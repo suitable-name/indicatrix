@@ -2,7 +2,7 @@
 //! `shaders/spectral_transport.wgsl`'s `transport_main` entry point.
 //!
 //! - [`run_determinism`]: two dispatches against identical input, byte-for-byte.
-//! - [`run_furnace`]: energy-conservation furnace anchor -- a colourless, non-dispersive,
+//! - [`run_furnace`]: energy-conservation furnace anchor -- a colorless, non-dispersive,
 //!   non-absorbing cubic gem (Standard Round Brilliant) inside a uniform environment
 //!   must return exactly that uniform radiance in expectation, exercising
 //!   Fresnel/TIR/Russian-roulette/spectral-MIS against a TRUTH anchor (not just
@@ -83,7 +83,7 @@ use crate::renderer::gpu::frame::{self, SHADER_SRC};
 // Test scenes.
 // ---------------------------------------------------------------------------------
 
-/// The furnace anchor's gem: colourless (empty band set), non-dispersive
+/// The furnace anchor's gem: colorless (empty band set), non-dispersive
 /// (`Cauchy { a, b: 0, c: 0 }` reduces to bare `a`), cubic (`birefringence_delta:
 /// 0.0`).
 ///
@@ -93,7 +93,7 @@ use crate::renderer::gpu::frame::{self, SHADER_SRC};
 #[must_use]
 pub fn furnace_material() -> GemMaterial {
     GemMaterial {
-        name: "Phase2 furnace anchor (colourless n=1.5 cubic)".to_string(),
+        name: "Phase2 furnace anchor (colorless n=1.5 cubic)".to_string(),
         crystal_system: CrystalSystem::Cubic,
         optical_character: OpticalCharacter::Isotropic,
         dispersion: DispersionModel::Cauchy {

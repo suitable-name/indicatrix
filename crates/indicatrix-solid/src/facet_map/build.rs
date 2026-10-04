@@ -2,11 +2,11 @@
 //! own candidate-normal construction and dedup pass -- see this module's parent doc
 //! comment for the full derivation.
 
-use super::{Candidate, FacetInfo, FacetMap, OFFSET_REL_EPSILON};
+use super::{Candidate, FacetInfo, FacetKind, FacetMap, OFFSET_REL_EPSILON};
 use glam::Vec3;
 use indicatrix::geometry::{
     cuts::{StandardGemCuts, normals_coincide},
-    meet_solver::{SolvedTier, classify_blocks},
+    meet_solver::{Block, SolvedTier, classify_blocks},
     plane::tier_is_crown_side,
 };
 use indicatrix_cut_core::Design;
@@ -82,19 +82,27 @@ impl FacetMap {
 
         let mut facets = vec![FacetInfo::preform(); preform_plane_count];
         let mut orbits: Vec<Vec<u32>> = vec![Vec::new(); design.tiers.len()];
+        let canonical_labels = indicatrix_cut_core::compute_tier_labels(&design.tiers);
         for candidate in kept {
             let facet_id = facets.len() as u32;
             let block = blocks.get(candidate.tier_index).copied();
-            let (angle_deg, name) = design
+            let angle_deg = design
                 .tiers
                 .get(candidate.tier_index)
-                .map_or((0.0, String::new()), |t| (t.angle_deg, t.name.clone()));
+                .map_or(0.0, |t| t.angle_deg);
+            let (name, display_name) = canonical_labels
+                .get(candidate.tier_index)
+                .map_or((String::new(), String::new()), |l| {
+                    (l.code.clone(), l.display_name.clone())
+                });
             facets.push(FacetInfo {
                 tier_index: Some(candidate.tier_index),
                 index_on_gear: candidate.index_on_gear,
                 angle_deg,
                 block,
                 name,
+                display_name,
+                kind: FacetKind::Flat,
             });
             if let Some(orbit) = orbits.get_mut(candidate.tier_index) {
                 orbit.push(facet_id);
@@ -103,8 +111,67 @@ impl FacetMap {
 
         Self {
             preform_plane_count,
+            flat_facet_count: facets.len(),
             facets,
             orbits,
+            concave_hover: Vec::new(),
         }
+    }
+
+    /// [`Self::from_design`] plus one facet per concave tool, with ids above every
+    /// flat one: tool `k` of `placements` is facet `flat_count + k`.
+    ///
+    /// `placements` is the `(concave tier, placement)` list
+    /// `Design::concave_tools_from_solved` returns next to its primitives, so facet
+    /// ids line up with `StoneGeometry::facet_count`'s numbering. A placement naming
+    /// a tier or index the design does not have still gets an (unnamed) facet, so the
+    /// id range never drifts from the tool list. With no placements this is exactly
+    /// `from_design`.
+    #[must_use]
+    pub fn from_design_with_tools(
+        design: &Design,
+        solved: &[SolvedTier],
+        placements: &[(usize, usize)],
+    ) -> Self {
+        let mut map = Self::from_design(design, solved);
+        for &(tier, placement) in placements {
+            let concave = design.concave_tiers.get(tier);
+            let name = concave.map_or("", |t| t.name.as_str());
+            let angle_deg = concave.map_or(0.0, |t| t.angle_deg);
+            let index = concave
+                .and_then(|t| t.indices.get(placement))
+                .map_or(0, |i| i.round() as u32);
+            let label = match concave {
+                Some(t) if !name.is_empty() && t.indices.len() > 1 => format!("{name} {index}"),
+                _ => name.to_string(),
+            };
+            let hover = concave.map_or_else(String::new, |t| {
+                let shown = if name.is_empty() { "(unnamed)" } else { name };
+                format!(
+                    "{shown} {} θ {:.1}° D {:.3}",
+                    t.tool.code(),
+                    t.tool_azimuth_deg,
+                    t.diameter_ratio
+                )
+            });
+            let block = concave.map(|t| {
+                if t.is_crown_side() {
+                    Block::Crown
+                } else {
+                    Block::Pavilion
+                }
+            });
+            map.facets.push(FacetInfo {
+                tier_index: None,
+                index_on_gear: index,
+                angle_deg,
+                block,
+                name: label.clone(),
+                display_name: label,
+                kind: FacetKind::Concave { tier, placement },
+            });
+            map.concave_hover.push(hover);
+        }
+        map
     }
 }

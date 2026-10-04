@@ -48,10 +48,14 @@ impl SolidRasterizer {
     /// highlight look like a rendering glitch rather than a selection. Every
     /// highlighted pass also draws with a wider stroke (see [`EdgePass`]'s match
     /// arms below) so it reads clearly even where it doesn't win the fight.
+    ///
+    /// `edge_hidden` is parallel to `edge_points` (or empty): `true` skips the
+    /// segment leaving that point -- see [`super::SolidRasterizer`]'s field.
     pub(super) fn draw_facet_edges(
         &mut self,
         edge_ranges: &[(usize, usize, usize)],
         edge_points: &[(f32, f32, f32)],
+        edge_hidden: &[bool],
         style: &SolidStyle,
     ) {
         let is_selected = |facet_id: usize| style.selected.get(facet_id).copied().unwrap_or(false);
@@ -113,6 +117,11 @@ impl SolidRasterizer {
                 }
                 let pts = &edge_points[start..start + count];
                 for (i, &a) in pts.iter().enumerate() {
+                    // A seam inside one facet (concave path only; the flags are
+                    // empty on the planar one) is skipped before it is drawn.
+                    if edge_hidden.get(start + i).copied().unwrap_or(false) {
+                        continue;
+                    }
                     let b = pts[(i + 1) % count];
                     self.draw_edge(a, b, color, width);
                 }

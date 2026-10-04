@@ -6,13 +6,13 @@
 use glam::DVec3;
 
 use super::{
-    clip::{CLASS_EXTERIOR, CLASS_INTERIOR, classify_box_into},
+    clip::{CLASS_EXTERIOR, CLASS_INTERIOR, classify_box_in},
     compact::compact_tree,
     ctx::ShapedCtx,
     rows::{ClipRegion, PartialSolver, caliper_extents},
 };
 use crate::rough_plan::{
-    Axis, CandidateDesign, CutOrder, PlacedStone, PlanSettings, RoughLayout, StonePose,
+    Axis, CandidateDesign, CutOrder, FitMesh, PlacedStone, PlanSettings, RoughLayout, StonePose,
     piece::{ASSIGNMENTS, Norm, stone_scale},
     tree::{Leaf, Tree, assemble_layout, assignment_axes},
 };
@@ -22,6 +22,7 @@ pub struct StoneFitter<'a> {
     settings: &'a PlanSettings,
     pool: &'a [CandidateDesign],
     non_box: &'a [(DVec3, f64)],
+    mesh: Option<FitMesh<'a>>,
     solver: PartialSolver,
     violated: Vec<usize>,
 }
@@ -38,9 +39,21 @@ impl<'a> StoneFitter<'a> {
             settings,
             pool,
             non_box,
+            mesh: None,
             solver: PartialSolver::new(),
             violated: Vec::new(),
         }
+    }
+
+    /// The same fitter, also keeping every stone in the material of `mesh` (see
+    /// [`PartialSolver::solve_in_mesh`]); `None` changes nothing.
+    ///
+    /// This is the final authority on a placement: a piece whose stone box the mesh
+    /// surface meets is solved by the cutting-plane loop, and a piece in air holds nothing.
+    #[must_use]
+    pub const fn with_mesh(mut self, mesh: Option<FitMesh<'a>>) -> Self {
+        self.mesh = mesh;
+        self
     }
 
     /// Fits one stone of `leaf` into the piece at `origin` with `size`.
@@ -57,7 +70,7 @@ impl<'a> StoneFitter<'a> {
         let b_min = origin.map(|o| o + allowance);
         let b_max = [0, 1, 2].map(|i| origin[i] + size[i] - allowance);
 
-        let class = classify_box_into(b_min, b_max, self.non_box, &mut self.violated);
+        let class = classify_box_in(b_min, b_max, self.non_box, self.mesh, &mut self.violated);
         if class == CLASS_EXTERIOR {
             return None;
         }
@@ -72,7 +85,7 @@ impl<'a> StoneFitter<'a> {
                 violated: &self.violated,
             };
             self.solver
-                .solve(&region, caliper_extents(&norm, leaf.orient))?
+                .solve_with(&region, caliper_extents(&norm, leaf.orient), self.mesh)?
         };
         if scale <= 0.0 || scale < self.settings.min_width_mm {
             return None;
@@ -136,7 +149,7 @@ pub fn layout_from_tree_shaped(
     settings: &PlanSettings,
 ) -> RoughLayout {
     let mut tree = tree.clone();
-    let mut fitter = StoneFitter::new(settings, pool, &ctx.non_box);
+    let mut fitter = StoneFitter::new(settings, pool, &ctx.non_box).with_mesh(ctx.fit_mesh());
     let stones = compact_tree(
         order,
         &mut tree,

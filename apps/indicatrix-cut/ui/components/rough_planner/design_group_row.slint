@@ -2,7 +2,7 @@ import { Theme } from "../../theme.slint";
 import { RoughPlanModel, RoughPlanStoneGroup, RoughMetric } from "../../models/rough_plan.slint";
 import { RoughPill } from "fields.slint";
 
-// One design group row inside a result card: colour swatch, thumbnail, title with
+// One design group row inside a result card: color swatch, thumbnail, title with
 // its count, a short status chip, the Exclude pill, and a label/value metric list.
 // The design name is its own link to the design in the library; a click anywhere
 // else on the row selects the group. The Exclude pill asks Rust to leave the design
@@ -60,7 +60,7 @@ export component DesignGroupRow inherits Rectangle {
         HorizontalLayout {
             spacing: 6px;
 
-            // Palette colour swatch
+            // Palette color swatch
             VerticalLayout {
                 alignment: center;
                 Rectangle {

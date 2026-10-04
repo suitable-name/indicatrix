@@ -21,6 +21,7 @@ fn sample_summary() -> DesignSummary {
         ignored: false,
         version: [7u8; 32],
         design_version: [8u8; 32],
+        concave_tiers: 0,
     }
 }
 
@@ -61,6 +62,7 @@ fn library_request_variants_round_trip() {
             cursor: Some(1000),
         },
         LibraryRequest::FetchDesignSource { entry_id: 42 },
+        LibraryRequest::FetchDesignNative { entry_id: 42 },
     ] {
         let mut buf = Vec::new();
         write_message(&mut buf, &req).unwrap();
@@ -108,6 +110,7 @@ fn library_response_variants_round_trip() {
             angle: "41.0".to_string(),
             index: "96".to_string(),
             notes: String::new(),
+            tool_line: None,
         }],
         attachments: vec![AttachedFileMeta {
             id: 1,
@@ -160,6 +163,12 @@ fn library_response_variants_round_trip() {
             asc_text: "GemCad 5.0\n...\n".to_string(),
         },
         LibraryResponse::DesignSourceNotAvailable,
+        LibraryResponse::DesignNative {
+            entry_id: 42,
+            file_name: "scooped.indicatrix".to_string(),
+            content: b"version = 2\n".to_vec(),
+        },
+        LibraryResponse::DesignNativeNotAvailable,
     ] {
         let mut buf = Vec::new();
         write_message(&mut buf, &resp).unwrap();

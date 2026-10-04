@@ -227,8 +227,23 @@ pub fn to_asc_string(schedule: &AscSchedule) -> Result<String, AscWriteError> {
         let _ = write!(out, "H {header}{eol}");
     }
 
-    for (tier_index, tier) in schedule.tiers.iter().enumerate() {
-        write_tier(&mut out, tier, tier_index, schedule.gear_teeth_abs());
+    let mut g_count = 0usize;
+    let mut c_count = 0usize;
+    let mut p_count = 0usize;
+    for tier in &schedule.tiers {
+        let block_ordinal = if tier.angle_deg.abs() == 90.0 {
+            g_count += 1;
+            g_count
+        } else if tier.angle_deg > 0.0 {
+            c_count += 1;
+            c_count
+        } else if tier.angle_deg < 0.0 || tier.is_culet() {
+            p_count += 1;
+            p_count
+        } else {
+            1
+        };
+        write_tier(&mut out, tier, block_ordinal, schedule.gear_teeth_abs());
         out.push_str(eol);
     }
 
@@ -301,9 +316,9 @@ fn validate_writable(schedule: &AscSchedule) -> Result<(), AscWriteError> {
 }
 
 /// The label written for a facet name that sanitises to nothing: the tier's block
-/// letter and `ordinal + 1`. `G` for a girdle (`|angle| = 90`), `C` for a crown
-/// tier, `P` for a pavilion tier or the culet, `T` for the table.
-fn auto_tier_name(tier: &AscTier, ordinal: usize) -> String {
+/// letter and `block_ordinal`. `G` for a girdle (`|angle| = 90`), `C` for a crown
+/// tier, `P` for a pavilion tier or the culet, `Table` for the table.
+fn auto_tier_name(tier: &AscTier, block_ordinal: usize) -> String {
     let letter = if tier.angle_deg.abs() == 90.0 {
         'G'
     } else if tier.angle_deg > 0.0 {
@@ -313,7 +328,11 @@ fn auto_tier_name(tier: &AscTier, ordinal: usize) -> String {
     } else {
         'T'
     };
-    format!("{letter}{}", ordinal + 1)
+    if letter == 'T' {
+        "Table".to_string()
+    } else {
+        format!("{letter}{block_ordinal}")
+    }
 }
 
 /// Writes one `a` record (without its line terminator).

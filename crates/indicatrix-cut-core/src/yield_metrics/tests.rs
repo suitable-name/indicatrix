@@ -52,7 +52,7 @@ fn gate_1_yield_and_carat_weight_match_a_hand_calculation() {
             name: Some("Diamond".to_string()),
             specific_gravity_override: None,
             refractive_index_override: None,
-            body_colour_override: None,
+            body_color_override: None,
         },
     );
     let solved = design.solve().expect("single anchored tier must solve");
@@ -91,7 +91,7 @@ fn gate_2_volumetric_yield_is_independent_of_specific_gravity() {
             name: Some("Diamond".to_string()),
             specific_gravity_override: None,
             refractive_index_override: None,
-            body_colour_override: None,
+            body_color_override: None,
         },
     );
     let heavy_override = box_design(
@@ -100,7 +100,7 @@ fn gate_2_volumetric_yield_is_independent_of_specific_gravity() {
             name: None,
             specific_gravity_override: Some(19.3), // arbitrary, e.g. gold-like
             refractive_index_override: None,
-            body_colour_override: None,
+            body_color_override: None,
         },
     );
 
@@ -374,4 +374,69 @@ fn fits_the_box_extents_but_pokes_out_of_an_octagonal_preform() {
         (violation - (2.0_f64.sqrt() - 1.0)).abs() < 1e-9,
         "{violation}"
     );
+}
+
+/// A tiny `CIR` pit plunged well inside the 2x2x1.5 box of [`box_design`] removes
+/// exactly its own volume, so the yield must drop by that volume over the
+/// preform's (8.0), whatever the planar numbers are. Pit geometry (W = 2,
+/// contact corner (1, -1, -1), phi = -45, index 0): centre
+/// (0.010, -0.576, 0.000), radius 0.1, length 0.02, entirely interior.
+#[test]
+fn yield_volume_drops_by_the_groove_volume_for_the_concave_fixture() {
+    use crate::design::{ConcaveTier, ConcaveTool, ToolMotion};
+    use indicatrix::geometry::stone_metrics::{
+        TOOL_SEGMENTS, measure_solid, measure_solid_with_vertices, tessellate_tool,
+    };
+
+    let flat = box_design(Some(8.0), MaterialSelection::none());
+    let mut carved = flat.clone();
+    carved.concave_tiers.push(ConcaveTier {
+        name: "Pit".to_owned(),
+        angle_deg: -45.0,
+        indices: vec![0.0],
+        instructions: String::new(),
+        tool: ConcaveTool::Circle,
+        tool_azimuth_deg: 0.0,
+        displacement: [-0.2, 0.5, 0.5],
+        diameter_ratio: 0.1,
+        tool_angle_deg: None,
+        motion: ToolMotion::Plunge,
+    });
+    carved.ensure_concave_tier_ids();
+
+    let solved = flat.solve().expect("the box design solves");
+    let (planes, tools, _) = carved.geometry_from_solved(&solved).expect("resolves");
+    assert_eq!(tools.len(), 1);
+    let pit = tessellate_tool(&tools[0], TOOL_SEGMENTS);
+    let (_, pit_vertices) = measure_solid_with_vertices(&pit).expect("a tool is a solid");
+    for v in &pit_vertices {
+        assert!(
+            planes.iter().all(|&(n, m)| n.dot(*v) - m < -1e-6),
+            "the pit must lie strictly inside the stone for a closed form: {v:?}"
+        );
+    }
+    let removed = measure_solid(&pit).expect("a tool is a solid").volume;
+
+    let flat_yield = flat.yield_report(&solved).volumetric_yield.expect("closes");
+    let carved_yield = carved
+        .yield_report(&solved)
+        .volumetric_yield
+        .expect("closes");
+    let preform_volume = 8.0;
+    assert!((flat_yield - 0.75).abs() < 1e-12, "{flat_yield}");
+    let dropped = (flat_yield - carved_yield) * preform_volume;
+    assert!(
+        ((dropped - removed) / removed).abs() < 1e-6,
+        "yield fell by {dropped}, the pit is {removed}"
+    );
+    // mm^3 and carat follow the same volume.
+    let mm = carved
+        .yield_report(&solved)
+        .finished_volume_mm3
+        .expect("scaled");
+    let mm_flat = flat
+        .yield_report(&solved)
+        .finished_volume_mm3
+        .expect("scaled");
+    assert!(mm < mm_flat);
 }

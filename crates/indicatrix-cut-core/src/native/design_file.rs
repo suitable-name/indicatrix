@@ -10,14 +10,15 @@
 
 use super::{
     convert::{
-        SELF_CONTAINED_META_KEY, SaveExtras, external_proportions_from_source,
-        material_selection_from_table, material_table_from_selection, preform_spec_from_table,
-        preform_table_from_spec, source_table_from_proportions, tier_table_from_tier,
+        CONCAVE_TIERS_STASH_KEY, SELF_CONTAINED_META_KEY, SaveExtras, concave_tier_tables,
+        external_proportions_from_source, material_selection_from_table,
+        material_table_from_selection, preform_spec_from_table, preform_table_from_spec,
+        source_table_from_proportions, tier_table_from_tier,
     },
     load::{
         MaterialResolution, apply_tier_ids_and_targets, cheater_offsets_from_native,
         material_resolution_of, raw_tier_ids_from_native, raw_tier_targets_from_native,
-        tier_from_table_with_full_geometry, tier_notes_from_native,
+        restore_concave_tiers, tier_from_table_with_full_geometry, tier_notes_from_native,
     },
 };
 use crate::design::{Design, ScheduleMeta, TierId};
@@ -45,6 +46,16 @@ pub enum DesignLoadError {
         /// Zero-based position of the tier in the file.
         index: usize,
     },
+    /// A concave tier names a tool or motion this build does not know, or holds a
+    /// value that fails validation (an out-of-range angle or index, a name that
+    /// clashes with a flat tier). Refused rather than repaired: the file is the
+    /// only copy of what the cutter authored.
+    ConcaveTier {
+        /// Zero-based position among the concave tiers in the file.
+        index: usize,
+        /// What is wrong with it.
+        reason: String,
+    },
 }
 
 impl fmt::Display for DesignLoadError {
@@ -56,6 +67,9 @@ impl fmt::Display for DesignLoadError {
                 "tier {} has no recorded angle/indices to rebuild it from",
                 index + 1
             ),
+            Self::ConcaveTier { index, reason } => {
+                write!(f, "concave tier {} is not usable: {reason}", index + 1)
+            }
         }
     }
 }
@@ -184,7 +198,9 @@ fn build_file(
         design.girdle_diameter_mm,
         tiers,
     )
-    .with_history(HistoryTable::new(bounded_history(history)));
+    .with_history(HistoryTable::new(bounded_history(history)))
+    // Also sets `version = 2` and the frame, and only when the list is non-empty.
+    .with_concave_tiers(concave_tier_tables(design));
     match source {
         Some(source) => file.with_source(source),
         None => file,
@@ -255,6 +271,7 @@ pub fn design_from_file(file: DesignFile) -> Result<LoadedDesign, DesignLoadErro
         source,
         history,
         tiers,
+        concave_tiers,
         meta,
         attachments,
         ..
@@ -285,6 +302,8 @@ pub fn design_from_file(file: DesignFile) -> Result<LoadedDesign, DesignLoadErro
     design.tier_notes = notes;
     design.cheater_offsets_deg = offsets;
     apply_tier_ids_and_targets(&mut design, raw_ids, raw_targets, true);
+    restore_concave_tiers(&mut design, concave_tiers)
+        .map_err(|(index, reason)| DesignLoadError::ConcaveTier { index, reason })?;
 
     let material_resolution = material_resolution_of(design.material.name.as_deref());
     let restorable_custom_material = matches!(material_resolution, MaterialResolution::Unresolved)
@@ -339,6 +358,10 @@ pub fn migrate_sidecar_to_file(design: &Design, sidecar: &NativeDesignFile) -> D
     .with_draft(sidecar.draft);
     file.unknown = sidecar.unknown.clone();
     file.unknown.remove(SELF_CONTAINED_META_KEY);
+    // The design already supplies its concave tiers (see `build_file`); the
+    // sidecar's stash of the same list must not also be written back as an unknown
+    // key.
+    file.unknown.remove(CONCAVE_TIERS_STASH_KEY);
     file.preform.unknown = sidecar.preform.unknown.clone();
     file.material.unknown = sidecar.material.unknown.clone();
     file

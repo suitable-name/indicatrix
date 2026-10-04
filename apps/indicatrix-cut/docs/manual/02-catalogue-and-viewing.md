@@ -126,7 +126,7 @@ genuine right-drag gesture.)
 **Toolbar controls:**
 
 - **Render Material** — choose the gem material the render simulates
-  optically (colour, dispersion, birefringence). This changes only the
+  optically (color, dispersion, birefringence). This changes only the
   *appearance* of the render, never the cut itself — see Chapter 6 for the
   distinction between this and any material-like control in the editor.
   (Labelled just "Material" before this control's own hover tooltip and
@@ -138,9 +138,9 @@ genuine right-drag gesture.)
   independent render material without touching the design at all.
 - A pencil button next to Render Material opens the **Material Editor**, where
   you can define a fully custom material (name, refractive index,
-  dispersion, birefringence, colour swatch, crystal system, and optical
+  dispersion, birefringence, color swatch, crystal system, and optical
   character) starting from one of the built-in templates.
-- **Lighting** — seven presets in two families:
+- **Lighting** — nine presets in three families (the two UV lamps are listed last):
   - **Studio** (the analytic studio rig): **D65 Daylight (6500K)**, **Incandescent
     (3200K)**, **Gem Studio Ring Lights** and **Dramatic Dark Spotlight**. A dark velvet
     backdrop with a key softbox, a fill and sixteen ring pinpoints: hard sparkle,
@@ -157,6 +157,10 @@ genuine right-drag gesture.)
       controls; the cards sit 90°, 180° and 270° around from it.
     - **Daylight sky + sun** — a clear sky, brighter towards the horizon and around the
       sun, a 2° sun for fire, dark ground.
+  - **UV lamps** — **UV lamp 365 nm** and **UV lamp 395 nm**: the Studio rig lit by a
+    narrow ultraviolet line (10 nm and 12 nm wide) in a dark room, with no backdrop glow
+    and no white balance. A non-fluorescent stone stays nearly black (the 395 nm lamp
+    lights it faintly violet); a fluorescent one glows. They render on the CPU only.
 
   At exposure 1× the lit models put their ambient light near middle grey, so only a
   direct reflection of a light source clips to white; use Studio Exposure to go darker

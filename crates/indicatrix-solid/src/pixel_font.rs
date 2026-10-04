@@ -5,7 +5,7 @@
 //! [`crate::diagram2d`]'s crown/pavilion/profile panel labels, in this crate, and
 //! the desktop's `gui::tilt::video_export::overlay` tilt-performance readout
 //! (`apps/indicatrix-cut`, via this crate's re-export at `gui::pixel_font`). Both
-//! call sites keep their own scaling, drawing, and colour code
+//! call sites keep their own scaling, drawing, and color code
 //! (`draw_text`/`draw_glyph`/`text_size`/`text_width`); only the glyph DATA -- the
 //! character-to-bitmap lookup -- lives here, so the two copies this module
 //! replaces could never drift against each other one character at a time.

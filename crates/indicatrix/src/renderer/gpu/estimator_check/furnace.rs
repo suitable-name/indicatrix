@@ -1,4 +1,4 @@
-//! The energy-conservation furnace anchors: a colourless, non-dispersive, non-absorbing
+//! The energy-conservation furnace anchors: a colorless, non-dispersive, non-absorbing
 //! cubic gem inside a uniform (direction-independent) environment must return exactly
 //! that uniform radiance in expectation, on both CPU and GPU -- against a TRUTH anchor,
 //! not merely CPU-vs-GPU. See [`run_furnace`]'s doc comment.

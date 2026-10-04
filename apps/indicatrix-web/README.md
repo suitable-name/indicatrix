@@ -40,11 +40,11 @@ nowhere else.
   read-only Solved section. The Preform tab has the starting rough, the proportion
   verdicts and the yield inputs and results; Schedule is the cutting instructions.
 - **Design settings** (Design menu, or the button in the dock): material, RI override and
-  colour, index gear (with the remap confirmation), symmetry and mirror, title / header /
+  color, index gear (with the remap confirmation), symmetry and mirror, title / header /
   footnotes, printed proportions, and a compact custom-material editor (name, RI,
-  dispersion, birefringence, specific gravity, colour). A custom material is offered in
+  dispersion, birefringence, specific gravity, color). A custom material is offered in
   the material lists and kept with the design's `.indicatrix` file (its snapshot: optics and
-  body colour; a built-in material's name is refused, so a custom material never shadows
+  body color; a built-in material's name is refused, so a custom material never shadows
   one). The Render tab's "Linked to design" switch is the one control for whether the
   render follows the design's material.
 - **Optimize and Retarget.** Optimize's coordinate search and Retarget's Optimize mode run
@@ -100,7 +100,7 @@ nowhere else.
   frosted girdle, inclusion haze, edge rounding, stone size and crystal-axis override,
   and an uploaded `.hdr` environment map. A view narrower than 16:10 is traced at 16:10
   and letterboxed, so the whole stone stays in the frame on a phone-width window.
-  File > Export PNG renders a still at a chosen size and colour space (sRGB or
+  File > Export PNG renders a still at a chosen size and color space (sRGB or
   Display P3, with an embedded profile), at the framing the view shows.
 - **Guided walkthrough** (Help > Guided walkthrough, or the link on the empty state). The
   desktop's ten-step worked example, the same steps (`indicatrix_editor::guide`) in a
@@ -203,8 +203,8 @@ File menu and the tabs.
   the Solid tab is not redrawn with the pending angles.
 - **The full custom-material editor** (crystal-system and optical-character pickers,
   biaxial data, base templates). A design carries the snapshot of one custom material
-  (the last one created or opened) with its optics and body colour; a file written before
-  the colour was stored restores the material colourless.
+  (the last one created or opened) with its optics and body color; a file written before
+  the color was stored restores the material colorless.
 - **The Preform tab's "Yield Material" picker.** The desktop removed it too (its index was
   never read); only the girdle diameter and a specific-gravity override are typed, and the
   material for the carat estimate follows Design settings.

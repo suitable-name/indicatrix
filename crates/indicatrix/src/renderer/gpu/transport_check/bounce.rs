@@ -445,6 +445,7 @@ fn cpu_frosted_bounce(case: &FrostedBounceCase, material: &GemMaterial) -> Frost
             surface_glare: 1.0,
         },
         plane_soa: &plane_soa,
+        tools: &[],
         enabled: false,
     };
     let mut radiance = [0.0f32; 8];
@@ -452,6 +453,7 @@ fn cpu_frosted_bounce(case: &FrostedBounceCase, material: &GemMaterial) -> Frost
         &mat_ctx,
         &geo,
         normal,
+        Vec3::ZERO,
         case.inside_gem != 0,
         case.is_extraordinary != 0,
         case.rng_seed,

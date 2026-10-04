@@ -40,8 +40,11 @@
 //! caller passes one backed by `performance.now()`.
 
 use glam::{DVec3, Vec3};
-use indicatrix::geometry::meet_solver::{MeetConstraint, SolveStrategy, SolvedTier};
-use indicatrix_cut_core::{Design, DesignSolveError};
+use indicatrix::geometry::{
+    cuts::StandardGemCuts,
+    meet_solver::{MeetConstraint, SolveStrategy, SolvedTier},
+};
+use indicatrix_cut_core::{Design, DesignSolveError, design::TierRef};
 use std::{collections::BTreeSet, time::Duration};
 
 /// Default over-budget threshold for [`plan_preview`]'s tier-2/3 decision.
@@ -134,22 +137,96 @@ fn narrow_planes(planes: Vec<(DVec3, f64)>) -> Vec<(Vec3, f32)> {
         .collect()
 }
 
+/// Which flat tiers the "show through tier N" slider shows, indexed like
+/// `design.tiers`.
+///
+/// A planar design (no concave tiers) keeps its stored order: tiers `0..=cutoff`. With
+/// concave tiers the slider walks [`Design::cutting_order`] (plan §4.4): the shown flat
+/// tiers are those cut up to and including flat tier `cutoff`, so the planes and the
+/// concave tools of one frame always describe the same step of the cut. For a design
+/// stored in cutting order the two rules agree.
+pub(crate) fn visible_flat_tiers(design: &Design, cutoff: usize) -> Vec<bool> {
+    let count = design.tiers.len();
+    if design.concave_tiers.is_empty() {
+        return (0..count).map(|i| i <= cutoff).collect();
+    }
+    let order = design.cutting_order();
+    let Some(step) = order.iter().position(|t| *t == TierRef::Flat(cutoff)) else {
+        // A cutoff past the last flat tier (or a stale one) means "every tier".
+        return vec![true; count];
+    };
+    let mut visible = vec![false; count];
+    for tier in &order[..=step] {
+        if let TierRef::Flat(i) = tier {
+            visible[*i] = true;
+        }
+    }
+    visible
+}
+
+/// `planes` of `design` restricted to the flat tiers `visible` marks (the preform's
+/// planes are always kept): [`Design::planes_from_solved`] with each tier's own slice
+/// of facet planes dropped when the tier is hidden. Tier slices are located exactly as
+/// `Design::tier_for_plane_index` does, by the plane count of each schedule prefix.
+fn planes_of_visible_tiers(
+    design: &Design,
+    solved: &[SolvedTier],
+    visible: &[bool],
+) -> Vec<(DVec3, f64)> {
+    let planes = design.planes_from_solved(solved);
+    let preform_len = design.preform.planes().len();
+    let schedule = design.to_asc_schedule_from_solved(solved);
+    let boundaries: Vec<usize> = (0..schedule.tiers.len())
+        .map(|i| {
+            let mut prefix = schedule.clone();
+            prefix.tiers.truncate(i + 1);
+            StandardGemCuts::from_asc_schedule(&prefix).len()
+        })
+        .collect();
+    planes
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| {
+            index
+                .checked_sub(preform_len)
+                .and_then(|local| boundaries.iter().position(|&end| local < end))
+                .is_none_or(|tier| visible.get(tier).copied().unwrap_or(true))
+        })
+        .map(|(_, plane)| plane)
+        .collect()
+}
+
 /// [`plan_preview`]'s single choice of "the full arrangement" vs. "truncated through
 /// a tier cutoff" (the "show through tier N" viewport slider) -- routing every one
 /// of `plan_preview`'s five branches through here keeps that truncation decision in
 /// exactly one place rather than five.
 ///
 /// `tier_cutoff.is_none()` reproduces [`Design::planes_from_solved`] exactly --
-/// the pre-existing behaviour for every caller that has no cutoff to offer.
+/// the pre-existing behaviour for every caller that has no cutoff to offer. A planar
+/// design truncates by stored position ([`Design::planes_through_tier`]); a design
+/// with concave tiers follows [`visible_flat_tiers`], the same rule that picks the
+/// concave tools.
 fn planes_for_display(
     design: &Design,
     solved: &[SolvedTier],
     tier_cutoff: Option<usize>,
 ) -> Vec<(DVec3, f64)> {
-    tier_cutoff.map_or_else(
-        || design.planes_from_solved(solved),
-        |through_tier| design.planes_through_tier(solved, through_tier),
-    )
+    let Some(through_tier) = tier_cutoff else {
+        return design.planes_from_solved(solved);
+    };
+    if design.concave_tiers.is_empty() {
+        return design.planes_through_tier(solved, through_tier);
+    }
+    let visible = visible_flat_tiers(design, through_tier);
+    let is_stored_prefix = visible
+        .iter()
+        .enumerate()
+        .all(|(i, &shown)| shown == (i <= through_tier));
+    if is_stored_prefix {
+        design.planes_through_tier(solved, through_tier)
+    } else {
+        planes_of_visible_tiers(design, solved, &visible)
+    }
 }
 
 /// Every tier's mast read directly off its own [`MeetConstraint::ScaleReference`] --
@@ -566,6 +643,43 @@ mod tests {
             Some(design.tiers.len()),
         );
         assert_eq!(full.planes.len(), uncut.planes.len());
+    }
+
+    /// A design stored crown-first, with a pavilion groove: the slider must follow
+    /// cutting order for the planes as well as the tools. Stored-prefix truncation kept
+    /// only the crown tier's planes, so the pavilion groove was carved into a stone with
+    /// no pavilion.
+    #[test]
+    fn concave_tier_cutoff_follows_cutting_order_for_the_planes() {
+        let mut design = Design::concave_fixture();
+        // Stored: C40, C32, P-38, P-42, G90; cut: P-38, P-42, G90, (Groove), C40, C32, ...
+        design.tiers.reverse();
+        let uncut = plan_preview(
+            &design,
+            None,
+            &BTreeSet::new(),
+            DEFAULT_PREVIEW_BUDGET,
+            &PanicSolver,
+            &ZeroClock,
+            None,
+        );
+        let cut = plan_preview(
+            &design,
+            None,
+            &BTreeSet::new(),
+            DEFAULT_PREVIEW_BUDGET,
+            &PanicSolver,
+            &ZeroClock,
+            Some(0),
+        );
+        assert!(cut.solved.is_some());
+        assert_eq!(
+            visible_flat_tiers(&design, 0),
+            [true, false, true, true, true],
+            "everything cut before the stored-first crown tier, and that tier"
+        );
+        // Only the second crown tier (stored 1, four facets) is hidden.
+        assert_eq!(cut.planes.len() + 4, uncut.planes.len());
     }
 
     /// `indicatrix-cut-core`'s "CrackOtto-Step" fixture (PC 05.115, 103 tiers), re-authored

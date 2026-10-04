@@ -139,7 +139,7 @@ impl ExportHandle {
 #[expect(
     clippy::too_many_arguments,
     reason = "every argument is a distinct piece of one export request's own identity \
-              (scene, output params/path/colour-space, the remote selection, the local \
+              (scene, output params/path/color-space, the remote selection, the local \
               compute choice, and the two UI callbacks) -- bundling them into a struct \
               would just move the same count into field access, not reduce it"
 )]

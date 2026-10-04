@@ -353,3 +353,57 @@ fn inline_angle_text_is_a_no_op_when_bit_identical() {
     );
     assert!(session.set_tier_angle_from_text(0, "abc").is_err());
 }
+
+fn session_with_concave_fixture() -> EditorSession {
+    let design = indicatrix_cut_core::Design::concave_fixture();
+    EditorSession::with_history(design, indicatrix_cut_core::History::default())
+}
+
+#[test]
+fn concave_duplicate_remove_and_move_edit_only_the_concave_list() {
+    let mut session = session_with_concave_fixture();
+    let flat_before = session.design.tiers.clone();
+
+    let outcome = session
+        .duplicate_concave_tier(0)
+        .unwrap()
+        .expect("tier 0 exists");
+    assert_eq!(outcome.new_index, 1);
+    let copy_name = outcome.duplicate_label.clone();
+    assert!(outcome.change.concave_count_changed());
+    assert!(!outcome.change.tier_count_changed());
+    assert_eq!(session.design.concave_tiers.len(), 3);
+    assert_ne!(
+        session.design.concave_tiers[1].name, session.design.concave_tiers[0].name,
+        "the copy gets its own name"
+    );
+
+    let moved = session.move_concave_tier(1, 1).unwrap().expect("not last");
+    assert_eq!(moved.target, 2);
+    assert!(session.move_concave_tier(2, 1).unwrap().is_none());
+    assert!(session.move_concave_tier(0, -1).unwrap().is_none());
+
+    let removed = session.remove_concave_tier(2).unwrap().expect("exists");
+    assert_eq!(removed.name, copy_name, "the moved copy is last");
+    assert_eq!(removed.facet_count, 8);
+    assert!(session.remove_concave_tier(9).unwrap().is_none());
+    assert_eq!(session.design.tiers, flat_before);
+
+    // Every step is one undo step.
+    for _ in 0..3 {
+        session.undo().unwrap();
+    }
+    assert_eq!(session.design.concave_tiers.len(), 2);
+}
+
+#[test]
+fn the_concave_selection_follows_its_tier_and_clears_when_it_is_removed() {
+    let mut session = session_with_concave_fixture();
+    session.selected_concave = Some(1);
+    session.duplicate_concave_tier(0).unwrap();
+    assert_eq!(session.selected_concave, Some(2), "pushed down by the copy");
+    session.move_concave_tier(2, -1).unwrap();
+    assert_eq!(session.selected_concave, Some(1));
+    session.remove_concave_tier(1).unwrap();
+    assert_eq!(session.selected_concave, None);
+}

@@ -29,7 +29,11 @@
 //! over shipping twelve where some might not close. See this crate's own
 //! `#[cfg(test)]` module below for the verification every entry gets.
 
-use crate::design::{ConstraintTier, ScheduleMeta};
+use crate::{
+    design::{ConcaveTier, ConcaveTool, ConstraintTier, Design, ScheduleMeta, ToolMotion},
+    material::MaterialSelection,
+    preform::PreformSpec,
+};
 use indicatrix::geometry::meet_solver::MeetConstraint;
 
 /// One gallery entry: display metadata plus a pure constructor for its tier table.
@@ -245,6 +249,76 @@ pub const TEMPLATES: &[TemplateSpec] = &[
         build: rich_teaching_tiers,
     },
 ];
+
+impl Design {
+    /// The concave-facet fixture later work packages pin their numbers against:
+    /// a five-tier 16-tooth round brilliant on a 2 x 1 x 2 block (the same
+    /// schedule the cut-core edit round-trip tests use), plus two concave tiers,
+    ///
+    /// - `Groove`: `CYL`, φ = −42, the eight even indices, θ = 0,
+    ///   X = 0, Y = 0.15, Z = 0.03, D = 0.25, reciprocating;
+    /// - `Dimple`: `SPH`, φ = +36, indices 0/4/8/12, X = Y = 0, Z = 0.02,
+    ///   D = 0.1, plunge (a crown-side dimple).
+    ///
+    /// **Frozen once published**: tests in other crates pin geometry, hashes and
+    /// text against these exact numbers, so change them only by adding a second
+    /// fixture. Not a template for users, and the concave tiers carry the
+    /// provisional `v0` frame conventions (plan §11a).
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: the embedded `.asc` text is a constant that parses.
+    #[must_use]
+    pub fn concave_fixture() -> Self {
+        const ASC: &str = "GemCad 5.0\n\
+             g 16 0.0\n\
+             y 4 n\n\
+             I 1.54\n\
+             a 90.000000 1.00000000 0 4 8 12 G Set girdle thickness\n\
+             a -42.000000 0.60000000 0 4 8 12 G Set stone size\n\
+             a -38.000000 0.55000000 2 6 10 14 G Set stone size\n\
+             a 32.000000 0.45000000 0 4 8 12 G Set stone size\n\
+             a 40.000000 0.40000000 2 6 10 14 G Set stone size\n";
+        let schedule =
+            indicatrix_formats::asc::parse_asc(ASC).expect("the fixture's .asc text must parse");
+        let mut design = Self::from_asc_schedule(PreformSpec::block(2.0, 1.0, 2.0), &schedule);
+        design.girdle_diameter_mm = Some(6.5);
+        design.material = MaterialSelection {
+            name: Some("Diamond".to_string()),
+            specific_gravity_override: None,
+            refractive_index_override: Some(1.54),
+            body_color_override: None,
+        };
+        design.concave_tiers = vec![
+            ConcaveTier {
+                name: "Groove".to_owned(),
+                angle_deg: -42.0,
+                indices: (0..8).map(|i| f64::from(2 * i)).collect(),
+                instructions: String::new(),
+                tool: ConcaveTool::Cylinder,
+                tool_azimuth_deg: 0.0,
+                displacement: [0.0, 0.15, 0.03],
+                diameter_ratio: 0.25,
+                tool_angle_deg: None,
+                motion: ToolMotion::Reciprocating,
+            },
+            ConcaveTier {
+                name: "Dimple".to_owned(),
+                angle_deg: 36.0,
+                indices: vec![0.0, 4.0, 8.0, 12.0],
+                instructions: String::new(),
+                tool: ConcaveTool::Sphere,
+                tool_azimuth_deg: 0.0,
+                displacement: [0.0, 0.0, 0.02],
+                diameter_ratio: 0.1,
+                tool_angle_deg: None,
+                motion: ToolMotion::Plunge,
+            },
+        ];
+        design.ensure_concave_tier_ids();
+        design
+    }
+}
 
 #[cfg(test)]
 mod tests {

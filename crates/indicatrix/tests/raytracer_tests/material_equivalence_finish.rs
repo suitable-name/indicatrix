@@ -141,7 +141,7 @@ fn frosted_finish_all_polished_is_bit_identical_to_trace_spectral_ray() {
     }
 }
 
-/// The existing white-furnace energy-conservation invariant (a colourless,
+/// The existing white-furnace energy-conservation invariant (a colorless,
 /// non-dispersive gem immersed in a spatially UNIFORM environment must render at exactly
 /// that environment's own radiance, regardless of its internal optics -- reflectance and
 /// transmittance always sum to 1 at every interface, so a lossless system can neither
@@ -164,7 +164,7 @@ fn frosted_girdle_white_furnace_energy_conservation_still_holds() {
 
     let planes = StandardGemCuts::standard_round_brilliant();
     let finishes = bruted_girdle_finishes(planes.len());
-    // Colourless, non-dispersive, cubic -- matches
+    // colorless, non-dispersive, cubic -- matches
     // `renderer::gpu::estimator_check::furnace_material`'s own construction (not
     // reusable directly: that function is behind the `gpu` feature).
     let material = GemMaterial::new_custom("CPU furnace probe", 1.5, 0.0, 0.0, [0.0, 0.0, 0.0]);

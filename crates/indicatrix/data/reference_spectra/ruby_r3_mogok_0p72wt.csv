@@ -1,0 +1,53 @@
+# sample: R-3 natural Mogok
+# host: corundum (Al2O3), uniaxial; E_perp_c = o-ray, E_par_c = e-ray
+# composition: 0.720 wt% Cr2O3 (2.28e20 cm^-3, 1932 ppma) + 0.015 wt% Fe2O3 (106 ppma)
+# path_text_cm: 0.25 (color table also lists 0.50 cm)
+# units: lambda_nm; alpha in cm^-1, Napierian (T = exp(-alpha*L), L in cm)
+# path_cm: 0.25
+# source: research-2026-10-polarized-spectra.md section 1 "Napierian alpha" table, columns 0.72 wt% E_perp_c / E_par_c (user-delivered, secondary, unverified)
+# note: R1 (694.3 nm) and R2 (692.8 nm) are tabulated as single points between 680 and 700 nm; B lines (468.5/475.1/476.5 nm) only as 468.5 (see tests for the line handling)
+# lab: mean_uniax | D65 | 0.25 | 26.2 | 58.4 | 28.5
+# lab: mean_uniax | D65 | 0.5 | 14.1 | 35.8 | 18.2
+lambda_nm,E_perp_c,E_par_c
+350,9.42,8.18
+360,11.85,10.45
+370,16.70,14.70
+380,23.55,20.65
+390,30.10,26.40
+400,34.20,30.10
+405,35.42,31.15
+410,35.10,30.55
+415,33.45,28.90
+420,31.15,26.75
+430,23.10,19.45
+440,14.85,11.95
+450,8.52,6.35
+460,4.60,3.28
+468.5,4.05,2.58
+470,3.48,2.22
+475,3.12,1.90
+480,3.20,1.92
+490,4.10,2.50
+500,7.10,4.52
+510,12.85,8.42
+520,21.05,14.30
+530,29.80,20.75
+540,36.65,26.20
+550,39.60,28.38
+555,39.90,28.05
+560,39.45,27.15
+570,35.85,23.55
+580,28.85,17.90
+590,20.60,12.00
+600,12.80,6.85
+610,7.20,3.60
+620,3.75,1.88
+640,1.25,0.62
+660,0.80,0.48
+680,0.65,0.32
+692.8,5.50,0.95
+694.3,7.52,1.25
+700,0.48,0.32
+720,0.32,0.16
+750,0.16,0.09
+800,0.10,0.06

@@ -61,7 +61,7 @@ it.
 
 ## Protocol version and message set
 
-`messages::PROTOCOL_VERSION: u16 = 18`. Three protocols share one authenticated
+`messages::PROTOCOL_VERSION: u16 = 20`. Three protocols share one authenticated
 connection: **render** (offload sample tracing), **tilt curves** (offload one design's
 full tilt-performance sweep), and **library** (read a design catalogue). A peer may
 serve any subset, and — for a viewer — consume all three.
@@ -234,9 +234,22 @@ anyway because the contribution didn't arrive in time or was invalid, v17 append
 `library::DesignSummary::design_version` (the design's
 revision token, so a mirror re-fetches a design whose edit left the search summary
 unchanged) and made `library::DesignRecord::version` carry that same token instead of a
-content hash, and v18 — the current version — appended `SceneState::surface_glare`
-(the scale of the first-surface reflection of the analytic lighting presets). postcard
-lays structs out as bare fields in order, so the appended `f32` shifts the byte
+content hash, v18 appended `SceneState::surface_glare`
+(the scale of the first-surface reflection of the analytic lighting presets), v19 added
+concave facets: `SceneState::tools` (`Vec<ToolPrimitive>`,
+convex tool volumes subtracted from the plane polyhedron; always on the wire, empty for
+a convex stone, because postcard cannot omit a trailing field), `library::DesignSummary::
+concave_tiers`, `library::AngleSettingWire::tool_line`, and `LibraryRequest::
+FetchDesignNative` with its `DesignNative`/`DesignNativeNotAvailable` replies. The
+worker's summary `version` hash now also covers `concave_tiers`, so the stamp of every
+design (planar ones included) changes once and each mirror re-syncs its catalogue one
+time. A scene with tools is traced on the CPU only; the GPU path is unchanged. And v20 —
+the current version — added fluorescence: `SceneState::fluorescence` (the material's
+emitters, `indicatrix::optics::fluorescence::Fluorescence`; always on the wire, an empty
+emitter list for a non-fluorescent material) and the `LightingPreset::{UvLamp365,
+UvLamp395}` variants (enum indices 7 and 8). A scene with fluorescence or a UV lamp is
+traced on the CPU only (`scene_routes_to_gpu` is false); the GPU path is unchanged.
+postcard lays structs out as bare fields in order, so every appended field shifts the byte
 layout of every `SceneState`: the bump turns a silent misread into a clear handshake
 refusal (the build-hash check would refuse a peer on a different build anyway, but
 the version names the cause).

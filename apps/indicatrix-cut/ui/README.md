@@ -36,7 +36,7 @@ window's own handle.
 | `ShortcutsModel` | `models/shortcuts.slint` | The keyboard-shortcuts overlay |
 | `SolidPreviewModel` | `models/solid_preview.slint` | The Edit tab's solid-inspection viewport |
 | `TemplateGalleryModel` | `models/templates.slint` | The New Design dialog's template gallery |
-| `Theme` | `theme.slint` | The colour palette and other design tokens; read from `.slint` only, not exported to Rust |
+| `Theme` | `theme.slint` | The color palette and other design tokens; read from `.slint` only, not exported to Rust |
 | `TiltModel`, `TiltVideoExportModel` | `models/tilt.slint` | Tilt performance graphs; the tilt-video export section |
 | `UndoRedoLabels` | `components/editor_command_bar.slint` | The Undo/Redo wording shown by the command bar and the Edit menu (declared beside the command bar because both import it from there) |
 | `ViewportModel` | `models/viewport.slint` | The 3D gem viewport's camera/lighting/material controls |

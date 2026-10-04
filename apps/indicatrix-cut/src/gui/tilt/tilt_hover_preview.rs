@@ -38,12 +38,16 @@ use crate::{
 use glam::Vec3;
 use indicatrix::{
     color::metrics::PROFILE_AZIMUTHS_DEG,
-    geometry::plane::GpuFacetPlane,
+    geometry::{
+        plane::GpuFacetPlane,
+        tool::{StoneGeometry, ToolPrimitive},
+    },
     optics::{
+        fluorescence::Fluorescence,
         materials::GemMaterial,
         raytracer::{
             Camera, DEFAULT_FOV_DEG, add_finite_sample, pixel_rotations, sample_draws,
-            trace_spectral_ray_with_finish,
+            trace_spectral_ray_geom,
         },
     },
     renderer::tonemap::tonemap_to_rgba,
@@ -66,7 +70,7 @@ const PREVIEW_SIZE: u32 = 96;
 /// Samples per pixel for the hover preview. Deliberately tiny -- this trades visible
 /// noise for staying well under the per-render cost that would make even a
 /// settled-cursor preview feel laggy; the preview only needs to communicate
-/// silhouette, facet pattern and rough colour/brightness, not serve as a converged
+/// silhouette, facet pattern and rough color/brightness, not serve as a converged
 /// reference image.
 const PREVIEW_SPP: u32 = 2;
 
@@ -115,6 +119,11 @@ fn camera_pose_for_hover(axis_index: usize, tilt_deg: f32) -> (f32, f32) {
 /// rather than a ten-parameter function signature.
 struct HoverPreviewScene<'a> {
     planes: &'a [GpuFacetPlane],
+    /// The concave tools cut out of `planes`; empty for a planar stone.
+    tools: &'a [ToolPrimitive],
+    /// The material's fluorescent emitters (`RenderContext::active_fluorescence`); empty for
+    /// every non-fluorescent material.
+    fluorescence: &'a Fluorescence,
     material: &'a GemMaterial,
     cam_yaw: f32,
     cam_pitch: f32,
@@ -181,11 +190,14 @@ fn render_hover_preview(scene: &HoverPreviewScene<'_>) -> SharedPixelBuffer<Rgba
                 // Preview always renders an all-polished stone (`&[]` facet finishes)
                 // regardless of the live viewport's frosted-girdle toggle -- this
                 // illustrates the curve's own pose/geometry, not every display option.
-                let sample = trace_spectral_ray_with_finish(
+                let sample = trace_spectral_ray_geom(
                     ray,
-                    scene.planes,
-                    &[],
+                    StoneGeometry {
+                        planes: scene.planes,
+                        tools: scene.tools,
+                    },
                     scene.material,
+                    scene.fluorescence,
                     scene.max_bounces,
                     environment,
                     draws.seed,
@@ -250,6 +262,8 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
 
                 let (
                     planes,
+                    tools,
+                    fluorescence,
                     material_name,
                     material_override,
                     custom_materials,
@@ -265,6 +279,8 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     (
                         ctx.active_planes.clone(),
+                        ctx.active_tools.clone(),
+                        ctx.active_fluorescence(),
                         ctx.material_name.clone(),
                         ctx.material_override.clone(),
                         ctx.custom_materials.clone(),
@@ -294,6 +310,8 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
 
                 let buffer = render_hover_preview(&HoverPreviewScene {
                     planes: &planes,
+                    tools: &tools,
+                    fluorescence: fluorescence.as_deref().unwrap_or(Fluorescence::none()),
                     material: &material,
                     cam_yaw,
                     cam_pitch,

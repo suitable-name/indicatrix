@@ -15,8 +15,11 @@
 //! option (not just the simplest one).
 
 use crate::{
-    design::{ConstraintTier, Design, ScheduleMeta, TierId, TierTarget},
-    material::MaterialSelection,
+    design::{
+        ConcaveTier, ConcaveTool, ConstraintTier, Design, ScheduleMeta, TierId, TierTarget,
+        ToolMotion,
+    },
+    material::{MaterialSelection, colorMode},
     preform::{PreformShape, PreformSpec},
 };
 use indicatrix::{
@@ -24,8 +27,9 @@ use indicatrix::{
     optics::materials::GemMaterial,
 };
 use indicatrix_formats::native::{
-    CustomMaterialSnapshot, HistoryTable, MaterialTable, NativeDesignFile, NativeMeetConstraint,
-    NativePreformShape, NativeTierTarget, PreformTable, SourceTable, TierTable, sha256_hex,
+    ConcaveTierTable, CustomMaterialSnapshot, HistoryTable, MaterialTable, NativeDesignFile,
+    NativeMeetConstraint, NativePreformShape, NativeTierTarget, PreformTable, SourceTable,
+    TierTable, colorRecipeDto, sha256_hex,
 };
 
 pub(super) fn native_meet_constraint_from(constraint: &MeetConstraint) -> NativeMeetConstraint {
@@ -115,7 +119,7 @@ pub(super) fn material_table_from_selection(selection: &MaterialSelection) -> Ma
         selection.specific_gravity_override,
         selection.refractive_index_override,
     )
-    .with_body_colour_override(selection.body_colour_override.map(body_colour_to_table))
+    .with_body_color_override(selection.body_color_override.map(body_color_to_table))
 }
 
 #[must_use]
@@ -124,17 +128,17 @@ pub(super) fn material_selection_from_table(table: &MaterialTable) -> MaterialSe
         name: table.name.clone(),
         specific_gravity_override: table.specific_gravity_override,
         refractive_index_override: table.refractive_index_override,
-        body_colour_override: table.body_colour_override.map(body_colour_from_table),
+        body_color_override: table.body_color_override.map(body_color_from_table),
     }
 }
 
 /// `f32` triple -> the `f64` triple `MaterialTable` stores, by way of each
 /// component's SHORTEST round-trip decimal (`f32`'s `Display`): a plain
 /// `f64::from(0.2f32)` would serialise as `0.20000000298023224`, which is what the
-/// on-disk file would then show a cutter for a colour they picked as "0.2". The
-/// decimal text uniquely identifies the `f32`, so [`body_colour_from_table`]'s cast
+/// on-disk file would then show a cutter for a color they picked as "0.2". The
+/// decimal text uniquely identifies the `f32`, so [`body_color_from_table`]'s cast
 /// back returns the identical bits (asserted by the native round-trip tests).
-fn body_colour_to_table(rgb: [f32; 3]) -> [f64; 3] {
+fn body_color_to_table(rgb: [f32; 3]) -> [f64; 3] {
     rgb.map(|v| {
         v.to_string()
             .parse::<f64>()
@@ -142,9 +146,9 @@ fn body_colour_to_table(rgb: [f32; 3]) -> [f64; 3] {
     })
 }
 
-/// The inverse of [`body_colour_to_table`]: nearest `f32` per component, which for a
+/// The inverse of [`body_color_to_table`]: nearest `f32` per component, which for a
 /// value written by that function is the original `f32` exactly.
-fn body_colour_from_table(rgb: [f64; 3]) -> [f32; 3] {
+fn body_color_from_table(rgb: [f64; 3]) -> [f32; 3] {
     rgb.map(|v| v as f32)
 }
 
@@ -255,6 +259,60 @@ pub struct SaveExtras<'a> {
     pub custom_catalogue: &'a [GemMaterial],
 }
 
+/// How a native snapshot's color reads (spec 6): which payload the file really carries.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Snapshotcolor {
+    /// No recipe: the top-level `absorption_rgb` is the color (fantasy, or a file written
+    /// before physics color existed).
+    Fantasy,
+    /// A recipe whose fallback color still matches the top-level `absorption_rgb`: it was not
+    /// touched since this build (or one like it) wrote it, so the recipe is the color.
+    Physics(colorMode),
+    /// A recipe, but the top-level `absorption_rgb` differs from the fallback the DTO recorded:
+    /// an older build edited the color. Treated as fantasy-edited; the caller asks the user
+    /// whether to keep the physics recipe (the [`colorMode`] is that recipe).
+    EditedElsewhere(colorMode),
+}
+
+/// Reads `snapshot`'s color payload: see [`Snapshotcolor`]. An unreadable recipe JSON is
+/// treated as [`Snapshotcolor::Fantasy`] (the fallback color is still there).
+#[must_use]
+pub fn snapshot_color(snapshot: &CustomMaterialSnapshot) -> Snapshotcolor {
+    let Some(dto) = &snapshot.color_recipe else {
+        return Snapshotcolor::Fantasy;
+    };
+    let Some(mode) = colorMode::from_json(&dto.recipe_json) else {
+        return Snapshotcolor::Fantasy;
+    };
+    // A fantasy-active material renders from the top-level color; its parked recipe only
+    // matters to the vault row, not to a session-local restore.
+    if !mode.is_physics() {
+        return Snapshotcolor::Fantasy;
+    }
+    // Compared as `f32`, the precision `with_body_color` stores them at.
+    let recorded = dto.fallback_rgb.map(|v| v as f32);
+    let top_level = snapshot.body_color().unwrap_or([0.0; 3]);
+    if top_level == recorded {
+        Snapshotcolor::Physics(mode)
+    } else {
+        Snapshotcolor::EditedElsewhere(mode)
+    }
+}
+
+/// The DTO recording `mode` for the native file; `fallback_rgb` is the exact value the caller
+/// writes as the top-level `absorption_rgb` ([`colorMode::fallback_rgb`]).
+#[must_use]
+pub fn color_recipe_dto(mode: &colorMode) -> colorRecipeDto {
+    colorRecipeDto {
+        recipe_json: mode.to_json(),
+        fallback_rgb: mode.fallback_rgb().map(|v| {
+            v.to_string()
+                .parse::<f64>()
+                .unwrap_or_else(|_| f64::from(v))
+        }),
+    }
+}
+
 /// Reconstructs a session-local [`GemMaterial`] from a native file's custom-material
 /// snapshot.
 ///
@@ -264,25 +322,48 @@ pub struct SaveExtras<'a> {
 /// `material.name` in its own catalogue so the design's real optics survive the
 /// round trip instead of silently resolving to [`GemMaterial::diamond`].
 ///
-/// The body colour is the snapshot's [`CustomMaterialSnapshot::absorption_rgb`]
-/// triple; a snapshot written before that field existed (or for a colourless
-/// material) carries none and restores colourless (`[0.0; 3]`). `crystal_system`/
+/// The body color is the snapshot's [`CustomMaterialSnapshot::absorption_rgb`]
+/// triple; a snapshot written before that field existed (or for a colorless
+/// material) carries none and restores colorless (`[0.0; 3]`). `crystal_system`/
 /// `optical_character` are NOT read from the snapshot's own string fields: exactly
 /// like [`GemMaterial::new_custom`] itself, both are re-derived from the sign of
 /// `birefringence_delta`, which is what every other caller of `new_custom` in this
 /// codebase already relies on.
+///
+/// A physics recipe renders from its stored `resolved_bands`, never a re-resolve. A file
+/// whose top-level color was edited by an older build ([`Snapshotcolor::EditedElsewhere`])
+/// restores the *edited* color here; use [`gem_material_from_custom_snapshot_keeping_recipe`]
+/// when the user chose to keep the recipe.
 #[must_use]
 pub fn gem_material_from_custom_snapshot(
     name: &str,
     snapshot: &CustomMaterialSnapshot,
 ) -> GemMaterial {
-    GemMaterial::new_custom(
+    let mut mat = GemMaterial::new_custom(
         name,
         snapshot.mean_ri as f32,
         snapshot.dispersion_delta as f32,
         snapshot.birefringence_delta as f32,
-        snapshot.body_colour().unwrap_or([0.0, 0.0, 0.0]),
-    )
+        snapshot.body_color().unwrap_or([0.0, 0.0, 0.0]),
+    );
+    if let Snapshotcolor::Physics(mode) = snapshot_color(snapshot) {
+        mat.absorption = mode.resolve_tensor();
+    }
+    mat
+}
+
+/// Like [`gem_material_from_custom_snapshot`], but a recipe wins even when an older build
+/// edited the top-level color (the user's "keep physics recipe" choice).
+#[must_use]
+pub fn gem_material_from_custom_snapshot_keeping_recipe(
+    name: &str,
+    snapshot: &CustomMaterialSnapshot,
+) -> GemMaterial {
+    let mut mat = gem_material_from_custom_snapshot(name, snapshot);
+    if let Snapshotcolor::EditedElsewhere(mode) = snapshot_color(snapshot) {
+        mat.absorption = mode.resolve_tensor();
+    }
+    mat
 }
 
 /// Builds a [`NativeDesignFile`] from `design`'s current state.
@@ -335,10 +416,179 @@ pub fn to_native_file(
     // Always `Some` on a fresh save: `design.meta.refractive_index` is a plain
     // `f64`, never itself optional.
     .with_authored_refractive_index(Some(design.meta.refractive_index));
-    match printed_proportions {
+    let mut native = match printed_proportions {
         Some(props) => native.with_source(source_table_from_proportions(props)),
         None => native,
+    };
+    stash_concave_tiers(&mut native.unknown, design);
+    native
+}
+
+/// A concave tier as its file record: the tool and motion become the standard's
+/// own strings, everything else is copied, so the conversion is lossless in both
+/// directions (see [`concave_tier_from_table`]).
+#[must_use]
+pub(super) fn concave_tier_table_from_tier(tier: &ConcaveTier) -> ConcaveTierTable {
+    ConcaveTierTable {
+        name: tier.name.clone(),
+        angle_deg: tier.angle_deg,
+        indices: tier.indices.clone(),
+        instructions: tier.instructions.clone(),
+        tool: tier.tool.code().to_owned(),
+        tool_azimuth_deg: tier.tool_azimuth_deg,
+        displacement: tier.displacement,
+        diameter_ratio: tier.diameter_ratio,
+        tool_angle_deg: tier.tool_angle_deg,
+        motion: tier.motion.word().to_owned(),
+        unknown: toml::Table::new(),
     }
+}
+
+/// The inverse of [`concave_tier_table_from_tier`]. The error is the reason a
+/// human can act on: a tool code or motion this build does not know is refused
+/// rather than replaced by a default, since a guessed tool cuts a different stone.
+/// Range checks (angles, indices, diameter) are the caller's
+/// [`Design::validate_concave_tiers`], which needs the design's gear.
+pub(super) fn concave_tier_from_table(table: ConcaveTierTable) -> Result<ConcaveTier, String> {
+    let tool = table
+        .tool
+        .parse::<ConcaveTool>()
+        .map_err(|e| e.to_string())?;
+    let motion = ToolMotion::from_word(&table.motion).ok_or_else(|| {
+        format!(
+            "unknown tool motion {:?} (expected reciprocating or plunge)",
+            table.motion
+        )
+    })?;
+    Ok(ConcaveTier {
+        name: table.name,
+        angle_deg: table.angle_deg,
+        indices: table.indices,
+        instructions: table.instructions,
+        tool,
+        tool_azimuth_deg: table.tool_azimuth_deg,
+        displacement: table.displacement,
+        diameter_ratio: table.diameter_ratio,
+        tool_angle_deg: table.tool_angle_deg,
+        motion,
+    })
+}
+
+/// Every concave tier of `design` as file records, in stored order.
+#[must_use]
+pub(super) fn concave_tier_tables(design: &Design) -> Vec<ConcaveTierTable> {
+    design
+        .concave_tiers
+        .iter()
+        .map(concave_tier_table_from_tier)
+        .collect()
+}
+
+/// The `unknown`-table key [`stash_concave_tiers`]/[`unstash_concave_tiers`] use,
+/// namespaced like [`SELF_CONTAINED_META_KEY`].
+pub(super) const CONCAVE_TIERS_STASH_KEY: &str = "indicatrix_cut_core_concave_tiers";
+
+/// Packs `design`'s concave tiers into `unknown` so the paired sidecar and the
+/// autosave (both [`NativeDesignFile`]s, which have no concave field of their own)
+/// do not silently drop them: `.asc` cannot carry them, and an autosave restore
+/// that lost them would be the one data loss a cutter cannot see. Writes nothing
+/// for a planar design, so those sidecars stay byte-identical.
+pub(super) fn stash_concave_tiers(unknown: &mut toml::Table, design: &Design) {
+    if design.concave_tiers.is_empty() {
+        return;
+    }
+    unknown.insert(
+        CONCAVE_FLAT_FINGERPRINT_KEY.to_string(),
+        toml::Value::String(flat_schedule_fingerprint(design)),
+    );
+    let tables = concave_tier_tables(design)
+        .into_iter()
+        .filter_map(|table| toml::Value::try_from(table).ok())
+        .collect();
+    unknown.insert(
+        CONCAVE_TIERS_STASH_KEY.to_string(),
+        toml::Value::Array(tables),
+    );
+}
+
+/// The `unknown`-table key holding [`flat_schedule_fingerprint`], written next to
+/// [`CONCAVE_TIERS_STASH_KEY`].
+pub(super) const CONCAVE_FLAT_FINGERPRINT_KEY: &str =
+    "indicatrix_cut_core_concave_flat_fingerprint";
+
+/// A SHA-256 over the flat schedule the concave tiers were authored against: the
+/// gear and every flat tier's angle and indices (3 decimals, far finer than any
+/// cutting setting and immune to the `.asc` writer's own rounding). Names, meet
+/// constraints and masts are left out: they are not the stone's facet layout.
+pub(super) fn flat_schedule_fingerprint(design: &Design) -> String {
+    use core::fmt::Write as _;
+    let mut text = format!(
+        "gear={};tiers={}",
+        design.meta.gear_teeth,
+        design.tiers.len()
+    );
+    for tier in &design.tiers {
+        let _ = write!(text, ";{:.3}:", tier.angle_deg);
+        for index in &tier.indices {
+            let _ = write!(text, "{index:.3},");
+        }
+    }
+    sha256_hex(text.as_bytes())
+}
+
+/// Checks the stashed concave tiers were authored against the flat schedule that
+/// `design` now holds. A sidecar with no stash, or one written before the
+/// fingerprint existed, passes; a recorded fingerprint that differs is an error
+/// (an older build edited the flat tiers and re-saved the stash verbatim).
+///
+/// # Errors
+///
+/// A message saying the flat tiers changed since the concave tiers were saved.
+pub(super) fn check_concave_flat_fingerprint(
+    unknown: &toml::Table,
+    design: &Design,
+) -> Result<(), String> {
+    if !unknown.contains_key(CONCAVE_TIERS_STASH_KEY) {
+        return Ok(());
+    }
+    let Some(recorded) = unknown
+        .get(CONCAVE_FLAT_FINGERPRINT_KEY)
+        .and_then(toml::Value::as_str)
+    else {
+        return Ok(());
+    };
+    if recorded.eq_ignore_ascii_case(&flat_schedule_fingerprint(design)) {
+        Ok(())
+    } else {
+        Err(
+            "the flat tiers were changed after the concave tiers were saved (the file was \
+             probably edited by an older version), so the concave tiers no longer fit this stone"
+                .to_owned(),
+        )
+    }
+}
+
+/// The inverse of [`stash_concave_tiers`]: the stashed records, empty when `unknown`
+/// carries none. A malformed entry is an error naming its position, never skipped.
+pub(super) fn unstash_concave_tiers(
+    unknown: &toml::Table,
+) -> Result<Vec<ConcaveTierTable>, (usize, String)> {
+    let Some(value) = unknown.get(CONCAVE_TIERS_STASH_KEY) else {
+        return Ok(Vec::new());
+    };
+    let Some(entries) = value.as_array() else {
+        return Err((0, "the concave tier list is not an array".to_owned()));
+    };
+    entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            entry
+                .clone()
+                .try_into::<ConcaveTierTable>()
+                .map_err(|e| (index, e.to_string()))
+        })
+        .collect()
 }
 
 /// The `unknown`-table key [`stash_schedule_meta`]/[`unstash_schedule_meta`] use --

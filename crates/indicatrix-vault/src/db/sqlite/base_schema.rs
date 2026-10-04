@@ -72,6 +72,11 @@ pub(super) const DIAGRAM_DETAILS_TABLE_SQL: &str = "
         pdf_file TEXT,
         gem_file TEXT,
         shape_category INTEGER,
+        -- Concave-tier counts; see Database::migrate_concave_columns's doc
+        -- comment. Declared before the BLOB for the same reason as every
+        -- other searched column.
+        concave_tiers INTEGER NOT NULL DEFAULT 0,
+        concave_facets INTEGER NOT NULL DEFAULT 0,
         -- Declared LAST, after every searched/text column -- see
         -- Database::migrate_blob_columns_last's doc comment: SQLite reads a
         -- row's columns in physical order, so a query that never touches this
@@ -93,6 +98,9 @@ pub(super) const ANGLE_SETTINGS_TABLE_SQL: &str = "
         angle TEXT NOT NULL,
         index_val TEXT NOT NULL, -- 'index' is a reserved keyword in SQL
         notes TEXT NOT NULL,
+        -- NULL for a flat tier; see Database::migrate_concave_columns's doc comment.
+        tool TEXT,
+        tool_line TEXT,
         FOREIGN KEY (detail_id) REFERENCES diagram_details (id) ON DELETE CASCADE
     );
 ";
@@ -131,7 +139,10 @@ pub(super) const CUSTOM_GEM_MATERIALS_TABLE_SQL: &str = "
         -- Nullable specific gravity (density relative to water); see
         -- migrations::Database::migrate_custom_material_specific_gravity's
         -- doc comment.
-        specific_gravity REAL
+        specific_gravity REAL,
+        -- Nullable color recipe (JSON) for physically based chromophores; see
+        -- migrations::Database::migrate_custom_material_color_recipe's doc comment.
+        color_recipe_json TEXT
     );
 ";
 

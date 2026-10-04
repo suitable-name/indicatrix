@@ -479,7 +479,8 @@ pub fn parse_tier_target(
 
 /// Classifies a [`parse_tier_form`] (or `Edit`-apply) error message by tier-form field.
 ///
-/// The answer is `"angle"`, `"name"`, `"indices"` or `"constraint"`, or `""` for a
+/// The answer is `"angle"`, `"name"`, `"indices"` or `"constraint"` (and, for the concave
+/// form, `"tool"`, `"theta"`, `"x"`, `"y"`, `"z"`, `"diameter"` or `"tool_angle"`), or `""` for a
 /// general/unclassified error -- what a UI reads to put a red border on the SPECIFIC
 /// offending control, not only on the shared message under the whole form.
 ///
@@ -491,6 +492,12 @@ pub fn parse_tier_target(
 /// Moved from the desktop's `tier_actions::tier_form`.
 #[must_use]
 pub fn tier_form_error_field(message: &str) -> &'static str {
+    // The concave form's messages name their field up front (`"theta: ..."`, see
+    // `loading::concave_form`); none of the flat form's messages has that lowercase
+    // `field:` shape, so this cannot shadow them.
+    if let Some(field) = concave_form_error_field(message) {
+        return field;
+    }
     if message.starts_with("Angle") {
         "angle"
     } else if message.starts_with("Another tier is already named") {
@@ -512,6 +519,29 @@ pub fn tier_form_error_field(message: &str) -> &'static str {
     } else {
         ""
     }
+}
+
+/// The field a concave form message names by prefix, or `None` for any other message.
+///
+/// `"tool angle:"` is listed before `"tool:"`; the answers are `"name"`, `"angle"`,
+/// `"indices"`, `"tool"`, `"theta"`, `"x"`, `"y"`, `"z"`, `"diameter"` and `"tool_angle"`.
+fn concave_form_error_field(message: &str) -> Option<&'static str> {
+    const PREFIXES: [(&str, &str); 10] = [
+        ("tool angle:", "tool_angle"),
+        ("tool:", "tool"),
+        ("name:", "name"),
+        ("angle:", "angle"),
+        ("indices:", "indices"),
+        ("theta:", "theta"),
+        ("x:", "x"),
+        ("y:", "y"),
+        ("z:", "z"),
+        ("diameter:", "diameter"),
+    ];
+    PREFIXES
+        .iter()
+        .find(|(prefix, _)| message.starts_with(prefix))
+        .map(|&(_, field)| field)
 }
 
 /// The warning shown for a non-integral index-wheel position, which is accepted anyway.

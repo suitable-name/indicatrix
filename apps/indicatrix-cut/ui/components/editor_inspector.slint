@@ -8,7 +8,9 @@ import { GuideLockTip } from "guide_lock.slint";
 // extinction). Lets the user judge edit results without leaving the Edit tab.
 import { ViewportModel } from "../models/viewport.slint";
 import { SectionHeader } from "section_header.slint";
+import { ConcaveFormData } from "../types.slint";
 import { TierFormTab } from "editor_inspector/tier_form_tab.slint";
+import { ConcaveFormTab } from "editor_inspector/concave_form_tab.slint";
 import { PreformTab } from "editor_inspector/preform_tab.slint";
 import { OptimizeTab } from "editor_inspector/optimize_tab.slint";
 import { ScheduleTab } from "editor_inspector/schedule_tab.slint";
@@ -115,6 +117,24 @@ export component EditorInspector inherits Rectangle {
     property <string> new_facet_position: "";
     property <string> rotate_by_text: "1";
 
+    // The CONCAVE tier form's scratch fields (`ConcaveFormTab`), the tool-cut
+    // counterpart of the five above: seeded from `EditorModel.concave_form_data`,
+    // snapshotted and dirty-tracked the same way (one joined `concave_signature`
+    // instead of a snapshot per field). `loaded_tier_index` below is the table
+    // POSITION for either kind; `concave_loaded` says which form it describes.
+    property <string> c_name: "";
+    property <string> c_angle: "";
+    property <string> c_indices: "";
+    property <string> c_instructions: "";
+    property <int> c_tool: 0;
+    property <string> c_theta: "";
+    property <string> c_x: "";
+    property <string> c_y: "";
+    property <string> c_z: "";
+    property <string> c_diameter: "";
+    property <string> c_tool_angle: "";
+    property <bool> c_reciprocating: false;
+
     // In-progress "Add Tier" draft or tier edit. `loaded_tier_index` tracks which
     // tier (or `-1` for "Add") the five fields above actually represent, which can
     // now disagree with `EditorModel.selected_tier_index` for as long as
@@ -142,11 +162,28 @@ export component EditorInspector inherits Rectangle {
     property <string> loaded_constraint_text_snapshot: "";
     property <string> loaded_name_snapshot: "";
     property <string> loaded_indices_snapshot: "";
+    property <string> loaded_concave_snapshot: "";
+    // The concave draft as one comparable string. `\u{1}` cannot be typed into a
+    // `LineEdit`, so two different drafts never join to the same signature.
+    property <string> concave_signature: root.c_name + "\u{1}" + root.c_angle + "\u{1}" + root.c_indices + "\u{1}"
+        + root.c_instructions + "\u{1}" + root.c_tool + "\u{1}" + root.c_theta + "\u{1}" + root.c_x + "\u{1}"
+        + root.c_y + "\u{1}" + root.c_z + "\u{1}" + root.c_diameter + "\u{1}" + root.c_tool_angle + "\u{1}"
+        + (root.c_reciprocating ? "1" : "0");
     property <bool> form_dirty: root.tier_angle != root.loaded_angle_snapshot
         || root.tier_constraint_kind != root.loaded_constraint_kind_snapshot
         || root.tier_constraint_text != root.loaded_constraint_text_snapshot
         || root.tier_name != root.loaded_name_snapshot
-        || root.tier_indices != root.loaded_indices_snapshot;
+        || root.tier_indices != root.loaded_indices_snapshot
+        || root.concave_signature != root.loaded_concave_snapshot;
+    // Which form the loaded draft belongs to: a loaded row's own `kind`, or -- for an
+    // "Add" draft (`loaded_tier_index == -1`) -- the mode "+ Add Concave Tier" set.
+    property <bool> concave_loaded: (root.loaded_tier_index >= 0 && root.loaded_tier_index < EditorModel.tiers.length)
+        ? EditorModel.tiers[root.loaded_tier_index].kind == 1
+        : EditorModel.inspector_concave_mode;
+    // The concave form's angle check (the only local one): beyond 90 degrees, or Rust
+    // reported an angle-field error.
+    property <bool> concave_angle_invalid: Math.abs(root.c_angle.to-float()) > 90
+        || EditorModel.tier_form_error_field == "angle";
     // Angle field invalid if > 90 degrees (locally checkable) or if Rust
     // reported an angle-field error.
     property <bool> angle_field_invalid: Math.abs(root.tier_angle.to-float()) > 90
@@ -172,6 +209,77 @@ export component EditorInspector inherits Rectangle {
     // real tier.
     property <bool> show_external_change: root.external_change_pending && root.form_dirty && root.loaded_tier_index >= 0;
 
+    // The tool combo's index for a tool code (`CYL` 0, `CON` 1, `CIR` 2, `DSC` 3, `SPH` 4;
+    // anything else reads as the first), and back.
+    function tool_index(code: string) -> int {
+        if code == "CON" { return 1; }
+        if code == "CIR" { return 2; }
+        if code == "DSC" { return 3; }
+        if code == "SPH" { return 4; }
+        return 0;
+    }
+    function tool_code(index: int) -> string {
+        if index == 1 { return "CON"; }
+        if index == 2 { return "CIR"; }
+        if index == 3 { return "DSC"; }
+        if index == 4 { return "SPH"; }
+        return "CYL";
+    }
+    // The concave draft as the struct `EditorModel.save_concave_tier` takes.
+    function concave_draft() -> ConcaveFormData {
+        return {
+            name: root.c_name,
+            angle_deg: root.c_angle,
+            indices: root.c_indices,
+            instructions: root.c_instructions,
+            tool: root.tool_code(root.c_tool),
+            tool_azimuth_deg: root.c_theta,
+            x: root.c_x,
+            y: root.c_y,
+            z: root.c_z,
+            diameter_ratio: root.c_diameter,
+            tool_angle_deg: root.c_tool_angle,
+            reciprocating: root.c_reciprocating,
+        };
+    }
+    // Seeds the concave scratch fields from a tier read back at full precision.
+    function seed_concave(data: ConcaveFormData) {
+        root.c_name = data.name;
+        root.c_angle = data.angle_deg;
+        root.c_indices = data.indices;
+        root.c_instructions = data.instructions;
+        root.c_tool = root.tool_index(data.tool);
+        root.c_theta = data.tool_azimuth_deg;
+        root.c_x = data.x;
+        root.c_y = data.y;
+        root.c_z = data.z;
+        root.c_diameter = data.diameter_ratio;
+        root.c_tool_angle = data.tool_angle_deg;
+        root.c_reciprocating = data.reciprocating;
+    }
+    function blank_concave() {
+        root.c_name = "";
+        root.c_angle = "";
+        root.c_indices = "";
+        root.c_instructions = "";
+        root.c_tool = 0;
+        root.c_theta = "";
+        root.c_x = "";
+        root.c_y = "";
+        root.c_z = "";
+        root.c_diameter = "";
+        root.c_tool_angle = "";
+        root.c_reciprocating = false;
+    }
+    // The signature `concave_signature` would read after `seed_concave(data)` -- the
+    // same join, for `loaded_tier_changed_in_design`'s comparison with the design.
+    function data_signature(data: ConcaveFormData) -> string {
+        return data.name + "\u{1}" + data.angle_deg + "\u{1}" + data.indices + "\u{1}" + data.instructions + "\u{1}"
+            + root.tool_index(data.tool) + "\u{1}" + data.tool_azimuth_deg + "\u{1}" + data.x + "\u{1}" + data.y + "\u{1}"
+            + data.z + "\u{1}" + data.diameter_ratio + "\u{1}" + data.tool_angle_deg + "\u{1}"
+            + (data.reciprocating ? "1" : "0");
+    }
+
     // Snapshots the five fields' CURRENT values as the new "clean" baseline --
     // shared tail of `apply_load`/`clear_form`/`save_form`, all of which just
     // assigned (or left unchanged) exactly these fields and want `form_dirty` to
@@ -182,6 +290,7 @@ export component EditorInspector inherits Rectangle {
         root.loaded_constraint_text_snapshot = root.tier_constraint_text;
         root.loaded_name_snapshot = root.tier_name;
         root.loaded_indices_snapshot = root.tier_indices;
+        root.loaded_concave_snapshot = root.concave_signature;
         root.external_change_pending = false;
     }
 
@@ -211,6 +320,16 @@ export component EditorInspector inherits Rectangle {
         EditorModel.tier_form_error = "";
         EditorModel.tier_form_error_field = "";
         EditorModel.selected_tier_index = idx;
+        // A concave row has its own form, seeded from Rust at full precision (the
+        // table row carries only the display strings).
+        if EditorModel.tiers[idx].kind == 1 {
+            root.seed_concave(EditorModel.concave_form_data(idx));
+            root.loaded_tier_index = idx;
+            root.snapshot_form();
+            return;
+        }
+        // A flat row ends the concave "Add" mode: the flat form is what shows.
+        EditorModel.inspector_concave_mode = false;
         // Seeded from the FULL-precision string, not the 2-decimal display
         // `angle_deg` -- see `EditorTierItem.angle_full`'s own doc comment: a
         // Save with nothing retyped must round-trip bit-exact, which a rounded
@@ -258,7 +377,7 @@ export component EditorInspector inherits Rectangle {
         // handler cannot possibly re-enter before this function itself
         // returns; ordering the two assignments this way is what guarantees
         // it sees `loaded_tier_index == -1` once it does run.
-        root.clear_form();
+        root.reset_fields();
         EditorModel.selected_tier_index = -1;
     }
 
@@ -321,6 +440,15 @@ export component EditorInspector inherits Rectangle {
     // `request_new` above) -- every one of those callers is already a deliberate,
     // confirmed, design-changing action of its own, not an incidental row click.
     public function clear_form() {
+        root.reset_fields();
+        // New/Load/Open/Remove all start from the flat "Add Tier" form again.
+        EditorModel.inspector_concave_mode = false;
+    }
+
+    // `clear_form` minus the mode reset: also what "New Tier"/an Escape back to
+    // selection -1 (`apply_new`) uses, since "+ Add Concave Tier" reaches `apply_new`
+    // through the very selection change it makes and must stay in concave mode.
+    function reset_fields() {
         // Clear validation errors so stale errors don't survive into "Add Tier" draft.
         EditorModel.tier_form_error = "";
         EditorModel.tier_form_error_field = "";
@@ -329,6 +457,7 @@ export component EditorInspector inherits Rectangle {
         root.tier_constraint_text = "";
         root.tier_name = "";
         root.tier_indices = "";
+        root.blank_concave();
         root.loaded_tier_index = -1;
         root.snapshot_form();
         root.show_dirty_warning = false;
@@ -385,6 +514,9 @@ export component EditorInspector inherits Rectangle {
         if root.loaded_tier_index < 0 || root.loaded_tier_index >= EditorModel.tiers.length {
             return false;
         }
+        if EditorModel.tiers[root.loaded_tier_index].kind == 1 {
+            return root.data_signature(EditorModel.concave_form_data(root.loaded_tier_index)) != root.loaded_concave_snapshot;
+        }
         return EditorModel.tiers[root.loaded_tier_index].angle_full != root.loaded_angle_snapshot
             || EditorModel.tiers[root.loaded_tier_index].constraint_kind != root.loaded_constraint_kind_snapshot
             || EditorModel.tiers[root.loaded_tier_index].constraint_text != root.loaded_constraint_text_snapshot
@@ -413,6 +545,16 @@ export component EditorInspector inherits Rectangle {
         // through here, so this one check covers them all while the guide locks
         // the tier form.
         if !GuideModel.allows_tier_form() {
+            return;
+        }
+        // The concave form commits through its own callback (`index` is the row's table
+        // position, -1 to add) and its own, stricter guide lock.
+        if root.concave_loaded {
+            if !GuideModel.allows_concave_tier() {
+                return;
+            }
+            EditorModel.save_concave_tier(root.loaded_tier_index, root.concave_draft());
+            root.snapshot_form();
             return;
         }
         EditorModel.save_tier(root.loaded_tier_index, root.tier_angle, root.tier_constraint_kind, root.tier_constraint_text, root.tier_name, root.tier_indices);
@@ -506,7 +648,32 @@ export component EditorInspector inherits Rectangle {
                 VerticalLayout {
                     spacing: 8px;
 
-                if EditorModel.inspector_tab == 0: TierFormTab {
+                if EditorModel.inspector_tab == 0 && root.concave_loaded: ConcaveFormTab {
+                    unlocked: GuideModel.allows_concave_tier();
+                    c_name <=> root.c_name;
+                    c_angle <=> root.c_angle;
+                    c_indices <=> root.c_indices;
+                    c_instructions <=> root.c_instructions;
+                    c_tool <=> root.c_tool;
+                    c_theta <=> root.c_theta;
+                    c_x <=> root.c_x;
+                    c_y <=> root.c_y;
+                    c_z <=> root.c_z;
+                    c_diameter <=> root.c_diameter;
+                    c_tool_angle <=> root.c_tool_angle;
+                    c_reciprocating <=> root.c_reciprocating;
+                    loaded_tier_index: root.loaded_tier_index;
+                    show_dirty_warning: root.show_dirty_warning;
+                    show_external_change: root.show_external_change;
+                    pending_load_index: root.pending_load_index;
+                    keep_draft => { root.keep_draft(); }
+                    confirm_discard_and_load => { root.confirm_discard_and_load(); }
+                    reload_from_design => { root.reload_from_design(); }
+                    dismiss_external_change => { root.dismiss_external_change(); }
+                    save_form => { root.save_form(); }
+                }
+
+                if EditorModel.inspector_tab == 0 && !root.concave_loaded: TierFormTab {
                     unlocked: GuideModel.allows_tier_form();
                     tier_angle <=> root.tier_angle;
                     tier_constraint_kind <=> root.tier_constraint_kind;
@@ -561,10 +728,14 @@ export component EditorInspector inherits Rectangle {
             if EditorModel.inspector_tab == 0: HorizontalLayout {
                 spacing: 6px;
                 Button {
-                    text: root.loaded_tier_index < 0 ? "Add Tier" : "Save Tier";
+                    text: root.concave_loaded
+                        ? (root.loaded_tier_index < 0 ? "Add Concave Tier" : "Save Concave Tier")
+                        : (root.loaded_tier_index < 0 ? "Add Tier" : "Save Tier");
                     // Save button gated on angle_field_invalid (also covers
                     // Rust-reported angle rejection). Other fields validated after save attempt.
-                    enabled: !root.angle_field_invalid && GuideModel.allows_tier_form();
+                    enabled: root.concave_loaded
+                        ? (!root.concave_angle_invalid && GuideModel.allows_tier_form() && GuideModel.allows_concave_tier())
+                        : (!root.angle_field_invalid && GuideModel.allows_tier_form());
                     clicked => { root.save_form(); }
                 }
                 Button {
@@ -576,7 +747,11 @@ export component EditorInspector inherits Rectangle {
                     // bar's own "+ Add Tier" affordance more than a plain reset.
                     text: "New Tier";
                     enabled: GuideModel.allows_tier_form();
-                    clicked => { root.request_new(); }
+                    clicked => {
+                        // The flat form is what "New Tier" arms, even from the concave one.
+                        EditorModel.inspector_concave_mode = false;
+                        root.request_new();
+                    }
                 }
             }
         }

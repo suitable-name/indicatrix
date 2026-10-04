@@ -16,12 +16,17 @@ use crate::{
         refresh_material_options, show_toast,
     },
 };
-use indicatrix::optics::materials::{
-    GemMaterial,
-    body_colour::{BODY_COLOUR_PRESETS, preset_index_for_rgb},
+use indicatrix::optics::{
+    chromophore::ChromophoreCatalogue,
+    fluorescence::Fluorescence,
+    materials::{
+        GemMaterial,
+        body_color::{BODY_color_PRESETS, preset_index_for_rgb},
+    },
 };
+use indicatrix_cut_core::material::colorMode;
 use indicatrix_vault::db::sqlite::Database;
-use slint::{ComponentHandle, Model, SharedString};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::sync::{Arc, Mutex};
 
 /// `name`'s real built-in [`GemMaterial`] name (`Some`) iff it collides
@@ -38,7 +43,7 @@ fn built_in_name_collision(name: &str) -> Option<String> {
 }
 
 /// The material editor's "Custom (keep)" swatch index -- one past
-/// [`BODY_COLOUR_PRESETS`]' fixed table. Selected by
+/// [`BODY_color_PRESETS`]' fixed table. Selected by
 /// [`color_index_for_absorption_rgb`] when a saved material's `absorption_rgb`
 /// matches none of the nine presets exactly (authored outside the dialog, e.g. by an
 /// imported `.asc`/template, or by a preset a future build adds); handled by
@@ -46,30 +51,30 @@ fn built_in_name_collision(name: &str) -> Option<String> {
 /// never as Clear.
 pub(super) const CUSTOM_KEEP_COLOR_INDEX: i32 = 9;
 
-/// [`BODY_COLOUR_PRESETS`]' index -> rgb direction, for [`apply_custom_material_save`].
+/// [`BODY_color_PRESETS`]' index -> rgb direction, for [`apply_custom_material_save`].
 ///
 /// `MaterialColorPresets`' (`ui/components/material_editor/color_presets.slint`) nine
 /// fixed swatches, index 0 ("Clear") through 8 ("Amber Topaz"), are exactly that table in
 /// its own order -- the single source of truth both this function (index -> rgb, at
 /// save time) and [`color_index_for_absorption_rgb`] (rgb -> index, the dialog's
-/// pre-fill) resolve against, shared with the design's own body-colour override.
+/// pre-fill) resolve against, shared with the design's own body-color override.
 /// An out-of-range index (defensively -- the dialog's own combo can never actually
 /// produce one) falls back to Clear, matching the old bare `match`'s `_` arm.
-fn absorption_rgb_for_color_index(color_idx: i32) -> [f32; 3] {
+pub(super) fn absorption_rgb_for_color_index(color_idx: i32) -> [f32; 3] {
     usize::try_from(color_idx)
         .ok()
-        .and_then(|i| BODY_COLOUR_PRESETS.get(i))
+        .and_then(|i| BODY_color_PRESETS.get(i))
         .map_or([0.0, 0.0, 0.0], |preset| preset.absorption_rgb)
 }
 
-/// [`BODY_COLOUR_PRESETS`]' rgb -> index direction (exact match, via
+/// [`BODY_color_PRESETS`]' rgb -> index direction (exact match, via
 /// [`preset_index_for_rgb`]), for `push_selected_custom_material_fields`'s pre-fill.
 /// `None` when `rgb` matches no preset -- the caller's cue to pre-fill
 /// [`CUSTOM_KEEP_COLOR_INDEX`] instead of defaulting to 0 ("Clear"), which is what
-/// used to silently flatten a re-saved coloured custom material to colourless (see
+/// used to silently flatten a re-saved colored custom material to colorless (see
 /// this module's own doc comment).
 #[must_use]
-fn color_index_for_absorption_rgb(rgb: [f32; 3]) -> Option<i32> {
+pub(super) fn color_index_for_absorption_rgb(rgb: [f32; 3]) -> Option<i32> {
     preset_index_for_rgb(rgb).and_then(|i| i32::try_from(i).ok())
 }
 
@@ -104,6 +109,8 @@ struct CustomMaterialForm {
     /// custom-material list. `false` lets a cutter create or correct a custom
     /// material without disturbing whatever the viewport is currently showing.
     apply_to_live_render: bool,
+    /// The serialized physics color recipe or color mode JSON string.
+    color_recipe_json: SharedString,
 }
 
 /// A successfully applied "Save Custom Material": everything the callback needs
@@ -130,16 +137,16 @@ struct SavedCustomMaterial {
     specific_gravity: Option<f64>,
 }
 
-/// The absorption colour a saved material gets: the swatch preset for `color_idx`, or --
+/// The absorption color a saved material gets: the swatch preset for `color_idx`, or --
 /// for [`CUSTOM_KEEP_COLOR_INDEX`] -- whatever the same-named row already stores.
 fn resolve_absorption_rgb(db: &Arc<Mutex<Database>>, name: &str, color_idx: i32) -> [f32; 3] {
     if color_idx == CUSTOM_KEEP_COLOR_INDEX {
         // The swatch row was never touched (or "Custom (keep)" was picked
         // deliberately) -- reuse whatever THIS name's previously saved
         // `absorption_rgb` already was, rather than falling through to Clear.
-        // This is the fix for the sapphire-turns-colourless bug: the dialog's
+        // This is the fix for the sapphire-turns-colorless bug: the dialog's
         // `init` (`material_editor_dialog.slint`) now pre-fills this index
-        // itself whenever a reopened custom material's colour matches no
+        // itself whenever a reopened custom material's color matches no
         // fixed preset (see `color_index_for_absorption_rgb`'s own doc
         // comment), so a plain re-save with nothing touched must actually
         // keep it. A name with no existing row (nothing to keep) falls back
@@ -162,6 +169,10 @@ fn resolve_absorption_rgb(db: &Arc<Mutex<Database>>, name: &str, color_idx: i32)
 /// callback does except showing the resulting toast, split out purely to keep
 /// that closure under clippy's function-length lint. `Err` carries the exact
 /// message to toast on a validation or database failure.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear validate -> color -> persist -> publish sequence; the steps share the locals"
+)]
 fn apply_custom_material_save(
     db: &Arc<Mutex<Database>>,
     render_ctx: &Arc<Mutex<RenderContext>>,
@@ -178,6 +189,7 @@ fn apply_custom_material_save(
         biaxial_delta_beta_alpha,
         specific_gravity,
         apply_to_live_render,
+        color_recipe_json,
     } = form;
     // A blank/whitespace-only name, or one that collides with a built-in
     // material, is refused outright here -- the dialog's own `can_save`
@@ -197,9 +209,37 @@ fn apply_custom_material_save(
         ));
     }
 
-    let abs_rgb = resolve_absorption_rgb(db, &trimmed, color_idx);
+    // The dialog hands over the full `colorMode` JSON whenever the material has (or had) a
+    // recipe: both payloads are persisted, and saving while fantasy is active keeps the recipe.
+    let mut mode = colorMode::from_json(color_recipe_json.trim());
+    if let Some(mode) = mode.as_mut() {
+        // The dialog's preset row is the fantasy payload, unless it is "Custom (keep)".
+        if color_idx != CUSTOM_KEEP_COLOR_INDEX {
+            mode.fantasy_rgb = absorption_rgb_for_color_index(color_idx);
+        }
+    }
+    // What an older build reads as `absorption_rgb`: the fantasy triple, or -- while physics is
+    // active -- the nearest legacy color of the recipe (spec 6).
+    let abs_rgb = mode.as_ref().map_or_else(
+        || resolve_absorption_rgb(db, &trimmed, color_idx),
+        colorMode::fallback_rgb,
+    );
+    let color_json = mode.as_ref().map(colorMode::to_json);
+    let color_recipe_opt = color_json.as_deref();
+    let is_physics = mode.as_ref().is_some_and(colorMode::is_physics);
+    // The glow of the recipe (empty for fantasy or a recipe without emitters), resolved from the
+    // catalogue's elements and concentrations.
+    let glow = mode.as_ref().map_or_else(
+        || Fluorescence::new(Vec::new()),
+        |m| m.fluorescence(ChromophoreCatalogue::global()),
+    );
 
     let mut new_mat = GemMaterial::new_custom(&trimmed, ri, disp, biref, abs_rgb);
+    if let Some(mode) = mode.as_ref().filter(|m| m.is_physics()) {
+        // Rendered from the stored resolved bands, never a re-resolve.
+        new_mat.absorption = mode.resolve_tensor();
+    }
+
     // The dialog always sends a definite combo selection (its own
     // defaults already mirror what `new_custom` above would infer -- see
     // `material_editor_dialog.slint`'s initial property values), so an
@@ -237,6 +277,7 @@ fn apply_custom_material_save(
         biref,
         abs_rgb,
         sg,
+        color_recipe_opt,
     );
     if let Err(e) = save_result {
         return Err(format!("Could not save '{trimmed}': {e}"));
@@ -288,6 +329,8 @@ fn apply_custom_material_save(
     }
     ctx.custom_material_specific_gravity =
         Arc::new(custom_material_specific_gravity_from_rows(&sg_rows));
+    ctx.set_custom_material_physics(&trimmed, is_physics);
+    ctx.set_custom_material_fluorescence(&trimmed, glow);
     // Reads the just-saved SG back OUT of the side channel
     // (rather than trusting the locally-computed `sg` above) so the toast confirms
     // the FULL round trip -- dialog -> database -> `RenderContext`'s side channel --
@@ -395,6 +438,8 @@ fn apply_custom_material_delete(
     let materials = Arc::make_mut(&mut ctx.custom_materials);
     let existed = materials.iter().any(|m| m.name.eq_ignore_ascii_case(name));
     materials.retain(|m| !m.name.eq_ignore_ascii_case(name));
+    ctx.set_custom_material_physics(name, false);
+    ctx.set_custom_material_fluorescence(name, Fluorescence::new(Vec::new()));
     ctx.custom_material_specific_gravity =
         Arc::new(custom_material_specific_gravity_from_rows(&sg_rows));
     // The deleted material can be the live selection either by
@@ -509,6 +554,7 @@ fn push_selected_custom_material_fields(
     let model = ui.global::<ViewportModel>();
     let Some(row) = row else {
         model.set_selected_custom_material_valid(false);
+        model.set_selected_material_color_outdated(false);
         return;
     };
     let material = gem_material_from_row(&row);
@@ -527,14 +573,33 @@ fn push_selected_custom_material_fields(
         material.biaxial_delta_beta_alpha.unwrap_or(0.0),
     );
     // Reverse lookup against the SAME preset table `apply_custom_material_save`
-    // resolves an index into -- `CUSTOM_KEEP_COLOR_INDEX` when the row's colour
+    // resolves an index into -- `CUSTOM_KEEP_COLOR_INDEX` when the row's color
     // matches none of the nine fixed presets, so `material_editor_dialog.slint`'s
     // `init` can select "Custom (keep)" instead of silently defaulting to index 0
-    // ("Clear"), which is what used to flatten a re-saved coloured custom material
-    // to colourless the moment its RI was merely tweaked (this module's own doc
+    // ("Clear"), which is what used to flatten a re-saved colored custom material
+    // to colorless the moment its RI was merely tweaked (this module's own doc
     // comment).
+    // The dialog's swatch row mirrors the FANTASY payload: a physics row's top-level color is
+    // only the older-build fallback, so the stored `colorMode`'s own fantasy color is used.
+    let mode = row
+        .color_recipe_json
+        .as_deref()
+        .and_then(colorMode::from_json);
+    let fantasy_rgb = mode.as_ref().map_or(row.absorption_rgb, |m| m.fantasy_rgb);
     model.set_selected_custom_material_color_idx(
-        color_index_for_absorption_rgb(row.absorption_rgb).unwrap_or(CUSTOM_KEEP_COLOR_INDEX),
+        color_index_for_absorption_rgb(fantasy_rgb).unwrap_or(CUSTOM_KEEP_COLOR_INDEX),
+    );
+    model.set_selected_custom_material_rgb(ModelRc::new(VecModel::from(fantasy_rgb.to_vec())));
+    model.set_selected_custom_material_color_recipe_json(
+        mode.as_ref()
+            .map(colorMode::to_json)
+            .unwrap_or_default()
+            .into(),
+    );
+    // The "color data updated" badge: the recipe predates the catalogue's data version.
+    model.set_selected_material_color_outdated(
+        mode.as_ref()
+            .is_some_and(|m| m.data_outdated(ChromophoreCatalogue::global())),
     );
 }
 
@@ -602,6 +667,10 @@ fn handle_saved_custom_material(ui: &MainWindow, outcome: &SavedCustomMaterial) 
     // This toast carries no biaxial-vs-GPU caveat: `gpu_supported()` is
     // unconditionally `true` since the `BiaxialIndicatrix` WGSL port (see its own doc
     // comment), so a biaxial custom material renders on the GPU like any other.
+    // Re-read the selected material's stored values (and its "color data updated" badge): a
+    // save that kept the same selection does not fire the selection-changed handler itself.
+    ui.global::<ViewportModel>()
+        .invoke_selected_material_changed_for_editor_prefill();
     let verb = if outcome.overwrote_existing {
         "Overwrote"
     } else {
@@ -649,7 +718,8 @@ pub(in crate::gui) fn setup_custom_material_callbacks(
               optical_character_idx: i32,
               biaxial_delta_beta_alpha: f32,
               specific_gravity: f32,
-              apply_to_live_render: bool| {
+              apply_to_live_render: bool,
+              color_recipe_json: SharedString| {
             // The actual save (or its validation failure) always runs, whether or
             // not the window handle below still upgrades -- only the toast/UI
             // refresh afterward is conditional on that, matching every other
@@ -668,6 +738,7 @@ pub(in crate::gui) fn setup_custom_material_callbacks(
                     biaxial_delta_beta_alpha,
                     specific_gravity,
                     apply_to_live_render,
+                    color_recipe_json,
                 },
             );
             let Some(ui) = ui_weak_save.upgrade() else {
@@ -712,4 +783,9 @@ pub(in crate::gui) fn setup_custom_material_callbacks(
                 Err(e) => show_toast(&ui, &e, "error"),
             }
         });
+
+    super::physics_ui::setup_physics_callbacks(ui, render_ctx);
 }
+
+#[cfg(test)]
+mod tests;

@@ -1,4 +1,4 @@
-//! In-memory PNG encoding with an embedded ICC profile for wide-gamut colour spaces.
+//! In-memory PNG encoding with an embedded ICC profile for wide-gamut color spaces.
 //!
 //! Behind the `hdr` feature: that feature already pulls in the `image` crate (for
 //! `renderer::env_map`'s Radiance `.hdr` decoding), so reusing it here for PNG
@@ -9,7 +9,7 @@
 //! [`encode_png_with_icc`] is pure/in-memory -- no filesystem access -- so both the
 //! desktop viewer (whose `save_png` writes the returned bytes to a file) and the
 //! browser app (which hands them to a download) produce byte-identical PNGs for the
-//! same pixel buffer and colour space.
+//! same pixel buffer and color space.
 
 use super::icc_profile;
 use crate::color::ColorSpace;

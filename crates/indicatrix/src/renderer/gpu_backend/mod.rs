@@ -141,10 +141,11 @@
 //! configurations so a caller needs no `#[cfg]` of its own.
 
 use crate::{
-    geometry::GpuFacetPlane,
+    geometry::{GpuFacetPlane, tool::StoneGeometry},
     optics::{
+        fluorescence::Fluorescence,
         materials::GemMaterial,
-        raytracer::{Camera, EnvironmentSource, FacetFinish},
+        raytracer::{Camera, EnvironmentSource, FacetFinish, LightingPreset},
     },
 };
 
@@ -188,6 +189,38 @@ pub struct GpuSceneRef<'a> {
     pub max_bounces: u32,
     /// Lighting environment.
     pub environment: EnvironmentSource<'a>,
+}
+
+/// Whether a scene may be dispatched to the GPU at all.
+///
+/// The material must be one the GPU supports, the stone must be convex (no tools), the
+/// material must not fluoresce (`fluorescence` empty) and the lighting must not be a UV
+/// lamp.
+///
+/// Fluorescence is single-wavelength CPU transport (`optics::fluorescence`), and the UV
+/// lamps' spectra and the excitation paths below 380 nm exist only on the CPU, so such
+/// a scene is traced entirely by the CPU, like a concave one. `lighting` is the analytic
+/// lighting preset of the scene (`EnvironmentSource::lighting_preset`; for an HDR
+/// panorama pass the preset's default, as no lamp is in play).
+///
+/// The WGSL intersection, NEE probes and edge-rounding know nothing about tools, and
+/// changing them needs an adapter to verify (see `docs/gpu.md`). Until that lands a
+/// concave stone must take the CPU tracer, which is the shipped behaviour for it; a
+/// caller that gets `false` renders the whole frame with
+/// [`crate::renderer::cpu_frame::trace_pixels_interleaved_geom`], i.e. a
+/// `HybridSplit::cpu_only` split. A pure function of the scene so it is unit-tested
+/// without an adapter.
+#[must_use]
+pub const fn scene_routes_to_gpu(
+    material: &GemMaterial,
+    geom: StoneGeometry<'_>,
+    fluorescence: &Fluorescence,
+    lighting: LightingPreset,
+) -> bool {
+    material.gpu_supported()
+        && geom.is_convex()
+        && fluorescence.is_empty()
+        && !lighting.is_uv_lamp()
 }
 
 /// Outcome of [`GpuBackend::try_accumulate_cancellable`].
@@ -243,4 +276,70 @@ pub enum GpuPipelineKind {
     Megakernel,
     /// Separate kernels advance all paths one bounce at a time.
     Wavefront,
+}
+
+#[cfg(test)]
+mod routing_tests {
+    use super::*;
+    use crate::{
+        geometry::{cuts::StandardGemCuts, tool::ToolPrimitive},
+        optics::{
+            absorption::AbsorptionBand,
+            fluorescence::{EmissionBand, FluorescentEmitter},
+        },
+    };
+    use glam::Vec3;
+
+    #[test]
+    fn scene_routes_to_gpu_is_false_whenever_tools_are_present() {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let tools = [ToolPrimitive::ball(Vec3::new(0.0, 0.3, 0.0), 0.1)];
+        let material = GemMaterial::diamond();
+        assert!(
+            material.gpu_supported(),
+            "test premise: a supported material"
+        );
+        let none = Fluorescence::none();
+        let daylight = LightingPreset::Daylight;
+        assert!(scene_routes_to_gpu(
+            &material,
+            StoneGeometry::planes_only(&planes),
+            none,
+            daylight
+        ));
+        assert!(!scene_routes_to_gpu(
+            &material,
+            StoneGeometry {
+                planes: &planes,
+                tools: &tools,
+            },
+            none,
+            daylight
+        ));
+    }
+
+    #[test]
+    fn scene_routes_to_gpu_is_false_for_fluorescence_or_a_uv_lamp() {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let stone = StoneGeometry::planes_only(&planes);
+        let material = GemMaterial::diamond();
+        let emitter = FluorescentEmitter {
+            excitation: vec![AbsorptionBand::new(410.0, 20.0, 1.0)],
+            emission: vec![EmissionBand::new(694.0, 2.0, 1.0)],
+            quantum_yield: 0.9,
+        };
+        let fluorescent = Fluorescence::new(vec![emitter]);
+        // Unchanged for every existing preset with no fluorescence.
+        for preset in LightingPreset::ALL {
+            assert_eq!(
+                scene_routes_to_gpu(&material, stone, Fluorescence::none(), preset),
+                !preset.is_uv_lamp(),
+                "{preset:?}"
+            );
+        }
+        // A non-empty fluorescence routes to the CPU under any lighting.
+        for preset in LightingPreset::ALL {
+            assert!(!scene_routes_to_gpu(&material, stone, &fluorescent, preset));
+        }
+    }
 }

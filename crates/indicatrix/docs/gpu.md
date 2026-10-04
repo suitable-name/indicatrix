@@ -117,7 +117,7 @@ The harness is not a `cargo test` target, so nothing in a default `cargo test` r
 proves the GPU still matches the CPU. The repository therefore keeps one artefact of
 the last harness run, `crates/indicatrix/docs/gpu_harness_last_run.json`, and **the
 owner commits a fresh one with each physics change** (a change to anything under
-`optics/raytracer/`, `renderer/shaders/`, or the colour pipeline). The file does not
+`optics/raytracer/`, `renderer/shaders/`, or the color pipeline). The file does not
 exist until the first recorded run; its absence means nobody has recorded one yet,
 not that the port is verified.
 
@@ -162,3 +162,7 @@ renderer's poisoning rules, the reduction's non-finite rule, a statistical merge
 the CPU-versus-GPU equivalence evidence is the recorded harness run above, and the
 whole-frame `cpu_accumulate` identity pins in `renderer/gpu/pin_tests.rs` are compiled
 only with `--features gpu`.
+
+**Concave stones are CPU-only.** The WGSL has no tool intersection yet, so `renderer::gpu_backend::scene_routes_to_gpu` sends a scene with tools to the CPU tracer; porting the tool kernel needs an adapter and is a separate hardware-session work package.
+
+**Fluorescence and the UV lamps are CPU-only.** `scene_routes_to_gpu(material, geom, fluorescence, lighting)` is also false for a non-empty `Fluorescence` or a `UvLamp365`/`UvLamp395` lighting: the in-medium fluorescence vertex, the single-wavelength paths and the 300-380 nm D65 extension have no WGSL twin (the shader's D65 table still clamps at 380 nm).

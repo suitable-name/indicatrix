@@ -114,7 +114,7 @@ fn restore_material(
 ) -> (Option<String>, bool) {
     let name = design.session.design.material.name.clone();
     if let (Some(snapshot), Some(name)) = (snapshot, name) {
-        // The colour travels in the snapshot, so the restored material is the one saved.
+        // The color travels in the snapshot, so the restored material is the one saved.
         let restored =
             app.register_custom_material(gem_material_from_custom_snapshot(&name, &snapshot));
         match restored {

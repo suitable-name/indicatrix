@@ -129,7 +129,11 @@ export component CuttingTableView inherits Rectangle {
                     property <bool> row_shown: root.filter_mode == 0
                         || (root.filter_mode == 1 && row.side < 0)
                         || (root.filter_mode == 2 && row.side > 0);
-                    height: self.row_shown ? 32px : 0px;
+                    // A concave tier is ONE band of two lines: the facet line above and its
+                    // tool line (`AngleItem.second_line`) under it. The zebra alternates per
+                    // tier, not per line, so the two lines share this one background.
+                    property <bool> has_second_line: row.second_line != "";
+                    height: self.row_shown ? (self.has_second_line ? 54px : 32px) : 0px;
                     visible: self.row_shown;
                     clip: true;
                     background: row_touch.has-hover ? Theme.bg-card-hover : (Math.mod(row.order_idx, 2) == 0 ? Theme.bg-input : Theme.bg-card);
@@ -140,7 +144,9 @@ export component CuttingTableView inherits Rectangle {
                     }
                     Tooltip { text: @markdown("Click to copy this row."); }
 
+                    VerticalLayout {
                     HorizontalLayout {
+                        height: 32px;
                         padding-left: 12px;
                         padding-right: 12px;
                         alignment: start;
@@ -161,6 +167,21 @@ export component CuttingTableView inherits Rectangle {
                             visible: row_touch.has-hover;
                             vertical-alignment: center;
                         }
+                    }
+                    // The tool line, indented to sit under the facet name.
+                    if row.second_line != "": HorizontalLayout {
+                        height: 20px;
+                        padding-left: 62px;
+                        padding-right: 12px;
+                        Text {
+                            horizontal-stretch: 1;
+                            text: row.second_line;
+                            font-size: 11px;
+                            color: Theme.accent-cyan;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                    }
                     }
                 }
             }

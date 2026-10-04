@@ -61,42 +61,42 @@ fn new_custom_preserves_mean_ri_at_sodium_d_line_regardless_of_dispersion_delta(
     }
 }
 
-/// A body-colour variant changes ONLY the absorption: a yellow sapphire keeps
+/// A body-color variant changes ONLY the absorption: a yellow sapphire keeps
 /// sapphire's own name, dispersion, birefringence and c-axis bit for bit, and its
 /// absorption becomes exactly the isotropic band set the yellow preset expands to.
 #[test]
-fn with_body_colour_changes_only_the_absorption() {
-    let yellow = crate::optics::materials::body_colour::BODY_COLOUR_PRESETS[5];
+fn with_body_color_changes_only_the_absorption() {
+    let yellow = crate::optics::materials::body_color::BODY_color_PRESETS[5];
     assert_eq!(
         yellow.key, "yellow",
         "test premise: index 5 is the yellow preset"
     );
     let base = GemMaterial::sapphire();
-    let coloured = base.clone().with_body_colour(yellow.absorption_rgb);
+    let colored = base.clone().with_body_color(yellow.absorption_rgb);
 
-    assert_eq!(coloured.name, base.name);
-    assert_eq!(coloured.dispersion, base.dispersion);
+    assert_eq!(colored.name, base.name);
+    assert_eq!(colored.dispersion, base.dispersion);
     assert_eq!(
-        coloured.birefringence_delta.to_bits(),
+        colored.birefringence_delta.to_bits(),
         base.birefringence_delta.to_bits()
     );
     assert_eq!(
-        coloured.c_axis.to_array().map(f32::to_bits),
+        colored.c_axis.to_array().map(f32::to_bits),
         base.c_axis.to_array().map(f32::to_bits)
     );
     assert_ne!(
-        coloured.absorption, base.absorption,
-        "the colour variant must actually change the absorption"
+        colored.absorption, base.absorption,
+        "the color variant must actually change the absorption"
     );
     assert_eq!(
-        coloured.absorption,
+        colored.absorption,
         crate::optics::absorption::AbsorptionTensor::isotropic(
             crate::optics::absorption::legacy_rgb_bands(yellow.absorption_rgb)
         )
     );
     // Every other field too: restoring the base absorption must give back the base
     // material exactly.
-    let mut restored = coloured;
+    let mut restored = colored;
     restored.absorption = base.absorption.clone();
     assert_eq!(restored, base);
 }

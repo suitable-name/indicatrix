@@ -738,6 +738,7 @@ fn test_polish_never_decreases_scale() {
             &hull.vertices,
             &region,
             &mut workspace,
+            None,
         );
         assert!(
             k_end >= k_start,

@@ -287,7 +287,7 @@ mod tests {
     }
 
     /// Convergence requirement: at a high enough sample count the À-Trous filter's
-    /// taper curve drives its colour sigma below `taper_identity_epsilon`, so
+    /// taper curve drives its color sigma below `taper_identity_epsilon`, so
     /// `denoise_into` short-circuits to an exact copy of its input. Pins that
     /// guarantee at the integration point: once converged, the displayed image must be
     /// bit-identical to tone-mapping the raw accumulation average.

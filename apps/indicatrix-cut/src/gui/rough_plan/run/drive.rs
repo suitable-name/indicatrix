@@ -108,6 +108,8 @@ fn plan_plain_block(
         hulls: input.hulls,
         settings,
         keep: PLAIN_SINGLE_FITS,
+        // A plain block is never a mesh rough.
+        mesh: None,
     };
     let fits = fit_single_stones_parallel(&job, lanes, progress)?;
     layouts.extend(single_fit_layouts(
@@ -198,6 +200,7 @@ fn plan_shaped(
         hulls: input.hulls,
         settings,
         keep: SHAPED_SINGLE_FITS,
+        mesh: ctx.fit_mesh(),
     };
     let single_fits = fit_single_stones_parallel(&job, lanes, progress)?;
 
@@ -251,6 +254,7 @@ fn shaped_dp_groups(
         non_box: &ctx.non_box,
         size_table: &size_table,
         settings,
+        mesh: ctx.mesh.as_deref(),
     };
     let clipped = build_clipped_table_parallel(&clip, lanes, progress)?;
     let mixed = run_orders(lanes, progress, |order, on| {

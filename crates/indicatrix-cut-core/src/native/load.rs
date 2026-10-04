@@ -5,14 +5,15 @@
 //! file says.
 
 use super::convert::{
-    external_proportions_from_source, material_selection_from_table, meet_constraint_from_native,
-    preform_spec_from_table, tier_target_from_native, unstash_schedule_meta,
+    check_concave_flat_fingerprint, concave_tier_from_table, external_proportions_from_source,
+    material_selection_from_table, meet_constraint_from_native, preform_spec_from_table,
+    tier_target_from_native, unstash_concave_tiers, unstash_schedule_meta,
 };
 use crate::design::{ConstraintTier, Design, TierId};
 use indicatrix::geometry::stone_metrics::ExternalProportions;
 use indicatrix_formats::native::{
-    CustomMaterialSnapshot, FORMAT_VERSION, FingerprintCheck, NativeFormatError, NativeTierTarget,
-    TierTable, check_fingerprint, from_toml_str,
+    ConcaveTierTable, CustomMaterialSnapshot, FORMAT_VERSION, FingerprintCheck, NativeFormatError,
+    NativeTierTarget, TierTable, check_fingerprint, from_toml_str,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -116,6 +117,20 @@ pub enum LoadPairedError {
     /// silently defaulting to `0.0`/an empty index list (which invents geometry a
     /// cutter never authored), this error is returned.
     DraftTierMissingGeometry { index: usize },
+    /// The sidecar's stashed concave tiers were saved against a different flat
+    /// schedule than the one just loaded (see [`LoadNativeOnlyError::ConcaveStale`]).
+    ConcaveStale {
+        /// What changed.
+        reason: String,
+    },
+    /// The sidecar's stashed concave tier at this position cannot be used (an
+    /// unknown tool, a malformed record, or a value that fails validation).
+    ConcaveTier {
+        /// Zero-based position among the concave tiers.
+        index: usize,
+        /// What is wrong with it.
+        reason: String,
+    },
 }
 
 impl fmt::Display for LoadPairedError {
@@ -128,6 +143,14 @@ impl fmt::Display for LoadPairedError {
                 "draft sidecar's tier {} has no recorded angle/indices to rebuild it from",
                 index + 1
             ),
+            Self::ConcaveStale { reason } => write!(f, "sidecar's concave tiers: {reason}"),
+            Self::ConcaveTier { index, reason } => {
+                write!(
+                    f,
+                    "sidecar's concave tier {} is not usable: {reason}",
+                    index + 1
+                )
+            }
         }
     }
 }
@@ -361,6 +384,22 @@ pub fn load_paired(
         }
     };
 
+    // The `.asc` cannot carry concave tiers; the sidecar stashes them (see
+    // `stash_concave_tiers`), so they come back from there regardless of whether
+    // the tier overlay applied: they have no `.asc` counterpart to disagree with.
+    let stashed = unstash_concave_tiers(&native.unknown)
+        .map_err(|(index, reason)| LoadPairedError::ConcaveTier { index, reason })?;
+    check_concave_flat_fingerprint(&native.unknown, &design)
+        .map_err(|reason| LoadPairedError::ConcaveStale { reason })?;
+    restore_concave_tiers(&mut design, stashed)
+        .map_err(|(index, reason)| LoadPairedError::ConcaveTier { index, reason })?;
+    if !design.concave_tiers.is_empty() {
+        // The `.asc` an earlier save exported carries the concave tiers as footnotes
+        // (see `Design::append_concave_footnotes`); the sidecar's tiers are the
+        // truth, and a re-export regenerates them, so the stale lines go now.
+        crate::design::strip_generated_concave_footnotes(&mut design.meta.footnotes);
+    }
+
     let material_resolution = material_resolution_of(design.material.name.as_deref());
     let restorable_custom_material = matches!(material_resolution, MaterialResolution::Unresolved)
         .then(|| native.material.custom.clone())
@@ -520,6 +559,37 @@ pub(super) fn apply_tier_ids_and_targets(
     design.tier_ids = ids;
 }
 
+/// Installs concave tiers read from a file onto `design`: converts each record,
+/// validates the lot against the design's gear and flat tier names, and gives each
+/// a fresh stable id (ids are regenerated on load, never stored -- plan §6.1).
+///
+/// The tiers are only installed when all of them pass, so a design is never left
+/// half-loaded. An empty `tables` is a no-op.
+///
+/// # Errors
+///
+/// The position of the first unusable tier and why.
+pub(super) fn restore_concave_tiers(
+    design: &mut Design,
+    tables: Vec<ConcaveTierTable>,
+) -> Result<(), (usize, String)> {
+    if tables.is_empty() {
+        return Ok(());
+    }
+    design.concave_tiers = tables
+        .into_iter()
+        .enumerate()
+        .map(|(index, table)| concave_tier_from_table(table).map_err(|reason| (index, reason)))
+        .collect::<Result<_, _>>()?;
+    if let Err((index, error)) = design.validate_concave_tiers() {
+        design.concave_tiers.clear();
+        return Err((index, error.to_string()));
+    }
+    design.concave_tier_ids.clear();
+    design.ensure_concave_tier_ids();
+    Ok(())
+}
+
 /// Rebuilds a draft save's full tier list purely from the native sidecar, ignoring
 /// whatever the paired `.asc` (placeholder masts and all) says -- see
 /// [`TierOverlay::AppliedFromDraft`] and [`load_paired`]'s own doc comment.
@@ -579,6 +649,20 @@ pub enum LoadNativeOnlyError {
     /// [`LoadPairedError::DraftTierMissingGeometry`], the identical condition on the
     /// paired-load draft path.
     TierMissingGeometry { index: usize },
+    /// The stashed concave tiers were saved against a different flat schedule: an
+    /// older build edited the flat tiers and re-saved the stash verbatim.
+    ConcaveStale {
+        /// What changed.
+        reason: String,
+    },
+    /// See [`LoadPairedError::ConcaveTier`], the identical condition on the
+    /// paired-load path.
+    ConcaveTier {
+        /// Zero-based position among the concave tiers.
+        index: usize,
+        /// What is wrong with it.
+        reason: String,
+    },
 }
 
 impl fmt::Display for LoadNativeOnlyError {
@@ -595,14 +679,19 @@ impl fmt::Display for LoadNativeOnlyError {
                 "tier {} has no recorded angle/indices to rebuild it from",
                 index + 1
             ),
+            Self::ConcaveStale { reason } => write!(f, "concave tiers: {reason}"),
+            Self::ConcaveTier { index, reason } => {
+                write!(f, "concave tier {} is not usable: {reason}", index + 1)
+            }
         }
     }
 }
 
 impl std::error::Error for LoadNativeOnlyError {}
 
-/// Everything [`load_native_only`] found -- the self-contained-save analog of
-/// [`LoadPairedResult`], with no [`FingerprintCheck`]/[`TierOverlay`] at all (there
+/// Everything [`load_native_only`] found.
+///
+/// The self-contained-save analog of [`LoadPairedResult`], with no [`FingerprintCheck`]/[`TierOverlay`] at all (there
 /// is no paired `.asc` to check either against).
 #[derive(Debug)]
 pub struct LoadNativeOnlyResult {
@@ -673,6 +762,12 @@ pub fn load_native_only(native_text: &str) -> Result<LoadNativeOnlyResult, LoadN
     if let Some(authored) = native.authored_refractive_index {
         design.meta.refractive_index = authored;
     }
+    let stashed = unstash_concave_tiers(&native.unknown)
+        .map_err(|(index, reason)| LoadNativeOnlyError::ConcaveTier { index, reason })?;
+    check_concave_flat_fingerprint(&native.unknown, &design)
+        .map_err(|reason| LoadNativeOnlyError::ConcaveStale { reason })?;
+    restore_concave_tiers(&mut design, stashed)
+        .map_err(|(index, reason)| LoadNativeOnlyError::ConcaveTier { index, reason })?;
 
     let material_resolution = material_resolution_of(design.material.name.as_deref());
     let restorable_custom_material = matches!(material_resolution, MaterialResolution::Unresolved)

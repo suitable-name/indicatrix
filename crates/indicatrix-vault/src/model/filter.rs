@@ -54,6 +54,10 @@ pub struct RangeFilter {
     /// as if it failed the predicate -- see
     /// `Database::search_diagrams_with_performance_exclusions` for the count of those.
     pub performance: Vec<PerformanceFilter>,
+    /// `Some(true)`: only designs with at least one concave tier
+    /// (`diagram_details.concave_tiers > 0`). `Some(false)`: only fully planar designs.
+    /// `None` (default): no restriction. A design with no detail row counts as planar.
+    pub has_concave: Option<bool>,
 }
 
 impl RangeFilter {
@@ -71,6 +75,7 @@ impl RangeFilter {
             && self.ri_tolerance.is_none()
             && !self.include_ignored
             && self.performance.is_empty()
+            && self.has_concave.is_none()
     }
 }
 

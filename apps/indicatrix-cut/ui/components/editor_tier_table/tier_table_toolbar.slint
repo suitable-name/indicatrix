@@ -138,6 +138,29 @@ export component TierTableToolbar inherits VerticalLayout {
             }
             Tooltip { text: GuideModel.allows_tier_form() ? @markdown("Open the Tier tab in Add mode to author a new tier.") : @markdown("\{GuideModel.locked_hint}"); }
         }
+        // The tool-cut counterpart: opens the same Tier tab on the concave form
+        // (tool, theta, X/Y/Z, D/W) instead of the flat one. Handled in Rust
+        // (`EditorModel.add_concave_tier`), which also sets `inspector_concave_mode`.
+        Rectangle {
+            width: 110px;
+            height: 20px;
+            opacity: GuideModel.allows_concave_tier() ? 1.0 : 0.4;
+            background: add_concave_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+            border-radius: 3px;
+            Text {
+                text: "+ Add Concave Tier";
+                font-size: 9px;
+                font-weight: 600;
+                color: Theme.accent-cyan;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            add_concave_touch := TouchArea {
+                enabled: GuideModel.allows_concave_tier();
+                clicked => { EditorModel.add_concave_tier(); }
+            }
+            Tooltip { text: GuideModel.allows_concave_tier() ? @markdown("Open the Tier tab in Add mode for a concave tier -- a facet cut with a tool (cylinder, cone, circle, disc or sphere) instead of a flat lap.") : @markdown("\{GuideModel.locked_hint}"); }
+        }
         Rectangle { horizontal-stretch: 1; }
         Rectangle {
             width: 64px;

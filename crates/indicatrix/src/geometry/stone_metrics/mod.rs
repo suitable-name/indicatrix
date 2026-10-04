@@ -25,10 +25,12 @@
 //! Split into: [`types`] (the reported data shapes), [`vertices`] (plane-
 //! arrangement vertex enumeration and dedup, shared by both entry points),
 //! [`measure`] ([`measure_solid`] itself), [`mesh`] ([`build_solid_mesh`] and
-//! face reconstruction), [`caliper`] (the rotating-caliper cross-check), and
+//! face reconstruction), [`concave`] (the tool-carved mesh behind
+//! [`build_solid_mesh_geom`]), [`caliper`] (the rotating-caliper cross-check), and
 //! [`proportions`] ([`StoneProportions`], the cutter-facing readout).
 
 mod caliper;
+mod concave;
 mod measure;
 mod mesh;
 mod proportions;
@@ -39,7 +41,10 @@ mod vertices;
 
 pub use caliper::{CaliperFrame, caliper_frame};
 pub use measure::{measure_solid, measure_solid_with_vertices};
-pub use mesh::build_solid_mesh;
+pub use mesh::{
+    TOOL_ICOSPHERE_LEVEL, TOOL_SEGMENTS, build_solid_mesh, build_solid_mesh_geom, mesh_volume,
+    tessellate_tool,
+};
 pub use proportions::StoneProportions;
 pub use types::{ExternalProportions, SolidMesh, SolidMetrics, SolidStatus};
 

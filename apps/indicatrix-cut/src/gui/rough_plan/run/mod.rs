@@ -306,6 +306,22 @@ fn unmeasured_note(count: usize) -> String {
     }
 }
 
+/// The summary suffix naming designs skipped because their concave tiers (curved-tool
+/// cuts) could not be resolved ("; 2 designs skipped: concave tiers could not be
+/// resolved"), empty when there are none. They are never planned as flat stones: that
+/// would overstate their yield and carat. Nothing is saved for them, so the next run
+/// tries again.
+fn concave_note(count: usize) -> String {
+    match count {
+        0 => String::new(),
+        1 => "; 1 design skipped: its concave tiers could not be resolved".to_string(),
+        n => format!(
+            "; {} designs skipped: their concave tiers could not be resolved",
+            group_thousands(n)
+        ),
+    }
+}
+
 /// The summary suffix for measurements the cache could not keep ("; cache could not be
 /// saved (2 designs)"), empty when every measurement was saved. Those designs were still
 /// planned with, from memory; the next run measures them again.
@@ -374,6 +390,8 @@ struct Gathered {
     scanned: bool,
     /// Measurements that were planned with but could not be saved to the cache.
     save_failures: usize,
+    /// Designs skipped because their concave tiers could not be resolved.
+    concave_unresolved: usize,
 }
 
 /// Loads the cached extents and hulls of `ids` and measures whatever has none. What the
@@ -399,6 +417,7 @@ fn gather(db: &Mutex<Database>, reporter: &Reporter, ids: &[i64]) -> Result<Gath
         hulls,
         scanned: !missing.is_empty(),
         save_failures: outcome.save_failures,
+        concave_unresolved: outcome.concave_unresolved,
     })
 }
 
@@ -437,10 +456,16 @@ pub fn run_plan(db: &Mutex<Database>, job: &PlanJob, reporter: &Reporter) -> Pla
     let boxes_only = designs
         .len()
         .saturating_sub(prepared.hulls.len() + prepared.duplicates);
+    // The concave-unresolved designs have no row either, but get their own note.
+    let unmeasured = ids
+        .len()
+        .saturating_sub(gathered.stored.len())
+        .saturating_sub(gathered.concave_unresolved);
     let note = format!(
-        "{}{}{}{}",
+        "{}{}{}{}{}",
         excluded_note(excluded),
-        unmeasured_note(ids.len().saturating_sub(gathered.stored.len())),
+        unmeasured_note(unmeasured),
+        concave_note(gathered.concave_unresolved),
         cache_note(gathered.save_failures),
         outline_note(boxes_only)
     );

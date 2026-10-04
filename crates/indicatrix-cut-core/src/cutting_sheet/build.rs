@@ -3,9 +3,9 @@
 //! which other tiers a tier's own `MeetConstraint::MeetNamed` resolves to,
 //! using the same [`MeetNameResolver`] the solver itself uses.
 
-use super::sheet::{CutSheetRow, CuttingSheet};
+use super::sheet::{ConcaveRowInfo, CutSheetRow, CuttingSheet};
 use crate::{
-    design::{ConstraintTier, Design, SolveMismatch},
+    design::{ConcaveTier, ConstraintTier, Design, SolveMismatch, TierRef},
     edit::EditError,
 };
 use indicatrix::{
@@ -31,6 +31,37 @@ fn meet_instruction(tier: &ConstraintTier) -> String {
         MeetConstraint::MeetExisting => "Meet at previously cut facets".to_string(),
         MeetConstraint::MeetNamed(names) => format!("Meet {}", names.join(", ")),
         MeetConstraint::ScaleReference(mast) => format!("Set to mast depth {mast:.4}"),
+    }
+}
+
+/// A concave tier's facet-line row. It has no mast and no depth (its cut is
+/// bounded by the tool, not by a solved plane), so both read as zero or absent
+/// and the meet column prints the tier's own instructions, else "cut to depth"; the tool line's values ride in
+/// [`CutSheetRow::concave`].
+fn concave_row(tier: &ConcaveTier, sequence: usize) -> CutSheetRow {
+    CutSheetRow {
+        sequence,
+        name: tier.name.clone(),
+        angle_deg: tier.angle_deg.abs(),
+        indices: tier.indices.clone(),
+        mast: 0.0,
+        meet_instruction: if tier.instructions.trim().is_empty() {
+            "cut to depth".to_string()
+        } else {
+            tier.instructions.clone()
+        },
+        meets_tiers: Vec::new(),
+        cheater_offset_deg: None,
+        angle_of_elevation_deg: tier.angle_deg.abs(),
+        depth_mm: None,
+        concave: Some(ConcaveRowInfo {
+            tool: tier.tool,
+            tool_azimuth_deg: tier.tool_azimuth_deg,
+            displacement: tier.displacement,
+            diameter_ratio: tier.diameter_ratio,
+            tool_angle_deg: tier.tool_angle_deg,
+            motion: tier.motion,
+        }),
     }
 }
 
@@ -209,15 +240,24 @@ impl Design {
 
         let inputs = meet_tier_inputs(&self.tiers);
         let resolver = MeetNameResolver::new(&inputs);
-        let rows = self
-            .tiers
-            .iter()
-            .zip(solved)
-            .enumerate()
-            .map(|(i, (tier, solved_tier))| CutSheetRow {
-                sequence: i + 1,
-                name: tier.name.clone(),
-                angle_deg: tier.angle_deg,
+        let canonical_labels = crate::design::labelling::compute_tier_labels(&self.tiers);
+        let flat_row = |i: usize, sequence: usize| {
+            let (tier, solved_tier) = (&self.tiers[i], &solved[i]);
+            let name = if tier.name.is_empty() {
+                canonical_labels
+                    .get(i)
+                    .map_or_else(String::new, |l| l.display_name.clone())
+            } else if crate::design::labelling::is_legacy_123_abc(&tier.name) {
+                canonical_labels
+                    .get(i)
+                    .map_or_else(|| tier.name.clone(), |l| l.display_name.clone())
+            } else {
+                tier.name.clone()
+            };
+            CutSheetRow {
+                sequence,
+                name,
+                angle_deg: tier.angle_deg.abs(),
                 indices: tier.indices.clone(),
                 mast: solved_tier.mast,
                 meet_instruction: meet_instruction(tier),
@@ -225,8 +265,25 @@ impl Design {
                 cheater_offset_deg: self.cheater_offset_deg(i),
                 angle_of_elevation_deg: tier.angle_deg.abs(),
                 depth_mm: mm_per_unit.map(|scale| solved_tier.mast * scale),
-            })
-            .collect();
+                concave: None,
+            }
+        };
+        // A design without concave tiers keeps its stored tier order, so every
+        // planar sheet stays byte-identical to what it was before concave
+        // tiers existed; with concave tiers the sheet follows `cutting_order`
+        // so each tool line sits at the end of its section, above the table.
+        let rows = if self.concave_tiers.is_empty() {
+            (0..self.tiers.len()).map(|i| flat_row(i, i + 1)).collect()
+        } else {
+            self.cutting_order()
+                .into_iter()
+                .enumerate()
+                .map(|(position, tier_ref)| match tier_ref {
+                    TierRef::Flat(i) => flat_row(i, position + 1),
+                    TierRef::Concave(i) => concave_row(&self.concave_tiers[i], position + 1),
+                })
+                .collect()
+        };
 
         Ok(CuttingSheet { header, rows })
     }

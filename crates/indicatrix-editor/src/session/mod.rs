@@ -23,6 +23,7 @@
 //! [`EditorSession::multi_selected`] holds row indices, so every edit, undo and redo
 //! that adds, removes or moves a tier renumbers it to keep naming the same tiers (a
 //! removed tier leaves the selection) -- see the `selection` module.
+//! [`EditorSession::selected_concave`] does the same for the concave list.
 //!
 //! # No clock
 //!
@@ -89,6 +90,10 @@ pub struct EditChange {
     pub tier_count_before: usize,
     /// `design.tiers.len()` after the change.
     pub tier_count_after: usize,
+    /// `design.concave_tiers.len()` before the change.
+    pub concave_count_before: usize,
+    /// `design.concave_tiers.len()` after the change.
+    pub concave_count_after: usize,
 }
 
 impl EditChange {
@@ -97,6 +102,13 @@ impl EditChange {
     #[must_use]
     pub const fn tier_count_changed(&self) -> bool {
         self.tier_count_before != self.tier_count_after
+    }
+
+    /// Whether the change added or removed concave tiers (they have their own list,
+    /// so [`Self::tier_count_changed`] stays `false` for them).
+    #[must_use]
+    pub const fn concave_count_changed(&self) -> bool {
+        self.concave_count_before != self.concave_count_after
     }
 }
 
@@ -141,6 +153,10 @@ pub struct EditorSession {
     /// tiers are added, removed or moved (a removed tier leaves the group), and
     /// clears it when the renumbering cannot be worked out.
     pub multi_selected: BTreeSet<usize>,
+    /// The selected concave tier (a position in `design.concave_tiers`), if any. Kept
+    /// apart from the flat selection because the two lists number independently; it
+    /// is renumbered like [`Self::multi_selected`] and clears when its tier is removed.
+    pub selected_concave: Option<usize>,
     /// Bumped by every successful edit/undo/redo (and once by
     /// [`Self::continue_generation_from`]). Shared so a background job can compare
     /// against it -- see the module doc comment.
@@ -202,6 +218,7 @@ impl EditorSession {
             design,
             history,
             multi_selected: BTreeSet::new(),
+            selected_concave: None,
             generation: Arc::new(AtomicU64::new(0)),
             saved_generation: 0,
         }
@@ -248,7 +265,7 @@ impl EditorSession {
     ///
     /// [`History::apply`]'s error, verbatim; nothing changes on `Err`.
     pub fn apply(&mut self, edit: Edit) -> Result<EditChange, EditError> {
-        let before = self.design.tiers.len();
+        let before = self.tier_counts();
         let renumbering = TierIndexMap::of(&edit);
         self.history.apply(&mut self.design, edit)?;
         Ok(self.record_change(before, Some(&renumbering)))
@@ -269,7 +286,7 @@ impl EditorSession {
         key: u64,
         now: Duration,
     ) -> Result<EditChange, EditError> {
-        let before = self.design.tiers.len();
+        let before = self.tier_counts();
         let renumbering = TierIndexMap::of(&edit);
         self.history
             .apply_coalescing(&mut self.design, edit, key, now)?;
@@ -282,7 +299,7 @@ impl EditorSession {
     ///
     /// [`History::undo`]'s error (a failed replay of the recorded inverse).
     pub fn undo(&mut self) -> Result<Option<EditChange>, EditError> {
-        let before = self.design.tiers.len();
+        let before = self.tier_counts();
         let renumbering = self.history.peek_undo().map(TierIndexMap::of);
         let undone = self.history.undo(&mut self.design)?;
         Ok(undone.then(|| self.record_change(before, renumbering.as_ref())))
@@ -294,7 +311,7 @@ impl EditorSession {
     ///
     /// [`History::redo`]'s error, symmetrically to [`Self::undo`].
     pub fn redo(&mut self) -> Result<Option<EditChange>, EditError> {
-        let before = self.design.tiers.len();
+        let before = self.tier_counts();
         let renumbering = self.history.peek_redo().map(TierIndexMap::of);
         let redone = self.history.redo(&mut self.design)?;
         Ok(redone.then(|| self.record_change(before, renumbering.as_ref())))
@@ -534,11 +551,14 @@ impl EditorSession {
     /// than leave it naming arbitrary tiers), and describes the change.
     fn record_change(
         &mut self,
-        tier_count_before: usize,
+        (tier_count_before, concave_count_before): (usize, usize),
         renumbering: Option<&TierIndexMap>,
     ) -> EditChange {
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
-        let tier_count_after = self.design.tiers.len();
+        let (tier_count_after, concave_count_after) = self.tier_counts();
+        self.selected_concave = renumbering
+            .and_then(|map| map.map_concave(self.selected_concave?))
+            .filter(|&index| index < concave_count_after);
         self.multi_selected = renumbering.map_or_else(BTreeSet::new, |map| {
             map.remap(&self.multi_selected)
                 .into_iter()
@@ -549,7 +569,14 @@ impl EditorSession {
             generation,
             tier_count_before,
             tier_count_after,
+            concave_count_before,
+            concave_count_after,
         }
+    }
+
+    /// `(flat, concave)` tier counts, for [`EditChange`].
+    const fn tier_counts(&self) -> (usize, usize) {
+        (self.design.tiers.len(), self.design.concave_tiers.len())
     }
 }
 

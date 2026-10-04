@@ -53,7 +53,7 @@ pub(super) const PREVIEW_MAX_BOUNCES: u32 = DEFAULT_MAX_BOUNCES;
 /// `Database::ensure_preview_material`/`pick_ri_preset`. Chosen loosely rather than
 /// measured: most named gem-species RI bands in `GemMaterial::all_materials()` are
 /// separated by well over this (e.g. Quartz ~1.55 vs. Beryl ~1.58), while a handful of
-/// distinct colour varieties of the SAME species intentionally share (near-)identical
+/// distinct color varieties of the SAME species intentionally share (near-)identical
 /// RI and are meant to tie (resolved by `gui::batch::material_choice`'s balanced
 /// measure, not by chance) -- `0.02` sits comfortably inside a single species' natural RI spread
 /// without being wide enough to blur two visually and physically distinct species

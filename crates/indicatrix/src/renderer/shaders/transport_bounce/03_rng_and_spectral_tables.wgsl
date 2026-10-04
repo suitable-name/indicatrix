@@ -44,7 +44,7 @@ fn cranley_patterson_rotate(x: f32, offset: f32) -> f32 {
     return sum - floor(sum);
 }
 
-// The CIE 1931 colour matching table, `cie_1931_cmf`, and
+// The CIE 1931 color matching table, `cie_1931_cmf`, and
 // `integrate_channels_to_xyz_family` live in `transport_physics/05_nee_env_sampling.wgsl` so the
 // standalone transport-function kernels share them with the megakernel.
 

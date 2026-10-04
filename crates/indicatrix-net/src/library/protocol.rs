@@ -84,6 +84,14 @@ pub enum LibraryRequest {
     /// earlier in the enum, so postcard's index-based encoding of every existing variant
     /// is undisturbed.
     FetchDesignSource { entry_id: i64 },
+    /// Fetch one design's self-contained native `.indicatrix` file, byte for byte
+    /// (v19). The only lossless carrier of a concave design: the `.asc` that
+    /// [`Self::FetchDesignSource`] returns cannot represent concave tiers, so a client
+    /// that wants the real stone loads this instead. Answered by
+    /// [`LibraryResponse::DesignNative`], or [`LibraryResponse::DesignNativeNotAvailable`]
+    /// for a design with no native attachment. Appended after
+    /// [`Self::FetchDesignSource`] so every earlier variant keeps its postcard index.
+    FetchDesignNative { entry_id: i64 },
 }
 
 /// A worker's reply to one [`LibraryRequest`].
@@ -156,4 +164,17 @@ pub enum LibraryResponse {
     /// reconstructed (placeholder, every mast `0.0`) schedule has nothing genuine here
     /// to send.
     DesignSourceNotAvailable,
+    /// Reply to [`LibraryRequest::FetchDesignNative`]: `entry_id`'s native design file.
+    /// `content` is the attachment's raw bytes, undecoded -- the client parses it with
+    /// the same reader a local file goes through, so a design loads identically either
+    /// way. Bounded by the transport-level `crate::framing::MAX_FRAME_LEN`, like
+    /// [`Self::Attachment`].
+    DesignNative {
+        entry_id: i64,
+        file_name: String,
+        content: Vec<u8>,
+    },
+    /// `entry_id` names a real catalogue entry that has no native `.indicatrix`
+    /// attachment (the counterpart of [`Self::DesignSourceNotAvailable`]).
+    DesignNativeNotAvailable,
 }

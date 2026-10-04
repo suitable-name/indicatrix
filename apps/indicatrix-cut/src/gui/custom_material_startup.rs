@@ -45,6 +45,7 @@ mod tests {
             biaxial_delta_beta_alpha: None,
             per_axis_dispersion_json: None,
             specific_gravity,
+            color_recipe_json: None,
         }
     }
 

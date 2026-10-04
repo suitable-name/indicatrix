@@ -1,0 +1,52 @@
+# sample: R-2 synthetic flux
+# host: corundum (Al2O3), uniaxial; E_perp_c = o-ray, E_par_c = e-ray
+# composition: 0.250 wt% Cr2O3 (7.90e19 cm^-3, 671 ppma)
+# path_text_cm: 0.50
+# units: lambda_nm; alpha in cm^-1, Napierian (T = exp(-alpha*L), L in cm)
+# path_cm: 0.50
+# source: research-2026-10-polarized-spectra.md section 1 "Napierian alpha" table, columns 0.25 wt% E_perp_c / E_par_c (user-delivered, secondary, unverified)
+# note: R1 (694.3 nm) and R2 (692.8 nm) are tabulated as single points between 680 and 700 nm; B lines (468.5/475.1/476.5 nm) only as 468.5 (see tests for the line handling)
+# lab: mean_uniax | D65 | 0.5 | 37.8 | 69.5 | 24.8
+lambda_nm,E_perp_c,E_par_c
+350,3.10,2.70
+360,3.90,3.45
+370,5.50,4.85
+380,7.75,6.80
+390,9.90,8.70
+400,11.25,9.90
+405,11.65,10.25
+410,11.55,10.05
+415,11.00,9.50
+420,10.25,8.80
+430,7.60,6.40
+440,4.75,3.90
+450,2.60,2.05
+460,1.40,1.05
+468.5,1.25,0.80
+470,1.05,0.70
+475,0.95,0.60
+480,1.00,0.60
+490,1.30,0.80
+500,2.25,1.45
+510,4.10,2.70
+520,6.75,4.60
+530,9.55,6.65
+540,11.75,8.40
+550,12.70,9.10
+555,12.80,9.00
+560,12.65,8.70
+570,11.50,7.55
+580,9.25,5.75
+590,6.60,3.85
+600,4.10,2.20
+610,2.30,1.15
+620,1.20,0.60
+640,0.40,0.20
+660,0.25,0.15
+680,0.20,0.10
+692.8,1.75,0.30
+694.3,2.40,0.40
+700,0.15,0.10
+720,0.10,0.05
+750,0.05,0.03
+800,0.03,0.02

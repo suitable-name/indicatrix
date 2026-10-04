@@ -8,7 +8,7 @@ use core::mem::offset_of;
 ///
 /// `env_mode` selects which environment model to sample (`0` = the direction-independent
 /// "uniform furnace" grey environment at `l0`, `1` = the analytic studio rig at the
-/// given colour temperature/exposure/rig-pose). `sample_offset` + `camera.num_samples`
+/// given color temperature/exposure/rig-pose). `sample_offset` + `camera.num_samples`
 /// select the sample range this dispatch traces, mirroring
 /// `apps/indicatrix-worker/src/render_core.rs`'s `first_sample`/`samples` convention --
 /// this lets `estimator_check`'s statistical comparison give the CPU and GPU DISJOINT

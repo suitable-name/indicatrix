@@ -11,7 +11,7 @@ impl GemMaterial {
     /// First of four new-species quarters: Aquamarine, Morganite (both beryl, sharing
     /// Emerald's host-mineral optics), Chrysoberyl (Yellow) (sharing Alexandrite's
     /// host-mineral indicatrix), Amethyst and Citrine (both quartz, sharing the
-    /// colourless Quartz entry's exact Ghosh 1999 o/e Sellmeier pair above).
+    /// colorless Quartz entry's exact Ghosh 1999 o/e Sellmeier pair above).
     ///
     /// # Dispersion-figure convention note (applies to every entry in this file)
     ///
@@ -64,7 +64,7 @@ impl GemMaterial {
                 // the visible band (unlike Tourmaline's 1120nm band, too far out to
                 // reach it at all), giving aquamarine its pale blue-green cast. Peak
                 // (1.0) deliberately weak, matching aquamarine's reputation as one of
-                // the palest common coloured gemstones.
+                // the palest common colored gemstones.
                 absorption: AbsorptionTensor::isotropic(vec![AbsorptionBand::new(
                     830.0, 110.0, 1.0,
                 )]),
@@ -91,7 +91,7 @@ impl GemMaterial {
                 birefringence_delta: -0.0060,
                 // Chromophore: Mn3+ in the beryl channel structure, a single band
                 // near 540nm (green) -- the standard attribution for morganite's pink
-                // colour. Width (45nm) and peak (1.0, deliberately weak -- morganite
+                // color. Width (45nm) and peak (1.0, deliberately weak -- morganite
                 // is a characteristically pale pink stone) tuned; band centre cited.
                 absorption: AbsorptionTensor::isotropic(vec![AbsorptionBand::new(
                     540.0, 45.0, 1.0,
@@ -124,7 +124,7 @@ impl GemMaterial {
                 birefringence_delta: 0.0090,
                 // Chromophore: Fe3+ substitution (rather than Alexandrite's Cr3+), a
                 // single band near 440nm (blue-violet) leaving yellow-red transmitted
-                // -- the standard attribution for ordinary (non-colour-change)
+                // -- the standard attribution for ordinary (non-color-change)
                 // yellow/green chrysoberyl. Width (35nm) and peak (1.4) tuned; band
                 // centre cited.
                 absorption: AbsorptionTensor::isotropic(vec![AbsorptionBand::new(

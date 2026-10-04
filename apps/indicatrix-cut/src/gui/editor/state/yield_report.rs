@@ -27,6 +27,11 @@ pub(in crate::gui::editor) fn cutting_instructions_rows(
             angle: row.angle.into(),
             index_val: row.index_val.into(),
             notes: row.notes.into(),
+            // The tool columns joined the way the cutting sheet's text prints them.
+            second_line: row
+                .second_line
+                .map_or_else(String::new, |fields| fields.join("  "))
+                .into(),
         })
         .collect()
 }

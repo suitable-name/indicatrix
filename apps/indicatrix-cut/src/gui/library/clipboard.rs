@@ -258,6 +258,11 @@ pub(in crate::gui) fn setup_copy_callbacks(ui: &MainWindow) {
                         row.index_val,
                         row.notes
                     );
+                    // A concave tier's tool line follows its facet line, as on the
+                    // cutting sheet, so a pasted table does not silently lose it.
+                    if !row.second_line.is_empty() {
+                        let _ = writeln!(text, "\t{}", row.second_line);
+                    }
                 }
             }
             copy_to_clipboard_with_toast(
@@ -274,10 +279,13 @@ pub(in crate::gui) fn setup_copy_callbacks(ui: &MainWindow) {
             if let Some(ui) = ui_weak_row.upgrade() {
                 let angles_model = ui.global::<LibraryModel>().get_current_angles();
                 if let Some(row) = angles_model.row_data(idx as usize) {
-                    let text = format!(
+                    let mut text = format!(
                         "Facet: {}, Angle: {}, Index: {}, Notes: {}",
                         row.facet, row.angle, row.index_val, row.notes
                     );
+                    if !row.second_line.is_empty() {
+                        let _ = write!(text, "\nTool: {}", row.second_line);
+                    }
                     copy_to_clipboard_with_toast(&ui, text, format!("Copied step #{}", idx + 1));
                 }
             }

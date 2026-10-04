@@ -21,7 +21,7 @@ impl GemMaterial {
             // 1.925-1.961; (2) International Gem Society: "High zircon: n_o =
             // 1.920-1.940 (often 1.925); n_e = 1.970-2.010 (often 1.984)"; (3) the
             // widely-reproduced gem-trade n_o=1.9250/n_e=1.9840 pairing, also the
-            // standard GIA reference point for gem-quality (heat-treated) colourless
+            // standard GIA reference point for gem-quality (heat-treated) colorless
             // high zircon. birefringence_delta = n_e - n_o = 1.984 - 1.925 = +0.0590.
             //
             // No primary Sellmeier/Cauchy fit for zircon exists in the optics
@@ -49,7 +49,7 @@ impl GemMaterial {
                     c: 0.0,
                 },
                 birefringence_delta: 0.0590,
-                // Chromophore: high (gem-quality) zircon's colour and characteristic
+                // Chromophore: high (gem-quality) zircon's color and characteristic
                 // sharp lines come from trace U4+ substituting for Zr4+, producing
                 // narrow lines rather than a broad transition-metal band. Source: the
                 // U4+ absorption spectrum of zircon, e.g. P.E. Fielding (1970) and
@@ -117,11 +117,11 @@ impl GemMaterial {
                 // chrysoberyl, alexandrite, peridot, and sinhalite," American
                 // Mineralogist 50, 1972 (1965). Polarized absorption at 77K, space
                 // group Pnma (a=9.40, b=5.48, c=4.43 A -- same axis convention as this
-                // entry's dispersion source, Walling 1980), pleochroic colours
+                // entry's dispersion source, Walling 1980), pleochroic colors
                 // yellow||a, green||b, red||c. Two Cr3+ band systems: 4A2->4T2 at
                 // 560-595nm and 4A2->4T1 at 410-440nm, straddling Neuhaus's 580/415nm
                 // red-green critical values -- that straddle is the illuminant-
-                // dependent daylight-green/incandescent-red colour change (pinned by
+                // dependent daylight-green/incandescent-red color change (pinned by
                 // `raytracer_tests::alexandrite_shifts_redder_under_incandescent_than_d65`);
                 // the per-axis split below adds direction-dependence on top.
                 //
@@ -215,16 +215,16 @@ impl GemMaterial {
                 },
                 birefringence_delta: 0.0080,
                 // This entry models "London/Sky Blue" TOPAZ specifically
-                // (the commercially dominant form: near-colourless natural topaz,
-                // irradiated then heat-treated) -- its colour comes from an
-                // irradiation-induced colour centre (a trapped-electron/hole defect),
+                // (the commercially dominant form: near-colorless natural topaz,
+                // irradiated then heat-treated) -- its color comes from an
+                // irradiation-induced color centre (a trapped-electron/hole defect),
                 // not a transition-metal d-d transition, a broad band centred roughly
                 // 610-620nm (red-orange), leaving blue transmitted. Source: K. Nassau,
                 // "Gemstone Enhancement" (2nd ed., Butterworth-Heinemann, 1994), the
                 // standard gemological reference for this mechanism. Width (70nm,
                 // broader than the sharp transition-metal bands elsewhere in this
-                // file -- colour centres are typically broad) and peak (1.6) tuned;
-                // band centre (620nm) cited. Colourless natural (pre-treatment) topaz
+                // file -- color centres are typically broad) and peak (1.6) tuned;
+                // band centre (620nm) cited. colorless natural (pre-treatment) topaz
                 // is reachable with an empty band set; imperial topaz (orange-pink,
                 // Cr3+ ~540nm) is a candidate for a follow-up built-in.
                 absorption: AbsorptionTensor::isotropic(vec![AbsorptionBand::new(

@@ -5,10 +5,10 @@ use super::{
     camera::camera_view_basis,
     fan::FanGeometry,
     lighting::ExitLighting,
-    ray_trace::{RayFate, trace_wavelength},
+    ray_trace::{RayFate, StoneArena, trace_wavelength},
     visibility::ray_is_visibly_returned,
 };
-use crate::optics::raytracer::{Ray, intersect_polyhedron_soa};
+use crate::optics::raytracer::Ray;
 
 /// Small camera-yaw offsets (degrees), sampled around the primary viewing azimuth, used
 /// to measure Scintillation's TEMPORAL component: how much a given grid cell's light
@@ -31,7 +31,7 @@ const SCINT_TEMPORAL_WEIGHT: f32 = 0.4;
 /// within clippy's `too_many_arguments` lint -- identical across all
 /// `grid_size * grid_size * SCINT_TEMPORAL_YAW_OFFSETS_DEG.len()` calls per invocation.
 pub(super) struct TemporalPoseContext<'a> {
-    pub(super) plane_soa: &'a crate::simd::PlanesSoA32,
+    pub(super) stone: StoneArena<'a>,
     pub(super) nd: f32,
     pub(super) cam_yaw: f32,
     pub(super) cam_pitch: f32,
@@ -68,14 +68,14 @@ fn cell_returned_at_yaw_offset(
         origin: ctx.fan.origin(forward, right, up, u, v),
         dir: forward,
     };
-    let Some(hit_rec) = intersect_polyhedron_soa(ray, ctx.plane_soa) else {
+    let Some(hit_rec) = ctx.stone.intersect(ray) else {
         return false;
     };
     let hit_point = ray.origin + hit_rec.t * ray.dir;
     let n_entry = hit_rec.normal;
     let cos_i = (-ray.dir).dot(n_entry).clamp(0.0, 1.0);
 
-    match trace_wavelength(hit_point, ray.dir, n_entry, cos_i, ctx.plane_soa, ctx.nd) {
+    match trace_wavelength(hit_point, ray.dir, n_entry, cos_i, ctx.stone, ctx.nd) {
         RayFate::ExitedUpward(exit) => ray_is_visibly_returned(exit.dir, forward, &ctx.lighting),
         RayFate::EntryBlocked | RayFate::Leaked | RayFate::Absorbed => false,
     }

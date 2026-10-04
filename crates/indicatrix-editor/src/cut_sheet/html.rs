@@ -7,7 +7,7 @@ use indicatrix::{
     geometry::meet_solver::{Block, SolvedTier, classify_blocks},
     optics::materials::GemMaterial,
 };
-use indicatrix_cut_core::{CutSheetRow, Design};
+use indicatrix_cut_core::{ConcaveRowInfo, CutSheetRow, Design, design::TierRef};
 use std::fmt::Write as _;
 
 /// The standard (RFC 4648) base64 alphabet, padded -- this crate's own encoder
@@ -153,7 +153,7 @@ pub fn cutting_sheet_html(
     custom: &[GemMaterial],
 ) -> String {
     let sheet = design.cutting_sheet_with(solved, custom);
-    let blocks = classify_blocks(&design.meet_tier_inputs());
+    let blocks = row_blocks(design);
     let mm_per_unit = design.yield_report(solved).mm_per_unit;
     let show_mm_column = design.girdle_diameter_mm.is_some();
     // Shows the cheater-offset column only when some tier actually carries one --
@@ -164,8 +164,15 @@ pub fn cutting_sheet_html(
         .iter()
         .any(|row| row.cheater_offset_deg.is_some());
 
+    let has_concave = !design.concave_tiers.is_empty();
+
     let mut out = String::new();
     out.push_str(HTML_HEAD);
+    if has_concave {
+        // Only a design with concave tiers gains the banding rules, so every planar
+        // sheet stays byte-identical.
+        out = out.replacen("</style>", CONCAVE_STYLE, 1);
+    }
     out.push_str("<h1>Cutting Sheet</h1>\n");
     push_header_block(&mut out, design, custom);
     push_carat_weight_row(&mut out, design, solved);
@@ -177,11 +184,40 @@ pub fn cutting_sheet_html(
         TierTableColumns {
             show_mm: show_mm_column,
             show_cheater: show_cheater_column,
+            banded: has_concave,
         },
         mm_per_unit,
+        design.girdle_diameter_mm,
     );
     out.push_str(HTML_TAIL);
     out
+}
+
+/// One [`Block`] per row of the cutting sheet, in the sheet's own row order.
+///
+/// A planar design's rows follow its stored tier order, so its blocks are the solver's
+/// own classification as before. With concave tiers the rows follow `cutting_order()`:
+/// a flat row takes its tier's classification, a concave row the side its angle is on
+/// (a concave tier is never a girdle, its angle is strictly inside `(-90, 90)`).
+fn row_blocks(design: &Design) -> Vec<Block> {
+    let blocks = classify_blocks(&design.meet_tier_inputs());
+    if design.concave_tiers.is_empty() {
+        return blocks;
+    }
+    design
+        .cutting_order()
+        .into_iter()
+        .map(|tier_ref| match tier_ref {
+            TierRef::Flat(i) => blocks.get(i).copied().unwrap_or(Block::Girdle),
+            TierRef::Concave(i) => {
+                if design.concave_tiers[i].is_crown_side() {
+                    Block::Crown
+                } else {
+                    Block::Pavilion
+                }
+            }
+        })
+        .collect()
 }
 
 /// [`cutting_sheet_html`]'s header meta table: material, refractive index,
@@ -290,6 +326,16 @@ struct TierTableColumns {
     show_mm: bool,
     /// The per-tier cheater/azimuth offset -- only when some tier has one.
     show_cheater: bool,
+    /// One `<tbody>` per tier with a zebra class on it, so a concave tier's two lines
+    /// share one band -- only when the design has concave tiers.
+    banded: bool,
+}
+
+impl TierTableColumns {
+    /// How many cells a full-width row of the table has.
+    fn width(self) -> usize {
+        7 + usize::from(self.show_mm) + usize::from(self.show_cheater)
+    }
 }
 
 /// [`cutting_sheet_html`]'s tier table: header row (the "Mast (mm)" column
@@ -301,10 +347,11 @@ fn push_tier_table(
     blocks: &[Block],
     columns: TierTableColumns,
     mm_per_unit: Option<f64>,
+    girdle_diameter_mm: Option<f64>,
 ) {
     out.push_str("<table class=\"tiers\">\n<thead><tr>");
     out.push_str(
-        "<th>#</th><th>Tier</th><th>Block</th><th>Angle</th><th>Elevation</th><th>Indices</th>\
+        "<th>#</th><th>Tier</th><th>Block</th><th>Angle</th><th>Indices</th>\
          <th>Mast</th>",
     );
     if columns.show_mm {
@@ -313,16 +360,77 @@ fn push_tier_table(
     if columns.show_cheater {
         out.push_str("<th>Cheater</th>");
     }
-    out.push_str("<th>Meet</th></tr></thead>\n<tbody>\n");
-    for (row, &block) in rows.iter().zip(blocks) {
-        push_tier_row(out, row, block, columns, mm_per_unit);
+    out.push_str("<th>Meet</th></tr></thead>\n");
+    if !columns.banded {
+        out.push_str("<tbody>\n");
+        for (row, &block) in rows.iter().zip(blocks) {
+            push_tier_row(out, row, block, columns, mm_per_unit);
+        }
+        out.push_str("</tbody>\n</table>\n");
+        return;
     }
-    out.push_str("</tbody>\n</table>\n");
+    // One `<tbody>` per tier, striped per tier rather than per line: a concave
+    // tier's tool line belongs to the same band as its facet line, and
+    // `break-inside: avoid` on the `<tbody>` keeps the pair on one page.
+    for (position, (row, &block)) in rows.iter().zip(blocks).enumerate() {
+        let stripe = if position % 2 == 0 {
+            "band-a"
+        } else {
+            "band-b"
+        };
+        let _ = writeln!(out, "<tbody class=\"{stripe}\">");
+        push_tier_row(out, row, block, columns, mm_per_unit);
+        if let Some(concave) = &row.concave {
+            push_tool_row(out, concave, columns, girdle_diameter_mm);
+        }
+        out.push_str("</tbody>\n");
+    }
+    out.push_str("</table>\n");
+}
+
+/// A concave tier's second `<tr class="tool">`, under the facet line's columns: the
+/// tool code under the tier name, theta under the angle, the displacement under the
+/// indices, and the size and motion spanning the rest. The strings are
+/// [`ConcaveRowInfo::second_line_fields`], the very ones the text sheet prints. With a
+/// girdle diameter set, the diameter and displacement are also given in millimetres
+/// (the ratios are over the stone width, which is the girdle diameter).
+fn push_tool_row(
+    out: &mut String,
+    concave: &ConcaveRowInfo,
+    columns: TierTableColumns,
+    girdle_diameter_mm: Option<f64>,
+) {
+    let [code, theta, displacement, details] = concave.second_line_fields();
+    out.push_str("<tr class=\"tool\"><td></td>");
+    let _ = write!(out, "<td>{}</td><td></td>", html_escape(&code));
+    let _ = write!(out, "<td>{}</td>", html_escape(&theta));
+    let mut displacement_cell = html_escape(&displacement);
+    let mut details_cell = html_escape(&details);
+    if let Some(width_mm) = girdle_diameter_mm {
+        let [x, y, z] = concave.displacement.map(|ratio| ratio * width_mm);
+        let _ = write!(
+            displacement_cell,
+            " <span class=\"mm\">({x:.2}, {y:.2}, {z:.2} mm)</span>"
+        );
+        let _ = write!(
+            details_cell,
+            " <span class=\"mm\">(D = {:.2} mm)</span>",
+            concave.diameter_ratio * width_mm
+        );
+    }
+    let _ = write!(out, "<td>{displacement_cell}</td>");
+    // Everything after the indices column: mast, the optional columns and the meet.
+    let _ = write!(
+        out,
+        "<td colspan=\"{}\">{details_cell}</td>",
+        columns.width() - 5
+    );
+    out.push_str("</tr>\n");
 }
 
 /// One `<tr>` of [`push_tier_table`]: step number, tier name, Crown/Pavilion/
 /// Girdle label (from `block`, never the sign of `row.angle_deg` -- see this
-/// module's own doc comment), signed angle, index list, mast in model units,
+/// module's own doc comment), unsigned positive angle, index list, mast in model units,
 /// mast in mm (only when `columns.show_mm`; `"-"` when `mm_per_unit` itself
 /// could not be resolved), and the meet note.
 fn push_tier_row(
@@ -346,8 +454,7 @@ fn push_tier_row(
         block_css_class(block),
         block_label(block)
     );
-    let _ = write!(out, "<td>{:+.2}&deg;</td>", row.angle_deg);
-    let _ = write!(out, "<td>{:.2}&deg;</td>", row.angle_of_elevation_deg);
+    let _ = write!(out, "<td>{:.2}&deg;</td>", row.angle_deg.abs());
     let _ = write!(out, "<td>{}</td>", format_indices_html(&row.indices));
     let _ = write!(out, "<td>{:.4}</td>", row.mast);
     if columns.show_mm {
@@ -417,6 +524,14 @@ const HTML_HEAD: &str = r#"<!DOCTYPE html>
 </head>
 <body>
 "#;
+
+/// The extra rules a sheet with concave tiers adds just before `</style>`: the zebra
+/// bands (one per `<tbody>`, so a tier's two lines share one) and the tool line's look.
+const CONCAVE_STYLE: &str = r"  tbody.band-b { background: #f4f4f4; }
+  tbody { page-break-inside: avoid; break-inside: avoid; }
+  tr.tool td { border-top: none; color: #333333; font-style: italic; }
+  tr.tool span.mm { color: #666666; }
+</style>";
 
 /// [`cutting_sheet_html`]'s closing half.
 const HTML_TAIL: &str = "</body>\n</html>\n";

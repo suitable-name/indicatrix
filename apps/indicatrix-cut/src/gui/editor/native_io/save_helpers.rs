@@ -10,9 +10,10 @@ use indicatrix::{
 };
 use indicatrix_cut_core::{
     Design, built_in_refractive_index,
+    material::colorMode,
     native::{
-        CustomMaterialSnapshot, DesignExtras, PairedSave, SaveError, SaveExtras, design_to_file,
-        save_paired_extended, save_paired_extended_from_solved,
+        CustomMaterialSnapshot, DesignExtras, PairedSave, SaveError, SaveExtras, color_recipe_dto,
+        design_to_file, save_paired_extended, save_paired_extended_from_solved,
     },
 };
 use indicatrix_vault::db::sqlite::Database;
@@ -185,17 +186,34 @@ pub(super) fn custom_material_snapshot_for_save(
         .ok()?
         .into_iter()
         .find(|r| r.name.eq_ignore_ascii_case(name))?;
-    Some(
-        CustomMaterialSnapshot::new(
-            f64::from(row.refractive_index),
-            f64::from(row.dispersion),
-            f64::from(row.birefringence),
-            row.specific_gravity.map(f64::from),
-            row.crystal_system.unwrap_or_default(),
-            row.optical_character.unwrap_or_default(),
-        )
-        .with_body_colour(Some(row.absorption_rgb)),
+    let mut snapshot = CustomMaterialSnapshot::new(
+        f64::from(row.refractive_index),
+        f64::from(row.dispersion),
+        f64::from(row.birefringence),
+        row.specific_gravity.map(f64::from),
+        row.crystal_system.unwrap_or_default(),
+        row.optical_character.unwrap_or_default(),
     )
+    .with_body_color(Some(row.absorption_rgb));
+
+    // Both color payloads travel in the file: the typed `colorMode` (recipe, resolved bands,
+    // data version, fantasy color) as the DTO, with the fallback color recorded exactly as it
+    // was written to the top-level `absorption_rgb` -- an older build that edits that color
+    // later makes the two differ, which the open path detects.
+    if let Some(mode) = row
+        .color_recipe_json
+        .as_deref()
+        .and_then(colorMode::from_json)
+        .filter(|m| m.last_recipe.is_some())
+    {
+        let mut dto = color_recipe_dto(&mode);
+        if let Some(top_level) = snapshot.absorption_rgb {
+            dto.fallback_rgb = top_level;
+        }
+        snapshot = snapshot.with_color_recipe(Some(dto));
+    }
+
+    Some(snapshot)
 }
 
 /// The text of `design`'s self-contained `.indicatrix` file: every tier in full plus

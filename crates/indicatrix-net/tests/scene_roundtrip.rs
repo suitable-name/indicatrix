@@ -45,6 +45,8 @@ fn sample_scene() -> SceneState {
         backdrop: 0.0,
         environment: indicatrix_net::scene::SceneEnvironment::Studio,
         surface_glare: 1.0,
+        tools: Vec::new(),
+        fluorescence: Default::default(),
     }
 }
 
@@ -59,6 +61,97 @@ fn scene_state_round_trips_unchanged_through_postcard() {
         scene, decoded,
         "SceneState must round-trip bit-for-bit through postcard"
     );
+}
+
+/// v19: a scene with concave tools round-trips, and a convex one (the empty `Vec`) still
+/// does -- postcard has no way to omit a trailing field, so both must decode by count.
+#[test]
+fn scene_state_with_and_without_tools_round_trips_through_postcard() {
+    use glam::Vec3;
+    use indicatrix::geometry::ToolPrimitive;
+
+    let convex = sample_scene();
+    assert!(convex.tools.is_empty());
+    let convex_bytes = postcard::to_allocvec(&convex).unwrap();
+    let decoded: SceneState = postcard::from_bytes(&convex_bytes).unwrap();
+    assert_eq!(convex, decoded);
+
+    let mut concave = sample_scene();
+    concave.tools = vec![
+        ToolPrimitive::ball(Vec3::new(0.0, 0.0, 0.4), 0.2),
+        ToolPrimitive::cylinder(Vec3::new(0.1, 0.0, 0.3), Vec3::X, 0.05, 0.3),
+    ];
+    let concave_bytes = postcard::to_allocvec(&concave).unwrap();
+    let decoded: SceneState = postcard::from_bytes(&concave_bytes).unwrap();
+    assert_eq!(concave, decoded);
+    assert!(
+        concave_bytes.len() > convex_bytes.len(),
+        "tools are a length-prefixed trailing Vec, so they only add bytes"
+    );
+}
+
+/// v20: a scene with fluorescent emitters round-trips through postcard (and a non-fluorescent
+/// one, which costs one zero length byte), and the cached sampling tables a trace builds
+/// are not part of the wire form.
+#[test]
+fn scene_state_with_and_without_fluorescence_round_trips_through_postcard() {
+    use indicatrix::optics::{
+        absorption::AbsorptionBand,
+        fluorescence::{EmissionBand, Fluorescence, FluorescentEmitter},
+    };
+
+    let plain = sample_scene();
+    assert!(plain.fluorescence.is_empty());
+    let plain_bytes = postcard::to_allocvec(&plain).unwrap();
+    let decoded: SceneState = postcard::from_bytes(&plain_bytes).unwrap();
+    assert_eq!(plain, decoded);
+
+    let mut glowing = sample_scene();
+    glowing.lighting_preset = LightingPreset::UvLamp365;
+    glowing.fluorescence = Fluorescence::new(vec![FluorescentEmitter {
+        excitation: vec![
+            AbsorptionBand::energy(410.0, 3500.0, 2.0),
+            AbsorptionBand::energy(556.0, 2800.0, 2.0),
+        ],
+        emission: vec![
+            EmissionBand::new(692.9, 1.0, 0.4),
+            EmissionBand::new(694.3, 1.0, 0.6),
+        ],
+        quantum_yield: 0.9,
+    }]);
+    // Build the sampling tables, as a trace would: they must not change the wire bytes.
+    let before = postcard::to_allocvec(&glowing).unwrap();
+    let _ = glowing.fluorescence.pseudo_extinction(694.0);
+    let bytes = postcard::to_allocvec(&glowing).unwrap();
+    assert_eq!(before, bytes);
+    let decoded: SceneState = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(glowing, decoded);
+    assert_eq!(decoded.lighting_preset, LightingPreset::UvLamp365);
+    assert_eq!(decoded.fluorescence.emitters().len(), 1);
+    assert!(
+        bytes.len() > plain_bytes.len(),
+        "emitters are a length-prefixed trailing Vec, so they only add bytes"
+    );
+    // The emitter list is the last thing on the wire.
+    let tail = postcard::to_allocvec(&glowing.fluorescence).unwrap();
+    assert_eq!(&bytes[bytes.len() - tail.len()..], tail.as_slice());
+}
+
+/// A v19 `SceneState` (no `fluorescence` field) decodes as v20 only by the handshake's
+/// refusal: postcard cannot skip a missing trailing field, so the bytes of the old layout
+/// run out. Pins that the decode fails rather than yielding a scene.
+#[test]
+fn a_v19_scene_byte_layout_does_not_decode_as_v20() {
+    let scene = sample_scene();
+    let v20 = postcard::to_allocvec(&scene).unwrap();
+    // The v19 layout is the v20 one without the trailing (empty) emitter list: one 0 byte.
+    assert_eq!(
+        *v20.last().unwrap(),
+        0,
+        "an empty emitter list is one zero byte"
+    );
+    let v19 = &v20[..v20.len() - 1];
+    assert!(postcard::from_bytes::<SceneState>(v19).is_err());
 }
 
 #[test]

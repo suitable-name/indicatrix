@@ -190,9 +190,7 @@ fn apply_tier_save_success(
     } = outcome;
     // A successful save means the form is valid again, so this clears whatever the
     // last save's parse/validation error left behind.
-    let model = ui.global::<EditorModel>();
-    model.set_tier_form_error("".into());
-    model.set_tier_form_error_field("".into());
+    clear_tier_form_error(ui);
     // `AddTier` changes the tier count, so the alignment
     // check falls back to a full solve regardless of
     // `dirty`; for `ModifyTier` this one index is exactly
@@ -229,6 +227,28 @@ fn apply_tier_save_success(
     }
 }
 
+/// Preserves an existing tier's detached indices and block side (pavilion vs crown)
+/// across a tier form save, or infers pavilion side from name for a new tier.
+fn preserve_saved_tier_side_and_detached(
+    tier: &mut indicatrix_cut_core::ConstraintTier,
+    design: &indicatrix_cut_core::Design,
+    index: i32,
+) {
+    if let Some(current) = usize::try_from(index)
+        .ok()
+        .and_then(|i| design.tiers.get(i))
+    {
+        tier.detached.clone_from(&current.detached);
+        if current.angle_deg.is_sign_negative() {
+            tier.angle_deg = -tier.angle_deg.abs();
+        }
+    } else if index < 0
+        && indicatrix_cut_core::design::labelling::name_indicates_pavilion(&tier.name)
+    {
+        tier.angle_deg = -tier.angle_deg.abs();
+    }
+}
+
 /// The Tier form's Save action: parses the form via [`loading::parse_tier_form`],
 /// applies the resulting [`Edit`] through [`EditorState::apply`], and refreshes the
 /// preview and panel on success.
@@ -239,6 +259,15 @@ pub(in crate::gui::editor) fn setup_save_tier_callback(
     preview_state: &Arc<SolidPreviewState>,
     solid_last_solved: &SolidLastSolved,
 ) {
+    // The concave form's three callbacks are wired from here: this is the one existing
+    // call site that already receives every argument they need.
+    super::concave_tier::setup_concave_tier_callbacks(
+        ui,
+        state,
+        render_ctx,
+        preview_state,
+        solid_last_solved,
+    );
     let state = Rc::clone(state);
     let render_ctx = Arc::clone(render_ctx);
     let preview_state = Arc::clone(preview_state);
@@ -296,16 +325,7 @@ pub(in crate::gui::editor) fn setup_save_tier_callback(
                     // own doc comment for why this warns rather than rejects.
                     let non_integral_warning = non_integral_index_warning(&tier.indices);
                     let mut st = state.borrow_mut();
-                    // Preserve the row's own `detached` set across a save --
-                    // `parse_tier_form` always returns an empty one, and without this
-                    // a rename/angle/index edit would silently re-link a deliberately
-                    // detached tier back into its orbit.
-                    if let Some(current) = usize::try_from(index)
-                        .ok()
-                        .and_then(|i| st.design.tiers.get(i))
-                    {
-                        tier.detached.clone_from(&current.detached);
-                    }
+                    preserve_saved_tier_side_and_detached(&mut tier, &st.design, index);
                     // A `MeetNamed` token that resolves to nothing today would
                     // otherwise degrade silently inside the solver (`meet_solver`'s
                     // own doc comment: "an unresolved token is dropped") -- caught
@@ -358,6 +378,14 @@ pub(in crate::gui::editor) fn setup_save_tier_callback(
     );
 }
 
+/// Clears the inline error state a failed save left behind -- what a successful save of
+/// either form (flat or concave) does, so a marker never outlives the failure it reports.
+pub(super) fn clear_tier_form_error(ui: &MainWindow) {
+    let model = ui.global::<EditorModel>();
+    model.set_tier_form_error("".into());
+    model.set_tier_form_error_field("".into());
+}
+
 /// Shows one tier-form failure in both places a cutter looks: inline under the
 /// field that caused it (`EditorModel.tier_form_error`, which the inspector renders
 /// in red) and as a toast. Factored out because all three failure branches of
@@ -370,7 +398,7 @@ pub(in crate::gui::editor) fn setup_save_tier_callback(
 /// for the exact contract `editor_inspector.slint`
 /// reads this against to put a red border on the SPECIFIC offending control,
 /// not only the shared message under the whole form.
-fn report_tier_form_error(ui: &MainWindow, message: &str, field: &str) {
+pub(super) fn report_tier_form_error(ui: &MainWindow, message: &str, field: &str) {
     let model = ui.global::<EditorModel>();
     model.set_tier_form_error(message.into());
     model.set_tier_form_error_field(field.into());

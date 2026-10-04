@@ -56,7 +56,7 @@ fn fresh_from_spec_round_trips_gear_symmetry_mirror_and_material() {
             name: Some("Quartz".to_string()),
             specific_gravity_override: None,
             refractive_index_override: Some(1.55),
-            body_colour_override: None,
+            body_color_override: None,
         },
         preform: indicatrix_cut_core::PreformSpec::cylinder(80, 1.4, 1.0, 1.3),
     };
@@ -100,7 +100,7 @@ fn set_material_edit_leaves_every_tier_untouched_but_bumps_generation() {
                 name: Some("Quartz".to_string()),
                 specific_gravity_override: None,
                 refractive_index_override: None,
-                body_colour_override: None,
+                body_color_override: None,
             },
         })
         .unwrap();

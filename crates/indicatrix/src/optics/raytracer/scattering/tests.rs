@@ -112,8 +112,8 @@ fn hg_sampling_always_produces_finite_unit_directions() {
     }
 }
 
-fn round_brilliant_colourless_scattering_material(sigma_s: f32, g: f32) -> GemMaterial {
-    // Colourless, non-dispersive, cubic -- isolates the scattering estimator from
+fn round_brilliant_colorless_scattering_material(sigma_s: f32, g: f32) -> GemMaterial {
+    // colorless, non-dispersive, cubic -- isolates the scattering estimator from
     // the chromatic absorption/dispersion machinery.
     GemMaterial::new_custom("scattering furnace probe", 1.5, 0.0, 0.0, [0.0, 0.0, 0.0])
         .with_scattering(sigma_s, g)
@@ -194,7 +194,7 @@ fn lossless_scattering_white_furnace_energy_conservation_holds() {
     const TOLERANCE: f32 = 0.03;
 
     let planes = StandardGemCuts::standard_round_brilliant();
-    let material = round_brilliant_colourless_scattering_material(1.2, 0.4);
+    let material = round_brilliant_colorless_scattering_material(1.2, 0.4);
     let env_map = EnvironmentMap::uniform(1, 1, [L0, L0, L0]);
 
     let camera = Camera::new(0.35, 0.28, 5.0, 18.0);
@@ -247,12 +247,12 @@ fn lossless_scattering_white_furnace_energy_conservation_holds() {
     );
 }
 
-/// Regression: the furnace test above uses a colourless, NON-dispersive probe
+/// Regression: the furnace test above uses a colorless, NON-dispersive probe
 /// (every channel shares one index), which cannot see the exit-split MIS weight or
 /// the NEE-deposit `path_pdf`/`compat` timing bugs fixed alongside this test -- both
 /// are chromatic multi-technique (MIS-family) effects a single-family material can't
 /// exercise. `GemMaterial::diamond()` is genuinely dispersive (`Sellmeier3`) and still
-/// colourless (`sigma_a == 0`), isolating the fix from chromatic absorption. Traced via
+/// colorless (`sigma_a == 0`), isolating the fix from chromatic absorption. Traced via
 /// the public [`trace_spectral_ray`] entry point (NEE auto-enabled for `HdrMap`,
 /// matching production) at 64 bounces, measured against the pre-fix code: before
 /// the fix this read ~1.06 (NEE double-counting the exit-split radiance and
@@ -381,7 +381,7 @@ fn scattering_measurably_changes_face_up_appearance() {
 /// directly rather than only inferred from the furnace test above.
 #[test]
 fn hero_channel_weight_matches_albedo_and_unity_survival_identities() {
-    let material = round_brilliant_colourless_scattering_material(0.8, 0.0);
+    let material = round_brilliant_colorless_scattering_material(0.8, 0.0);
     let alphas = [0.0f32; NUM_CHANNELS]; // sigma_a == 0 for this material, every channel
     let sigma_t_hero = material.scattering_sigma_s; // sigma_a == 0 for this material
     let albedo = material.scattering_sigma_s / sigma_t_hero; // == 1.0 (lossless)
@@ -435,7 +435,7 @@ fn hero_channel_weight_matches_albedo_and_unity_survival_identities() {
 /// independently-derived closed form -- not merely re-checking the implementation
 /// against itself. Uses two channels with deliberately different chromatic
 /// absorption (Tourmaline's o-ray vs. e-ray at 550nm/430nm) so the hero-vs-companion
-/// divergence actually exercises the chromatic term, unlike a colourless material
+/// divergence actually exercises the chromatic term, unlike a colorless material
 /// where `sigma_t_k == sigma_t_hero` for every k would hide a bug that swaps the
 /// shared hero-pdf denominator for a per-channel one.
 ///

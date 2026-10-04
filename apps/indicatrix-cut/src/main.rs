@@ -59,7 +59,7 @@ fn install_tracing_subscriber() {
         .flatten();
 
     let stderr_layer = fmt::layer().with_writer(std::io::stderr).with_target(true);
-    // `with_ansi(false)`: colour escape codes have no business in a plain-text log
+    // `with_ansi(false)`: color escape codes have no business in a plain-text log
     // file a user might open in Notepad.
     let file_layer = log_file.map(|file| {
         fmt::layer()

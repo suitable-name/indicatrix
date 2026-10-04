@@ -242,6 +242,8 @@ pub(super) fn build_search_predicate(
         params.push(Box::new(center + tolerance));
     }
 
+    append_concave_filter(&mut sql, range.has_concave);
+
     // Ignored designs excluded unless opted back in. No bound parameter: 0/1 is a
     // fixed literal, not caller-supplied.
     if !range.include_ignored {
@@ -273,6 +275,17 @@ pub(super) fn build_search_predicate(
     }
 
     (sql, params)
+}
+
+/// Appends the `has_concave` clause: fixed literals, no bound parameter. A design with
+/// no detail row (NULL after the LEFT JOIN) counts as planar, so it satisfies
+/// `Some(false)`.
+fn append_concave_filter(sql: &mut String, has_concave: Option<bool>) {
+    match has_concave {
+        Some(true) => sql.push_str(" AND COALESCE(dd.concave_tiers, 0) > 0 "),
+        Some(false) => sql.push_str(" AND COALESCE(dd.concave_tiers, 0) = 0 "),
+        None => {}
+    }
 }
 
 /// Appends [`build_search_predicate`]'s tag-chip and "show

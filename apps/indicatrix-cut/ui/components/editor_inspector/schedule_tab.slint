@@ -22,15 +22,34 @@ export component ScheduleTab inherits VerticalLayout {
         spacing: 2px;
         HorizontalLayout {
             spacing: 6px;
+            padding-left: 4px;
+            padding-right: 4px;
             Text { horizontal-stretch: 1; text: "FACET"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
             Text { width: 48px; text: "ANGLE"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
             Text { horizontal-stretch: 1; text: "INDEX"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
         }
-        for row in EditorModel.cutting_rows: HorizontalLayout {
-            spacing: 6px;
-            Text { horizontal-stretch: 1; text: row.facet; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
-            Text { width: 48px; text: row.angle; font-size: 10px; color: Theme.text-secondary; }
-            Text { horizontal-stretch: 1; text: row.index_val; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+        // One shaded band per tier, the zebra alternating per tier (not per line): a
+        // concave tier's facet line and its tool line (`AngleItem.second_line`) share
+        // their band, so the pair reads as one entry.
+        for row in EditorModel.cutting_rows: Rectangle {
+            background: Math.mod(row.order_idx, 2) == 0 ? Theme.bg-input : Theme.bg-card;
+            border-radius: Theme.radius-sm;
+            VerticalLayout {
+                padding-left: 4px;
+                padding-right: 4px;
+                HorizontalLayout {
+                    spacing: 6px;
+                    Text { horizontal-stretch: 1; text: row.facet; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                    Text { width: 48px; text: row.angle; font-size: 10px; color: Theme.text-secondary; }
+                    Text { horizontal-stretch: 1; text: row.index_val; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                }
+                if row.second_line != "": Text {
+                    text: row.second_line;
+                    font-size: 9px;
+                    color: Theme.accent-cyan;
+                    overflow: elide;
+                }
+            }
         }
         Text { text: "For a copyable file, use Export Edited .asc."; font-size: 9px; color: Theme.text-muted; wrap: word-wrap; }
     }

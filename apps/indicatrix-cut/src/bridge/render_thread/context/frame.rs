@@ -8,8 +8,8 @@ use crate::{
 };
 use glam::Vec3;
 use indicatrix::{
-    geometry::plane::GpuFacetPlane,
-    optics::{materials::GemMaterial, raytracer::LightingPreset},
+    geometry::{plane::GpuFacetPlane, tool::ToolPrimitive},
+    optics::{fluorescence::Fluorescence, materials::GemMaterial, raytracer::LightingPreset},
     renderer::env_map::EnvironmentMap,
 };
 use std::sync::{Arc, Mutex};
@@ -56,8 +56,13 @@ pub(in crate::bridge::render_thread) struct FrameInputs {
     pub(in crate::bridge::render_thread) girdle_frosted: bool,
     pub(in crate::bridge::render_thread) edge_rounding_radius: f32,
     pub(in crate::bridge::render_thread) stone_width_mm: f32,
+    pub(in crate::bridge::render_thread) physics_color: bool,
     pub(in crate::bridge::render_thread) active_planes: Arc<Vec<GpuFacetPlane>>,
+    /// See [`RenderContext::active_tools`].
+    pub(in crate::bridge::render_thread) active_tools: Arc<Vec<ToolPrimitive>>,
     pub(in crate::bridge::render_thread) custom_materials: Arc<Vec<GemMaterial>>,
+    /// See [`RenderContext::active_fluorescence`]; `None` is no fluorescence.
+    pub(in crate::bridge::render_thread) fluorescence: Option<Arc<Fluorescence>>,
     pub(in crate::bridge::render_thread) running: bool,
     pub(in crate::bridge::render_thread) dirty: bool,
     pub(in crate::bridge::render_thread) paused: bool,
@@ -125,12 +130,17 @@ pub(in crate::bridge::render_thread) fn snapshot_frame_inputs(
         girdle_frosted: ctx.girdle_frosted,
         edge_rounding_radius: ctx.edge_rounding_radius,
         stone_width_mm: ctx.stone_width_mm,
+        physics_color: ctx.physics_color(),
         // `Arc::clone`, not a deep copy -- see `RenderContext::active_planes`'s doc
         // comment.
         active_planes: Arc::clone(&ctx.active_planes),
+        // `Arc::clone`, like the planes beside it.
+        active_tools: Arc::clone(&ctx.active_tools),
         // `Arc::clone`, not a deep copy -- see `RenderContext::custom_materials`'s doc
         // comment.
         custom_materials: Arc::clone(&ctx.custom_materials),
+        // `Arc::clone` of the active material's emitters, `None` for the common case.
+        fluorescence: ctx.active_fluorescence(),
         running: ctx.running,
         dirty,
         paused: ctx.paused,

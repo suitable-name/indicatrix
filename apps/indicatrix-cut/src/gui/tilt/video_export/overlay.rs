@@ -4,7 +4,7 @@
 //! The glyph lookup itself is [`crate::gui::pixel_font`], shared with
 //! `gui::solid_preview::diagram2d` -- see that module's own doc comment. Only the
 //! scaling/drawing code below (`draw_glyph`/`draw_text`) and the overlay-specific
-//! layout/colour logic are this module's own.
+//! layout/color logic are this module's own.
 
 use super::metrics::{Metric, MetricReading};
 use crate::gui::pixel_font;
@@ -45,7 +45,7 @@ fn put_pixel(frame: &mut [u8], width: u32, height: u32, x: i32, y: i32, color: [
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "every argument is a distinct piece of one glyph's own draw request (the target buffer, its dimensions, the glyph's position/bitmap/scale/colour) -- bundling them into a struct would just move the same count into field access, matching this crate's existing convention for genuinely-this-shaped calls (e.g. bridge::export_thread::spawn_export)"
+    reason = "every argument is a distinct piece of one glyph's own draw request (the target buffer, its dimensions, the glyph's position/bitmap/scale/color) -- bundling them into a struct would just move the same count into field access, matching this crate's existing convention for genuinely-this-shaped calls (e.g. bridge::export_thread::spawn_export)"
 )]
 fn draw_glyph(
     frame: &mut [u8],
@@ -85,7 +85,7 @@ fn draw_glyph(
 /// land outside the buffer are silently skipped rather than panicking.
 #[expect(
     clippy::too_many_arguments,
-    reason = "every argument is a distinct piece of one text run's own draw request (the target buffer, its dimensions, the text's position/content/scale/colour) -- see draw_glyph's identical reasoning just above"
+    reason = "every argument is a distinct piece of one text run's own draw request (the target buffer, its dimensions, the text's position/content/scale/color) -- see draw_glyph's identical reasoning just above"
 )]
 pub fn draw_text(
     frame: &mut [u8],
@@ -114,11 +114,11 @@ pub fn draw_text(
 }
 
 /// Alpha-blends a solid `color` rectangle onto `frame` (`alpha` in `0..=255`) -- the
-/// dark backing bar drawn behind each overlay row so light-coloured text stays legible
+/// dark backing bar drawn behind each overlay row so light-colored text stays legible
 /// over a bright render.
 #[expect(
     clippy::too_many_arguments,
-    reason = "every argument is a distinct piece of one backing-bar draw request (the target buffer, its dimensions, the rectangle's position/size, its colour/alpha) -- see draw_glyph's identical reasoning above"
+    reason = "every argument is a distinct piece of one backing-bar draw request (the target buffer, its dimensions, the rectangle's position/size, its color/alpha) -- see draw_glyph's identical reasoning above"
 )]
 pub fn fill_rect_alpha(
     frame: &mut [u8],
@@ -220,7 +220,7 @@ pub fn select_overlay_layout(width: u32, height: u32, metric_count: usize) -> Ov
     OverlayLayout::NumbersOnly
 }
 
-/// Colour for one metric reading, matching the live viewport HUD's own colours
+/// color for one metric reading, matching the live viewport HUD's own colors
 /// (`gem_viewport.slint`'s 5-point metrics row, `ui/theme.slint`'s palette) including
 /// its value-dependent thresholds for windowing/extinction -- brilliance is always
 /// `accent-emerald`, windowing turns `accent-ruby` above 10%, extinction turns

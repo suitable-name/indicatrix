@@ -87,15 +87,15 @@ fn an_unresolved_material_with_a_snapshot_is_restorable_after_a_round_trip() {
     assert!((f64::from(rebuilt.birefringence_delta) - (-0.021)).abs() < 1e-6);
 }
 
-/// A custom material's body colour travels in the snapshot: written to the sidecar,
+/// A custom material's body color travels in the snapshot: written to the sidecar,
 /// read back out of `load_paired`, and rebuilt into the same absorption the original
 /// `GemMaterial::new_custom` call produces -- instead of a restored material being
-/// colourless.
+/// colorless.
 #[test]
-fn a_custom_materials_body_colour_survives_a_save_and_open() {
+fn a_custom_materials_body_color_survives_a_save_and_open() {
     // Exactly representable, so the f64 snapshot fields cast back to the same f32s.
     let (ri, dispersion, birefringence) = (1.75_f32, 0.015_625_f32, -0.007_812_5_f32);
-    let colour = [0.2_f32, 1.4, 2.8];
+    let color = [0.2_f32, 1.4, 2.8];
     let mut design = simple_design();
     design.material.name = Some("My Ruby".to_string());
     let snapshot = CustomMaterialSnapshot::new(
@@ -106,7 +106,7 @@ fn a_custom_materials_body_colour_survives_a_save_and_open() {
         "Trigonal",
         "UniaxialNegative",
     )
-    .with_body_colour(Some(colour));
+    .with_body_color(Some(color));
     let extras = SaveExtras {
         custom_material: Some(&snapshot),
         history_entries: &[],
@@ -122,7 +122,7 @@ fn a_custom_materials_body_colour_survives_a_save_and_open() {
         .collect();
     assert!(
         compact.contains("absorption_rgb=[0.2,1.4,2.8"),
-        "the file shows the colour as typed, not as widened f32 digits:\n{}",
+        "the file shows the color as typed, not as widened f32 digits:\n{}",
         saved.native_toml
     );
 
@@ -130,19 +130,19 @@ fn a_custom_materials_body_colour_survives_a_save_and_open() {
     let restored = loaded
         .restorable_custom_material
         .expect("the snapshot is restorable");
-    assert_eq!(restored.body_colour(), Some(colour), "identical f32 bits");
+    assert_eq!(restored.body_color(), Some(color), "identical f32 bits");
 
     let rebuilt = gem_material_from_custom_snapshot("My Ruby", &restored);
-    let original = GemMaterial::new_custom("My Ruby", ri, dispersion, birefringence, colour);
+    let original = GemMaterial::new_custom("My Ruby", ri, dispersion, birefringence, color);
     assert_eq!(rebuilt.absorption, original.absorption);
-    let colourless = GemMaterial::new_custom("My Ruby", ri, dispersion, birefringence, [0.0; 3]);
-    assert_ne!(rebuilt.absorption, colourless.absorption);
+    let colorless = GemMaterial::new_custom("My Ruby", ri, dispersion, birefringence, [0.0; 3]);
+    assert_ne!(rebuilt.absorption, colorless.absorption);
 }
 
-/// A snapshot without a colour (a file written before the field existed, or a
-/// colourless material) writes no `absorption_rgb` key and restores colourless.
+/// A snapshot without a color (a file written before the field existed, or a
+/// colorless material) writes no `absorption_rgb` key and restores colorless.
 #[test]
-fn a_snapshot_without_a_colour_writes_no_key_and_restores_colourless() {
+fn a_snapshot_without_a_color_writes_no_key_and_restores_colorless() {
     let mut design = simple_design();
     design.material.name = Some("Clear Glass".to_string());
     let snapshot = CustomMaterialSnapshot::new(1.5, 0.0, 0.0, None, "Cubic", "Isotropic");
@@ -252,7 +252,7 @@ fn save_paired_extended_resolves_a_custom_materials_own_refractive_index() {
         name: Some("My Garnet".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     let custom = [custom_garnet(1.9)];
 
@@ -298,7 +298,7 @@ fn save_paired_extended_from_solved_resolves_a_custom_materials_own_refractive_i
         name: Some("My Garnet".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     let custom = [custom_garnet(1.9)];
     let solved = design.solve().expect("fully_anchored_design always solves");
@@ -350,7 +350,7 @@ fn save_paired_extended_matches_byte_for_byte_on_a_built_in_regardless_of_catalo
         name: Some("Diamond".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     let custom = [custom_garnet(1.9)];
 
@@ -382,4 +382,132 @@ fn save_paired_extended_matches_byte_for_byte_on_a_built_in_regardless_of_catalo
     let schedule =
         indicatrix_formats::asc::parse_asc(&without_catalogue.asc_text).expect("must parse");
     assert!((schedule.refractive_index - 2.417).abs() < 1e-3);
+}
+
+// --- physics color recipe (spec 6 / 11.9) ---
+
+mod physics_color {
+    use super::*;
+    use crate::{
+        material::{Activecolor, color::fantasy_lab, colorMode},
+        native::{
+            Snapshotcolor, color_recipe_dto, gem_material_from_custom_snapshot_keeping_recipe,
+            snapshot_color,
+        },
+    };
+    use indicatrix::{
+        color::body_color::{Illuminant, body_colors, delta_e_2000},
+        optics::chromophore::{ChromophoreCatalogue, ResolvedBands, colorRecipe, resolve},
+    };
+
+    fn ruby_mode() -> colorMode {
+        let cat = ChromophoreCatalogue::global();
+        let mut recipe = colorRecipe::new("corundum", cat.data_version);
+        recipe.set_amount("Cr", 0.3);
+        let (tensor, _) = resolve(&recipe, cat).expect("ruby resolves");
+        recipe.resolved_bands = ResolvedBands::from_tensor(&tensor);
+        colorMode::physics(recipe, [0.0; 3])
+    }
+
+    fn snapshot_for(mode: &colorMode) -> CustomMaterialSnapshot {
+        CustomMaterialSnapshot::new(1.768, 0.018, -0.008, None, "Trigonal", "UniaxialNegative")
+            .with_body_color(Some(mode.fallback_rgb()))
+            .with_color_recipe(Some(color_recipe_dto(mode)))
+    }
+
+    /// Save -> open: the file carries both the recipe DTO and the fallback color, and the
+    /// restored material renders from the stored `resolved_bands`.
+    #[test]
+    fn a_physics_recipe_survives_a_save_and_open() {
+        let mode = ruby_mode();
+        let snapshot = snapshot_for(&mode);
+        let mut design = simple_design();
+        design.material.name = Some("Physics Ruby".to_string());
+        let extras = SaveExtras {
+            custom_material: Some(&snapshot),
+            history_entries: &[],
+            custom_catalogue: &[],
+        };
+        let saved = save_paired_extended(&design, "design.asc", None, None, None, &extras)
+            .expect("must save");
+        let loaded =
+            load_paired(&saved.asc_text, &saved.native_toml, false).expect("must load back");
+        let restored = loaded.restorable_custom_material.expect("restorable");
+        assert!(matches!(
+            snapshot_color(&restored),
+            Snapshotcolor::Physics(_)
+        ));
+        let rebuilt = gem_material_from_custom_snapshot("Physics Ruby", &restored);
+        assert_eq!(
+            rebuilt.absorption,
+            mode.last_recipe
+                .as_ref()
+                .unwrap()
+                .resolved_bands
+                .to_tensor()
+        );
+    }
+
+    /// An older build ignores the recipe and opens the fallback `absorption_rgb` only: its
+    /// color must be near the physics color (DeltaE00 <= 15).
+    #[test]
+    fn an_older_build_opens_the_fallback_color_within_delta_e_15() {
+        let mode = ruby_mode();
+        let snapshot = snapshot_for(&mode);
+        // What an older build does: `new_custom` from the top-level color, no recipe.
+        let older = GemMaterial::new_custom(
+            "Physics Ruby",
+            snapshot.mean_ri as f32,
+            snapshot.dispersion_delta as f32,
+            snapshot.birefringence_delta as f32,
+            snapshot.body_color().expect("fallback color written"),
+        );
+        let older_lab = body_colors(&older.absorption, 1.0, Illuminant::D65)
+            .unpolarised
+            .lab;
+        let physics_lab = mode.recipe_lab().expect("has recipe");
+        let de = delta_e_2000(physics_lab, older_lab);
+        assert!(
+            de <= 15.0,
+            "older build shows DeltaE {de:.1} from the recipe"
+        );
+        assert!((delta_e_2000(fantasy_lab(snapshot.body_color().unwrap()), older_lab)) < 1e-6);
+    }
+
+    /// An older build that changed the top-level color: detected, defaults to the edited
+    /// color, and keeps the recipe on request.
+    #[test]
+    fn a_color_edited_by_an_older_build_is_detected() {
+        let mode = ruby_mode();
+        let mut snapshot = snapshot_for(&mode);
+        snapshot = snapshot.with_body_color(Some([0.1, 0.2, 2.5]));
+        assert!(matches!(
+            snapshot_color(&snapshot),
+            Snapshotcolor::EditedElsewhere(_)
+        ));
+        let edited = gem_material_from_custom_snapshot("Physics Ruby", &snapshot);
+        let kept = gem_material_from_custom_snapshot_keeping_recipe("Physics Ruby", &snapshot);
+        let fantasy = GemMaterial::new_custom("x", 1.768, 0.018, -0.008, [0.1, 0.2, 2.5]);
+        assert_eq!(edited.absorption, fantasy.absorption);
+        assert_eq!(
+            kept.absorption,
+            mode.last_recipe
+                .as_ref()
+                .unwrap()
+                .resolved_bands
+                .to_tensor()
+        );
+    }
+
+    /// A material saved while fantasy is active is plain fantasy on restore.
+    #[test]
+    fn a_fantasy_active_material_restores_as_fantasy() {
+        let mut mode = ruby_mode();
+        mode.fantasy_rgb = [0.3, 0.6, 1.2];
+        mode.switch_to_fantasy();
+        assert_eq!(mode.active, Activecolor::Fantasy);
+        let snapshot = snapshot_for(&mode);
+        assert_eq!(snapshot.body_color(), Some([0.3, 0.6, 1.2]));
+        assert_eq!(snapshot_color(&snapshot), Snapshotcolor::Fantasy);
+    }
 }

@@ -99,7 +99,13 @@ fn setup_select_tier_range_callback(ui: &MainWindow, state: &Rc<RefCell<EditorSt
             let Ok(index) = usize::try_from(index) else {
                 return;
             };
+            // A selected CONCAVE row (a position past the flat tiers) is no anchor: the
+            // multi-select group is a flat-tier selection, so the range starts at the
+            // clicked row instead of sweeping across rows it cannot contain.
+            let flat_count = state.borrow().design.tiers.len();
             let anchor = usize::try_from(ui.global::<EditorModel>().get_selected_tier_index())
+                .ok()
+                .filter(|&selected| selected < flat_count)
                 .unwrap_or(index);
             let (lo, hi) = if anchor <= index {
                 (anchor, index)

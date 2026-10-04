@@ -95,6 +95,7 @@ rfd = { workspace = true }
 # second thread touching the same TLS connection).
 rustls = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 # Connection-liveness-only dependency: connect/handshake/write
 # deadlines and TCP keepalive tuning for `bridge::remote::remote_render::connection`.
 # `std::net::TcpStream` has no API to tune keepalive probe timing at all -- only

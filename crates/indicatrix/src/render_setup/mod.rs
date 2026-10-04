@@ -28,9 +28,11 @@ pub mod stone_width;
 
 pub use backdrop::Backdrop;
 pub use materials::{
-    MaterialOverrides, apply_material_overrides, resolve_material, resolve_material_with_override,
+    MaterialOverrides, PHYSICS_DEFAULT_STONE_WIDTH_MM, apply_material_overrides,
+    apply_material_overrides_for_mode, effective_stone_width_mm, resolve_material,
+    resolve_material_with_override,
 };
-pub use plane_hash::hash_planes;
+pub use plane_hash::{hash_geometry, hash_planes};
 #[cfg(feature = "hdr")]
 pub use png_encode::encode_png_with_icc;
 pub use stone_width::measure_model_width;

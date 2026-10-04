@@ -5,7 +5,7 @@
 //! World units make the rough about one unit in radius, like a design, so the same camera
 //! and zoom limits serve every scene.
 
-use super::design_mesh::{DesignMesh, MeshMiss, MeshSource, simplify_ring};
+use super::design_mesh::{DesignMesh, MeshMiss, MeshSource, simplified_flags, simplify_ring};
 use crate::gui::rough_plan::{
     format::{group_order, piece_positions},
     metrics::PALETTE,
@@ -22,16 +22,16 @@ use std::{
     },
 };
 
-/// The colour of a base face of the rough.
+/// The color of a base face of the rough.
 pub(super) const BASE_GREY: [u8; 3] = [200, 205, 215];
 
-/// The colour of a cut face of the rough while cut faces are tinted.
+/// The color of a cut face of the rough while cut faces are tinted.
 pub(super) const CUT_TINT: [u8; 3] = [230, 190, 120];
 
-/// The colour of a stone whose design is gone.
+/// The color of a stone whose design is gone.
 pub(super) const DELETED_GREY: [u8; 3] = [120, 126, 138];
 
-/// The colour of a stone whose design exists but could not be loaded.
+/// The color of a stone whose design exists but could not be loaded.
 pub(super) const UNREADABLE_TINT: [u8; 3] = [150, 110, 118];
 
 /// The tooltip note of a stone whose design is gone from the library.
@@ -100,8 +100,28 @@ fn push_facet(mesh: &mut SolidMesh, id: usize, normal: DVec3, ring: Vec<DVec3>) 
     mesh.rings.push((id, ring));
 }
 
+/// Records which edges of the ring `push_facet` just added to `mesh` are drawn. `drawn` is
+/// `None` for a ring that draws every edge. `mesh.edge_visible` stays `None` until a
+/// ring has something to hide, so a scene of flat designs is exactly what it was; the
+/// rings before the first such one are backfilled as fully drawn.
+fn set_drawn_edges(mesh: &mut SolidMesh, drawn: Option<&[bool]>) {
+    let Some(last) = mesh.rings.len().checked_sub(1) else {
+        return;
+    };
+    if drawn.is_none() && mesh.edge_visible.is_none() {
+        return;
+    }
+    let visible = mesh.edge_visible.get_or_insert_with(Vec::new);
+    while visible.len() < last {
+        let len = mesh.rings[visible.len()].1.len();
+        visible.push(vec![true; len]);
+    }
+    visible.push(drawn.map_or_else(|| vec![true; mesh.rings[last].1.len()], <[bool]>::to_vec));
+}
+
 /// `centred_mm` (a mesh in the centred frame, in mm) scaled to world units, with every
-/// ring reduced to its true corners.
+/// ring reduced to its true corners. A mesh with `piece_normals` (a non-convex rough, one
+/// normal per ring) keeps them, and its `edge_visible` flags follow the corners kept.
 #[must_use]
 fn world_mesh(centred_mm: &SolidMesh, scale: f64) -> SolidMesh {
     let mut normals: BTreeMap<usize, DVec3> = BTreeMap::new();
@@ -109,15 +129,31 @@ fn world_mesh(centred_mm: &SolidMesh, scale: f64) -> SolidMesh {
         normals.entry(id).or_insert(normal);
     }
     let mut mesh = SolidMesh::default();
-    for (id, ring) in &centred_mm.rings {
-        let Some(&normal) = normals.get(id) else {
+    for (index, (id, ring)) in centred_mm.rings.iter().enumerate() {
+        let normal = centred_mm.piece_normals.as_ref().map_or_else(
+            || normals.get(id).copied(),
+            |pieces| pieces.get(index).copied(),
+        );
+        let Some(normal) = normal else {
             continue;
         };
         let scaled: Vec<DVec3> = ring.iter().map(|&p| p * scale).collect();
-        let ring = simplify_ring(&scaled);
-        if ring.len() >= 3 {
-            push_facet(&mut mesh, *id, normal, ring);
+        let corners = simplify_ring(&scaled);
+        if corners.len() < 3 {
+            continue;
         }
+        let drawn = centred_mm.edge_visible.as_ref().map(|visible| {
+            simplified_flags(
+                &scaled,
+                &corners,
+                visible.get(index).map_or(&[], Vec::as_slice),
+            )
+        });
+        push_facet(&mut mesh, *id, normal, corners);
+        if centred_mm.piece_normals.is_some() {
+            mesh.piece_normals.get_or_insert_with(Vec::new).push(normal);
+        }
+        set_drawn_edges(&mut mesh, drawn.as_deref());
     }
     mesh
 }
@@ -266,7 +302,7 @@ impl ModelScene {
         self.mesh.normals.get(at).copied()
     }
 
-    /// The base colour of every facet: base faces grey, cut faces tinted when asked.
+    /// The base color of every facet: base faces grey, cut faces tinted when asked.
     #[must_use]
     pub(super) fn facet_colors(&self, tint_cuts: bool) -> Vec<[u8; 3]> {
         (0..self.base_facets + self.cut_count)
@@ -384,7 +420,7 @@ pub(super) struct FitScene {
     /// Every stone's faces in one mesh; the faces of stone `s` are the ids from
     /// `stone_starts[s]` up to `stone_starts[s + 1]`.
     pub(super) stones: SolidMesh,
-    /// The base colour of every stone facet.
+    /// The base color of every stone facet.
     pub(super) facet_colors: Vec<[u8; 3]>,
     /// First facet id of every stone, then the total.
     pub(super) stone_starts: Vec<usize>,
@@ -427,7 +463,7 @@ impl FitScene {
         design: &DesignMesh,
         pose: &StonePose,
         frame: &WorldFrame,
-        colour: [u8; 3],
+        color: [u8; 3],
     ) {
         for facet in &design.facets {
             let ring: Vec<DVec3> = facet
@@ -442,13 +478,14 @@ impl FitScene {
                 normal_to_world(facet.normal, pose),
                 ring,
             );
-            self.facet_colors.push(colour);
+            set_drawn_edges(&mut self.stones, facet.edge_drawn.as_deref());
+            self.facet_colors.push(color);
         }
     }
 
-    /// Adds the box that stands in for a stone without a design, in `colour`: the stone's
+    /// Adds the box that stands in for a stone without a design, in `color`: the stone's
     /// recorded size across, centred on its pose, axis-aligned in the rough.
-    fn push_placeholder(&mut self, stone: &PlacedStone, frame: &WorldFrame, colour: [u8; 3]) {
+    fn push_placeholder(&mut self, stone: &PlacedStone, frame: &WorldFrame, color: [u8; 3]) {
         let centre_mm = DVec3::from_array(stone.pose.center_mm);
         let half = DVec3::from_array(stone.stone_size_mm) * 0.5;
         for (normal, corners) in box_faces(centre_mm - half, centre_mm + half) {
@@ -459,7 +496,8 @@ impl FitScene {
                 normal,
                 corners.map(|c| frame.point(c)).to_vec(),
             );
-            self.facet_colors.push(colour);
+            set_drawn_edges(&mut self.stones, None);
+            self.facet_colors.push(color);
         }
     }
 
@@ -471,7 +509,7 @@ impl FitScene {
         draw: StoneDraw,
         meshes: &dyn MeshSource,
         frame: &WorldFrame,
-        colour: [u8; 3],
+        color: [u8; 3],
     ) -> String {
         let (entry_id, rescale, note) = match draw {
             StoneDraw::Design(id) => (id, false, ""),
@@ -485,7 +523,7 @@ impl FitScene {
         match meshes.mesh(entry_id) {
             Ok(design) if rescale => {
                 let (pose, scaled) = rescaled_pose(stone, design.caliper_width());
-                self.push_design(&design, &pose, frame, colour);
+                self.push_design(&design, &pose, frame, color);
                 if scaled {
                     format!("{note}{NOTE_SCALED}")
                 } else {
@@ -493,7 +531,7 @@ impl FitScene {
                 }
             }
             Ok(design) => {
-                self.push_design(&design, &stone.pose, frame, colour);
+                self.push_design(&design, &stone.pose, frame, color);
                 note.to_string()
             }
             Err(MeshMiss::Gone) => {
@@ -599,8 +637,8 @@ pub(super) fn build_fit_scene(inputs: &FitInputs<'_>, meshes: &dyn MeshSource) -
             .get(&stone.entry_id)
             .copied()
             .unwrap_or(StoneDraw::Design(stone.entry_id));
-        let colour = PALETTE[group % PALETTE.len()];
-        let note = scene.push_stone(stone, draw, meshes, &frame, colour);
+        let color = PALETTE[group % PALETTE.len()];
+        let note = scene.push_stone(stone, draw, meshes, &frame, color);
         scene.info.push(StoneInfo {
             title: inputs
                 .titles

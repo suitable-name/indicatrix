@@ -1,6 +1,8 @@
-/// CIE 1931 colour matching and D65 spectral integration.
+/// Body color and colorimetry from absorption spectra and illuminants.
+pub mod body_color;
+/// CIE 1931 color matching and D65 spectral integration.
 ///
-/// Holds the tabulated 2-degree standard observer colour-matching functions.
+/// Holds the tabulated 2-degree standard observer color-matching functions.
 pub mod cie1931;
 /// Gamut mapping from CIE XYZ into a target RGB working space.
 pub mod gamut;
@@ -8,8 +10,12 @@ pub mod gamut;
 ///
 /// Covers brilliance, fire, scintillation, windowing and extinction.
 pub mod metrics;
-/// RGB colour-space definitions (primaries, white points, transfer functions) and
+/// RGB color-space definitions (primaries, white points, transfer functions) and
 /// tone-mapping operators.
 pub mod space;
 
+pub use body_color::{
+    Bodycolor, Bodycolors, Illuminant, body_color, body_colors, color_change_delta_e, delta_e_2000,
+    srgb_to_lab, xyz_to_lab,
+};
 pub use space::{ColorSpace, ToneMap, TransferFunction};

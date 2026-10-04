@@ -40,7 +40,7 @@ pub use planner::{
 };
 
 use glam::Vec3;
-use indicatrix::{renderer::cpu_frame::trace_pixels_interleaved, simd::PlanesSoA32};
+use indicatrix::{renderer::cpu_frame::trace_pixels_interleaved_geom, simd::PlanesSoA32};
 
 use crate::scene::OwnedScene;
 
@@ -48,8 +48,10 @@ use crate::scene::OwnedScene;
 /// `first_pixel, first_pixel + stride, ...` of `scene`, returning one SUMMED radiance
 /// per owned pixel, in that pixel order.
 ///
-/// A thin call into `renderer::cpu_frame::trace_pixels_interleaved`, the same
-/// thread-free core the desktop's `hybrid::cpu_trace_range` runs per thread. `plane_soa`
+/// A thin call into `renderer::cpu_frame::trace_pixels_interleaved_geom`, the same
+/// thread-free core the desktop's `hybrid::cpu_trace_range` runs per thread, with the scene's
+/// fluorescence beside it (empty for a non-fluorescent material, which then is
+/// `trace_pixels_interleaved` bit for bit). `plane_soa`
 /// is normally [`OwnedScene::plane_soa`]; it is a parameter so a caller can reuse its
 /// own arena.
 #[must_use]
@@ -61,8 +63,10 @@ pub fn handle_trace_chunk(
     sample_offset: u32,
     spp: u32,
 ) -> Vec<Vec3> {
-    trace_pixels_interleaved(
+    trace_pixels_interleaved_geom(
         &scene.frame_scene(),
+        &[],
+        scene.fluorescence(),
         plane_soa,
         first_pixel,
         stride,

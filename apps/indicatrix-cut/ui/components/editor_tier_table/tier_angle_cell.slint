@@ -68,6 +68,9 @@ export component TierAngleCell inherits Rectangle {
     // double-click/F2 edit and the wheel nudge are refused, while a plain click still
     // selects the row (selection changes no design data).
     in property <bool> editable: true;
+    // The tooltip shown while `editable` is false -- the guide's lock hint by default,
+    // or a row-specific reason (a concave tier's angle is authored in the inspector).
+    in property <string> locked_text: GuideModel.locked_hint;
     // Fired on a plain click, BEFORE edit mode -- lets the row select itself the
     // same way clicking any other cell does.
     callback select();
@@ -111,7 +114,7 @@ export component TierAngleCell inherits Rectangle {
         }
     }
 
-    Tooltip { text: root.editable ? @markdown("Click to select this row, double-click to edit. Scroll while editing, or Ctrl+Scroll any time, to nudge +-0.1deg.") : @markdown("\{GuideModel.locked_hint}"); }
+    Tooltip { text: root.editable ? @markdown("Click to select this row, double-click to edit. Scroll while editing, or Ctrl+Scroll any time, to nudge +-0.1deg.") : @markdown("\{root.locked_text}"); }
 
     area := TouchArea {
         clicked => { root.select(); }

@@ -203,16 +203,18 @@ pub fn tiers_incomplete_under_proposed_symmetry(
 /// `#` column, which is what a cutter actually reads off screen.
 #[must_use]
 pub fn tier_label(design: &Design, tier_index: usize) -> String {
-    design.tiers.get(tier_index).map_or_else(
-        || format!("tier {}", tier_index + 1),
-        |tier| {
-            if tier.name.is_empty() {
-                format!("tier {}", tier_index + 1)
-            } else {
-                format!("tier {} ({})", tier_index + 1, tier.name)
-            }
-        },
-    )
+    let Some(tier) = design.tiers.get(tier_index) else {
+        return format!("tier {}", tier_index + 1);
+    };
+    if tier.name.is_empty() || indicatrix_cut_core::is_legacy_123_abc(&tier.name) {
+        let labels = indicatrix_cut_core::compute_tier_labels(&design.tiers);
+        labels.get(tier_index).map_or_else(
+            || format!("tier {}", tier_index + 1),
+            |l| format!("tier {} ({})", tier_index + 1, l.code),
+        )
+    } else {
+        format!("tier {} ({})", tier_index + 1, tier.name)
+    }
 }
 
 /// Patches [`TierRow::multi_selected`] onto every row in `rows` from `multi_selected`.

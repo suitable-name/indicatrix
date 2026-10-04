@@ -154,6 +154,8 @@ mod tests {
             backdrop: 0.0,
             environment: crate::scene::SceneEnvironment::Studio,
             surface_glare: 1.0,
+            tools: Vec::new(),
+            fluorescence: Default::default(),
         }
     }
 

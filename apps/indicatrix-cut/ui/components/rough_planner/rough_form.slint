@@ -47,10 +47,10 @@ export component RoughForm inherits VerticalLayout {
         }
     }
 
-    // Imported mesh: the size of its convex outline (read-only; a pick of the radio
+    // Imported mesh: the size of its bounding box (read-only; a pick of the radio
     // imports another file).
     if RoughPlanModel.base_kind == 3: Text {
-        text: "Convex outline of the mesh, " + RoughPlanModel.rough_x + " x "
+        text: "Bounding box of the mesh, " + RoughPlanModel.rough_x + " x "
             + RoughPlanModel.rough_y + " x " + RoughPlanModel.rough_z
             + " mm (OBJ units read as mm; Fit to weight rescales it).";
         font-size: 10px;

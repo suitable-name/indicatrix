@@ -238,7 +238,7 @@ export component TiltVideoExportSection inherits Rectangle {
             Rectangle { height: 1px; background: Theme.surface-raised; }
 
             // Quality -- same shape as the still-image export dialog's own
-            // controls (power-of-two sample slider, bounce ladder, colour
+            // controls (power-of-two sample slider, bounce ladder, color
             // space), kept as this section's OWN state (see
             // `TiltVideoExportModel`'s own doc comment on why).
             VerticalLayout {
@@ -275,7 +275,7 @@ export component TiltVideoExportSection inherits Rectangle {
                     }
                 }
 
-                Text { text: "Colour Space"; font-size: 10px; color: Theme.text-muted; }
+                Text { text: "color Space"; font-size: 10px; color: Theme.text-muted; }
                 HorizontalLayout {
                     spacing: 4px;
                     for label[idx] in ["sRGB", "Display P3", "Rec.2020"]: Rectangle {

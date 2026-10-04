@@ -2493,6 +2493,7 @@ dependencies = [
  "pollster 1.0.1",
  "rusqlite",
  "serde",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "wgpu",
@@ -2518,6 +2519,7 @@ dependencies = [
  "rfd",
  "rustls",
  "serde",
+ "serde_json",
  "sha2",
  "slint",
  "slint-build",
@@ -2536,6 +2538,8 @@ dependencies = [
  "indicatrix",
  "indicatrix-formats",
  "rusqlite",
+ "serde",
+ "serde_json",
  "toml",
 ]
 
@@ -2605,9 +2609,11 @@ name = "indicatrix-vault"
 version = "0.6.2"
 dependencies = [
  "anyhow",
+ "indicatrix",
  "indicatrix-formats",
  "rusqlite",
  "serde",
+ "serde_json",
  "tracing",
 ]
 

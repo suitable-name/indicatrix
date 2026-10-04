@@ -10,7 +10,7 @@
 //! 1. **Material.** The catalogue is `GemMaterial::all_materials()` plus the session's
 //!    custom materials. The linked design's override is
 //!    `indicatrix_editor::material_lookup::traced_gem_material` (the RI override and body
-//!    colour applied through `MaterialSelection::apply_overrides`). Then
+//!    color applied through `MaterialSelection::apply_overrides`). Then
 //!    `render_setup::resolve_material_with_override` and
 //!    `render_setup::apply_material_overrides`, the stone width measured by
 //!    `render_setup::measure_model_width` only when the stone-size control is on.
@@ -29,6 +29,8 @@ use std::{fmt, sync::Arc};
 use indicatrix::{
     geometry::{GpuFacetPlane, girdle::girdle_facet_finishes},
     optics::{
+        chromophore::ChromophoreCatalogue,
+        fluorescence::Fluorescence,
         materials::GemMaterial,
         raytracer::{
             Camera, DEFAULT_FOV_DEG, EnvironmentSource, FacetFinish, LightingPreset,
@@ -36,15 +38,18 @@ use indicatrix::{
         },
     },
     render_setup::{
-        Backdrop, MaterialOverrides, apply_material_overrides, measure_model_width,
+        Backdrop, MaterialOverrides, apply_material_overrides_for_mode, measure_model_width,
         resolve_material_with_override,
     },
     renderer::{env_map::EnvironmentMap, frame_scene::FrameScene},
     simd::PlanesSoA32,
 };
-use indicatrix_cut_core::{MaterialSelection, native::gem_material_from_custom_snapshot};
+use indicatrix_cut_core::{
+    MaterialSelection,
+    native::{Snapshotcolor, gem_material_from_custom_snapshot, snapshot_color},
+};
 use indicatrix_editor::material_lookup::{EditorMaterialLookup, traced_gem_material};
-use indicatrix_formats::native::CustomMaterialSnapshot;
+use indicatrix_formats::native::{CustomMaterialSnapshot, colorRecipeDto};
 use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
@@ -119,8 +124,11 @@ pub struct CustomMaterialSpec {
     pub dispersion_delta: f64,
     /// Birefringence delta.
     pub birefringence_delta: f64,
-    /// The body colour (the snapshot's `absorption_rgb`); `None` is colourless.
+    /// The body color (the snapshot's `absorption_rgb`); `None` is colorless.
     pub absorption_rgb: Option<[f64; 3]>,
+    /// The snapshot's physics color recipe (`color_recipe`); when present the material
+    /// renders from its stored resolved bands, `absorption_rgb` being only the fallback.
+    pub color_recipe: Option<colorRecipeDto>,
 }
 
 impl CustomMaterialSpec {
@@ -133,14 +141,12 @@ impl CustomMaterialSpec {
             dispersion_delta: snapshot.dispersion_delta,
             birefringence_delta: snapshot.birefringence_delta,
             absorption_rgb: snapshot.absorption_rgb,
+            color_recipe: snapshot.color_recipe.clone(),
         }
     }
 
-    /// Builds the material through `native::gem_material_from_custom_snapshot`, the
-    /// same conversion the desktop uses when it restores a file's custom material.
-    #[must_use]
-    pub fn to_gem_material(&self) -> GemMaterial {
-        let snapshot = CustomMaterialSnapshot::new(
+    fn to_snapshot(&self) -> CustomMaterialSnapshot {
+        CustomMaterialSnapshot::new(
             self.mean_ri,
             self.dispersion_delta,
             self.birefringence_delta,
@@ -148,19 +154,53 @@ impl CustomMaterialSpec {
             "",
             "",
         )
-        .with_absorption_rgb(self.absorption_rgb);
-        gem_material_from_custom_snapshot(&self.name, &snapshot)
+        .with_absorption_rgb(self.absorption_rgb)
+        .with_color_recipe(self.color_recipe.clone())
+    }
+
+    /// Builds the material through `native::gem_material_from_custom_snapshot`, the
+    /// same conversion the desktop uses when it restores a file's custom material.
+    #[must_use]
+    pub fn to_gem_material(&self) -> GemMaterial {
+        gem_material_from_custom_snapshot(&self.name, &self.to_snapshot())
+    }
+
+    /// Whether this material's color renders from its physics recipe: the explicit flag
+    /// [`resolve_scene_material_with`] takes (the 7 mm default stone width applies to such
+    /// a material even when its recipe emits no bands, e.g. a pure host). Derived from the
+    /// recipe the spec carries -- present, physics active, and the top-level color not
+    /// edited by an older build (`native::snapshot_color`) -- never from the shape of the
+    /// built material's bands.
+    #[must_use]
+    pub fn is_physics_color(&self) -> bool {
+        self.color_recipe.is_some()
+            && matches!(
+                snapshot_color(&self.to_snapshot()),
+                Snapshotcolor::Physics(_)
+            )
+    }
+
+    /// The fluorescence this material renders with: the emitters of its physics recipe
+    /// (`colorMode::fluorescence`, resolved from the recipe's elements and concentrations
+    /// against the catalogue), empty for every other material -- fantasy colors, edited
+    /// ones ([`Self::is_physics_color`] false) and recipes without emitters.
+    #[must_use]
+    pub fn fluorescence(&self) -> Fluorescence {
+        match snapshot_color(&self.to_snapshot()) {
+            Snapshotcolor::Physics(mode) => mode.fluorescence(ChromophoreCatalogue::global()),
+            _ => Fluorescence::new(Vec::new()),
+        }
     }
 }
 
 /// The linked design's per-design material overrides (`MaterialSelection`'s RI
-/// override and body colour).
+/// override and body color).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub struct DesignMaterialOverrides {
     /// `MaterialSelection::refractive_index_override`: a flat dispersion at this `n_d`.
     pub refractive_index_override: Option<f64>,
-    /// `MaterialSelection::body_colour_override`: an isotropic body colour.
-    pub body_colour_override: Option<[f32; 3]>,
+    /// `MaterialSelection::body_color_override`: an isotropic body color.
+    pub body_color_override: Option<[f32; 3]>,
 }
 
 impl DesignMaterialOverrides {
@@ -169,14 +209,14 @@ impl DesignMaterialOverrides {
     pub const fn from_selection(selection: &MaterialSelection) -> Self {
         Self {
             refractive_index_override: selection.refractive_index_override,
-            body_colour_override: selection.body_colour_override,
+            body_color_override: selection.body_color_override,
         }
     }
 
     fn to_selection(self) -> MaterialSelection {
         MaterialSelection {
             refractive_index_override: self.refractive_index_override,
-            body_colour_override: self.body_colour_override,
+            body_color_override: self.body_color_override,
             ..MaterialSelection::default()
         }
     }
@@ -408,6 +448,26 @@ pub fn resolve_scene_material(
     spec: &MaterialSpec,
     planes: &[GpuFacetPlane],
 ) -> Result<GemMaterial, SceneError> {
+    resolve_scene_material_with(spec, planes, false)
+}
+
+/// [`resolve_scene_material`] for a traced material whose color is (`physics_color`) or is
+/// not a physics recipe -- the flag comes from [`CustomMaterialSpec::is_physics_color`] of the
+/// traced custom material, never from the built material's bands. A physics material
+/// takes the 7 mm default stone width when `overrides.stone_width_mm` is 0.
+///
+/// [`resolve_scene_material`] itself passes `false`: a [`MaterialSpec`] carries built
+/// `GemMaterial`s only, so a caller that holds [`CustomMaterialSpec`]s calls this.
+///
+/// # Errors
+///
+/// [`SceneError::UnknownMaterial`] when neither the linked override nor the name
+/// resolves.
+pub fn resolve_scene_material_with(
+    spec: &MaterialSpec,
+    planes: &[GpuFacetPlane],
+    physics_color: bool,
+) -> Result<GemMaterial, SceneError> {
     let materials = GemMaterial::all_materials();
     let custom = &spec.custom_materials;
     let material_override = spec.linked_design.and_then(|linked| {
@@ -423,13 +483,21 @@ pub fn resolve_scene_material(
                 name: spec.name.clone(),
             })?;
     let overrides = spec.overrides.to_overrides();
-    // The desktop's `StoneWidthCache` adapter measures only when the control is on.
-    let model_width = if overrides.stone_width_mm > 0.0 {
+    let eff_stone_width = indicatrix::render_setup::materials::effective_stone_width_mm(
+        overrides.stone_width_mm,
+        physics_color,
+    );
+    let model_width = if eff_stone_width > 0.0 {
         measure_model_width(planes)
     } else {
         None
     };
-    Ok(apply_material_overrides(base, &overrides, model_width))
+    Ok(apply_material_overrides_for_mode(
+        base,
+        &overrides,
+        model_width,
+        physics_color,
+    ))
 }
 
 /// The per-plane finishes for `spec` -- see the module doc comment, step 2.
@@ -488,6 +556,8 @@ pub struct OwnedScene {
     width: u32,
     height: u32,
     plane_soa: PlanesSoA32,
+    /// The material's emitters; empty (the default) traces exactly as before.
+    fluorescence: Fluorescence,
 }
 
 impl OwnedScene {
@@ -535,7 +605,48 @@ impl OwnedScene {
             width: spec.width,
             height: spec.height,
             plane_soa,
+            fluorescence: Fluorescence::new(Vec::new()),
         })
+    }
+
+    /// [`Self::build`] for a caller that holds the session's [`CustomMaterialSpec`]s (the
+    /// materials with their physics recipes): the traced material's physics flag decides the
+    /// default stone width (`resolve_scene_material_with`) and its recipe fills the scene's
+    /// fluorescence ([`CustomMaterialSpec::fluorescence`]), the way the desktop's render
+    /// context carries `active_fluorescence` beside `physics_color()`. A traced material that
+    /// is not among `customs` (a catalogue name) builds exactly like [`Self::build`].
+    ///
+    /// # Errors
+    ///
+    /// See [`SceneError`].
+    pub fn build_with_customs(
+        spec: &SceneSpec,
+        hdr: Option<Arc<EnvironmentMap>>,
+        customs: &[CustomMaterialSpec],
+    ) -> Result<Self, SceneError> {
+        let traced = customs
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(&spec.material.name));
+        let mut scene = Self::build(spec, hdr)?;
+        if let Some(custom) = traced.filter(|c| c.is_physics_color()) {
+            scene.material = resolve_scene_material_with(&spec.material, &scene.planes, true)?;
+            scene.fluorescence = custom.fluorescence();
+        }
+        Ok(scene)
+    }
+
+    /// Replaces the scene's fluorescence (empty for none).
+    #[must_use]
+    pub fn with_fluorescence(mut self, fluorescence: Fluorescence) -> Self {
+        self.fluorescence = fluorescence;
+        self
+    }
+
+    /// The material's fluorescent emitters; empty for a non-fluorescent material. A fluorescent
+    /// scene is traced on the CPU alone (`scene_routes_to_gpu`), which is all the browser has.
+    #[must_use]
+    pub const fn fluorescence(&self) -> &Fluorescence {
+        &self.fluorescence
     }
 
     /// The borrowed `FrameScene` the tracer takes.
@@ -602,5 +713,122 @@ impl OwnedScene {
     #[must_use]
     pub const fn max_bounces(&self) -> u32 {
         self.max_bounces
+    }
+}
+
+#[cfg(test)]
+mod physics_flag_tests {
+    use super::*;
+    use indicatrix::{
+        geometry::cuts::StandardGemCuts,
+        optics::chromophore::{ChromophoreCatalogue, ResolvedBands, colorRecipe, resolve},
+    };
+    use indicatrix_cut_core::{material::colorMode, native::color_recipe_dto};
+
+    fn spec_with(mode: Option<&colorMode>, rgb: [f32; 3]) -> CustomMaterialSpec {
+        CustomMaterialSpec {
+            name: "Ruby X".to_string(),
+            mean_ri: 1.77,
+            dispersion_delta: 0.018,
+            birefringence_delta: -0.008,
+            absorption_rgb: Some(rgb.map(f64::from)),
+            color_recipe: mode.map(color_recipe_dto),
+        }
+    }
+
+    fn pure_host_mode() -> colorMode {
+        let cat = ChromophoreCatalogue::global();
+        let mut recipe = colorRecipe::new("corundum", cat.data_version);
+        let (tensor, _) = resolve(&recipe, cat).expect("pure host resolves");
+        recipe.resolved_bands = ResolvedBands::from_tensor(&tensor);
+        colorMode::physics(recipe, [0.0; 3])
+    }
+
+    /// The flag follows the recipe the spec carries, not the shape of the built bands: a
+    /// pure-host recipe (no bands at all) is still physics.
+    #[test]
+    fn the_flag_follows_the_recipe_presence() {
+        let mode = pure_host_mode();
+        let fallback = mode.fallback_rgb();
+        assert!(spec_with(Some(&mode), fallback).is_physics_color());
+        assert!(!spec_with(None, [0.0; 3]).is_physics_color());
+        // A fantasy-active material parks its recipe but renders as fantasy.
+        let mut parked = mode.clone();
+        parked.switch_to_fantasy();
+        assert!(!spec_with(Some(&parked), parked.fallback_rgb()).is_physics_color());
+        // An older build edited the top-level color: not physics until the user chooses.
+        assert!(!spec_with(Some(&mode), [0.1, 0.2, 2.5]).is_physics_color());
+    }
+
+    /// A zero-band physics recipe still gets the 7 mm default width; without the flag the
+    /// material keeps scale 1.0.
+    #[test]
+    fn a_pure_host_physics_material_takes_the_default_stone_width() {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let mode = pure_host_mode();
+        let spec = spec_with(Some(&mode), mode.fallback_rgb());
+        assert!(spec.is_physics_color());
+        let material_spec = MaterialSpec {
+            custom_materials: vec![spec.to_gem_material()],
+            ..MaterialSpec::catalogue("Ruby X")
+        };
+        let plain = resolve_scene_material_with(&material_spec, &planes, false).expect("resolves");
+        assert!((plain.absorption_path_scale - 1.0).abs() < f32::EPSILON);
+        let physics = resolve_scene_material_with(&material_spec, &planes, true).expect("resolves");
+        assert!(
+            (physics.absorption_path_scale - 1.0).abs() > 1e-3,
+            "7 mm / model width must rescale the path, got {}",
+            physics.absorption_path_scale
+        );
+    }
+
+    /// A physics ruby recipe fills the scene's fluorescence (`build_with_customs`), a catalogue
+    /// material or a fantasy color leaves it empty, and the scene then traces through
+    /// `handle_trace_chunk` with the emitters beside it.
+    #[test]
+    fn a_physics_recipe_fills_the_scenes_fluorescence() {
+        let cat = ChromophoreCatalogue::global();
+        let mut recipe = colorRecipe::new("corundum", cat.data_version);
+        recipe.set_amount("Cr", 0.5);
+        let (tensor, _) = resolve(&recipe, cat).expect("ruby resolves");
+        recipe.resolved_bands = ResolvedBands::from_tensor(&tensor);
+        let mode = colorMode::physics(recipe, [0.0; 3]);
+        let custom = spec_with(Some(&mode), mode.fallback_rgb());
+        assert_eq!(custom.fluorescence().emitters().len(), 1);
+        assert!(spec_with(None, [0.0; 3]).fluorescence().is_empty());
+
+        let scene_spec = |material: MaterialSpec| SceneSpec {
+            planes: planes_to_data(&StandardGemCuts::standard_round_brilliant()),
+            finishes: FinishSpec::AllPolished,
+            material,
+            camera: CameraSpec {
+                yaw: 0.6,
+                pitch: 0.35,
+                distance: 4.2,
+            },
+            lighting: LightingSpec::new(LightingPreset::UvLamp365, 1.0, 0.4, 0.35, Backdrop::Grey),
+            max_bounces: 4,
+            width: 4,
+            height: 4,
+            hdr_id: None,
+        };
+        let ruby = scene_spec(MaterialSpec {
+            custom_materials: vec![custom.to_gem_material()],
+            ..MaterialSpec::catalogue("Ruby X")
+        });
+        let customs = [custom];
+        let glowing = OwnedScene::build_with_customs(&ruby, None, &customs).expect("builds");
+        assert!(!glowing.fluorescence().is_empty());
+        let plain = OwnedScene::build(&ruby, None).expect("builds");
+        assert!(plain.fluorescence().is_empty());
+        let diamond = OwnedScene::build_with_customs(
+            &scene_spec(MaterialSpec::catalogue("Diamond")),
+            None,
+            &customs,
+        )
+        .expect("builds");
+        assert!(diamond.fluorescence().is_empty());
+        let chunk = crate::render::handle_trace_chunk(&glowing, glowing.plane_soa(), 0, 1, 0, 1);
+        assert_eq!(chunk.len(), 16);
     }
 }

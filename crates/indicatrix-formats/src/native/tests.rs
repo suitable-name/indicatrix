@@ -247,13 +247,13 @@ fn material_table_custom_snapshot_round_trips_through_toml_text() {
     assert_eq!(parsed.material.custom, Some(snapshot));
 }
 
-/// A body colour attached via [`CustomMaterialSnapshot::with_body_colour`] must
+/// A body color attached via [`CustomMaterialSnapshot::with_body_color`] must
 /// survive a TOML text round trip with the identical `f32` bits, written as the
 /// shortest decimal of each component (`0.2`, not `0.20000000298023224`).
 #[test]
-fn custom_snapshot_body_colour_round_trips_through_toml_text() {
+fn custom_snapshot_body_color_round_trips_through_toml_text() {
     let mut native = sample_file();
-    let colour = [0.2_f32, 0.6, 1.8];
+    let color = [0.2_f32, 0.6, 1.8];
     let snapshot = CustomMaterialSnapshot::new(
         1.62,
         0.017,
@@ -262,7 +262,7 @@ fn custom_snapshot_body_colour_round_trips_through_toml_text() {
         "Trigonal",
         "UniaxialNegative",
     )
-    .with_body_colour(Some(colour));
+    .with_body_color(Some(color));
     native.material = native.material.with_custom(Some(snapshot.clone()));
     let text = to_toml_string(&native).expect("must serialize");
     let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
@@ -270,14 +270,14 @@ fn custom_snapshot_body_colour_round_trips_through_toml_text() {
     let parsed = from_toml_str(&text).expect("must parse its own output");
     let custom = parsed.material.custom.expect("custom snapshot loads back");
     assert_eq!(custom, snapshot);
-    let got = custom.body_colour().expect("body colour loads back");
-    assert_eq!(got.map(f32::to_bits), colour.map(f32::to_bits));
+    let got = custom.body_color().expect("body color loads back");
+    assert_eq!(got.map(f32::to_bits), color.map(f32::to_bits));
 }
 
-/// A custom snapshot with no body colour must not write an `absorption_rgb` key,
-/// and must load back as colourless.
+/// A custom snapshot with no body color must not write an `absorption_rgb` key,
+/// and must load back as colorless.
 #[test]
-fn custom_snapshot_without_body_colour_writes_no_absorption_rgb_key() {
+fn custom_snapshot_without_body_color_writes_no_absorption_rgb_key() {
     let mut native = sample_file();
     let snapshot = CustomMaterialSnapshot::new(
         1.62,
@@ -292,7 +292,7 @@ fn custom_snapshot_without_body_colour_writes_no_absorption_rgb_key() {
     assert!(!text.contains("absorption_rgb"), "{text}");
     let parsed = from_toml_str(&text).expect("must parse");
     let custom = parsed.material.custom.expect("custom snapshot loads back");
-    assert_eq!(custom.body_colour(), None);
+    assert_eq!(custom.body_color(), None);
 }
 
 /// A material with no custom snapshot must not even write a `[material.custom]`
@@ -306,32 +306,29 @@ fn material_table_with_no_custom_snapshot_omits_the_table() {
     assert_eq!(parsed.material.custom, None);
 }
 
-// --- `MaterialTable::body_colour_override` round-trips through TOML text ---
+// --- `MaterialTable::body_color_override` round-trips through TOML text ---
 
-/// A body-colour override attached via [`MaterialTable::with_body_colour_override`]
+/// A body-color override attached via [`MaterialTable::with_body_color_override`]
 /// must survive a serialize/parse round trip bit for bit, written as a plain
-/// `body_colour_override = [r, g, b]` array under `[material]`.
+/// `body_color_override = [r, g, b]` array under `[material]`.
 #[test]
-fn material_table_body_colour_override_round_trips_through_toml_text() {
+fn material_table_body_color_override_round_trips_through_toml_text() {
     let mut native = sample_file();
     // `f64` on the wire (TOML's only float); `indicatrix-cut-core` converts the
     // editor's `f32` triple to these shortest-decimal values -- see its
-    // `native::convert::body_colour_to_table`.
+    // `native::convert::body_color_to_table`.
     let yellow = [0.2f64, 0.4, 2.8];
-    native.material = native.material.with_body_colour_override(Some(yellow));
+    native.material = native.material.with_body_color_override(Some(yellow));
     let text = to_toml_string(&native).expect("must serialize");
     // The TOML writer spreads the array over several lines with a trailing comma;
     // compare with all whitespace removed so only the digits matter.
     let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
     assert!(
-        compact.contains("body_colour_override=[0.2,0.4,2.8"),
+        compact.contains("body_color_override=[0.2,0.4,2.8"),
         "{text}"
     );
     let parsed = from_toml_str(&text).expect("must parse its own output");
-    let got = parsed
-        .material
-        .body_colour_override
-        .expect("must load back");
+    let got = parsed.material.body_color_override.expect("must load back");
     assert_eq!(got.map(f64::to_bits), yellow.map(f64::to_bits));
     assert_eq!(parsed, native);
 }
@@ -339,11 +336,11 @@ fn material_table_body_colour_override_round_trips_through_toml_text() {
 /// No override: the key is not written at all, and a file without it (every file
 /// written before the field existed) loads back as `None`.
 #[test]
-fn material_table_without_a_body_colour_override_omits_the_key_and_loads_as_none() {
+fn material_table_without_a_body_color_override_omits_the_key_and_loads_as_none() {
     let text = to_toml_string(&sample_file()).expect("must serialize");
-    assert!(!text.contains("body_colour_override"));
+    assert!(!text.contains("body_color_override"));
     let parsed = from_toml_str(&text).expect("must parse");
-    assert_eq!(parsed.material.body_colour_override, None);
+    assert_eq!(parsed.material.body_color_override, None);
 }
 
 // --- `NativeDesignFile::history` round-trips through TOML text ---

@@ -7,6 +7,7 @@ use super::{
     classify::{ApertureSampleContext, RayClassification, classify_aperture_sample},
     fan::{FanGeometry, GRID_DISC_RADIUS_SQ},
     lighting::ExitLighting,
+    ray_trace::StoneArena,
     scintillation::{
         TemporalPoseContext, cell_temporal_variance, combine_scintillation_pct,
         spatial_scintillation_pct, temporal_scintillation_pct,
@@ -14,7 +15,7 @@ use super::{
     types::GemOpticalMetrics,
 };
 use crate::{
-    geometry::plane::GpuFacetPlane,
+    geometry::{plane::GpuFacetPlane, tool::StoneGeometry},
     optics::{
         materials::GemMaterial,
         raytracer::{EnvironmentSource, build_plane_soa},
@@ -129,7 +130,7 @@ struct GridEvalSetup<'a> {
 /// Builds [`GridEvalSetup`]. A pure setup extraction: every value is computed exactly
 /// once, unconditionally, with no accumulator or loop state involved.
 fn build_grid_eval_setup<'a>(
-    plane_soa: &'a crate::simd::PlanesSoA32,
+    stone: StoneArena<'a>,
     fan: FanGeometry,
     material: &GemMaterial,
     cam_yaw: f32,
@@ -163,7 +164,7 @@ fn build_grid_eval_setup<'a>(
     // Shared context for the Scintillation temporal sub-poses (see
     // `TemporalPoseContext`'s doc): identical across every grid cell and offset sample.
     let temporal_ctx = TemporalPoseContext {
-        plane_soa,
+        stone,
         nd,
         cam_yaw,
         cam_pitch,
@@ -174,7 +175,7 @@ fn build_grid_eval_setup<'a>(
     // Shared context for the per-aperture-sample classification (see
     // `ApertureSampleContext`'s doc): identical across every grid cell and sample.
     let aperture_ctx = ApertureSampleContext {
-        plane_soa,
+        stone,
         nd,
         n_f,
         n_c,
@@ -238,6 +239,34 @@ pub fn evaluate_gem_optical_metrics(
     cam_pitch: f32,
     environment: EnvironmentSource<'_>,
 ) -> GemOpticalMetrics {
+    evaluate_gem_optical_metrics_geom(
+        StoneGeometry::planes_only(planes),
+        material,
+        cam_yaw,
+        cam_pitch,
+        environment,
+    )
+}
+
+/// [`evaluate_gem_optical_metrics`] for a stone with tools.
+///
+/// Every ray goes through the one stone intersector, so the tools are subtracted from
+/// the polyhedron `geom.planes` define; with no tools the result is
+/// [`evaluate_gem_optical_metrics`]'s, bit for bit. The fan origins sit outside the
+/// stone because the fan is scaled to `P` alone (a cavity only removes material, so the
+/// polyhedron's girdle width bounds the stone). The traced ray follows the same
+/// refract-then-bounce loop as the planar case, so a path that leaves through a groove
+/// wall and would re-enter across the cavity is scored as having left: a v1 simplification
+/// shared with the tracer's exit split.
+#[must_use]
+pub fn evaluate_gem_optical_metrics_geom(
+    geom: StoneGeometry<'_>,
+    material: &GemMaterial,
+    cam_yaw: f32,
+    cam_pitch: f32,
+    environment: EnvironmentSource<'_>,
+) -> GemOpticalMetrics {
+    let planes = geom.planes;
     if planes.is_empty() {
         // No facet geometry to trace: fall back to neutral placeholder values rather
         // than a formula. Display defaults for "no geometry loaded", not measurements.
@@ -261,7 +290,11 @@ pub fn evaluate_gem_optical_metrics(
     // The fan is scaled to the stone once per evaluation (the measurement itself is
     // reused while the design is unchanged -- see `FanGeometry`).
     let fan = FanGeometry::for_planes(planes);
-    let setup = build_grid_eval_setup(&plane_soa, fan, material, cam_yaw, cam_pitch, environment);
+    let stone = StoneArena {
+        plane_soa: &plane_soa,
+        tools: geom.tools,
+    };
+    let setup = build_grid_eval_setup(stone, fan, material, cam_yaw, cam_pitch, environment);
 
     for ix in 0..setup.grid_size {
         for iz in 0..setup.grid_size {
@@ -360,5 +393,73 @@ pub fn evaluate_gem_optical_metrics(
         scintillation_pct,
         windowing_pct,
         extinction_pct,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        geometry::{cuts::StandardGemCuts, tool::ToolPrimitive},
+        optics::raytracer::LightingPreset,
+    };
+    use glam::Vec3;
+
+    fn bits(m: GemOpticalMetrics) -> [u32; 5] {
+        [
+            m.brilliance_pct.to_bits(),
+            m.fire_index.to_bits(),
+            m.scintillation_pct.to_bits(),
+            m.windowing_pct.to_bits(),
+            m.extinction_pct.to_bits(),
+        ]
+    }
+
+    #[test]
+    fn metrics_on_a_planar_design_are_unchanged_by_the_geometry_entry_point() {
+        let environment = LightingPreset::RingLights.studio(1.0, 0.85, 0.95);
+        let material = GemMaterial::diamond();
+        for planes in [
+            StandardGemCuts::standard_round_brilliant(),
+            StandardGemCuts::emerald_cut(),
+        ] {
+            let old = evaluate_gem_optical_metrics(&planes, &material, 0.6, 0.45, environment);
+            let new = evaluate_gem_optical_metrics_geom(
+                StoneGeometry::planes_only(&planes),
+                &material,
+                0.6,
+                0.45,
+                environment,
+            );
+            assert_eq!(bits(old), bits(new));
+        }
+    }
+
+    #[test]
+    fn metrics_of_a_grooved_stone_are_finite_and_differ_from_the_planar_stone() {
+        let environment = LightingPreset::RingLights.studio(1.0, 0.85, 0.95);
+        let material = GemMaterial::diamond();
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let tools = [ToolPrimitive::cylinder(
+            Vec3::new(0.0, 0.44, 0.0),
+            Vec3::X,
+            0.3,
+            2.0,
+        )];
+        let planar = evaluate_gem_optical_metrics(&planes, &material, 0.6, 1.2, environment);
+        let grooved = evaluate_gem_optical_metrics_geom(
+            StoneGeometry {
+                planes: &planes,
+                tools: &tools,
+            },
+            &material,
+            0.6,
+            1.2,
+            environment,
+        );
+        for v in bits(grooved) {
+            assert!(f32::from_bits(v).is_finite());
+        }
+        assert_ne!(bits(planar), bits(grooved));
     }
 }

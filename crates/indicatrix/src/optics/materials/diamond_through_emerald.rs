@@ -34,7 +34,7 @@ impl GemMaterial {
                     c: [0.011_236, 0.030_625, 1.0],
                 },
                 birefringence_delta: 0.0,
-                // Colourless (no chromophore): empty band set, zero absorption at every
+                // colorless (no chromophore): empty band set, zero absorption at every
                 // wavelength -- must render identically to before.
                 absorption: AbsorptionTensor::isotropic(vec![]),
                 c_axis: Vec3::Y,
@@ -71,7 +71,7 @@ impl GemMaterial {
                     c: [0.00528, 0.01424, 325.015],
                 },
                 birefringence_delta: -0.0081,
-                // Chromophore: blue sapphire's colour comes from a broad Fe2+-Ti4+
+                // Chromophore: blue sapphire's color comes from a broad Fe2+-Ti4+
                 // intervalence charge-transfer (IVCT) band centred ~580nm (yellow),
                 // absorbing yellow-orange-red and transmitting blue (see e.g. "Fe-Ti
                 // Charge Transfer: The Mechanism Behind Sapphire's Blue," skyjems.ca).

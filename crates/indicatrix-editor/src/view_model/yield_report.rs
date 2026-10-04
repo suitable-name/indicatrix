@@ -12,7 +12,7 @@ use super::{
 };
 use crate::material_lookup::EditorMaterialLookup;
 use indicatrix::geometry::meet_solver::{Block, SolvedTier, classify_blocks};
-use indicatrix_cut_core::Design;
+use indicatrix_cut_core::{Design, design::TierRef};
 
 /// `design`'s current yield/weight figures, formatted for `EditorView`'s read-only
 /// display fields.
@@ -500,6 +500,7 @@ pub fn cutting_instructions_rows(design: &Design, solved: &[SolvedTier]) -> Vec<
     // column uses, and it distinguishes a girdle facet (neither side) from a crown
     // one, which a sign test cannot.
     let tier_blocks = classify_blocks(&design.meet_tier_inputs());
+    let canonical_labels = indicatrix_cut_core::compute_tier_labels(&design.tiers);
     let schedule = match design.try_to_asc_schedule_from_solved(solved) {
         Ok(schedule) => schedule,
         Err(mismatch) => {
@@ -507,23 +508,27 @@ pub fn cutting_instructions_rows(design: &Design, solved: &[SolvedTier]) -> Vec<
             return Vec::new();
         }
     };
-    schedule
-        .tiers
-        .into_iter()
-        .enumerate()
-        .map(|(order_idx, tier)| CuttingRow {
+    // `tier_index` is the tier's stored position (what `tier_blocks` is indexed by),
+    // `order_idx` its position in the cutting sequence (what the row and an unnamed
+    // tier's placeholder label show). A planar design's two are the same number.
+    let flat_row =
+        |tier_index: usize, order_idx: usize, tier: indicatrix_formats::asc::AscTier| CuttingRow {
             order_idx: order_idx as i32,
-            side: match tier_blocks.get(order_idx) {
+            side: match tier_blocks.get(tier_index) {
                 Some(Block::Crown) => 1,
                 Some(Block::Pavilion) => -1,
                 _ => 0,
             },
             facet: if tier.name.is_empty() {
                 format!("#{}", order_idx + 1)
+            } else if indicatrix_cut_core::is_legacy_123_abc(&tier.name) {
+                canonical_labels
+                    .get(tier_index)
+                    .map_or_else(|| tier.name.clone(), |l| l.display_name.clone())
             } else {
                 tier.name
             },
-            angle: format_angle_cell(tier.angle_deg),
+            angle: format_angle_cell(tier.angle_deg.abs()),
             index_val: tier
                 .indices
                 .into_iter()
@@ -531,6 +536,56 @@ pub fn cutting_instructions_rows(design: &Design, solved: &[SolvedTier]) -> Vec<
                 .collect::<Vec<_>>()
                 .join(", "),
             notes: tier.notes,
+            second_line: None,
+        };
+    if design.concave_tiers.is_empty() {
+        // Planar designs keep the schedule's own (stored) order, byte for byte.
+        return schedule
+            .tiers
+            .into_iter()
+            .enumerate()
+            .map(|(order_idx, tier)| flat_row(order_idx, order_idx, tier))
+            .collect();
+    }
+    // With concave tiers the schedule is read in `cutting_order()`: each tool line
+    // sits at the end of its section, the crown's directly above the table. A flat
+    // row's `side` still comes from its own stored position, so the lookup keeps
+    // `flat_row`'s index (the tier's position in `design.tiers`) apart from the
+    // row's `order_idx` (its position in the cutting sequence, which also numbers an
+    // unnamed tier's placeholder label).
+    let mut flat_tiers: Vec<Option<indicatrix_formats::asc::AscTier>> =
+        schedule.tiers.into_iter().map(Some).collect();
+    design
+        .cutting_order()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(order_idx, tier_ref)| match tier_ref {
+            TierRef::Flat(i) => {
+                let tier = flat_tiers.get_mut(i)?.take()?;
+                Some(flat_row(i, order_idx, tier))
+            }
+            TierRef::Concave(i) => {
+                let tier = design.concave_tiers.get(i)?;
+                Some(CuttingRow {
+                    order_idx: order_idx as i32,
+                    side: if tier.is_crown_side() { 1 } else { -1 },
+                    facet: if tier.name.is_empty() {
+                        format!("#{}", order_idx + 1)
+                    } else {
+                        tier.name.clone()
+                    },
+                    angle: format_angle_cell(tier.angle_deg.abs()),
+                    index_val: tier
+                        .indices
+                        .iter()
+                        .copied()
+                        .map(format_index_value)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    notes: tier.instructions.clone(),
+                    second_line: Some(tier.second_line_fields()),
+                })
+            }
         })
         .collect()
 }

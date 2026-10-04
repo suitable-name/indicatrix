@@ -2,7 +2,7 @@
 //!
 //! Resolving its TARGET material from the dialog's combo/RI fields, the proposal view
 //! model ([`retarget_view`]) that decides which of rows/notes/anchored-tier errors/solve
-//! error a UI shows, and the per-row display text and risk badge colour.
+//! error a UI shows, and the per-row display text and risk badge color.
 
 use super::{CrownShift, RetargetError, RetargetMode, RetargetProposal, RetargetRow};
 use crate::{
@@ -31,7 +31,7 @@ pub struct RetargetRowView {
     pub margin: String,
     /// `"Safe"`/`"Marginal"`/`"Windows"`.
     pub risk_label: &'static str,
-    /// The risk badge colour, `(r, g, b)`.
+    /// The risk badge color, `(r, g, b)`.
     pub risk_rgb: (u8, u8, u8),
 }
 

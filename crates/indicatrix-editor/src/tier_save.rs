@@ -6,13 +6,16 @@
 //! target is written (or cleared) in the same undo step.
 
 use crate::manipulate::{dependents::rename_dependant_edits, tiers_meeting};
-use indicatrix_cut_core::{ConstraintTier, Design, Edit, TierTarget};
+use indicatrix_cut_core::{ConstraintTier, Design, Edit, TierTarget, design::ConcaveTier};
 
 /// Every OTHER tier's own name token, with the tier at `excluded_index` left out.
 ///
 /// The tokens are `ConstraintTier::names()`, split on `/`. Feeds `TierFormFields::other_tier_names` so
 /// `parse_tier_form` can reject name collisions. `excluded_index < 0` (a brand-new
 /// tier) excludes nothing, since there is no existing row to exempt.
+///
+/// Concave tier names are always included: a flat tier may not share a name with a
+/// concave one (`Design::validate_concave_tiers` rejects it on every load).
 #[must_use]
 pub fn other_tier_names_excluding(design: &Design, excluded_index: i32) -> Vec<String> {
     design
@@ -21,6 +24,13 @@ pub fn other_tier_names_excluding(design: &Design, excluded_index: i32) -> Vec<S
         .enumerate()
         .filter(|&(i, _)| excluded_index < 0 || i != excluded_index as usize)
         .flat_map(|(_, tier)| tier.names().into_iter().map(str::to_string))
+        .chain(
+            design
+                .concave_tiers
+                .iter()
+                .filter(|tier| !tier.name.is_empty())
+                .map(|tier| tier.name.clone()),
+        )
         .collect()
 }
 
@@ -139,6 +149,30 @@ pub fn tier_save_edit_with_target(
     (dirty_index, edit)
 }
 
+/// The edit that saves a concave tier form: `Edit::AddConcaveTier` appending the tier
+/// when `index` is `None` (a new tier), `Edit::ModifyConcaveTier` replacing the tier at
+/// `index` otherwise.
+///
+/// A new concave tier appends rather than inserting after a selection: concave tiers
+/// are cut in storage order within their section, so the author places one by
+/// moving it afterwards. There is no rename rewrite as for flat tiers (nothing meets a
+/// concave tier by name) and no target to carry. Lives here, in the GUI-free crate, so
+/// the desktop and the web app save a concave tier identically.
+#[must_use]
+pub const fn concave_tier_save_edit(
+    design: &Design,
+    index: Option<usize>,
+    tier: ConcaveTier,
+) -> Edit {
+    match index {
+        None => Edit::AddConcaveTier {
+            index: design.concave_tiers.len(),
+            tier,
+        },
+        Some(index) => Edit::ModifyConcaveTier { index, tier },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +199,21 @@ mod tests {
             vec!["P1".to_string(), "C1".to_string()]
         );
         assert_eq!(other_tier_names_excluding(&design, -1).len(), 4);
+    }
+
+    #[test]
+    fn concave_names_are_reserved_in_the_flat_form() {
+        let design = indicatrix_cut_core::Design::concave_fixture();
+        let names = other_tier_names_excluding(&design, 0);
+        assert!(names.contains(&"Groove".to_string()));
+        assert!(names.contains(&"Dimple".to_string()));
+        // A flat tier renamed to a concave tier's name is refused at the edit level too.
+        let mut session = EditorSession::fresh();
+        session.design = design;
+        let mut renamed = session.design.tiers[0].clone();
+        renamed.name = "Groove".to_string();
+        let (_, edit) = tier_save_edit(&session.design, 0, renamed, None);
+        assert!(session.apply(edit).is_err());
     }
 
     #[test]
@@ -258,5 +307,19 @@ mod tests {
             None,
         );
         assert!(matches!(with, Edit::Batch(edits) if edits.len() == 2));
+    }
+
+    #[test]
+    fn a_concave_save_appends_when_new_and_modifies_in_place_otherwise() {
+        let design = indicatrix_cut_core::Design::concave_fixture();
+        let tier = design.concave_tiers[0].clone();
+        assert!(matches!(
+            concave_tier_save_edit(&design, None, tier.clone()),
+            Edit::AddConcaveTier { index: 2, .. }
+        ));
+        assert!(matches!(
+            concave_tier_save_edit(&design, Some(1), tier),
+            Edit::ModifyConcaveTier { index: 1, .. }
+        ));
     }
 }

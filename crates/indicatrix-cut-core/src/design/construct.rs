@@ -58,6 +58,8 @@ impl Design {
             tier_ids,
             next_tier_id,
             tier_targets: BTreeMap::new(),
+            concave_tiers: Vec::new(),
+            concave_tier_ids: Vec::new(),
         }
     }
 
@@ -89,6 +91,8 @@ impl Design {
             tier_ids: Vec::new(),
             next_tier_id: 0,
             tier_targets: BTreeMap::new(),
+            concave_tiers: Vec::new(),
+            concave_tier_ids: Vec::new(),
         }
     }
 
@@ -207,6 +211,8 @@ impl Design {
             tier_ids,
             next_tier_id,
             tier_targets: BTreeMap::new(),
+            concave_tiers: Vec::new(),
+            concave_tier_ids: Vec::new(),
         }
     }
 }

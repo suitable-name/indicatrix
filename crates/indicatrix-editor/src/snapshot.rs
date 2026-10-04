@@ -6,7 +6,9 @@
 //! `indicatrix_cut_core::diff_tiers`.
 
 use indicatrix::geometry::meet_solver::SolvedTier;
-use indicatrix_cut_core::{Design, TierDelta, diff_tiers};
+use indicatrix_cut_core::{
+    ConcaveTierDelta, Design, TierDelta, design::ConcaveTier, diff_concave_tiers, diff_tiers,
+};
 
 /// A tier position where NEITHER the angle, the indices, nor the mast (beyond this
 /// tolerance) moved is shown as "Same" rather than "Changed", so a long, mostly-untouched
@@ -44,8 +46,12 @@ pub struct DiffRowView {
     pub mast_delta: String,
     /// `"Added"`, `"Removed"`, `"Changed"` or `"Same"`.
     pub status_label: &'static str,
-    /// The status badge colour, `(r, g, b)`.
+    /// The status badge color, `(r, g, b)`.
     pub status_rgb: (u8, u8, u8),
+    /// A concave tier's tool badge (`"CYL"`, or `"CYL -> CON"` when the tool itself
+    /// changed); empty for a flat tier. A concave row's [`Self::tier_index`] is its
+    /// position in `design.concave_tiers`, and its angles are the facet's own.
+    pub badge: String,
 }
 
 /// One [`TierDelta`]'s badge label and RGB color -- chosen HERE, once, so the label and the
@@ -85,26 +91,74 @@ pub fn diff_row_view(delta: &TierDelta) -> DiffRowView {
         mast_delta,
         status_label,
         status_rgb,
+        badge: String::new(),
     }
 }
 
-/// The comparison rows of `snapshot` against the design now (`design` with its solve
-/// `current_solved`, when it has one), one per tier position, in position order.
+/// The view of one [`ConcaveTierDelta`], flagged with the tool's badge.
+///
+/// A concave tier has no mast, so `mast_delta` is `"-"`. The status is `"Added"`,
+/// `"Removed"` or `"Changed"`: [`diff_concave_tiers`] only reports positions that
+/// differ, and a difference in ANY field (tool, theta, displacement, diameter,
+/// angle, motion, indices) is a change.
+#[must_use]
+pub fn concave_diff_row_view(delta: &ConcaveTierDelta) -> DiffRowView {
+    let angle_text = |t: Option<&ConcaveTier>| {
+        t.map_or_else(|| "-".to_string(), |t| format!("{:.2}\u{b0}", t.angle_deg))
+    };
+    let (status_label, status_rgb) = match (&delta.before, &delta.after) {
+        (None, _) => ("Added", (0x38, 0xbd, 0xf8)),
+        (_, None) => ("Removed", (0xf4, 0x3f, 0x5e)),
+        _ => ("Changed", (0xf5, 0x9e, 0x0b)),
+    };
+    let badge = match (&delta.before, &delta.after) {
+        (Some(before), Some(after)) if before.tool != after.tool => {
+            format!("{} -> {}", before.tool.code(), after.tool.code())
+        }
+        (Some(t), _) | (None, Some(t)) => t.tool.code().to_string(),
+        (None, None) => String::new(),
+    };
+    DiffRowView {
+        tier_index: delta.position,
+        name: delta
+            .after
+            .as_ref()
+            .or(delta.before.as_ref())
+            .map_or_else(String::new, |t| t.name.clone()),
+        old_angle: angle_text(delta.before.as_ref()),
+        new_angle: angle_text(delta.after.as_ref()),
+        mast_delta: "-".to_string(),
+        status_label,
+        status_rgb,
+        badge,
+    }
+}
+
+/// The comparison rows of `snapshot` against the design now.
+///
+/// `design` comes with its solve `current_solved`, when it has one. There is one row per
+/// flat tier position, in position order, then one per concave tier position that
+/// differs ([`concave_diff_row_view`]).
+///
+/// The concave rows are what makes a compare between two snapshots that differ only in
+/// a concave tier show that difference instead of "no change".
 #[must_use]
 pub fn compare_rows(
     snapshot: &DesignSnapshot,
     design: &Design,
     current_solved: Option<&[SolvedTier]>,
 ) -> Vec<DiffRowView> {
-    diff_tiers(
+    let flat = diff_tiers(
         &snapshot.design.tiers,
         snapshot.solved.as_deref(),
         &design.tiers,
         current_solved,
-    )
-    .iter()
-    .map(diff_row_view)
-    .collect()
+    );
+    let concave = diff_concave_tiers(&snapshot.design.concave_tiers, &design.concave_tiers);
+    flat.iter()
+        .map(diff_row_view)
+        .chain(concave.iter().map(concave_diff_row_view))
+        .collect()
 }
 
 /// The compare header: `"snapshot label" vs. current ("current label")`.
@@ -149,5 +203,33 @@ mod tests {
             compare_label("a", "b"),
             "\"a\" vs. current (\"b\")".to_string()
         );
+    }
+
+    #[test]
+    fn compare_rows_include_concave_deltas() {
+        let design = Design::concave_fixture();
+        let solved = design.solve().ok();
+        let snapshot = DesignSnapshot {
+            design: design.clone(),
+            solved: solved.clone(),
+            label: "before".to_string(),
+        };
+        let same = compare_rows(&snapshot, &design, solved.as_deref());
+        assert_eq!(same.len(), design.tiers.len(), "no concave row when equal");
+        assert!(same.iter().all(|row| row.badge.is_empty()));
+
+        let mut edited = design;
+        edited.concave_tiers[0].tool = indicatrix_cut_core::design::ConcaveTool::Cone;
+        edited.concave_tiers[0].tool_angle_deg = Some(60.0);
+        edited.concave_tiers.pop();
+        let rows = compare_rows(&snapshot, &edited, solved.as_deref());
+        let concave: Vec<&DiffRowView> = rows.iter().filter(|r| !r.badge.is_empty()).collect();
+        assert_eq!(concave.len(), 2);
+        assert_eq!(concave[0].status_label, "Changed");
+        assert_eq!(concave[0].badge, "CYL -> CON");
+        assert_eq!(concave[0].name, "Groove");
+        assert_eq!(concave[1].status_label, "Removed");
+        assert_eq!(concave[1].badge, "SPH");
+        assert_eq!(concave[1].new_angle, "-");
     }
 }

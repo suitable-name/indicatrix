@@ -268,7 +268,7 @@ fn unknown_keys_and_tables_are_ignored() {
 
 #[test]
 fn a_newer_version_is_reported_before_the_body_is_read() {
-    let error = expect_error("format = \"indicatrix-rough-plan\"\nversion = 2\n");
+    let error = expect_error("format = \"indicatrix-rough-plan\"\nversion = 3\n");
     assert!(error.contains("newer Indicatrix"), "{error}");
 
     // A body this build could not read is not a reason to hide that.

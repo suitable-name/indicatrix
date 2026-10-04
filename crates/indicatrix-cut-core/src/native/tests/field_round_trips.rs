@@ -201,14 +201,14 @@ fn a_sidecar_with_no_tier_ids_still_loads_and_gets_fresh_distinct_ids() {
     assert_eq!(ids.len(), before, "every fresh id must be distinct");
 }
 
-/// A design's body-colour override (`MaterialSelection::body_colour_override`) must
+/// A design's body-color override (`MaterialSelection::body_color_override`) must
 /// round-trip through a real save/load pair bit for bit, like every other
 /// `[material]` field.
 #[test]
-fn body_colour_override_round_trips_through_save_and_load() {
+fn body_color_override_round_trips_through_save_and_load() {
     let mut design = simple_design();
     let yellow = [0.2f32, 0.4, 2.8];
-    design.material = design.material.clone().with_body_colour(Some(yellow));
+    design.material = design.material.clone().with_body_color(Some(yellow));
     let native = to_native_file(
         &design,
         "design.asc",
@@ -217,14 +217,14 @@ fn body_colour_override_round_trips_through_save_and_load() {
         &SaveExtras::default(),
     );
     let native_toml = to_toml_string(&native).expect("must serialize");
-    assert!(native_toml.contains("body_colour_override"));
+    assert!(native_toml.contains("body_color_override"));
     // The file shows the cutter's own short decimals, not `f64::from(0.2f32)`'s
-    // `0.20000000298023224` -- see `convert::body_colour_to_table`.
+    // `0.20000000298023224` -- see `convert::body_color_to_table`.
     // The TOML writer spreads the array over several lines with a trailing comma;
     // compare with all whitespace removed so only the digits matter.
     let compact: String = native_toml.chars().filter(|c| !c.is_whitespace()).collect();
     assert!(
-        compact.contains("body_colour_override=[0.2,0.4,2.8"),
+        compact.contains("body_color_override=[0.2,0.4,2.8"),
         "expected shortest-decimal components, got:\n{native_toml}"
     );
 
@@ -232,19 +232,19 @@ fn body_colour_override_round_trips_through_save_and_load() {
     let got = loaded
         .design
         .material
-        .body_colour_override
+        .body_color_override
         .expect("the override must load back");
     assert_eq!(got.map(f32::to_bits), yellow.map(f32::to_bits));
     assert_eq!(loaded.design.material, design.material);
 }
 
-/// A design with no override writes no `body_colour_override` key at all, and such
+/// A design with no override writes no `body_color_override` key at all, and such
 /// a file -- exactly what every sidecar written before the field existed looks
 /// like -- loads back as `None`.
 #[test]
-fn a_sidecar_without_a_body_colour_override_loads_as_none() {
+fn a_sidecar_without_a_body_color_override_loads_as_none() {
     let design = simple_design();
-    assert_eq!(design.material.body_colour_override, None);
+    assert_eq!(design.material.body_color_override, None);
     let native = to_native_file(
         &design,
         "design.asc",
@@ -253,8 +253,8 @@ fn a_sidecar_without_a_body_colour_override_loads_as_none() {
         &SaveExtras::default(),
     );
     let native_toml = to_toml_string(&native).expect("must serialize");
-    assert!(!native_toml.contains("body_colour_override"));
+    assert!(!native_toml.contains("body_color_override"));
 
     let loaded = load_paired(SIMPLE_ASC, &native_toml, false).expect("must load");
-    assert_eq!(loaded.design.material.body_colour_override, None);
+    assert_eq!(loaded.design.material.body_color_override, None);
 }

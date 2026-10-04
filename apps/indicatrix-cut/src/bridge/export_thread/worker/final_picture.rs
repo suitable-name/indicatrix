@@ -49,7 +49,7 @@ use std::{
 
 /// One image's outcome from [`render_image_rgba`].
 pub enum RenderedImage {
-    /// Tone-mapped RGBA8, `width * height * 4` bytes, in the requested colour space.
+    /// Tone-mapped RGBA8, `width * height * 4` bytes, in the requested color space.
     Rgba(Vec<u8>),
     /// `cancel` was observed before the image finished.
     Cancelled,
@@ -67,7 +67,7 @@ pub enum RenderedImage {
     clippy::too_many_arguments,
     reason = "the same per-image identity `render_accumulation` takes (scene, pose, \
               params, remote selection, GPU backend, local compute, carry, cancel, \
-              progress) plus the output colour space; bundling would only move the count"
+              progress) plus the output color space; bundling would only move the count"
 )]
 pub fn render_image_rgba(
     scene: &SceneSnapshot,

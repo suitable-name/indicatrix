@@ -37,8 +37,8 @@ impl GemMaterial {
                 // third. No primary per-axis spectroscopic dataset is available
                 // (unlike Alexandrite/Tanzanite's figure-read primary data
                 // above) -- this is a QUALITATIVE, tuned trichroic pattern built from
-                // the well-known pleochroic COLOUR description alone, the same
-                // "known colours -> qualitative band pattern" approach Tanzanite's own
+                // the well-known pleochroic color description alone, the same
+                // "known colors -> qualitative band pattern" approach Tanzanite's own
                 // entry above used before its own primary source was found, flagged
                 // here as LOWER CONFIDENCE than a figure-read or numeric source.
                 absorption: AbsorptionTensor::biaxial(
@@ -64,8 +64,8 @@ impl GemMaterial {
                 absorption_path_scale: 1.0,
                 uniaxial_extraordinary_dispersion: None,
             },
-            // Opal (amorphous hydrated SiO2, common/body-colour opal -- NOT precious
-            // opal's structural play-of-colour, which this Gaussian-band absorption
+            // Opal (amorphous hydrated SiO2, common/body-color opal -- NOT precious
+            // opal's structural play-of-color, which this Gaussian-band absorption
             // model has no mechanism to represent at all: that effect is diffraction
             // off an ordered silica-sphere lattice, not a wavelength-selective
             // absorption coefficient, and is explicitly OUT OF SCOPE for this entry.
@@ -81,7 +81,7 @@ impl GemMaterial {
             // non-zero Delta n(F-C) = 0.001 (not a cited figure -- deliberately a
             // small hand-picked value, "~0.0, use a tiny
             // positive value," since opal's classical dispersion is minor and
-            // visually dominated by the unmodelled structural play-of-colour anyway).
+            // visually dominated by the unmodelled structural play-of-color anyway).
             // A=1.45-0.000523/0.5893^2=1.448493, B=0.000523.
             Self {
                 name: "Opal".to_string(),
@@ -93,12 +93,12 @@ impl GemMaterial {
                     c: 0.0,
                 },
                 birefringence_delta: 0.0,
-                // Body colour only, and even that varies far too widely (white,
+                // Body color only, and even that varies far too widely (white,
                 // black, fire/orange body opal) for one representative band set --
-                // left colourless (empty band set) as the neutral reference; a
-                // specific body-colour variant (e.g. fire opal's Fe3+ tint) is a
+                // left colorless (empty band set) as the neutral reference; a
+                // specific body-color variant (e.g. fire opal's Fe3+ tint) is a
                 // candidate follow-up built-in, same convention as un-added Topaz/
-                // Tanzanite variants above. Play-of-colour is NOT modelled -- see this
+                // Tanzanite variants above. Play-of-color is NOT modelled -- see this
                 // entry's own comment above.
                 absorption: AbsorptionTensor::isotropic(vec![]),
                 c_axis: Vec3::Y,
@@ -110,7 +110,7 @@ impl GemMaterial {
                 uniaxial_extraordinary_dispersion: None,
             },
             // Glass (Schott N-BK7) -- the most common optical crown glass, included
-            // as a colourless isotropic reference/calibration material (e.g. for
+            // as a colorless isotropic reference/calibration material (e.g. for
             // comparing a gemstone's fire against ordinary glass).
             //
             // Source: SCHOTT optical glass data sheet (N-BK7), Sellmeier coefficients
@@ -132,7 +132,7 @@ impl GemMaterial {
                     c: [0.006_000_699, 0.020_017_914, 103.560_65],
                 },
                 birefringence_delta: 0.0,
-                // Colourless glass: empty band set, zero absorption at every
+                // colorless glass: empty band set, zero absorption at every
                 // wavelength.
                 absorption: AbsorptionTensor::isotropic(vec![]),
                 c_axis: Vec3::Y,
@@ -146,7 +146,7 @@ impl GemMaterial {
             // Glass (Schott F2) -- a common dense flint glass, the classic
             // high-dispersion counterpart to N-BK7's crown glass above (an
             // achromatic-doublet pairing in real optics), included for the same
-            // colourless-reference reason.
+            // colorless-reference reason.
             //
             // Source: SCHOTT optical glass data sheet (F2), Sellmeier coefficients as
             // tabulated by refractiveindex.info ("SCHOTT-optical: F2"):
@@ -165,7 +165,7 @@ impl GemMaterial {
                     c: [0.009_977_439, 0.047_045_077, 111.886_76],
                 },
                 birefringence_delta: 0.0,
-                // Colourless glass: empty band set, zero absorption at every
+                // colorless glass: empty band set, zero absorption at every
                 // wavelength.
                 absorption: AbsorptionTensor::isotropic(vec![]),
                 c_axis: Vec3::Y,

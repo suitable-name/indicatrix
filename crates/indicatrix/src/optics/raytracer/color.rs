@@ -1,6 +1,6 @@
-//! Spectral-to-tristimulus colour conversion.
+//! Spectral-to-tristimulus color conversion.
 //!
-//! The CIE 1931 colour-matching functions, the spectral-MIS combination weight
+//! The CIE 1931 color-matching functions, the spectral-MIS combination weight
 //! applied at XYZ integration, von Kries white balance, and the final XYZ -> sRGB
 //! gamut/gamma mapping.
 
@@ -68,9 +68,9 @@ const fn mis_weighted_radiance(radiance: f32) -> f32 {
 /// to exactly 0 the moment its own specular refraction direction diverges from the
 /// direction the hero-driven path actually took. `sum_pdf` then degenerates toward
 /// `path_pdf[hero_idx]` alone, pushing the weight up toward `N` -- concentrating that
-/// sample's contribution onto the hero's own colour, the mechanism that produces
+/// sample's contribution onto the hero's own color, the mechanism that produces
 /// dispersion "fire" at the image level: different samples have different hero
-/// wavelengths, so they concentrate onto different colours.
+/// wavelengths, so they concentrate onto different colors.
 ///
 /// `sum_pdf` degenerates to exactly `NUM_CHANNELS * path_pdf[hero_idx]` whenever every
 /// channel's technique agrees at every decision (a non-dispersive material), making
@@ -171,7 +171,7 @@ pub(crate) fn integrate_channels_to_xyz_families(
     xyz
 }
 
-/// Colour temperature (Kelvin) associated with each named lighting preset. A thin
+/// color temperature (Kelvin) associated with each named lighting preset. A thin
 /// pass-through to [`LightingPreset::params`] -- the single source of truth both this
 /// and `sample_studio_environment` read from, since the white balance must be derived
 /// from the same illuminant that lit the scene.
@@ -193,7 +193,7 @@ const D65_WHITE_Y: f32 = 0.3290;
 
 /// Bradford chromatic-adaptation cone-response matrix (XYZ -> LMS; Lam 1985), the
 /// standard basis proper von Kries adaptation diagonalises in -- used by ICC v4 and
-/// most colour-management pipelines. Row-major, same convention as
+/// most color-management pipelines. Row-major, same convention as
 /// `color::space::ColorSpace::xyz_to_rgb_matrix`. See
 /// [`compute_illuminant_white_balance`]'s doc comment for why this basis matters:
 /// scaling X and Z directly is not von Kries adaptation, since XYZ tristimulus values
@@ -258,14 +258,14 @@ pub(crate) fn apply_von_kries_white_balance(xyz: Vec3, lms_scale: Vec3) -> Vec3 
 /// in Bradford LMS space, that adapts that illuminant's own white point toward
 /// [`D65_WHITE_X`]/[`D65_WHITE_Y`]. Applying this scale via
 /// [`apply_von_kries_white_balance`] to a rendered XYZ value neutralizes the
-/// illuminant's own colour cast without altering the light sources' colour
+/// illuminant's own color cast without altering the light sources' color
 /// temperatures or the `blackbody_spectrum` clamp.
 ///
 /// # Diagonalised in LMS, not XYZ
 ///
 /// A diagonal scale of raw X and Z tristimulus values (`[Y_w/X_w, 1.0, Y_w/Z_w]`
 /// multiplied directly into XYZ) is not von Kries adaptation: chromatic adaptation
-/// happens per cone class, and X/Y/Z each mix all three cone types, so every colour
+/// happens per cone class, and X/Y/Z each mix all three cone types, so every color
 /// but the illuminant white itself picks up a hue shift. Instead, both the source
 /// illuminant's white and the [`D65_WHITE_X`]/[`D65_WHITE_Y`] reference white (at the
 /// same luminance, for a directly comparable ratio) are converted to Bradford LMS via
@@ -321,16 +321,17 @@ pub(crate) fn compute_illuminant_white_balance(temp_k: f32) -> Vec3 {
 /// selected with a `match` -- a lock-free atomic read with no allocation after the
 /// first call per preset.
 ///
-/// Presets sampling the tabulated D65 curve ([`LightingPreset::uses_d65`]) get the
-/// identity (that white IS the sRGB white; a Planckian 6500 K scale would push neutrals
-/// green); only the blackbody presets carry a Planckian adaptation.
+/// Only presets with [`LightingPreset::uses_white_balance`] (the Planckian ones) carry
+/// an adaptation. The D65 presets get the identity (that white IS the sRGB white; a
+/// Planckian 6500 K scale would push neutrals green) and so do the UV lamps (no white
+/// point to adapt from).
 pub(super) fn illuminant_white_balance(lighting_preset: LightingPreset) -> Vec3 {
     static INCANDESCENT: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
     static RING_LIGHTS: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
     static DARK_SPOTLIGHT: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
     static LIGHT_TENT: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
 
-    if lighting_preset.uses_d65() {
+    if !lighting_preset.uses_white_balance() {
         return Vec3::ONE;
     }
     let cell = match lighting_preset {
@@ -338,7 +339,11 @@ pub(super) fn illuminant_white_balance(lighting_preset: LightingPreset) -> Vec3 
         LightingPreset::RingLights => &RING_LIGHTS,
         LightingPreset::DarkSpotlight => &DARK_SPOTLIGHT,
         LightingPreset::LightTent => &LIGHT_TENT,
-        LightingPreset::Daylight | LightingPreset::IsoHemisphere | LightingPreset::DaylightDome => {
+        LightingPreset::Daylight
+        | LightingPreset::IsoHemisphere
+        | LightingPreset::DaylightDome
+        | LightingPreset::UvLamp365
+        | LightingPreset::UvLamp395 => {
             return Vec3::ONE;
         }
     };
@@ -350,7 +355,7 @@ pub(super) fn illuminant_white_balance(lighting_preset: LightingPreset) -> Vec3 
 ///
 /// Reduced from the old per-channel-Vec3 form: applying this curve independently per
 /// RGB channel is a hue-shifting operator, which is exactly wrong for saturated
-/// dispersion "fire" colours. `xyz_to_srgb_gamma` now applies it to luminance only.
+/// dispersion "fire" colors. `xyz_to_srgb_gamma` now applies it to luminance only.
 #[must_use]
 #[expect(
     clippy::many_single_char_names,
@@ -372,7 +377,7 @@ pub fn aces_tonemap(y: f32) -> f32 {
 /// [`crate::color::ColorSpace`].
 ///
 /// Space-aware chromaticity-preserving gamut mapping (radially compressing
-/// out-of-gamut colours toward the space's own white point in CIE xyY at constant
+/// out-of-gamut colors toward the space's own white point in CIE xyY at constant
 /// luminance, rather than desaturating/hue-shifting via naive per-channel clamping),
 /// ACES filmic tone mapping applied to luminance only, and finally that space's own
 /// transfer function. See `crate::color::space` and `crate::color::gamut` for the

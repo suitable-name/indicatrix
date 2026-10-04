@@ -327,7 +327,7 @@ pub struct RemoteFinalImageRequest {
     pub first_sample: u32,
     /// Number of samples (the tone-mapping divisor).
     pub samples: u32,
-    /// The colour space the remote tone-maps into.
+    /// The color space the remote tone-maps into.
     pub color_space: indicatrix::color::ColorSpace,
     /// v16: the LAST `viewer_samples` of `[first_sample, first_sample + samples)`,
     /// reserved for the viewer's own local render -- `0` reproduces today's behaviour

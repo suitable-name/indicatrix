@@ -6,21 +6,23 @@
 //! Moved verbatim from the desktop's `gui::solid_preview::preview_state::request`,
 //! which re-exports them next to its own thread-facing `ReplanRequest`.
 
-use super::types::{CameraPose, FacetOverlay};
+use super::types::{CameraPose, FacetOverlay, StoneGeometryBuf};
 use crate::{diagram2d::PanelKind, raster::SolidStyle};
 use glam::Vec3;
-use indicatrix::geometry::meet_solver::SolvedTier;
+use indicatrix::geometry::{ToolPrimitive, meet_solver::SolvedTier};
 use std::{collections::BTreeSet, sync::Arc};
 
 /// One redraw request for [`super::render_request`].
 pub enum RedrawRequest {
-    /// Cheap camera-follow: re-render the SAME planes/mesh at a new pose (an
+    /// Cheap camera-follow: re-render the SAME geometry/mesh at a new pose (an
     /// orbit/zoom drag, no `Design` to plan against). Reuses whatever
     /// [`SolidStyle`] the pipeline last computed for a [`Self::Planned`] request, so
     /// a camera drag while viewing an overlay does not lose it.
     Reproject {
-        /// The plane arrangement, `(normal, offset)` with `n . x <= m`.
-        planes: Vec<(Vec3, f32)>,
+        /// The stone to draw: its planes plus any concave tools (see
+        /// [`StoneGeometryBuf`]); [`StoneGeometryBuf::from_halfspaces`] wraps a bare
+        /// `(normal, offset)` plane arrangement.
+        geometry: StoneGeometryBuf,
         /// The camera pose to render at.
         camera: CameraPose,
         /// Output size in physical pixels.
@@ -99,6 +101,11 @@ pub struct PlannedFrame {
     pub design: Arc<indicatrix_cut_core::Design>,
     /// The plane arrangement to draw this frame.
     pub planes: Vec<(Vec3, f32)>,
+    /// The concave tools subtracted from `planes`; empty for a design with no
+    /// concave tiers. Tool `k` is facet id `planes.len() + k`.
+    pub tools: Vec<ToolPrimitive>,
+    /// `(concave tier, placement)` of each tool, parallel to `tools`.
+    pub placements: Vec<(usize, usize)>,
     /// The facet-level style (flagged/pending/selected, preform handling).
     pub style: SolidStyle,
     /// The mast list to chain forward as the next call's `last_solved` -- already

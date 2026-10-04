@@ -13,6 +13,7 @@ use crate::{
     },
     settings::SettingsPersister,
 };
+use indicatrix_solid::preview::StoneGeometryBuf;
 use slint::{ComponentHandle, SharedString};
 use std::{
     f32::consts::FRAC_PI_2,
@@ -79,11 +80,7 @@ pub(in crate::gui) fn resubmit_at_current_pose(
     } else {
         ui.global::<SolidPreviewModel>().get_view_mode() as u8
     };
-    let planes = ctx
-        .active_planes
-        .iter()
-        .map(|p| (glam::Vec3::from(p.normal), -p.d))
-        .collect();
+    let stone = active_stone(ctx);
     let scale = ui.window().scale_factor();
     let size = if on_live_tab {
         (
@@ -101,8 +98,8 @@ pub(in crate::gui) fn resubmit_at_current_pose(
         // `contained_request_size`'s own doc comment.
         contained_request_size(view_mode, viewport_size, (ctx.width, ctx.height))
     };
-    preview_state.request_redraw_with_gear(
-        planes,
+    preview_state.request_redraw_geometry(
+        stone,
         CameraPose {
             yaw: ctx.yaw,
             pitch: ctx.pitch,
@@ -112,6 +109,20 @@ pub(in crate::gui) fn resubmit_at_current_pose(
         view_mode,
         ctx.design_gear,
     );
+}
+
+/// The stone `ctx` currently holds -- planes, concave tools and each tool's
+/// `(tier, placement)` -- as the owning geometry a camera-follow redraw carries.
+///
+/// The planes go through the same `(normal, -d)` flip the preview has always used, so a
+/// planar stone is the request it always was; the tools ride along unchanged, which is
+/// what stops a camera drag from redrawing a concave design as its flat hull.
+fn active_stone(ctx: &RenderContext) -> StoneGeometryBuf {
+    StoneGeometryBuf {
+        planes: ctx.active_planes.as_ref().clone(),
+        tools: ctx.active_tools.as_ref().clone(),
+        placements: ctx.active_placements.clone(),
+    }
 }
 
 /// Shrinks `viewport_size` to the rectangle Slint's `image-fit: contain` draws
@@ -217,18 +228,14 @@ pub(in crate::gui) fn resubmit_live_solid(
     if ctx.active_planes.is_empty() {
         return;
     }
-    let planes = ctx
-        .active_planes
-        .iter()
-        .map(|p| (glam::Vec3::from(p.normal), -p.d))
-        .collect();
+    let stone = active_stone(ctx);
     let scale = ui.window().scale_factor();
     let size = (
         (ui.global::<SolidPreviewModel>().get_live_viewport_width() * scale) as u32,
         (ui.global::<SolidPreviewModel>().get_live_viewport_height() * scale) as u32,
     );
-    preview_state.request_redraw_with_gear(
-        planes,
+    preview_state.request_redraw_geometry(
+        stone,
         CameraPose {
             yaw: ctx.yaw,
             pitch: ctx.pitch,

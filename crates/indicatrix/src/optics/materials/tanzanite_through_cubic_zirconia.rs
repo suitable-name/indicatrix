@@ -80,7 +80,7 @@ impl GemMaterial {
                 // (beta strongest on both V3+ bands, blocking red and green-yellow to
                 // leave blue; alpha weakest, leaving red open; gamma carries the
                 // 455nm band exclusively, blocking blue to leave yellow-green)
-                // follows directly from the three colours Hurlbut reports.
+                // follows directly from the three colors Hurlbut reports.
                 absorption: AbsorptionTensor::biaxial(
                     vec![
                         // alpha (o_ray) -- X-axis, red: both V3+ bands weak, leaving
@@ -170,7 +170,7 @@ impl GemMaterial {
                     c: [0.0, 0.031_78, 1000.0],
                 },
                 birefringence_delta: 0.0415,
-                // Colourless (no chromophore): empty band set, zero absorption at
+                // colorless (no chromophore): empty band set, zero absorption at
                 // every wavelength -- must render identically to before.
                 absorption: AbsorptionTensor::isotropic(vec![]),
                 c_axis: Vec3::Y,
@@ -200,7 +200,7 @@ impl GemMaterial {
                     c: [0.003_912, 0.027_802, 591.489],
                 },
                 birefringence_delta: 0.0,
-                // Colourless (no chromophore): empty band set, zero absorption at
+                // colorless (no chromophore): empty band set, zero absorption at
                 // every wavelength -- must render identically to before.
                 absorption: AbsorptionTensor::isotropic(vec![]),
                 c_axis: Vec3::Y,

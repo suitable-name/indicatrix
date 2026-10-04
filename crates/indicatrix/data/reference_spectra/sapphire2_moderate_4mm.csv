@@ -1,0 +1,38 @@
+# sample: "moderately saturated sapphire" of report 2 (no composition, no provenance)
+# host: corundum (Al2O3), uniaxial; E_perp_c = o-ray
+# composition: not stated (section B color sample is basaltic, 800 ppmw Fe, 50 ppmw Ti, 0 Mg, 4.0 mm; the table is not stated to be that sample)
+# units: lambda_nm; alpha in cm^-1, Napierian (T = exp(-alpha*L), L in cm)
+# path_cm: 0.40
+# source: research-2026-10-polarized-spectra-2.md section B table (user-delivered, unverified)
+# lab: E_perp_c | D65 | 0.4 | 35.5 | -8.2 | -38.4
+lambda_nm,E_perp_c
+350,3.50
+360,3.20
+370,4.80
+377,9.50
+388,7.80
+400,3.10
+410,2.05
+430,1.50
+450,2.65
+470,1.45
+500,1.85
+510,2.45
+520,3.20
+530,4.05
+540,4.90
+550,5.85
+560,6.75
+570,7.50
+580,7.95
+600,8.00
+650,8.35
+660,8.50
+670,8.55
+680,8.50
+690,8.35
+700,8.10
+720,7.45
+750,6.30
+800,4.45
+880,2.15

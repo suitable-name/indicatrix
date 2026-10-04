@@ -7,7 +7,7 @@ use super::specific_gravity::built_in_specific_gravity;
 use crate::optics_hints::critical_angle_deg;
 use indicatrix::optics::{
     dispersion::DispersionModel,
-    materials::{GemMaterial, body_colour::preset_label_for_rgb},
+    materials::{GemMaterial, body_color::preset_label_for_rgb},
 };
 
 /// A design's material choice for the carat-weight estimate.
@@ -33,17 +33,17 @@ pub struct MaterialSelection {
     /// `name` resolves to, same precedence as `specific_gravity_override`. `None`
     /// means "use the resolved material's own `n_D`".
     pub refractive_index_override: Option<f64>,
-    /// A per-design body colour: the `[R, G, B]` absorption triple
-    /// `GemMaterial::with_body_colour` applies on top of whatever `name` resolves to
-    /// (see `indicatrix::optics::materials::body_colour::BODY_COLOUR_PRESETS` for the
-    /// fixed presets). `None` means "the material's own colour". Lets a cutter try a
+    /// A per-design body color: the `[R, G, B]` absorption triple
+    /// `GemMaterial::with_body_color` applies on top of whatever `name` resolves to
+    /// (see `indicatrix::optics::materials::body_color::BODY_color_PRESETS` for the
+    /// fixed presets). `None` means "the material's own color". Lets a cutter try a
     /// design as, say, a yellow instead of a blue sapphire without authoring a new
     /// custom material; the variant is isotropic (the base material's pleochroism
     /// is not modelled while this is set).
-    pub body_colour_override: Option<[f32; 3]>,
+    pub body_color_override: Option<[f32; 3]>,
 }
 
-/// Hand-written rather than derived so a selection WITHOUT a body-colour override
+/// Hand-written rather than derived so a selection WITHOUT a body-color override
 /// prints exactly as it did before that field existed (the desktop's identity pins
 /// hash these `Debug` dumps); the field is printed only when it is set.
 impl std::fmt::Debug for MaterialSelection {
@@ -52,8 +52,8 @@ impl std::fmt::Debug for MaterialSelection {
         out.field("name", &self.name)
             .field("specific_gravity_override", &self.specific_gravity_override)
             .field("refractive_index_override", &self.refractive_index_override);
-        if let Some(rgb) = &self.body_colour_override {
-            out.field("body_colour_override", rgb);
+        if let Some(rgb) = &self.body_color_override {
+            out.field("body_color_override", rgb);
         }
         out.finish()
     }
@@ -71,40 +71,40 @@ impl MaterialSelection {
             name: None,
             specific_gravity_override: None,
             refractive_index_override: None,
-            body_colour_override: None,
+            body_color_override: None,
         }
     }
 
-    /// Returns this selection with `body_colour_override` replaced by `rgb` -- every
+    /// Returns this selection with `body_color_override` replaced by `rgb` -- every
     /// other field carries through unchanged. `None` restores the material's own
-    /// colour.
+    /// color.
     #[must_use]
-    pub const fn with_body_colour(mut self, rgb: Option<[f32; 3]>) -> Self {
-        self.body_colour_override = rgb;
+    pub const fn with_body_color(mut self, rgb: Option<[f32; 3]>) -> Self {
+        self.body_color_override = rgb;
         self
     }
 
-    /// Whether this selection recolours its material (see
-    /// [`Self::body_colour_override`]).
+    /// Whether this selection recolors its material (see
+    /// [`Self::body_color_override`]).
     #[must_use]
-    pub const fn has_body_colour_override(&self) -> bool {
-        self.body_colour_override.is_some()
+    pub const fn has_body_color_override(&self) -> bool {
+        self.body_color_override.is_some()
     }
 
-    /// A short label for [`Self::body_colour_override`]: the matching preset's own
-    /// label (`"Yellow"`), `"custom colour"` for a triple that matches no preset, or
-    /// `None` when no override is set. Used to name a recoloured material
+    /// A short label for [`Self::body_color_override`]: the matching preset's own
+    /// label (`"Yellow"`), `"custom color"` for a triple that matches no preset, or
+    /// `None` when no override is set. Used to name a recolored material
     /// (`Sapphire (Yellow)`) in the undo history and the render readout.
     #[must_use]
-    pub fn body_colour_label(&self) -> Option<&'static str> {
-        self.body_colour_override
-            .map(|rgb| preset_label_for_rgb(rgb).unwrap_or("custom colour"))
+    pub fn body_color_label(&self) -> Option<&'static str> {
+        self.body_color_override
+            .map(|rgb| preset_label_for_rgb(rgb).unwrap_or("custom color"))
     }
 
     /// `gem` with this selection's per-design overrides applied: the
     /// `refractive_index_override` as a flat (non-dispersive) Cauchy fit at exactly
-    /// the typed value, then the `body_colour_override` via
-    /// `GemMaterial::with_body_colour`. With neither set, `gem` comes back
+    /// the typed value, then the `body_color_override` via
+    /// `GemMaterial::with_body_color`. With neither set, `gem` comes back
     /// unchanged.
     ///
     /// The ONE place a design's selection turns a looked-up material into the stone
@@ -122,8 +122,13 @@ impl MaterialSelection {
                 c: 0.0,
             };
         }
-        if let Some(rgb) = self.body_colour_override {
-            gem = gem.with_body_colour(rgb);
+        if let Some(rgb) = self.body_color_override {
+            // Note: with_body_color replaces the entire absorption tensor with 3 isotropic
+            // legacy bands, which replaces any physics chromophore absorption. The desktop
+            // therefore greys the override control out for a physics material
+            // ("replaces the physical color", `EditorModel.design_material_is_physics`) and
+            // warns when one is already set; a physics override is a follow-up.
+            gem = gem.with_body_color(rgb);
         }
         gem
     }

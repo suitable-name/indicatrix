@@ -4,6 +4,80 @@
 
 use std::fmt::Write as _;
 
+use crate::design::{ConcaveTier, ConcaveTool, ToolMotion};
+
+/// Width of the name column in [`CuttingSheet::to_text`]. Hoisted so a concave
+/// tier's second line can start its tool code in the same column by
+/// construction instead of by a second hand-counted literal.
+pub const SHEET_NAME_WIDTH: usize = 16;
+
+/// Width of the leading "`{sequence:>3}. `" block of a text-sheet row; the
+/// second line of a concave tier is indented by it so its tool code sits in the
+/// name column.
+const SEQUENCE_PREFIX_WIDTH: usize = 5;
+
+/// Width of the θ column: formatted tool azimuth θ, right-aligned to match
+/// the facet line's angle column.
+const THETA_WIDTH: usize = 13;
+
+/// Blank columns between the end of θ and the displacement, so the
+/// displacement starts under the facet line's `indices` list.
+/// Facet line prefix up to "indices [":
+/// sequence (5) + name (16) + " angle " (7) + angle (6) + " deg  " (6) = 40.
+/// Second line prefix before displacement:
+/// indent (5) + code (16) + `THETA_WIDTH` (13) + `DISPLACEMENT_INDENT` (6) = 40.
+const DISPLACEMENT_INDENT: usize = 6;
+
+/// Width of the displacement column: `X = -0.250, Y = -0.250, Z = -0.250`, the
+/// widest value it prints, so the details column is straight on every row.
+const DISPLACEMENT_WIDTH: usize = 34;
+
+/// What a concave tier adds to its [`CutSheetRow`]: the tool line's raw values,
+/// for views that format them their own way.
+///
+/// The HTML sheet shows millimetres beside the ratio. The text and HTML sheets get their strings from
+/// [`ConcaveRowInfo::second_line_fields`], which is
+/// [`crate::design::ConcaveTier::second_line_fields`], so no output can
+/// disagree with another.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConcaveRowInfo {
+    /// Tool shape.
+    pub tool: ConcaveTool,
+    /// Tool azimuth θ, in degrees.
+    pub tool_azimuth_deg: f64,
+    /// Tool displacement `[x, y, z]`.
+    pub displacement: [f64; 3],
+    /// Tool diameter over stone width (D/W).
+    pub diameter_ratio: f64,
+    /// Included angle for cones and discs.
+    pub tool_angle_deg: Option<f64>,
+    /// How the tool moves while cutting.
+    pub motion: ToolMotion,
+}
+
+impl ConcaveRowInfo {
+    /// The tool line's four columns. Delegates to
+    /// [`ConcaveTier::second_line_fields`] through a tier carrying only the
+    /// tool's own fields (the formatter reads nothing else), rather than
+    /// repeating its format strings here.
+    #[must_use]
+    pub fn second_line_fields(&self) -> [String; 4] {
+        ConcaveTier {
+            name: String::new(),
+            angle_deg: 0.0,
+            indices: Vec::new(),
+            instructions: String::new(),
+            tool: self.tool,
+            tool_azimuth_deg: self.tool_azimuth_deg,
+            displacement: self.displacement,
+            diameter_ratio: self.diameter_ratio,
+            tool_angle_deg: self.tool_angle_deg,
+            motion: self.motion,
+        }
+        .second_line_fields()
+    }
+}
+
 /// One line of a printable cutting sequence: everything a cutter needs to
 /// know about a single facet tier, already in cutting order (see
 /// [`CuttingSheet::rows`]).
@@ -60,6 +134,10 @@ pub struct CutSheetRow {
     /// under). The cut sheet shows "depth in mm and dial readings", not just the
     /// dimensionless mast.
     pub depth_mm: Option<f64>,
+    /// `Some` for a concave tier, whose tool line follows the facet line;
+    /// `None` for a flat tier. A concave row has `mast == 0.0` (it has no
+    /// mast) and no depth, and its `meets_tiers` is empty.
+    pub concave: Option<ConcaveRowInfo>,
 }
 
 /// A design's printable cutting sequence: every tier, in cutting order, with
@@ -110,9 +188,11 @@ impl CuttingSheet {
             // `write!` into a `String` is infallible; nothing to propagate.
             let _ = write!(
                 out,
-                "{:>3}. {name:<16} angle {:>7.2} deg (elevation {:>6.2} deg)  indices [{indices}]  \
+                "{:>3}. {name:<SHEET_NAME_WIDTH$} angle {:>6.2} deg  indices [{indices}]  \
                  mast {:>8.4}",
-                row.sequence, row.angle_deg, row.angle_of_elevation_deg, row.mast
+                row.sequence,
+                row.angle_deg.abs(),
+                row.mast
             );
             if let Some(depth_mm) = row.depth_mm {
                 let _ = write!(out, "  depth {depth_mm:>6.2} mm");
@@ -122,6 +202,18 @@ impl CuttingSheet {
                 let _ = write!(out, "  cheater: {cheater:+.2} deg");
             }
             out.push('\n');
+            if let Some(concave) = &row.concave {
+                let [code, theta, displacement, details] = concave.second_line_fields();
+                // Under the facet line's own columns: the tool code in the name
+                // column, θ ending under φ, the displacement under the index
+                // list. No sequence number: the pair is one tier.
+                let _ = writeln!(
+                    out,
+                    "{:SEQUENCE_PREFIX_WIDTH$}{code:<SHEET_NAME_WIDTH$}{theta:>THETA_WIDTH$}\
+                     {:DISPLACEMENT_INDENT$}{displacement:<DISPLACEMENT_WIDTH$}  {details}",
+                    "", ""
+                );
+            }
         }
         out
     }
@@ -144,7 +236,7 @@ pub(super) fn format_indices(indices: &[f64]) -> String {
 /// Formats one index-wheel position: a whole tooth prints with no decimal
 /// point (`"12"`, matching how a cutter reads an index-wheel scale), a
 /// fractional position keeps two decimals (`"11.50"`).
-fn format_index(index: f64) -> String {
+pub fn format_index(index: f64) -> String {
     if (index - index.round()).abs() < 1e-9 {
         format!("{:.0}", index.round())
     } else {

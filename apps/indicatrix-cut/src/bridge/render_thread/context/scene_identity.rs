@@ -19,8 +19,8 @@ use super::RenderContext;
 use crate::settings::model::Backdrop;
 use glam::Vec3;
 use indicatrix::{
-    geometry::plane::GpuFacetPlane,
-    optics::{materials::GemMaterial, raytracer::LightingPreset},
+    geometry::{plane::GpuFacetPlane, tool::ToolPrimitive},
+    optics::{fluorescence::Fluorescence, materials::GemMaterial, raytracer::LightingPreset},
     renderer::env_map::EnvironmentMap,
 };
 use std::sync::Arc;
@@ -39,7 +39,9 @@ struct SceneKey {
     material_name: String,
     material_override: Option<GemMaterial>,
     active_planes: Arc<Vec<GpuFacetPlane>>,
+    active_tools: Arc<Vec<ToolPrimitive>>,
     custom_materials: Arc<Vec<GemMaterial>>,
+    fluorescence: Option<Arc<Fluorescence>>,
     env_map: Option<Arc<EnvironmentMap>>,
 }
 
@@ -67,6 +69,14 @@ fn c_axis(ctx: &RenderContext) -> Option<[u32; 3]> {
         .map(|v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()])
 }
 
+fn same_fluorescence(a: Option<&Arc<Fluorescence>>, b: Option<&Arc<Fluorescence>>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        _ => false,
+    }
+}
+
 fn same_env(a: Option<&Arc<EnvironmentMap>>, b: Option<&Arc<EnvironmentMap>>) -> bool {
     match (a, b) {
         (None, None) => true,
@@ -87,7 +97,9 @@ impl SceneKey {
             material_name: ctx.material_name.clone(),
             material_override: ctx.material_override.clone(),
             active_planes: Arc::clone(&ctx.active_planes),
+            active_tools: Arc::clone(&ctx.active_tools),
             custom_materials: Arc::clone(&ctx.custom_materials),
+            fluorescence: ctx.active_fluorescence(),
             env_map: ctx.env_map.clone(),
         }
     }
@@ -104,7 +116,12 @@ impl SceneKey {
             && self.material_name == ctx.material_name
             && self.material_override == ctx.material_override
             && Arc::ptr_eq(&self.active_planes, &ctx.active_planes)
+            && Arc::ptr_eq(&self.active_tools, &ctx.active_tools)
             && Arc::ptr_eq(&self.custom_materials, &ctx.custom_materials)
+            && same_fluorescence(
+                self.fluorescence.as_ref(),
+                ctx.active_fluorescence().as_ref(),
+            )
             && same_env(self.env_map.as_ref(), ctx.env_map.as_ref())
     }
 }
@@ -177,12 +194,18 @@ mod tests {
     fn every_kind_of_scene_change_bumps_the_generation() {
         let mut ctx = RenderContext::default();
         let mut last = ctx.scene_generation();
-        let changes: [fn(&mut RenderContext); 9] = [
+        let changes: [fn(&mut RenderContext); 10] = [
             |c| c.yaw += 0.1,
             |c| c.exposure = 2.0,
             |c| c.material_name = "Spinel".to_string(),
             |c| c.material_override = Some(GemMaterial::diamond()),
             |c| c.active_planes = Arc::new(c.active_planes.as_ref().clone()),
+            |c| {
+                c.active_tools = Arc::new(vec![ToolPrimitive::ball(
+                    glam::Vec3::new(0.0, 0.3, 0.0),
+                    0.1,
+                )]);
+            },
             |c| c.env_map = Some(Arc::new(EnvironmentMap::uniform(2, 2, [1.0, 1.0, 1.0]))),
             |c| c.girdle_frosted = true,
             |c| c.width = 640,

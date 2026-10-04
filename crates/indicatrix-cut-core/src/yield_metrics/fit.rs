@@ -8,7 +8,7 @@ use indicatrix::geometry::{
     GpuFacetPlane,
     cuts::StandardGemCuts,
     meet_solver::SolvedTier,
-    stone_metrics::{SolidStatus, build_solid_mesh, measure_solid},
+    stone_metrics::{SolidMetrics, SolidStatus, build_solid_mesh, measure_solid},
 };
 
 /// Whether the schedule's own facet planes -- **ignoring the preform entirely** --
@@ -60,6 +60,24 @@ pub fn exceeds_preform(design: &Design, solved: &[SolvedTier]) -> Option<Preform
         outside_halfspace: worst_halfspace_violation(&mesh.positions, &preform_planes),
     };
     fit.exceeds_any().then_some(fit)
+}
+
+/// Metrics of the finished stone for the yield figures: the flat solid's, with
+/// the volume of the concave-carved mesh when the design has concave tiers
+/// ([`Design::measure_from_solved_geom`], i.e. `build_solid_mesh_geom`).
+///
+/// Without concave tiers this is exactly `measure_solid(&design.planes_from_solved(solved))`,
+/// so planar yield figures do not move. Concave tiers that cannot be resolved
+/// (an invalid tier, too many placements) fall back to the flat stone: a yield
+/// figure that is slightly high is a better answer for a half-edited design than
+/// none, and the validation error is reported elsewhere.
+pub(super) fn finished_metrics(design: &Design, solved: &[SolvedTier]) -> Option<SolidMetrics> {
+    if design.concave_tiers.is_empty() {
+        return measure_solid(&design.planes_from_solved(solved));
+    }
+    design
+        .measure_from_solved_geom(solved)
+        .unwrap_or_else(|_| measure_solid(&design.planes_from_solved(solved)))
 }
 
 /// The worst violation of `planes`' half-spaces (`n . x <= m`) by any of

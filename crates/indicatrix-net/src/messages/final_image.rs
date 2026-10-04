@@ -50,7 +50,7 @@
 use crate::scene::SceneState;
 use serde::{Deserialize, Serialize};
 
-/// The RGB colour space the server tone-maps into -- the wire twin of
+/// The RGB color space the server tone-maps into -- the wire twin of
 /// `indicatrix::color::ColorSpace` (which has no serde derive). Variant order is
 /// wire-load-bearing; append only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,7 +115,7 @@ pub struct FinalImageRequest {
     pub width: u32,
     /// Output height in pixels. Must equal `scene.height` in v14, see [`Self::width`].
     pub height: u32,
-    /// The colour space to tone-map into.
+    /// The color space to tone-map into.
     pub color_space: WireColorSpace,
     /// The output format.
     pub output: FinalOutput,
@@ -192,6 +192,8 @@ mod tests {
             backdrop: 0.0,
             environment: crate::scene::SceneEnvironment::Studio,
             surface_glare: 1.0,
+            tools: Vec::new(),
+            fluorescence: Default::default(),
         }
     }
 

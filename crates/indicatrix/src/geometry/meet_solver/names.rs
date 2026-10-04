@@ -238,6 +238,34 @@ impl<'a> MeetNameResolver<'a> {
         {
             return TokenResolution::Tiers(vec![i]);
         }
+        // Legacy 123-ABC resolution: "1" -> pavilion tier named "P1" (or "PF1");
+        // "A" -> crown tier named "C1", "B" -> "C2".
+        if !token.is_empty() && token.chars().all(|c| c.is_ascii_digit()) {
+            let p_cand = format!("P{token}");
+            if let Some(i) = self.name_match(&p_cand)
+                && self.blocks[i] == Block::Pavilion
+            {
+                return TokenResolution::Tiers(vec![i]);
+            }
+            let pf_cand = format!("PF{token}");
+            if let Some(i) = self.name_match(&pf_cand)
+                && self.blocks[i] == Block::Pavilion
+            {
+                return TokenResolution::Tiers(vec![i]);
+            }
+        }
+        if token.len() == 1
+            && let Some(c) = token.chars().next()
+            && c.is_ascii_alphabetic()
+        {
+            let letter_idx = (c.to_ascii_uppercase() as u8).saturating_sub(b'A') + 1;
+            let c_cand = format!("C{letter_idx}");
+            if let Some(i) = self.name_match(&c_cand)
+                && self.blocks[i] == Block::Crown
+            {
+                return TokenResolution::Tiers(vec![i]);
+            }
+        }
         TokenResolution::Unresolved
     }
 
@@ -419,5 +447,26 @@ mod tests {
         let r = MeetNameResolver::new(&tiers);
         // The flat crown tier is named "T", but prose says "table".
         assert_eq!(r.resolve_token("table"), TokenResolution::Tiers(vec![5]));
+    }
+
+    #[test]
+    fn resolver_matches_legacy_123_abc_to_modern_labels() {
+        let mut tiers = resolver_fixture();
+        // Rename tiers to modern PF-P-G-C conventions:
+        tiers[0].names = vec!["P1".to_string()];
+        tiers[2].names = vec!["P2".to_string()];
+        tiers[3].names = vec!["C1".to_string()];
+        tiers[4].names = vec!["C2".to_string()];
+        let r = MeetNameResolver::new(&tiers);
+
+        // Legacy meet instructions "1" and "2" resolve to P1 and P2
+        assert_eq!(r.resolve_token("1"), TokenResolution::Tiers(vec![0]));
+        assert_eq!(r.resolve_token("2"), TokenResolution::Tiers(vec![2]));
+
+        // Legacy crown letters "A" and "B" resolve to C1 and C2
+        assert_eq!(r.resolve_token("A"), TokenResolution::Tiers(vec![3]));
+        assert_eq!(r.resolve_token("a"), TokenResolution::Tiers(vec![3]));
+        assert_eq!(r.resolve_token("B"), TokenResolution::Tiers(vec![4]));
+        assert_eq!(r.resolve_token("b"), TokenResolution::Tiers(vec![4]));
     }
 }

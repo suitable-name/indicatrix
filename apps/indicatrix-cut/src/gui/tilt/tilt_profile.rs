@@ -40,14 +40,18 @@
 
 use crate::{
     ActivityModel, MainWindow, TiltModel,
-    bridge::render_thread::{RenderContext, hash_planes, resolve_material_with_override},
+    bridge::render_thread::{RenderContext, resolve_material_with_override},
     gui::optics::curve_path::full_axis_curve_path,
     settings::SettingsPersister,
 };
 use indicatrix::{
-    color::metrics::evaluate_all_axes_profiles,
-    geometry::plane::GpuFacetPlane,
+    color::metrics::evaluate_all_axes_profiles_geom,
+    geometry::{
+        plane::GpuFacetPlane,
+        tool::{StoneGeometry, ToolPrimitive},
+    },
     optics::{materials::GemMaterial, raytracer::LightingPreset},
+    render_setup::hash_geometry,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::sync::{
@@ -100,7 +104,7 @@ type AxisCurveRows = Vec<[f32; 181]>;
 /// clippy's function-length lint. It is also the entire ~1.36s cost of a sweep in one
 /// place, which makes that cost easy to find and measure.
 fn sweep_all_axes(
-    planes: &[GpuFacetPlane],
+    geom: StoneGeometry<'_>,
     material: &GemMaterial,
     lighting_preset: LightingPreset,
     light_yaw: f32,
@@ -111,7 +115,7 @@ fn sweep_all_axes(
     // Scored under the selected preset at the current light pose, the lighting the
     // viewport renders with.
     let environment = lighting_preset.studio(1.0, light_yaw, light_pitch);
-    let axes = evaluate_all_axes_profiles(planes, material, environment);
+    let axes = evaluate_all_axes_profiles_geom(geom, material, environment);
     let mut brilliance_rows: AxisCurveRows = Vec::with_capacity(axes.len());
     let mut extinction_rows: AxisCurveRows = Vec::with_capacity(axes.len());
     let mut windowing_rows: AxisCurveRows = Vec::with_capacity(axes.len());
@@ -138,6 +142,7 @@ fn handle_request_tilt_profile_axes(
 ) {
     let (
         planes,
+        tools,
         material_name,
         material_override,
         custom_materials,
@@ -150,6 +155,7 @@ fn handle_request_tilt_profile_axes(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         (
             ctx.active_planes.clone(),
+            ctx.active_tools.clone(),
             ctx.material_name.clone(),
             ctx.material_override.clone(),
             ctx.custom_materials.clone(),
@@ -184,7 +190,11 @@ fn handle_request_tilt_profile_axes(
         light_yaw,
         light_pitch,
         material: material.clone(),
-        planes_hash: hash_planes(&planes),
+        // `hash_geometry` is `hash_planes` for a planar stone, so its keys are unchanged.
+        planes_hash: hash_geometry(StoneGeometry {
+            planes: &planes,
+            tools: &tools,
+        }),
     };
     // Whether the curves already on screen (`completed_key`, the last sweep that
     // actually FINISHED and pushed `graph_*` rows -- as opposed to `launched_key`
@@ -230,6 +240,7 @@ fn handle_request_tilt_profile_axes(
     spawn_tilt_profile_sweep(
         SweepRequest {
             planes,
+            tools,
             material,
             lighting_preset,
             light_yaw,
@@ -251,6 +262,8 @@ fn handle_request_tilt_profile_axes(
 /// see [`SweepBookkeeping`] for the other half.
 struct SweepRequest {
     planes: Arc<Vec<GpuFacetPlane>>,
+    /// The concave tools cut out of `planes`; empty for a planar stone.
+    tools: Arc<Vec<ToolPrimitive>>,
     material: GemMaterial,
     lighting_preset: LightingPreset,
     light_yaw: f32,
@@ -291,6 +304,7 @@ fn spawn_tilt_profile_sweep(
 ) {
     let SweepRequest {
         planes,
+        tools,
         material,
         lighting_preset,
         light_yaw,
@@ -304,8 +318,16 @@ fn spawn_tilt_profile_sweep(
         activity_id,
     } = bookkeeping;
     std::thread::spawn(move || {
-        let (brilliance_rows, extinction_rows, windowing_rows) =
-            sweep_all_axes(&planes, &material, lighting_preset, light_yaw, light_pitch);
+        let (brilliance_rows, extinction_rows, windowing_rows) = sweep_all_axes(
+            StoneGeometry {
+                planes: &planes,
+                tools: &tools,
+            },
+            &material,
+            lighting_preset,
+            light_yaw,
+            light_pitch,
+        );
 
         let brilliance_paths: Vec<SharedString> = brilliance_rows
             .iter()
@@ -450,7 +472,7 @@ pub(in crate::gui) fn setup_tilt_profile_callback(
 /// Whether the tilt-curve/preview data currently cached for this design was rendered
 /// under a different `GemMaterial` than the one the viewport currently has loaded, and
 /// the dialog should therefore offer to re-render fresh rather than silently show a
-/// stale-coloured cached curve/image.
+/// stale-colored cached curve/image.
 ///
 /// `cached_material_name` is `None` whenever there is no cached curve to compare
 /// against at all (e.g. no preview generated yet, or browsing a remote library whose

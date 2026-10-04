@@ -6,13 +6,13 @@
 //! the design's own `.indicatrix` file (`[material.custom]`), which is how it survives a reload of
 //! the tab and a save. The fields are the ones that decide the optics -- refractive index,
 //! dispersion (the F-C spread), birefringence, an optional specific gravity for the carat
-//! estimate and a body colour -- and the crystal system and optical character are derived
+//! estimate and a body color -- and the crystal system and optical character are derived
 //! from the birefringence exactly as `GemMaterial::new_custom` does. The desktop's fuller
 //! editor (crystal system and optical character pickers, biaxial data, templates) is not
 //! mirrored.
 
 use indicatrix::optics::materials::GemMaterial;
-use indicatrix_editor::material::body_colour_from_index;
+use indicatrix_editor::material::body_color_from_index;
 use indicatrix_formats::native::CustomMaterialSnapshot;
 
 /// The refractive-index range the desktop's editor allows.
@@ -35,9 +35,9 @@ pub struct CustomMaterialForm<'a> {
     pub birefringence: &'a str,
     /// Specific gravity for the carat estimate; blank or 0 means "not recorded".
     pub specific_gravity: &'a str,
-    /// The Colour combo's index (`indicatrix_editor::material::body_colour_options`): 0
+    /// The color combo's index (`indicatrix_editor::material::body_color_options`): 0
     /// and any unknown index are clear.
-    pub colour_index: i32,
+    pub color_index: i32,
 }
 
 /// A material built from the fields.
@@ -133,13 +133,13 @@ pub fn build_custom_material(form: &CustomMaterialForm<'_>) -> Result<BuiltCusto
     // 0 is the desktop's "not recorded" sentinel, stored as `None` rather than a
     // zero-density material.
     let specific_gravity = (specific_gravity > 0.0001).then_some(f64::from(specific_gravity));
-    let colour = body_colour_from_index(form.colour_index);
+    let color = body_color_from_index(form.color_index);
     let material = GemMaterial::new_custom(
         name,
         ri,
         dispersion,
         birefringence,
-        colour.unwrap_or([0.0; 3]),
+        color.unwrap_or([0.0; 3]),
     );
     let snapshot = CustomMaterialSnapshot::new(
         f64::from(ri),
@@ -149,7 +149,7 @@ pub fn build_custom_material(form: &CustomMaterialForm<'_>) -> Result<BuiltCusto
         format!("{:?}", material.crystal_system),
         format!("{:?}", material.optical_character),
     )
-    .with_body_colour(colour);
+    .with_body_color(color);
     Ok(BuiltCustomMaterial { material, snapshot })
 }
 
@@ -164,7 +164,7 @@ mod tests {
             dispersion: "",
             birefringence: "",
             specific_gravity: "",
-            colour_index: 0,
+            color_index: 0,
         }
     }
 
@@ -187,13 +187,13 @@ mod tests {
             dispersion: "0.018",
             birefringence: "-0.008",
             specific_gravity: "3.99",
-            colour_index: 2,
+            color_index: 2,
         })
         .expect("builds");
         assert_eq!(built.snapshot.specific_gravity, Some(f64::from(3.99_f32)));
         assert_eq!(built.snapshot.birefringence_delta, f64::from(-0.008_f32));
         assert_eq!(built.snapshot.optical_character, "UniaxialNegative");
-        // The colour is the preset the combo names (index 2 is the second preset), not clear.
+        // The color is the preset the combo names (index 2 is the second preset), not clear.
         let clear = GemMaterial::new_custom("Mineral", 1.76, 0.018, -0.008, [0.0; 3]);
         assert_ne!(built.material.absorption, clear.absorption);
         // The snapshot rebuilds the same optics on the next load.
@@ -203,17 +203,17 @@ mod tests {
         );
         assert_eq!(restored.crystal_system, built.material.crystal_system);
         assert_eq!(restored.optical_character, built.material.optical_character);
-        // ... and the body colour too: the restored material is not colourless.
+        // ... and the body color too: the restored material is not colorless.
         assert_eq!(
-            built.snapshot.body_colour(),
-            body_colour_from_index(2),
+            built.snapshot.body_color(),
+            body_color_from_index(2),
             "the preset the combo names"
         );
         assert_eq!(restored.absorption, built.material.absorption);
     }
 
     #[test]
-    fn a_clear_colour_leaves_the_snapshot_without_one() {
+    fn a_clear_color_leaves_the_snapshot_without_one() {
         let built = build_custom_material(&form("Glass", "1.5")).expect("builds");
         assert_eq!(built.snapshot.absorption_rgb, None);
     }

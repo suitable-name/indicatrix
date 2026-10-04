@@ -1,0 +1,524 @@
+import { Slider, ComboBox } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { PhysicscolorModel, PhysicsRow } from "../../models/physics_color.slint";
+import { colorPicker } from "color_picker.slint";
+
+// The material editor's physics color section (spec 7): host, data-confidence banner, the
+// element rows (log-scale amount sliders bounded by the host's concentration maximum, lock,
+// remove, "estimated data" note and a Sources popover per item), the two views (strength +
+// fractions / absolute amounts), treatments, the equivalent path, the D65 and 3200 K swatches
+// (unpolarised plus o/e/beta), the color picker whose pick is the solver's target, and the
+// "dE from your pick" readout. Everything shown is pushed from Rust
+// (`gui::optics::physics_ui`); this file holds no recipe logic.
+//
+// Rows and chips are STATELESS views (`value`/`on` come only from the model, interaction only
+// emits callbacks): a std `Slider` assigned by the user stops following its binding, which
+// would leave a row stale after an undo or a solver write.
+
+// A flat chip: a label that is either on or off.
+component Chip inherits Rectangle {
+    in property <string> text;
+    in property <bool> on: false;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 22px;
+    min-width: 40px;
+    border-radius: Theme.radius-sm;
+    background: root.on ? Theme.surface-raised : Theme.surface-sunken;
+    border-width: 1px;
+    border-color: root.on ? Theme.accent-cyan : Theme.border-dialog;
+    opacity: root.enabled ? 1.0 : 0.5;
+    TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        Text {
+            text: root.text;
+            font-size: 10px;
+            font-weight: 600;
+            color: root.on ? Theme.accent-cyan : Theme.text-secondary;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+// A small color swatch with a caption under the row it belongs to.
+component Swatch inherits HorizontalLayout {
+    in property <color> swatch;
+    in property <string> caption;
+    spacing: 4px;
+    Rectangle {
+        width: 28px;
+        height: 18px;
+        border-radius: 3px;
+        background: root.swatch;
+        border-width: 1px;
+        border-color: Theme.border-dialog;
+    }
+    Text { text: root.caption; font-size: 9px; color: Theme.text-muted; vertical-alignment: center; }
+}
+
+// A stateless horizontal slider: `value` is 0..1 and only ever comes from the model.
+component PhysSlider inherits Rectangle {
+    in property <float> value: 0.0;
+    callback changed(float);
+    callback released();
+    height: 18px;
+    min-width: 60px;
+    horizontal-stretch: 1;
+    function position(x: length) -> float {
+        return max(0.0, min(1.0, (x - 6px) / max(1px, root.width - 12px)));
+    }
+    Rectangle {
+        y: (parent.height - 4px) / 2;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.surface-sunken;
+        border-width: 1px;
+        border-color: Theme.border-dialog;
+    }
+    Rectangle {
+        y: (parent.height - 4px) / 2;
+        height: 4px;
+        border-radius: 2px;
+        width: root.value * (parent.width - 12px) + 6px;
+        background: Theme.accent-cyan;
+    }
+    Rectangle {
+        x: root.value * (parent.width - 12px);
+        y: (parent.height - 12px) / 2;
+        width: 12px;
+        height: 12px;
+        border-radius: 6px;
+        background: Theme.accent-cyan;
+        border-width: 1px;
+        border-color: #ffffff;
+    }
+    TouchArea {
+        pointer-event(e) => {
+            if (e.button == PointerEventButton.left) {
+                if (e.kind == PointerEventKind.down) {
+                    root.changed(root.position(self.mouse-x));
+                } else if (e.kind == PointerEventKind.up) {
+                    root.released();
+                }
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                root.changed(root.position(self.mouse-x));
+            }
+        }
+    }
+}
+
+// One recipe row: label, slider, amount, lock, remove, Sources, and the estimated-data note.
+component PhysicsRowItem inherits Rectangle {
+    in property <PhysicsRow> item;
+    in property <bool> fractions;
+    height: col.preferred-height + 4px;
+
+    col := VerticalLayout {
+        spacing: 2px;
+        HorizontalLayout {
+            spacing: 6px;
+            Text {
+                text: root.item.label;
+                font-size: 11px;
+                font-weight: 700;
+                color: Theme.text-primary;
+                width: 64px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            PhysSlider {
+                value: root.fractions ? root.item.fraction : root.item.slider;
+                changed(v) => {
+                    if (root.fractions) {
+                        PhysicscolorModel.fraction_changed(root.item.id, v);
+                    } else {
+                        PhysicscolorModel.amount_changed(root.item.id, v);
+                    }
+                }
+                released => { PhysicscolorModel.amount_released(); }
+            }
+            Text {
+                text: root.fractions ? root.item.fraction_text + "  " + root.item.amount_text : root.item.amount_text;
+                font-size: 10px;
+                color: Theme.accent-cyan;
+                min-width: 120px;
+                vertical-alignment: center;
+                horizontal-alignment: right;
+            }
+            Chip {
+                text: root.item.locked ? "Locked" : "Lock";
+                on: root.item.locked;
+                clicked => { PhysicscolorModel.lock_toggled(root.item.id); }
+            }
+            Chip {
+                text: "Sources";
+                clicked => { sources_popup.show(); }
+            }
+            Rectangle {
+                width: 22px;
+                height: 22px;
+                border-radius: Theme.radius-sm;
+                background: remove_touch.has-hover ? Theme.danger-surface-hover : Theme.danger-surface;
+                border-width: 1px;
+                border-color: Theme.danger-border;
+                remove_touch := TouchArea { clicked => { PhysicscolorModel.remove_item(root.item.id); } }
+                Image {
+                    source: @image-url("../../icons/close.svg");
+                    colorize: Theme.danger;
+                    width: 10px;
+                    height: 10px;
+                }
+            }
+        }
+        if root.item.estimated : Text {
+            text: "estimated data (" + root.item.confidence + ") - treat the strength as approximate";
+            font-size: 9px;
+            color: Theme.accent-amber;
+        }
+    }
+
+    sources_popup := PopupWindow {
+        x: 0px;
+        y: root.height;
+        width: 340px;
+        Rectangle {
+            background: Theme.surface-raised;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border-dialog;
+            height: src_col.preferred-height + 16px;
+            src_col := VerticalLayout {
+                padding: 8px;
+                spacing: 4px;
+                Text { text: "Sources \u{2014} " + root.item.label; font-size: 11px; font-weight: 700; color: Theme.text-primary; }
+                Text { text: root.item.sources; font-size: 9px; color: Theme.text-secondary; wrap: word-wrap; }
+            }
+        }
+    }
+}
+
+export component ChromophorePicker inherits VerticalLayout {
+    spacing: 10px;
+
+    // The color picker for "Pick color..." is inline (expands below the button).
+    property <bool> picker_open: false;
+
+    // ---- Host crystal ----
+    VerticalLayout {
+        spacing: 4px;
+        HorizontalLayout {
+            alignment: space-between;
+            Text { text: "Host Crystal:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+            Text { text: "(locks crystal system & character; prefills RI and SG)"; font-size: 10px; color: Theme.text-muted; }
+        }
+        ComboBox {
+            model: PhysicscolorModel.host_names;
+            current-index <=> PhysicscolorModel.host_index;
+            selected(val) => {
+                PhysicscolorModel.host_selected(self.current-index);
+            }
+        }
+    }
+
+    // ---- One data-confidence banner per host (only when some coefficient is not verified) ----
+    if PhysicscolorModel.banner_visible : Rectangle {
+        border-radius: Theme.radius-sm;
+        background: Theme.surface-warning;
+        border-width: 1px;
+        border-color: Theme.accent-amber;
+        height: banner_text.preferred-height + 12px;
+        banner_text := Text {
+            x: 8px;
+            width: parent.width - 16px;
+            y: 6px;
+            text: PhysicscolorModel.banner_text;
+            font-size: 10px;
+            font-weight: 600;
+            color: Theme.accent-amber;
+            wrap: word-wrap;
+        }
+    }
+
+    // ---- Recipe built with older catalogue data: a badge, never a silent update ----
+    if PhysicscolorModel.data_updated : Rectangle {
+        border-radius: Theme.radius-sm;
+        background: Theme.surface-info;
+        height: 28px;
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            spacing: 8px;
+            Text {
+                text: "color data updated \u{2014} this recipe still renders from its stored bands.";
+                font-size: 10px;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Chip {
+                text: "Update to current data";
+                clicked => { PhysicscolorModel.update_data(); }
+            }
+        }
+    }
+
+    // ---- Elements ----
+    VerticalLayout {
+        spacing: 6px;
+        HorizontalLayout {
+            spacing: 6px;
+            Text { text: "Elements"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; vertical-alignment: center; horizontal-stretch: 1; }
+            Chip {
+                text: "Undo";
+                enabled: PhysicscolorModel.can_undo;
+                clicked => { PhysicscolorModel.undo(); }
+            }
+            Chip {
+                text: "Redo";
+                enabled: PhysicscolorModel.can_redo;
+                clicked => { PhysicscolorModel.redo(); }
+            }
+            add_chip := Chip {
+                text: "+ Add";
+                clicked => { add_popup.show(); }
+                add_popup := PopupWindow {
+                    x: 0px;
+                    y: parent.height;
+                    width: 280px;
+                    Rectangle {
+                        background: Theme.surface-raised;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: Theme.border-dialog;
+                        height: add_col.preferred-height + 12px;
+                        add_col := VerticalLayout {
+                            padding: 6px;
+                            spacing: 2px;
+                            for opt in PhysicscolorModel.add_options : Rectangle {
+                                height: opt.enabled ? 22px : 34px;
+                                opacity: opt.enabled ? 1.0 : 0.55;
+                                background: opt_touch.has-hover && opt.enabled ? Theme.surface-control-hover : transparent;
+                                border-radius: 3px;
+                                opt_touch := TouchArea {
+                                    enabled: opt.enabled;
+                                    clicked => { PhysicscolorModel.add_item(opt.id); }
+                                }
+                                VerticalLayout {
+                                    padding-left: 6px;
+                                    alignment: center;
+                                    Text { text: opt.label; font-size: 11px; color: Theme.text-primary; }
+                                    if !opt.enabled : Text { text: opt.reason; font-size: 9px; color: Theme.accent-amber; }
+                                }
+                            }
+                            if PhysicscolorModel.add_options.length == 0 : Text {
+                                text: "Every item offered for this host is already in the recipe.";
+                                font-size: 10px;
+                                color: Theme.text-muted;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for r in PhysicscolorModel.rows : PhysicsRowItem {
+            item: r;
+            fractions: PhysicscolorModel.view_fractions;
+        }
+        if PhysicscolorModel.rows.length == 0 : Text {
+            text: PhysicscolorModel.note_text != "" ? PhysicscolorModel.note_text : "No elements yet \u{2014} add one or pick a color.";
+            font-size: 10px;
+            color: Theme.text-muted;
+        }
+    }
+
+    // ---- View toggle ----
+    HorizontalLayout {
+        spacing: 8px;
+        alignment: start;
+        Text { text: "View:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; vertical-alignment: center; }
+        Chip {
+            text: "Strength + fractions";
+            on: PhysicscolorModel.view_fractions;
+            clicked => {
+                PhysicscolorModel.view_fractions = true;
+                PhysicscolorModel.view_changed(true);
+            }
+        }
+        Chip {
+            text: "Absolute amounts";
+            on: !PhysicscolorModel.view_fractions;
+            clicked => {
+                PhysicscolorModel.view_fractions = false;
+                PhysicscolorModel.view_changed(false);
+            }
+        }
+    }
+
+    // ---- Strength: a multiplier on every item's absorption (hue unchanged) ----
+    VerticalLayout {
+        spacing: 4px;
+        HorizontalLayout {
+            alignment: space-between;
+            Text { text: "Strength (multiplier on all items):"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+            Text { text: Math.round(PhysicscolorModel.strength * 100.0) / 100.0 + "\u{d7}"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
+        }
+        Slider {
+            minimum: 0.05;
+            maximum: 10.0;
+            value <=> PhysicscolorModel.strength;
+            changed(v) => { PhysicscolorModel.strength_changed(v); }
+            released(v) => { PhysicscolorModel.strength_released(); }
+        }
+    }
+
+    // ---- Treatments valid for the host (and the present elements) ----
+    if PhysicscolorModel.treatments.length > 0 : VerticalLayout {
+        spacing: 4px;
+        Text { text: "Treatments:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+            for t in PhysicscolorModel.treatments : Chip {
+                text: t.name;
+                on: t.active;
+                clicked => { PhysicscolorModel.treatment_toggled(t.id, !t.active); }
+            }
+        }
+    }
+
+    // ---- Equivalent path ----
+    VerticalLayout {
+        spacing: 4px;
+        HorizontalLayout {
+            alignment: space-between;
+            Text { text: "Equivalent path (mm):"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+            Text { text: Math.round(PhysicscolorModel.reference_path_mm * 10.0) / 10.0 + " mm"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
+        }
+        Slider {
+            minimum: 1.0;
+            maximum: 40.0;
+            value <=> PhysicscolorModel.reference_path_mm;
+            changed(v) => { PhysicscolorModel.path_changed(v); }
+            released(v) => { PhysicscolorModel.path_released(); }
+        }
+        Text { text: PhysicscolorModel.path_hint; font-size: 9px; color: Theme.text-muted; wrap: word-wrap; }
+    }
+
+    // ---- Computed body color: D65 and 3200 K, unpolarised plus o / e / beta ----
+    VerticalLayout {
+        spacing: 6px;
+        Text { text: "Computed body color:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            Text { text: "D65"; font-size: 10px; font-weight: 600; color: Theme.text-muted; width: 44px; vertical-alignment: center; }
+            Swatch { swatch: PhysicscolorModel.d65_unpol; caption: "unpol."; }
+            Swatch { swatch: PhysicscolorModel.d65_o; caption: "o"; }
+            Swatch { swatch: PhysicscolorModel.d65_e; caption: "e"; }
+            if PhysicscolorModel.has_beta : Swatch { swatch: PhysicscolorModel.d65_beta; caption: "\u{3b2}"; }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            Text { text: "3200 K"; font-size: 10px; font-weight: 600; color: Theme.text-muted; width: 44px; vertical-alignment: center; }
+            Swatch { swatch: PhysicscolorModel.a_unpol; caption: "unpol."; }
+            Swatch { swatch: PhysicscolorModel.a_o; caption: "o"; }
+            Swatch { swatch: PhysicscolorModel.a_e; caption: "e"; }
+            if PhysicscolorModel.has_beta : Swatch { swatch: PhysicscolorModel.a_beta; caption: "\u{3b2}"; }
+        }
+        Text { text: PhysicscolorModel.color_change_text; font-size: 9px; font-weight: 600; color: Theme.accent-purple; }
+        if PhysicscolorModel.show_stone : HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            Text { text: PhysicscolorModel.stone_text; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+            Swatch { swatch: PhysicscolorModel.stone_d65; caption: "D65"; }
+            Swatch { swatch: PhysicscolorModel.stone_a; caption: "3200 K"; }
+        }
+
+        // ---- Fluorescence: the analytic glow of the recipe's emitters under the UV lamps ----
+        fluorescence_slot := VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                Text { text: PhysicscolorModel.fluorescence_text; font-size: 10px; font-weight: 600; color: Theme.text-secondary; vertical-alignment: center; }
+                if PhysicscolorModel.quench_text != "" : Text { text: "\u{b7} " + PhysicscolorModel.quench_text; font-size: 10px; font-weight: 600; color: Theme.accent-purple; vertical-alignment: center; }
+            }
+            if PhysicscolorModel.has_glow : HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                Text { text: "UV 365"; font-size: 10px; font-weight: 600; color: Theme.text-muted; width: 44px; vertical-alignment: center; }
+                Swatch { swatch: PhysicscolorModel.glow365; caption: PhysicscolorModel.glow365_text; }
+                Text { text: "UV 395"; font-size: 10px; font-weight: 600; color: Theme.text-muted; width: 44px; vertical-alignment: center; }
+                Swatch { swatch: PhysicscolorModel.glow395; caption: PhysicscolorModel.glow395_text; }
+            }
+        }
+    }
+
+    // ---- Pick color: the picked color is the solver's target ----
+    VerticalLayout {
+        spacing: 6px;
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            Rectangle {
+                width: 100px;
+                height: 26px;
+                border-radius: Theme.radius-sm;
+                background: pick_touch.has-hover ? Theme.accent-cyan : Theme.surface-raised;
+                border-width: 1px;
+                border-color: Theme.border-dialog;
+                pick_touch := TouchArea { clicked => { root.picker_open = !root.picker_open; } }
+                Text {
+                    text: "Pick color\u{2026}";
+                    font-size: 10px;
+                    font-weight: 600;
+                    color: pick_touch.has-hover ? Theme.text-on-accent : Theme.text-primary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            if PhysicscolorModel.has_target : Rectangle {
+                width: 28px;
+                height: 18px;
+                y: 4px;
+                border-radius: 3px;
+                background: PhysicscolorModel.target_color;
+                border-width: 1px;
+                border-color: Theme.border-dialog;
+            }
+            if PhysicscolorModel.solving : Text {
+                text: PhysicscolorModel.note_text != "" ? PhysicscolorModel.note_text : "Solving\u{2026}";
+                font-size: 10px;
+                font-weight: 600;
+                color: Theme.accent-cyan;
+                vertical-alignment: center;
+            }
+            if !PhysicscolorModel.solving && PhysicscolorModel.match_text != "" : Text {
+                text: PhysicscolorModel.match_text;
+                font-size: 10px;
+                font-weight: PhysicscolorModel.match_warn ? 700 : 400;
+                color: PhysicscolorModel.match_warn ? Theme.accent-amber : Theme.text-muted;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+        if root.picker_open : colorPicker {
+            initial: PhysicscolorModel.has_target ? PhysicscolorModel.target_color : PhysicscolorModel.d65_unpol;
+            apply_label: "Solve";
+            applied(c) => {
+                root.picker_open = false;
+                PhysicscolorModel.pick_solve(c);
+            }
+            cancelled => { root.picker_open = false; }
+        }
+    }
+}

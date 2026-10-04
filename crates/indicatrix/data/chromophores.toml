@@ -1,0 +1,4710 @@
+# Canonical Gem Chromophore Catalogue
+data_version = 4
+
+[[host]]
+id = "andalusite"
+name = "Andalusite"
+formula = "Al2SiO5"
+optical = "biaxial"
+axis_mapping_confidence = "secondary"
+uv_edge_nm = 300.0
+materials = ["Andalusite", "Chiastolite", "Viridine"]
+density_g_cm3 = 3.15
+formula_weight_g_mol = 162.05
+sites_per_fu = 2.0
+cation_site_density_cm3 = 2.341221e+22
+total_atom_density_cm3 = 9.364884e+22
+
+  [[host.chromophore]]
+  id = "V3+ / Cr3+"
+  kind = "ion"
+  elements = ["V", "Cr"]
+  site = "Al1 octahedral"
+  conc_unit = "wt_pct_oxide:V2O3"
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 420.0
+    fwhm_cm1 = 3200.0
+    shape = "gaussian_energy"
+    peak_coeff = 12.0
+    pol = { a = 1.0, b = 0.3, g = 0.3 }
+    confidence = "secondary"
+    source = "Report p.25 (Andalusite table, V3+/Cr3+ row, 420 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 565.0
+    fwhm_cm1 = 2800.0
+    shape = "gaussian_energy"
+    peak_coeff = 14.0
+    pol = { a = 1.0, b = 0.3, g = 0.3 }
+    confidence = "secondary"
+    source = "Report p.25 (Andalusite table, V3+/Cr3+ row, 565 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Mn3+"
+  kind = "ion"
+  elements = ["Mn"]
+  site = "Al1 octahedral (Jahn-Teller, d4)"
+  conc_unit = "wt_pct_oxide:Mn2O3"
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 702.0
+    fwhm_cm1 = 2500.0
+    shape = "gaussian_energy"
+    peak_coeff = 18.0
+    pol = { a = 0.3, b = 0.8, g = 1.0 }
+    confidence = "secondary"
+    source = "Report p.25 (Andalusite table, Mn3+ row, 702 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 455.0
+    fwhm_cm1 = 2000.0
+    shape = "gaussian_energy"
+    peak_coeff = 15.0
+    pol = { a = 0.4, b = 1.0, g = 0.8 }
+    confidence = "secondary"
+    source = "Report p.25 (Andalusite table, Mn3+ row, 455 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 426.0
+    fwhm_cm1 = 1800.0
+    shape = "gaussian_energy"
+    peak_coeff = 12.0
+    pol = { a = 0.4, b = 1.0, g = 0.8 }
+    confidence = "secondary"
+    source = "Report p.25 (Andalusite table, Mn3+ row, 426 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Fe3+"
+  kind = "ion"
+  elements = ["Fe"]
+  site = "Al1 / Al2 substitution"
+  conc_unit = "wt_pct_oxide:Fe2O3"
+  conc_typical = [0.1, 1.5]
+  conc_max = 3.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 440.0
+    fwhm_cm1 = 1200.0
+    shape = "lorentzian"
+    peak_coeff = 6.0
+    pol = { a = 0.4, b = 0.7, g = 1.0 }
+    confidence = "secondary"
+    source = "Report p.25 (Andalusite table, Fe3+ row, 440 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 380.0
+    fwhm_cm1 = 4500.0
+    shape = "gaussian_energy"
+    peak_coeff = 40.0
+    pol = { a = 0.5, b = 0.8, g = 1.0 }
+    confidence = "secondary"
+    source = "Report p.25 (Andalusite table, Fe3+ row, 380 nm (edge))"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+
+[[host]]
+id = "benitoite"
+name = "Benitoite"
+formula = "BaTiSi3O9"
+optical = "uniaxial"
+uv_edge_nm = 320.0
+materials = ["Benitoite"]
+valence_split = { Fe = { "Fe2+" = 0.5, "Fe3+" = 0.5 }, Ti = { "Ti4+" = 1.0 } }  # estimate
+density_g_cm3 = 3.65
+formula_weight_g_mol = 413.51
+sites_per_fu = 1.0
+cation_site_density_cm3 = 5.315667e+21
+total_atom_density_cm3 = 7.441934e+22
+
+  [[host.chromophore]]
+  id = "Fe2+-Ti4+ IVCT"
+  kind = "ivct_pair"
+  elements = ["Fe", "Ti"]
+  site = "edge-shared Fe2+ / Ti4+ octahedra; Ti is essential"
+  conc_unit = "wt_pct_oxide:FeO"
+  partners = ["Fe2+", "Ti4+"]
+  pairing = "random"
+  pair_z = 6.0
+  pairing_confidence = "estimate"
+  conc_typical = [0.0, 0.3]
+  conc_max = 1.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 635.0
+    fwhm_cm1 = 4500.0
+    shape = "gaussian_energy"
+    peak_coeff = 45.0
+    pol = { o = 0.05, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.20-21 (centre 635 nm, FWHM 4500, 45.0 cm^-1/wt% FeO, {0.05, 1.0}); prior polarisation S12 secondary - same"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = []
+    quantum_yield = 0.0
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "[TiO6]8- intrinsic (LMCT)"
+  kind = "intrinsic"
+  elements = []
+  site = "isolated [TiO6]8- octahedral clusters (host matrix)"
+  conc_unit = "intensity"
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 254.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.20-21 (Ligand-to-metal CT row: 254.0 nm (exc.), 39,370 cm^-1, {1.0, 1.0})"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = [415.0]
+    uv = { lw = "inert", sw = "intense chalky blue-white" }
+
+  [[host.chromophore]]
+  id = "Fe2+-Fe3+ IVCT (proposed)"
+  kind = "ivct_pair"
+  elements = ["Fe"]
+  site = "Fe2+/Fe3+ pair"
+  conc_unit = "wt_pct_oxide:FeO"
+  partners = ["Fe2+", "Fe3+"]
+  pairing = "random"
+  pair_z = 6.0
+  pairing_confidence = "estimate"
+  conc_typical = [0.0, 0.3]
+  conc_max = 1.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "estimate"
+
+    [[host.chromophore.band]]
+    centre_nm = 560.0
+    fwhm_cm1 = 4500.0
+    shape = "gaussian_energy"
+    pol = { o = 0.2, e = 1.0 }
+    confidence = "estimate"
+    source = "unknown; placeholder"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = []
+    quantum_yield = 0.0
+    uv = { lw = "inert", sw = "inert" }
+
+
+[[host]]
+id = "beryl"
+name = "Beryl"
+formula = "Be3Al2Si6O18"
+optical = "uniaxial"
+uv_edge_nm = 300.0
+materials = ["Emerald", "Aquamarine", "Morganite", "Heliodor", "Goshenite", "Red Beryl", "Maxixe"]
+valence_split = { Fe = { "Fe2+" = 0.7, "Fe3+" = 0.3 }, Mn = { "Mn2+" = 0.5, "Mn3+" = 0.5 } }  # estimate: aquamarine is Fe2+-rich, heliodor Fe3+-rich
+density_g_cm3 = 2.7
+formula_weight_g_mol = 537.5
+sites_per_fu = 2.0
+cation_site_density_cm3 = 6.050151e+21
+total_atom_density_cm3 = 8.772719e+22
+
+  [[host.chromophore]]
+  id = "Cr3+"
+  kind = "ion"
+  elements = ["Cr"]
+  site = "Al octahedral (Cr3+, d3; D3)"
+  conc_unit = "wt_pct_oxide:Cr2O3"
+  conc_typical = [0.05, 0.5]
+  conc_max = 2.0
+  requires = []
+  excludes = []
+  quenched_by = ["Fe2+", "Fe3+"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 414.55
+    fwhm_cm1 = 3563.4
+    shape = "gaussian_energy"
+    peak_coeff = 6.4482
+    pol = { o = 1.0 }
+    fit_residual_de00 = 0.1
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 3570 Emerald_3570_a.asc (E-perp-c, 0.859 mm), shape only, no Cr/V analysis; baseline A removed; scaled so that the E-perp-c 4T2 band is the data_version-3 value (9.73 per wt%); 4 energy Gaussians fitted in color terms without the CIELAB target (the O->Cr LMCT 400 nm band of data_version 3, FWHM 14000 cm-1, is removed: it closed the 480-540 nm window 2.5 times more than both the Caltech and the report spectrum); Y band 4A2->4T1 (violet part)"
+
+    [[host.chromophore.band]]
+    centre_nm = 446.37
+    fwhm_cm1 = 2721.5
+    shape = "gaussian_energy"
+    peak_coeff = 6.8987
+    pol = { o = 1.0 }
+    fit_residual_de00 = 0.1
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 3570 Emerald_3570_a.asc (E-perp-c, 0.859 mm), shape only, no Cr/V analysis; baseline A removed; scaled so that the E-perp-c 4T2 band is the data_version-3 value (9.73 per wt%); 4 energy Gaussians fitted in color terms without the CIELAB target (the O->Cr LMCT 400 nm band of data_version 3, FWHM 14000 cm-1, is removed: it closed the 480-540 nm window 2.5 times more than both the Caltech and the report spectrum); Y band 4A2->4T1 (blue part)"
+
+    [[host.chromophore.band]]
+    centre_nm = 532.70
+    fwhm_cm1 = 1463.1
+    shape = "gaussian_energy"
+    peak_coeff = 0.54585
+    pol = { o = 1.0 }
+    fit_residual_de00 = 0.1
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 3570 Emerald_3570_a.asc (E-perp-c, 0.859 mm), shape only, no Cr/V analysis; baseline A removed; scaled so that the E-perp-c 4T2 band is the data_version-3 value (9.73 per wt%); 4 energy Gaussians fitted in color terms without the CIELAB target (the O->Cr LMCT 400 nm band of data_version 3, FWHM 14000 cm-1, is removed: it closed the 480-540 nm window 2.5 times more than both the Caltech and the report spectrum); green window shoulder"
+
+    [[host.chromophore.band]]
+    centre_nm = 605.71
+    fwhm_cm1 = 2467.1
+    shape = "gaussian_energy"
+    peak_coeff = 9.4555
+    pol = { o = 1.0 }
+    fit_residual_de00 = 0.1
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 3570 Emerald_3570_a.asc (E-perp-c, 0.859 mm), shape only, no Cr/V analysis; baseline A removed; scaled so that the E-perp-c 4T2 band is the data_version-3 value (9.73 per wt%); 4 energy Gaussians fitted in color terms without the CIELAB target (the O->Cr LMCT 400 nm band of data_version 3, FWHM 14000 cm-1, is removed: it closed the 480-540 nm window 2.5 times more than both the Caltech and the report spectrum); U band 4A2->4T2"
+
+    [[host.chromophore.band]]
+    centre_nm = 399.30
+    fwhm_cm1 = 3000.0
+    shape = "gaussian_energy"
+    peak_coeff = 11.097
+    pol = { e = 1.0 }
+    fit_residual_de00 = 0.9
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 3570 Emerald_3570_c.asc (E-par-c, 0.859 mm), shape only, no Cr/V analysis; baseline A removed; scaled so that the E-perp-c 4T2 band is the data_version-3 value (9.73 per wt%); 4 energy Gaussians fitted in color terms without the CIELAB target (the O->Cr LMCT 400 nm band of data_version 3, FWHM 14000 cm-1, is removed: it closed the 480-540 nm window 2.5 times more than both the Caltech and the report spectrum); UV edge / Y band (violet part)"
+
+    [[host.chromophore.band]]
+    centre_nm = 445.68
+    fwhm_cm1 = 1480.8
+    shape = "gaussian_energy"
+    peak_coeff = 4.475
+    pol = { e = 1.0 }
+    fit_residual_de00 = 0.9
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 3570 Emerald_3570_c.asc (E-par-c, 0.859 mm), shape only, no Cr/V analysis; baseline A removed; scaled so that the E-perp-c 4T2 band is the data_version-3 value (9.73 per wt%); 4 energy Gaussians fitted in color terms without the CIELAB target (the O->Cr LMCT 400 nm band of data_version 3, FWHM 14000 cm-1, is removed: it closed the 480-540 nm window 2.5 times more than both the Caltech and the report spectrum); Y band 4A2->4T1 (blue part)"
+
+    [[host.chromophore.band]]
+    centre_nm = 568.75
+    fwhm_cm1 = 1200.0
+    shape = "gaussian_energy"
+    peak_coeff = 3.3047
+    pol = { e = 1.0 }
+    fit_residual_de00 = 0.9
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 3570 Emerald_3570_c.asc (E-par-c, 0.859 mm), shape only, no Cr/V analysis; baseline A removed; scaled so that the E-perp-c 4T2 band is the data_version-3 value (9.73 per wt%); 4 energy Gaussians fitted in color terms without the CIELAB target (the O->Cr LMCT 400 nm band of data_version 3, FWHM 14000 cm-1, is removed: it closed the 480-540 nm window 2.5 times more than both the Caltech and the report spectrum); green window shoulder"
+
+    [[host.chromophore.band]]
+    centre_nm = 635.22
+    fwhm_cm1 = 1969.5
+    shape = "gaussian_energy"
+    peak_coeff = 13.143
+    pol = { e = 1.0 }
+    fit_residual_de00 = 0.9
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 3570 Emerald_3570_c.asc (E-par-c, 0.859 mm), shape only, no Cr/V analysis; baseline A removed; scaled so that the E-perp-c 4T2 band is the data_version-3 value (9.73 per wt%); 4 energy Gaussians fitted in color terms without the CIELAB target (the O->Cr LMCT 400 nm band of data_version 3, FWHM 14000 cm-1, is removed: it closed the 480-540 nm window 2.5 times more than both the Caltech and the report spectrum); U band 4A2->4T2"
+
+    [[host.chromophore.band]]
+    centre_nm = 476.00
+    fwhm_cm1 = 300.0
+    shape = "gaussian_energy"
+    peak_coeff = 1.5
+    pol = { o = 1.0 }
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+    source = "prior (spin-forbidden 476 nm line, unchanged); research §4 lists R1/R2 683.5/680.5 nm"
+
+    [[host.chromophore.band]]
+    centre_nm = 683.50
+    fwhm_cm1 = 20.0
+    shape = "gaussian_energy"
+    peak_coeff = 8
+    pol = { o = 1.0, e = 0.35 }
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+    source = "research-2026-10 §4 R1 683.5 nm single table point (7.9/4.8 cm-1 at 0.55 wt%, excess over the continuum ~4.4/1.5)"
+
+    # Emerald: weak R-line emission (683/680 nm) with a small sideband. Phi_0 = 0.3 is an ESTIMATE
+    # (emerald Cr3+ is a less efficient emitter than ruby); iron quenches it much sooner than in
+    # ruby (Report p.21: intense only in Fe-poor emerald; p.31: gone by 0.5-1.0 wt% FeO). The
+    # halving concentration is ~660 ppm Fe = 0.0849 wt% FeO (research-2026-10-primary-data §8, a
+    # DERIVED estimate: the GIA Fall 2017 PL study, read at abstract level, gives a tenfold fall at
+    # 2200 ppm Fe, probably ppmw, so a pure exponential halves at 2200 x log10(2) = 660 ppm; the
+    # exponential is approximated by the n = 2 law, which also gives a 12-fold fall at 2200 ppm).
+    [[host.chromophore.fluorescence]]
+    emission_nm = [683.0, 680.0]
+    emission_fwhm_nm = 1.0
+    emission_weight = [0.6, 0.4]
+    sideband = { centre_nm = 700.0, fwhm_nm = 25.0, weight = 0.3 }
+    quantum_yield = 0.3
+    quench = [{ by = "Fe", unit = "wt_pct_oxide:FeO", c_half = 0.0849, n = 2.0 }]
+    uv = { lw = "red (R-lines), quenched by Fe", sw = "red (R-lines), quenched by Fe" }
+    confidence = "estimate"
+    source = "Report p.21-22, p.31 (emerald R lines, Fe quenching); research-2026-10-primary-data §8 (GIA G&G Fall 2017 abstract: tenfold PL fall at 2200 ppm Fe, c_half derived = 660 ppm Fe, estimate); yield, sideband and the quench law are estimates"
+
+  [[host.chromophore]]
+  id = "V3+"
+  kind = "ion"
+  elements = ["V"]
+  site = "Al octahedral (V3+, d2)"
+  conc_unit = "wt_pct_oxide:V2O3"
+  conc_typical = [0.05, 0.5]
+  conc_max = 1.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 429.0
+    fwhm_cm1 = 3200.0
+    shape = "gaussian_energy"
+    peak_coeff = 15.0
+    pol = { o = 1.0, e = 0.6 }
+    confidence = "secondary"
+    source = "Report p.22 (Beryl table, Emerald V3+ row, 429 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 617.0
+    fwhm_cm1 = 2800.0
+    shape = "gaussian_energy"
+    peak_coeff = 16.0
+    pol = { o = 1.0, e = 0.5 }
+    confidence = "secondary"
+    source = "Report p.22 (Beryl table, Emerald V3+ row, 617 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Fe2+-Fe3+ IVCT"
+  kind = "ivct_pair"
+  elements = ["Fe", "Fe"]
+  site = "Fe2+ and Fe3+ in adjacent octahedral / channel sites (exact pair debated)"
+  conc_unit = "wt_pct_oxide:FeO"
+  partners = ["Fe2+", "Fe3+"]
+  pairing = "random"
+  pair_z = 6.0
+  pairing_confidence = "estimate"
+  conc_typical = [0.1, 1.5]
+  conc_max = 3.0
+  requires = []
+  excludes = ["Maxixe centre (practically not co-occurring)"]
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 680.0
+    fwhm_cm1 = 3500.0
+    shape = "gaussian_energy"
+    peak_coeff = 12.0
+    pol = { o = 0.2, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.22 (Beryl table, Aquamarine row, 680 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 835.0
+    fwhm_cm1 = 4000.0
+    shape = "gaussian_energy"
+    peak_coeff = 10.0
+    pol = { o = 1.0, e = 0.3 }
+    confidence = "secondary"
+    source = "Report p.22 (Beryl table, Aquamarine row, 835 nm (Fe2+))"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Fe3+ (heliodor)"
+  kind = "ion"
+  elements = ["Fe"]
+  site = "Al octahedral and/or channel; debated"
+  conc_unit = "wt_pct_oxide:Fe2O3"
+  valence = "Fe3+"
+  conc_typical = [0.1, 1.0]
+  conc_max = 2.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 370.0
+    fwhm_cm1 = 800.0
+    shape = "lorentzian"
+    peak_coeff = 15.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.22 (Beryl table, Heliodor Fe3+ row, 370 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 426.0
+    fwhm_cm1 = 600.0
+    shape = "lorentzian"
+    peak_coeff = 8.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.22 (Beryl table, Heliodor Fe3+ row, 426 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Mn3+ (red beryl)"
+  kind = "ion"
+  elements = ["Mn"]
+  site = "Al octahedral, Jahn-Teller elongated (report: severely distorted)"
+  conc_unit = "wt_pct_oxide:MnO"
+  valence = "Mn3+"
+  requires = []
+  excludes = ["Fe2+-Fe3+ IVCT (high Fe absent in red beryl)"]
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 560.0
+    fwhm_cm1 = 3500.0
+    shape = "gaussian_energy"
+    peak_coeff = 45.0
+    pol = { o = 1.0, e = 0.5 }
+    confidence = "secondary"
+    source = "Report p.22 (Beryl table, Red Beryl row, 560 nm; 5Eg -> 5T2g)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Mn2+/Mn3+ (morganite)"
+  kind = "ion"
+  elements = ["Mn"]
+  site = "Al octahedral (Mn3+, d4), Mn2+ possible"
+  conc_unit = "wt_pct_oxide:MnO"
+  valence = "Mn2+"
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 567.0
+    fwhm_cm1 = 3200.0
+    shape = "gaussian_energy"
+    peak_coeff = 25.0
+    pol = { o = 1.0, e = 0.35 }
+    confidence = "secondary"
+    source = "Report p.22 (Beryl table, Morganite Mn3+ row, 567 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Maxixe centre (NO3 / CO3-)"
+  kind = "color_centre"
+  elements = []
+  site = "channel radical trap: NO3 (natural Maxixe) or CO3- (irradiated Maxixe-type)"
+  conc_unit = "intensity"
+  requires = []
+  excludes = ["Fe2+-Fe3+ IVCT as stable co-chromophore (not documented)"]
+  quenched_by = ["sunlight", "heat above 150 C (Report p.21-22; prior estimate ~200 C)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 690.0
+    fwhm_cm1 = 3000.0
+    shape = "gaussian_energy"
+    peak_coeff = 15.0
+    pol = { o = 0.3, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.22 (Beryl table, Maxixe row, 690 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 550.0
+    fwhm_cm1 = 3500.0
+    shape = "gaussian_energy"
+    peak_coeff = 8.0
+    pol = { o = 1.0, e = 0.2 }
+    confidence = "secondary"
+    source = "Report p.22 (Beryl table, Maxixe row, 550 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+
+[[host]]
+id = "chrysoberyl"
+name = "Chrysoberyl"
+formula = "BeAl2O4"
+optical = "biaxial"
+axis_mapping_confidence = "verified"  # stored by axis length (cell settings only relabel a/b/c): alpha 4.427, beta 9.404, gamma 5.476 A (Pnma: alpha||c, beta||a, gamma||b; Pbnm: alpha||a, beta||b, gamma||c; Pmnb: alpha||c, beta||b, gamma||a). Ray colors: alpha purple-violet (this fit: violet-blue under A, blue-grey under D65: the alpha shape is the report table's, no primary alpha spectrum exists), beta yellow-orange, gamma blue-green (Schmetzer 2019; Caltech GRR 874). research-2026-10-primary-data §7
+ray_axis_angstrom = { a = 4.427, b = 9.404, g = 5.476 }
+uv_edge_nm = 340.0
+materials = ["Alexandrite"]
+density_g_cm3 = 3.75
+formula_weight_g_mol = 126.97
+sites_per_fu = 2.0
+cation_site_density_cm3 = 3.557223e+22
+total_atom_density_cm3 = 1.245028e+23
+
+  [[host.chromophore]]
+  id = "Cr3+"
+  kind = "ion"
+  elements = ["Cr"]
+  site = "Al(M) mirror site (Cs)"
+  conc_unit = "wt_pct_oxide:Cr2O3"
+  conc_typical = [0.1, 0.8]
+  conc_max = 2.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 411.96
+    fwhm_cm1 = 3280.7
+    shape = "gaussian_energy"
+    peak_coeff = 36.607
+    pol = { a = 1.0 }
+    fit_residual_de00 = 1.1
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.1: Y band 4A2->4T1 (alpha, vibration along the 4.43 A axis ray; report table column alpha_par_c at 0.32 wt% Cr2O3 minus Fe3+; no Caltech alpha ray exists, so the alpha shape is the table's and unverified); refit to the spectral shape without the CIELAB target (the Cr-O LMCT window-closing band of data_version 3 is removed: the open 480-500 nm window is measured, Caltech GRR 874 A 0.19 against 2.0 at the Y peak); magnitude: the gamma 4T2 peak is the value of the report table gamma column (53.7 per wt% Cr2O3; data_version 3 carried 65.4, pulled up by the CIELAB target), one scale for beta and gamma"
+
+    [[host.chromophore.band]]
+    centre_nm = 537.31
+    fwhm_cm1 = 4566.7
+    shape = "gaussian_energy"
+    peak_coeff = 7.0795
+    pol = { a = 1.0 }
+    fit_residual_de00 = 1.1
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.1: U band shoulder 4T2 (alpha, vibration along the 4.43 A axis ray; report table column alpha_par_c at 0.32 wt% Cr2O3 minus Fe3+; no Caltech alpha ray exists, so the alpha shape is the table's and unverified); refit to the spectral shape without the CIELAB target (the Cr-O LMCT window-closing band of data_version 3 is removed: the open 480-500 nm window is measured, Caltech GRR 874 A 0.19 against 2.0 at the Y peak); magnitude: the gamma 4T2 peak is the value of the report table gamma column (53.7 per wt% Cr2O3; data_version 3 carried 65.4, pulled up by the CIELAB target), one scale for beta and gamma"
+
+    [[host.chromophore.band]]
+    centre_nm = 577.36
+    fwhm_cm1 = 2105.4
+    shape = "gaussian_energy"
+    peak_coeff = 34.242
+    pol = { a = 1.0 }
+    fit_residual_de00 = 1.1
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.1: 4T2 band (alpha, vibration along the 4.43 A axis ray; report table column alpha_par_c at 0.32 wt% Cr2O3 minus Fe3+; no Caltech alpha ray exists, so the alpha shape is the table's and unverified); refit to the spectral shape without the CIELAB target (the Cr-O LMCT window-closing band of data_version 3 is removed: the open 480-500 nm window is measured, Caltech GRR 874 A 0.19 against 2.0 at the Y peak); magnitude: the gamma 4T2 peak is the value of the report table gamma column (53.7 per wt% Cr2O3; data_version 3 carried 65.4, pulled up by the CIELAB target), one scale for beta and gamma"
+
+    [[host.chromophore.band]]
+    centre_nm = 410.21
+    fwhm_cm1 = 3686.4
+    shape = "gaussian_energy"
+    peak_coeff = 39.592
+    pol = { b = 1.0 }
+    fit_residual_de00 = 0.9
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.1: Y band 4A2->4T1 (beta, 9.40 A axis ray; Caltech GRR 874 ch874.a, shape only, no composition); refit to the spectral shape without the CIELAB target (the Cr-O LMCT window-closing band of data_version 3 is removed: the open 480-500 nm window is measured, Caltech GRR 874 A 0.19 against 2.0 at the Y peak); magnitude: the gamma 4T2 peak is the value of the report table gamma column (53.7 per wt% Cr2O3; data_version 3 carried 65.4, pulled up by the CIELAB target), one scale for beta and gamma"
+
+    [[host.chromophore.band]]
+    centre_nm = 434.67
+    fwhm_cm1 = 2140.8
+    shape = "gaussian_energy"
+    peak_coeff = 28.771
+    pol = { b = 1.0 }
+    fit_residual_de00 = 0.9
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.1: Y band 4A2->4T1 (beta, 9.40 A axis ray; Caltech GRR 874 ch874.a, shape only, no composition); refit to the spectral shape without the CIELAB target (the Cr-O LMCT window-closing band of data_version 3 is removed: the open 480-500 nm window is measured, Caltech GRR 874 A 0.19 against 2.0 at the Y peak); magnitude: the gamma 4T2 peak is the value of the report table gamma column (53.7 per wt% Cr2O3; data_version 3 carried 65.4, pulled up by the CIELAB target), one scale for beta and gamma"
+
+    [[host.chromophore.band]]
+    centre_nm = 560.45
+    fwhm_cm1 = 2535.7
+    shape = "gaussian_energy"
+    peak_coeff = 10.315
+    pol = { b = 1.0 }
+    fit_residual_de00 = 0.9
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.1: U band shoulder 4T2 (beta, 9.40 A axis ray; Caltech GRR 874 ch874.a, shape only, no composition); refit to the spectral shape without the CIELAB target (the Cr-O LMCT window-closing band of data_version 3 is removed: the open 480-500 nm window is measured, Caltech GRR 874 A 0.19 against 2.0 at the Y peak); magnitude: the gamma 4T2 peak is the value of the report table gamma column (53.7 per wt% Cr2O3; data_version 3 carried 65.4, pulled up by the CIELAB target), one scale for beta and gamma"
+
+    [[host.chromophore.band]]
+    centre_nm = 422.82
+    fwhm_cm1 = 2772.2
+    shape = "gaussian_energy"
+    peak_coeff = 38.194
+    pol = { g = 1.0 }
+    fit_residual_de00 = 0.9
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.1: Y band 4A2->4T1 (gamma, 5.48 A axis ray; Caltech GRR 874 ch874.b, shape only, no composition); refit to the spectral shape without the CIELAB target (the Cr-O LMCT window-closing band of data_version 3 is removed: the open 480-500 nm window is measured, Caltech GRR 874 A 0.19 against 2.0 at the Y peak); magnitude: the gamma 4T2 peak is the value of the report table gamma column (53.7 per wt% Cr2O3; data_version 3 carried 65.4, pulled up by the CIELAB target), one scale for beta and gamma"
+
+    [[host.chromophore.band]]
+    centre_nm = 548.75
+    fwhm_cm1 = 1928.1
+    shape = "gaussian_energy"
+    peak_coeff = 10.733
+    pol = { g = 1.0 }
+    fit_residual_de00 = 0.9
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.1: U band shoulder 4T2 (gamma, 5.48 A axis ray; Caltech GRR 874 ch874.b, shape only, no composition); refit to the spectral shape without the CIELAB target (the Cr-O LMCT window-closing band of data_version 3 is removed: the open 480-500 nm window is measured, Caltech GRR 874 A 0.19 against 2.0 at the Y peak); magnitude: the gamma 4T2 peak is the value of the report table gamma column (53.7 per wt% Cr2O3; data_version 3 carried 65.4, pulled up by the CIELAB target), one scale for beta and gamma"
+
+    [[host.chromophore.band]]
+    centre_nm = 598.55
+    fwhm_cm1 = 1988.3
+    shape = "gaussian_energy"
+    peak_coeff = 52.789
+    pol = { g = 1.0 }
+    fit_residual_de00 = 0.9
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.1: 4T2 band (gamma, 5.48 A axis ray; Caltech GRR 874 ch874.b, shape only, no composition); refit to the spectral shape without the CIELAB target (the Cr-O LMCT window-closing band of data_version 3 is removed: the open 480-500 nm window is measured, Caltech GRR 874 A 0.19 against 2.0 at the Y peak); magnitude: the gamma 4T2 peak is the value of the report table gamma column (53.7 per wt% Cr2O3; data_version 3 carried 65.4, pulled up by the CIELAB target), one scale for beta and gamma"
+
+    [[host.chromophore.band]]
+    centre_nm = 680.40
+    fwhm_cm1 = 12.0
+    shape = "gaussian_energy"
+    peak_coeff = 18.4
+    pol = { a = 0.75, b = 0.28, g = 0.95 }
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+    source = "research-2026-10 §3 R lines (678.5/680.4 nm single table points, excess over the continuum 3.6-5.6 cm-1 at 0.32 wt%); the Caltech GRR 874 gamma ray shows the line at 679 nm (A 0.64 on a 0.3 continuum)"
+
+    # Alexandrite: R lines (research-2026-10 §3: 678.5/680.4 nm) plus the broad 4T2 vibronic
+    # emission towards 750 nm (30 % of the photons). Phi_0 = 0.5 is an ESTIMATE (the Report names no
+    # yield; the thermally coupled 4T2 level lowers it against ruby), and Fe3+ on the mirror site
+    # quenches (Report p.8-9; c_half 0.3 wt% Fe2O3, n = 2, estimate).
+    [[host.chromophore.fluorescence]]
+    emission_nm = [680.4, 678.5]
+    emission_fwhm_nm = 1.0
+    emission_weight = [0.6, 0.4]
+    sideband = { centre_nm = 750.0, fwhm_nm = 60.0, weight = 0.3 }
+    quantum_yield = 0.5
+    quench = [{ by = "Fe", unit = "wt_pct_oxide:Fe2O3", c_half = 0.3, n = 2.0 }]
+    uv = { lw = "strong", sw = "weak" }
+    confidence = "estimate"
+    source = "Report p.9 (Luminescence column, Cr3+ row), research-2026-10 §3; yield, sideband and the quench law are estimates"
+
+  [[host.chromophore]]
+  id = "Fe3+"
+  kind = "ion"
+  elements = ["Fe"]
+  site = "Al(M) mirror site"
+  conc_unit = "wt_pct_oxide:Fe2O3"
+  conc_typical = [0.2, 1.5]
+  conc_max = 3.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 440.0
+    fwhm_cm1 = 1500.0
+    shape = "gaussian_energy"
+    peak_coeff = 8.0
+    pol = { a = 0.8, b = 1.0, g = 0.6 }
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 375.0
+    fwhm_cm1 = 5000.0
+    shape = "gaussian_energy"
+    peak_coeff = 60.0
+    pol = { a = 0.8, b = 1.0, g = 0.6 }
+    transition_class = "charge_transfer"
+    confidence = "secondary"
+
+  [[host.chromophore]]
+  id = "V3+"
+  kind = "ion"
+  elements = ["V"]
+  site = "Octahedral Al"
+  conc_unit = "wt_pct_oxide:V2O3"
+  conc_typical = [0.1, 0.6]
+  conc_max = 1.5
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 600.0
+    fwhm_cm1 = 3000.0
+    shape = "gaussian_energy"
+    peak_coeff = 15.0
+    pol = { a = 0.7, b = 1.0, g = 0.5 }
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 425.0
+    fwhm_cm1 = 3200.0
+    shape = "gaussian_energy"
+    peak_coeff = 14.0
+    pol = { a = 0.7, b = 1.0, g = 0.5 }
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+
+
+[[host]]
+id = "cordierite"
+name = "Cordierite"
+formula = "Mg2Al4Si5O18"
+optical = "biaxial"
+axis_mapping_confidence = "unknown"
+uv_edge_nm = 280.0
+materials = ["Iolite"]
+density_g_cm3 = 2.55
+formula_weight_g_mol = 584.97
+sites_per_fu = 4.0
+cation_site_density_cm3 = 1.050068e+22
+total_atom_density_cm3 = 7.612994e+22
+
+
+[[host]]
+id = "corundum"
+name = "Corundum"
+formula = "Al2O3"
+optical = "uniaxial"
+uv_edge_nm = 310.0
+materials = ["Ruby", "Sapphire"]
+valence_split = { Fe = { "Fe2+" = 0.85, "Fe3+" = 0.15 }, Ti = { "Ti3+" = 0.0, "Ti4+" = 1.0 } }  # default redox state of the blue-sapphire recipes (research-2026-10 §2: S-Met needs Fe2+/Fe >= 0.35 and the plan blue recipe Fe 1000 + Ti 100 needs >= 0.82 for h_ab <= 270); the Fe3+ coefficients are fitted at Fe3+ = 0.15 Fe; Ti is Ti4+ (colorless) unless reduced
+element_units = { Fe = "ppm_site", Ti = "ppm_site", V = "ppm_site", Mg = "ppm_site" }  # recipe amounts of these elements are ppm of Al sites; Cr stays wt% Cr2O3. Mg (selectable) binds Ti4+ into inactive Mg-Ti (compensator of the Fe2+-Ti4+ pair). Si (GIA 2020 pp. 18-19: [Ti]_avail = Ti - max(0, Mg - Si), Si pairs with Mg first) is not a selectable element: enter Mg - Si as Mg (see docs/chromophores/research-2026-10-validation.md, open items)
+density_g_cm3 = 3.98
+formula_weight_g_mol = 101.96
+sites_per_fu = 2.0
+cation_site_density_cm3 = 4.701475e+22
+total_atom_density_cm3 = 1.175369e+23
+
+  [[host.treatment]]
+  id = "reducing_anneal"
+  name = "Reducing anneal (H2, 1400°C)"
+  conditions = "1400°C, reducing (H2)"
+  requires = ["Fe", "Ti"]
+    [[host.treatment.effect]]
+    type = "valence_shift"
+    element = "Fe"
+    from = "Fe3+"
+    to = "Fe2+"
+    fraction = 0.8
+
+  [[host.treatment]]
+  id = "oxidizing_anneal"
+  name = "Oxidizing anneal (O2, 1600°C)"
+  conditions = "1600°C, oxidizing (O2), Mg/Be > Ti"
+  requires = ["Fe"]
+    [[host.treatment.effect]]
+    type = "valence_shift"
+    element = "Fe"
+    from = "Fe2+"
+    to = "Fe3+"
+    fraction = 1.0
+    [[host.treatment.effect]]
+    type = "create_centre"
+    centre_id = "[h•–Fe3+]"
+    from = "Fe"
+    fraction = 0.01  # estimate: ~1 % of the Fe becomes hole centres (golden color from 1.5 ppma); the centre itself is suspect and hidden
+
+  [[host.chromophore]]
+  id = "Cr3+"
+  kind = "ion"
+  elements = ["Cr"]
+  site = "Octahedral Al (C3)"
+  conc_unit = "wt_pct_oxide:Cr2O3"
+  conc_typical = [0.05, 0.5]
+  conc_max = 2.0
+  requires = []
+  excludes = []
+  quenched_by = ["Fe2+", "Fe3+"]
+  confidence = "secondary"
+  # data_version 4: the bands are Gaussians in energy fitted to the GIA 2020 sample 1110 cross-section sigma per Cr3+ ion (E-perp-c and E-par-c separately, 1.58e19 Cr/cm3 = 134 ppma = 0.050 wt% Cr2O3), converted to cm-1 per wt% Cr2O3 with N = 3.154e20 Cr per cm3 per wt%. The data_version 3 O->Cr LMCT/Urbach "window" band (454.55 nm, FWHM 16000 cm-1) and the 473 nm B-line band existed only to reproduce the discredited stated CIELAB of the research and are removed: the 450-500 nm window is real (sigma 1.3e-20 cm2 at its 472 nm minimum). GIA letters: GIA calls the 560 nm band "U" and the 410 nm band "Y".
+
+    [[host.chromophore.band]]
+    centre_nm = 345.00
+    fwhm_cm1 = 3687.4
+    shape = "gaussian_energy"
+    peak_coeff = 1.6173
+    pol = { o = 1.0 }
+    sigma_cm2 = 5.128e-21
+    fit_residual_de00 = 2.51
+    transition_class = "charge_transfer"
+    confidence = "measured"
+    source = "research-2026-10-primary-data §1/§2.1: GIA Dubinsky 2020 sample 1110 Cr3+ cross-section (UV charge-transfer edge (330-380 nm tail, sets the 365 nm excitation of the glow) E-perp-c); sigma 5.128e-21 cm2 x 3.1539e+20 Cr/cm3 per wt% Cr2O3; fitted to the reflection-corrected sigma (color-weighted spectral residual, no CIELAB target)"
+
+    [[host.chromophore.band]]
+    centre_nm = 404.36
+    fwhm_cm1 = 3286.7
+    shape = "gaussian_energy"
+    peak_coeff = 51.299
+    pol = { o = 1.0 }
+    sigma_cm2 = 1.627e-19
+    fit_residual_de00 = 2.51
+    transition_class = "spin_allowed"
+    confidence = "measured"
+    source = "research-2026-10-primary-data §1/§2.1: GIA Dubinsky 2020 sample 1110 Cr3+ cross-section (Y band 4A2->4T1 (GIA 'Y', ~410 nm) E-perp-c); sigma 1.627e-19 cm2 x 3.1539e+20 Cr/cm3 per wt% Cr2O3; fitted to the reflection-corrected sigma (color-weighted spectral residual, no CIELAB target)"
+
+    [[host.chromophore.band]]
+    centre_nm = 538.39
+    fwhm_cm1 = 2874.6
+    shape = "gaussian_energy"
+    peak_coeff = 20.804
+    pol = { o = 1.0 }
+    sigma_cm2 = 6.596e-20
+    fit_residual_de00 = 2.51
+    transition_class = "spin_allowed"
+    confidence = "measured"
+    source = "research-2026-10-primary-data §1/§2.1: GIA Dubinsky 2020 sample 1110 Cr3+ cross-section (blue wing of the U band (window continuum) E-perp-c); sigma 6.596e-20 cm2 x 3.1539e+20 Cr/cm3 per wt% Cr2O3; fitted to the reflection-corrected sigma (color-weighted spectral residual, no CIELAB target)"
+
+    [[host.chromophore.band]]
+    centre_nm = 559.87
+    fwhm_cm1 = 1583.9
+    shape = "gaussian_energy"
+    peak_coeff = 36.23
+    pol = { o = 1.0 }
+    sigma_cm2 = 1.149e-19
+    fit_residual_de00 = 2.51
+    transition_class = "spin_allowed"
+    confidence = "measured"
+    source = "research-2026-10-primary-data §1/§2.1: GIA Dubinsky 2020 sample 1110 Cr3+ cross-section (U band 4A2->4T2 (GIA 'U', ~560 nm) E-perp-c); sigma 1.149e-19 cm2 x 3.1539e+20 Cr/cm3 per wt% Cr2O3; fitted to the reflection-corrected sigma (color-weighted spectral residual, no CIELAB target)"
+
+    [[host.chromophore.band]]
+    centre_nm = 345.00
+    fwhm_cm1 = 12000.0
+    shape = "gaussian_energy"
+    peak_coeff = 1.0637
+    pol = { e = 1.0 }
+    sigma_cm2 = 3.373e-21
+    fit_residual_de00 = 2.51
+    transition_class = "charge_transfer"
+    confidence = "measured"
+    source = "research-2026-10-primary-data §1/§2.1: GIA Dubinsky 2020 sample 1110 Cr3+ cross-section (UV charge-transfer edge (330-380 nm tail, sets the 365 nm excitation of the glow) E-par-c); sigma 3.373e-21 cm2 x 3.1539e+20 Cr/cm3 per wt% Cr2O3; fitted to the reflection-corrected sigma (color-weighted spectral residual, no CIELAB target)"
+
+    [[host.chromophore.band]]
+    centre_nm = 400.44
+    fwhm_cm1 = 3257.5
+    shape = "gaussian_energy"
+    peak_coeff = 87.915
+    pol = { e = 1.0 }
+    sigma_cm2 = 2.788e-19
+    fit_residual_de00 = 2.51
+    transition_class = "spin_allowed"
+    confidence = "measured"
+    source = "research-2026-10-primary-data §1/§2.1: GIA Dubinsky 2020 sample 1110 Cr3+ cross-section (Y band 4A2->4T1 (GIA 'Y', ~410 nm) E-par-c); sigma 2.788e-19 cm2 x 3.1539e+20 Cr/cm3 per wt% Cr2O3; fitted to the reflection-corrected sigma (color-weighted spectral residual, no CIELAB target)"
+
+    [[host.chromophore.band]]
+    centre_nm = 537.81
+    fwhm_cm1 = 2416.0
+    shape = "gaussian_energy"
+    peak_coeff = 17.363
+    pol = { e = 1.0 }
+    sigma_cm2 = 5.505e-20
+    fit_residual_de00 = 2.51
+    transition_class = "spin_allowed"
+    confidence = "measured"
+    source = "research-2026-10-primary-data §1/§2.1: GIA Dubinsky 2020 sample 1110 Cr3+ cross-section (U band 4A2->4T2 (GIA 'U', ~560 nm) E-par-c); sigma 5.505e-20 cm2 x 3.1539e+20 Cr/cm3 per wt% Cr2O3; fitted to the reflection-corrected sigma (color-weighted spectral residual, no CIELAB target)"
+
+    [[host.chromophore.band]]
+    centre_nm = 693.30
+    fwhm_cm1 = 55.0
+    shape = "gaussian_energy"
+    peak_coeff = 2.8008
+    pol = { o = 1.0, e = 0.13 }
+    sigma_cm2 = 8.88e-21
+    transition_class = "spin_forbidden"
+    confidence = "measured"
+    source = "research-2026-10-primary-data §2.1: GIA sample 1110 R1/R2 lines (692.8/694.3 nm, 1.5 nm instrument resolution) merged into one Gaussian of the measured net area; E-par-c weight 0.13 from the same sigma columns (net peak 1.2e-21 against 8.9e-21)"
+
+    # Emission (fluorescence plan section 3). R1/R2 are 0.3-0.5 nm wide at room temperature; lines
+    # under 1 nm are widened to 1 nm (same area) by the resolver. Weights: R1 is the stronger line
+    # (R2 sits ~29 cm-1 higher and is thermally populated), 20 % of the photons go to the vibronic
+    # sideband at 700-720 nm. Phi_0 = 0.9 is the Report's isolated Cr3+ value; the only primary-literature
+    # figure found (QE 0.83 +- 0.10, Berdahl et al. 2016, NIST J. Res. 122:043) is a COATING-LEVEL value of
+    # a ruby pigment including escape losses, not an intrinsic yield (research-2026-10-primary-data §8). The Fe law is an
+    # ESTIMATE: Report p.31 says R-line emission is completely quenched by 0.5-1.0 wt% FeO, so
+    # Phi falls to 50 % at 0.2 wt% FeO with a steep (n = 2) law (4 % left at 1 wt%).
+    [[host.chromophore.fluorescence]]
+    emission_nm = [694.3, 692.9]
+    emission_fwhm_nm = 0.4
+    emission_weight = [0.6, 0.4]
+    sideband = { centre_nm = 707.0, fwhm_nm = 18.0, weight = 0.2 }
+    quantum_yield = 0.9
+    quench = [{ by = "Fe", unit = "wt_pct_oxide:FeO", c_half = 0.2, n = 2.0 }]
+    uv = { lw = "strong", sw = "weak" }
+    confidence = "estimate"
+    source = "Report p.7-8, p.31 (R1 694.3 nm, Phi 0.90, Fe quench threshold); R2 692.9 nm, sideband share and the quench law are estimates"
+
+  [[host.chromophore]]
+  id = "Fe2+-Ti4+"
+  kind = "ivct_pair"
+  elements = ["Fe", "Ti"]
+  site = "Basal edge-sharing octahedral pair"
+  conc_unit = "ppm_site"
+  # c_pair = min(c_Fe2+, c_Ti_avail) in ppm_site pairs (clustered_min law: linear in the available Ti with Fe in excess, GIA 2020 / Emmett 2003; no Fe x Ti product). [Ti]_avail = max(0, Ti - Mg) (the Si donor of GIA 2020 is folded into Mg by the user). peak_coeff is per ppm_site pair, from the GIA cross-section per pair sigma = 1.98e-18 cm2 (E-perp-c, 580 nm; +-25 %, 14 Yogo wafers) x 4.7015e16 sites per cm3 per ppm = 0.093 cm-1 per pair-ppm (Napierian), i.e. 0.229 per ppma of all atoms (data_version 3 carried ~0.05, fitted to the research tables; the research 0.28 per ppma was not reproduced either, see docs/chromophores/research-2026-10-validation.md). The pair count of synthetic and non-Yogo stones also depends on annealing and Fe clustering (GIA reports 2-3x larger apparent sigma for high-Fe naturals).
+  partners = ["Fe2+", "Ti4+"]
+  conc_typical = [10.0, 200.0]
+  conc_max = 500.0
+  compensator = { element = "Mg", subtract_from = "Ti4+", rule = "subtract" }  # [Ti]_avail = max(0, [Ti] - [Mg]) on the same ppm_site basis (Emmett 2003; GIA 2020 adds the Si donor, not modelled)
+  pairing = "clustered_min"
+  pairing_confidence = "secondary"
+  peak_coeff_empirical_per_ppm2 = 5.000000e-05
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 419.21
+    fwhm_cm1 = 6424.5
+    shape = "gaussian_energy"
+    peak_coeff = 0.014772
+    pol = { o = 1.0 }
+    sigma_cm2 = 3.142e-19
+    fit_residual_de00 = 0.53
+    transition_class = "ivct"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §7: GIA Dubinsky 2020 Fe2+-Ti4+ sigma per pair (E-perp-c, blue shoulder), xlsx 5 nm digest; sigma 3.142e-19 cm2 x 4.7015e+16 sites/cm3 per ppm of Al sites; 2 energy Gaussians fitted in color terms (no CIELAB target); the peak is the average of 14 Yogo wafers +-25 %"
+
+    [[host.chromophore.band]]
+    centre_nm = 591.05
+    fwhm_cm1 = 5755.1
+    shape = "gaussian_energy"
+    peak_coeff = 0.092191
+    pol = { o = 1.0 }
+    sigma_cm2 = 1.961e-18
+    epsilon_l_mol_cm = 500.0
+    fit_residual_de00 = 0.53
+    transition_class = "ivct"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §7: GIA Dubinsky 2020 Fe2+-Ti4+ sigma per pair (E-perp-c, 580 nm band), xlsx 5 nm digest; sigma 1.961e-18 cm2 x 4.7015e+16 sites/cm3 per ppm of Al sites; 2 energy Gaussians fitted in color terms (no CIELAB target); the peak is the average of 14 Yogo wafers +-25 %"
+
+    [[host.chromophore.band]]
+    centre_nm = 541.87
+    fwhm_cm1 = 14427.2
+    shape = "gaussian_energy"
+    peak_coeff = 0.028062
+    pol = { e = 1.0 }
+    sigma_cm2 = 5.969e-19
+    fit_residual_de00 = 0.53
+    transition_class = "ivct"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §7: GIA Dubinsky 2020 Fe2+-Ti4+ sigma per pair (E-par-c, broad short-wave part), xlsx 5 nm digest; sigma 5.969e-19 cm2 x 4.7015e+16 sites/cm3 per ppm of Al sites; 2 energy Gaussians fitted in color terms (no CIELAB target); the peak is the average of 14 Yogo wafers +-25 %"
+
+    [[host.chromophore.band]]
+    centre_nm = 727.21
+    fwhm_cm1 = 5370.3
+    shape = "gaussian_energy"
+    peak_coeff = 0.03659
+    pol = { e = 1.0 }
+    sigma_cm2 = 7.783e-19
+    fit_residual_de00 = 0.53
+    transition_class = "ivct"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §7: GIA Dubinsky 2020 Fe2+-Ti4+ sigma per pair (E-par-c, 700 nm band), xlsx 5 nm digest; sigma 7.783e-19 cm2 x 4.7015e+16 sites/cm3 per ppm of Al sites; 2 energy Gaussians fitted in color terms (no CIELAB target); the peak is the average of 14 Yogo wafers +-25 %"
+
+  [[host.chromophore]]
+  id = "Fe3+"
+  kind = "ion"
+  elements = ["Fe"]
+  site = "Octahedral Al (C3)"
+  conc_unit = "ppma_all"
+  valence = "Fe3+"
+  # Unit basis (review finding 4): the Report coefficients are per ppma of ALL atoms. Derivation: every sigma/alpha pair here implies
+  # alpha/sigma = 1.175e17 cm-3 per ppm = 1e-6 x 1.175e23 cm-3 total atoms (docs/chromophores/corundum_chrysoberyl_spinel_garnet-synthetics.md,
+  # Discrepancy 4), i.e. 1 ppma_all = 2.5 ppm of Al sites. conc_typical/conc_max are the old ppm_site ranges x 0.4. The coefficients are unchanged.
+  conc_typical = [200.0, 1200.0]
+  conc_max = 3200.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 449.89
+    fwhm_cm1 = 506.1
+    shape = "gaussian_energy"
+    peak_coeff = 0.047502
+    quadratic_coeff = 1.629e-05
+    pol = { o = 1.0, e = 0.326 }
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+    source = "research-2026-10 §2, fitted to sapphire_s_met/s_bas fixtures (spectrum+CIELAB); Fe3+ 450 nm (22220 cm-1); quadratic term = research c2/c1 ratio (pair enhancement), not separable from linear by the two samples"
+    fit_residual_de00 = 7.57
+
+    [[host.chromophore.band]]
+    centre_nm = 394.12
+    fwhm_cm1 = 1600.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.023765
+    quadratic_coeff = 8.388e-06
+    pol = { o = 1.0, e = 0.805 }
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+    source = "research-2026-10 §2, fitted to sapphire_s_met/s_bas fixtures (spectrum+CIELAB); Fe3+ 388 nm; quadratic term = research c2/c1 ratio (pair enhancement), not separable from linear by the two samples"
+    fit_residual_de00 = 7.57
+
+    [[host.chromophore.band]]
+    centre_nm = 382.78
+    fwhm_cm1 = 1064.2
+    shape = "gaussian_energy"
+    peak_coeff = 0.097494
+    quadratic_coeff = 3.091e-05
+    pol = { o = 1.0, e = 0.589 }
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+    source = "research-2026-10 §2, fitted to sapphire_s_met/s_bas fixtures (spectrum+CIELAB); Fe3+ 377 nm; quadratic term = research c2/c1 ratio (pair enhancement), not separable from linear by the two samples"
+    fit_residual_de00 = 7.57
+
+    [[host.chromophore.band]]
+    centre_nm = 370.37
+    fwhm_cm1 = 9000.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.051118
+    pol = { o = 1.0, e = 0.695 }
+    transition_class = "charge_transfer"
+    confidence = "secondary"
+    source = "research-2026-10 §2, fitted to sapphire_s_met/s_bas fixtures (spectrum+CIELAB); Fe3+ O->Fe CT edge (UV edge attached to the chromophore that causes it)"
+    fit_residual_de00 = 7.57
+
+  [[host.chromophore]]
+  id = "Fe2+-Fe3+"
+  kind = "ivct_pair"
+  elements = ["Fe"]
+  site = "Face-sharing pair along c-axis"
+  conc_unit = "ppm_site"
+  partners = ["Fe2+", "Fe3+"]
+  conc_typical = [50.0, 500.0]
+  conc_max = 2000.0
+  pairing = "product"
+  pair_z = 6.0
+  pairing_confidence = "secondary"
+  # c_pair = z * c_Fe2+ * c_Fe3+ * 1e-6 (product law, ppm_site): S-Bas/S-Met 880 nm absorption ratio is 40 for a Fe ratio of 6.2 (Fe^2), which a min() law cannot give.
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 800.00
+    fwhm_cm1 = 5200.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.25112
+    pol = { o = 1.0, e = 3.0 }
+    transition_class = "ivct"
+    confidence = "secondary"
+    source = "research-2026-10 §2, fitted to sapphire_s_met/s_bas fixtures; Fe2+-Fe3+ IVCT 880 nm (11360 cm-1) as 2 energy Gaussians"
+    fit_residual_de00 = 7.57
+
+    [[host.chromophore.band]]
+    centre_nm = 606.06
+    fwhm_cm1 = 6000.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.79414
+    pol = { o = 1.0, e = 0.736 }
+    transition_class = "ivct"
+    confidence = "secondary"
+    source = "research-2026-10 §2, fitted to sapphire_s_met/s_bas fixtures; Fe2+-Fe3+ IVCT 880 nm (11360 cm-1) as 2 energy Gaussians; red/orange shoulder"
+    fit_residual_de00 = 7.57
+
+  [[host.chromophore]]
+  id = "[h•–Fe3+]"
+  kind = "color_centre"
+  elements = ["Fe"]
+  site = "Acceptor-trapped hole on oxygen adjacent to Fe3+"
+  conc_unit = "ppma_all"
+  conc_typical = [1.0, 10.0]
+  conc_max = 50.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+  suspect = "10x too strong in Report"
+
+    [[host.chromophore.band]]
+    centre_nm = 450.0
+    fwhm_cm1 = 5000.0
+    shape = "gaussian_energy"
+    peak_coeff = 7.0
+    pol = { o = 1.0, e = 0.7 }
+    sigma_cm2 = 6.000000e-17
+    transition_class = "centre"
+    confidence = "secondary"
+    suspect = "10x too strong in Report"
+
+  [[host.chromophore]]
+  id = "V3+"
+  kind = "ion"
+  elements = ["V"]
+  site = "Octahedral Al (C3)"
+  conc_unit = "ppma_all"
+  # Unit basis: per ppma of ALL atoms (1 ppma_all = 2.5 ppm of Al sites = 1.175e17 cm-3). data_version 4: the bands are the GIA 2020 V3+ cross-section sigma per ion (xlsx; the paper text quotes 1.0e-19 cm2 at 580 nm but the xlsx gives 3.4e-20 cm2, the xlsx is used, docs/chromophores/research-2026-10-validation.md "Primary data batch 1"). The data_version 3 bands were fitted at 305 ppma to the report-1 table, which the GIA sigma contradicts (~2x for the 575 nm band).
+  conc_typical = [20.0, 200.0]
+  conc_max = 800.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 404.95
+    fwhm_cm1 = 2771.1
+    shape = "gaussian_energy"
+    peak_coeff = 0.011955
+    pol = { o = 1.0 }
+    sigma_cm2 = 1.017e-19
+    fit_residual_de00 = 0.59
+    transition_class = "spin_allowed"
+    confidence = "measured"
+    source = "research-2026-10-primary-data §6/§7: GIA Dubinsky 2020 V3+ sigma (Y band ~400 nm E-perp-c), xlsx 5 nm digest (the xlsx value is used: sigma(580 nm, E-perp-c) = 3.4e-20 cm2, not the 1.0e-19 of the paper text); sigma 1.017e-19 cm2 x 1.1754e+17 atoms/cm3 per ppma (all atoms); 3 energy Gaussians per polarisation fitted in color terms"
+
+    [[host.chromophore.band]]
+    centre_nm = 546.87
+    fwhm_cm1 = 3193.3
+    shape = "gaussian_energy"
+    peak_coeff = 0.0011217
+    pol = { o = 1.0 }
+    sigma_cm2 = 9.544e-21
+    fit_residual_de00 = 0.59
+    transition_class = "spin_allowed"
+    confidence = "measured"
+    source = "research-2026-10-primary-data §6/§7: GIA Dubinsky 2020 V3+ sigma (band between Y and U E-perp-c), xlsx 5 nm digest (the xlsx value is used: sigma(580 nm, E-perp-c) = 3.4e-20 cm2, not the 1.0e-19 of the paper text); sigma 9.544e-21 cm2 x 1.1754e+17 atoms/cm3 per ppma (all atoms); 3 energy Gaussians per polarisation fitted in color terms"
+
+    [[host.chromophore.band]]
+    centre_nm = 578.11
+    fwhm_cm1 = 2009.5
+    shape = "gaussian_energy"
+    peak_coeff = 0.0032429
+    pol = { o = 1.0 }
+    sigma_cm2 = 2.759e-20
+    fit_residual_de00 = 0.59
+    transition_class = "spin_allowed"
+    confidence = "measured"
+    source = "research-2026-10-primary-data §6/§7: GIA Dubinsky 2020 V3+ sigma (U band ~575 nm E-perp-c), xlsx 5 nm digest (the xlsx value is used: sigma(580 nm, E-perp-c) = 3.4e-20 cm2, not the 1.0e-19 of the paper text); sigma 2.759e-20 cm2 x 1.1754e+17 atoms/cm3 per ppma (all atoms); 3 energy Gaussians per polarisation fitted in color terms"
+
+    [[host.chromophore.band]]
+    centre_nm = 405.51
+    fwhm_cm1 = 2692.3
+    shape = "gaussian_energy"
+    peak_coeff = 0.055602
+    pol = { e = 1.0 }
+    sigma_cm2 = 4.731e-19
+    fit_residual_de00 = 0.59
+    transition_class = "spin_allowed"
+    confidence = "measured"
+    source = "research-2026-10-primary-data §6/§7: GIA Dubinsky 2020 V3+ sigma (Y band ~400 nm E-par-c), xlsx 5 nm digest (the xlsx value is used: sigma(580 nm, E-perp-c) = 3.4e-20 cm2, not the 1.0e-19 of the paper text); sigma 4.731e-19 cm2 x 1.1754e+17 atoms/cm3 per ppma (all atoms); 3 energy Gaussians per polarisation fitted in color terms"
+
+    [[host.chromophore.band]]
+    centre_nm = 549.45
+    fwhm_cm1 = 3134.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0016845
+    pol = { e = 1.0 }
+    sigma_cm2 = 1.433e-20
+    fit_residual_de00 = 0.59
+    transition_class = "spin_allowed"
+    confidence = "measured"
+    source = "research-2026-10-primary-data §6/§7: GIA Dubinsky 2020 V3+ sigma (band between Y and U E-par-c), xlsx 5 nm digest (the xlsx value is used: sigma(580 nm, E-perp-c) = 3.4e-20 cm2, not the 1.0e-19 of the paper text); sigma 1.433e-20 cm2 x 1.1754e+17 atoms/cm3 per ppma (all atoms); 3 energy Gaussians per polarisation fitted in color terms"
+
+    [[host.chromophore.band]]
+    centre_nm = 582.37
+    fwhm_cm1 = 1877.7
+    shape = "gaussian_energy"
+    peak_coeff = 0.0021692
+    pol = { e = 1.0 }
+    sigma_cm2 = 1.846e-20
+    fit_residual_de00 = 0.59
+    transition_class = "spin_allowed"
+    confidence = "measured"
+    source = "research-2026-10-primary-data §6/§7: GIA Dubinsky 2020 V3+ sigma (U band ~575 nm E-par-c), xlsx 5 nm digest (the xlsx value is used: sigma(580 nm, E-perp-c) = 3.4e-20 cm2, not the 1.0e-19 of the paper text); sigma 1.846e-20 cm2 x 1.1754e+17 atoms/cm3 per ppma (all atoms); 3 energy Gaussians per polarisation fitted in color terms"
+
+  [[host.chromophore]]
+  id = "Ti3+"
+  kind = "ion"
+  elements = ["Ti"]
+  site = "Octahedral Al (C3)"
+  conc_unit = "ppma_all"
+  valence = "Ti3+"
+  # Unit basis (review finding 4): the Report coefficients are per ppma of ALL atoms. Derivation: every sigma/alpha pair here implies
+  # alpha/sigma = 1.175e17 cm-3 per ppm = 1e-6 x 1.175e23 cm-3 total atoms (docs/chromophores/corundum_chrysoberyl_spinel_garnet-synthetics.md,
+  # Discrepancy 4), i.e. 1 ppma_all = 2.5 ppm of Al sites. conc_typical/conc_max are the old ppm_site ranges x 0.4. The coefficients are unchanged.
+  conc_typical = [20.0, 80.0]
+  conc_max = 200.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 490.0
+    fwhm_cm1 = 4000.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.005
+    pol = { o = 0.6, e = 1.0 }
+    sigma_cm2 = 4.000000e-20
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 540.0
+    fwhm_cm1 = 2500.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0025
+    pol = { o = 0.6, e = 1.0 }
+    sigma_cm2 = 2.000000e-20
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = 780.0
+    uv = { lw = "weak", sw = "inert" }
+
+
+[[host]]
+id = "cubic_zirconia"
+name = "Cubic Zirconia"
+formula = "ZrO2 (Y2O3-stabilised)"
+optical = "isotropic"
+uv_edge_nm = 290.0
+materials = ["Cubic Zirconia"]
+density_g_cm3 = 5.8
+formula_weight_g_mol = 123.22
+sites_per_fu = 1.0
+cation_site_density_cm3 = 2.834639e+22
+total_atom_density_cm3 = 8.503916e+22
+
+  [[host.chromophore]]
+  id = "Nd3+ (lilac)"
+  kind = "ion"
+  elements = ["Nd"]
+  site = "Zr4+ 8-fold cubic site (replaces Zr/Y)"
+  conc_unit = "wt_pct_oxide:Nd2O3"
+  conc_typical = [0.1, 2.0]
+  conc_max = 5.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 582.0
+    fwhm_cm1 = 250.0
+    shape = "gaussian_energy"
+    peak_coeff = 4.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.11 (Nd3+ row, 582 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 745.0
+    fwhm_cm1 = 200.0
+    shape = "gaussian_energy"
+    peak_coeff = 1.5
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.11 (Nd3+ row, 745 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 520.0
+    fwhm_cm1 = 250.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.8
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.11 (Nd3+ row, 520 nm)"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = [1060.0]
+    uv = { lw = "inert (visible)", sw = "inert (visible)" }
+
+  [[host.chromophore]]
+  id = "Er3+ (pink)"
+  kind = "ion"
+  elements = ["Er"]
+  site = "Zr4+ 8-fold cubic site"
+  conc_unit = "wt_pct_oxide:Er2O3"
+  conc_typical = [0.2, 3.0]
+  conc_max = 6.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 520.0
+    fwhm_cm1 = 250.0
+    shape = "gaussian_energy"
+    peak_coeff = 2.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.11 (Er3+ row, 520 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 653.0
+    fwhm_cm1 = 200.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.5
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.11 (Er3+ row, 653 nm)"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = [1540.0]
+    uv = { lw = "inert (visible)", sw = "inert (visible)" }
+
+  [[host.chromophore]]
+  id = "Ce (Ce3+/Ce4+, yellow to red)"
+  kind = "ion"
+  elements = ["Ce"]
+  site = "Zr4+ site; Ce4+ O-Ce charge-transfer edge dominates color"
+  conc_unit = "wt_pct_oxide:CeO2"
+  conc_typical = [0.1, 3.0]
+  conc_max = 6.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 400.0
+    shape = "edge"
+    peak_coeff = 8.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.11 (Ce4+ row, CT edge)"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = [520.0]
+    uv = { lw = "weak yellow/greenish (unverified)", sw = "weak (unverified)" }
+
+  [[host.chromophore]]
+  id = "Pr (Pr3+/Pr4+, yellow-orange-brown)"
+  kind = "ion"
+  elements = ["Pr"]
+  site = "Zr4+ site"
+  conc_unit = "wt_pct_oxide:Pr6O11"
+  conc_typical = [0.1, 2.0]
+  conc_max = 5.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 449.0
+    fwhm_cm1 = 250.0
+    shape = "gaussian_energy"
+    peak_coeff = 1.5
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.11 (Pr3+/Pr4+ row, 449 nm); position also CZspectra summary"
+
+    [[host.chromophore.band]]
+    centre_nm = 474.0
+    fwhm_cm1 = 250.0
+    shape = "gaussian_energy"
+    peak_coeff = 1.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.11 (Pr3+/Pr4+ row, 474 nm); position also CZspectra summary"
+
+    [[host.chromophore.band]]
+    centre_nm = 485.0
+    fwhm_cm1 = 250.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.8
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "verified"
+    source = "CZspectra summary (position); Report p.11 prose lists the line, no table value"
+
+    [[host.chromophore.band]]
+    centre_nm = 583.0
+    fwhm_cm1 = 300.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.6
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.11 (Pr3+/Pr4+ row, 583 nm); position also CZspectra summary"
+
+    [[host.chromophore.band]]
+    centre_nm = 612.0
+    fwhm_cm1 = 300.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.4
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "verified"
+    source = "CZspectra summary (position); Report p.11 prose lists the line, no table value"
+
+    [[host.chromophore.band]]
+    centre_nm = 400.0
+    shape = "edge"
+    peak_coeff = 6.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.11 (Pr3+/Pr4+ row, edge, onset 450 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Ho3+ (yellow-pink color change)"
+  kind = "ion"
+  elements = ["Ho"]
+  site = "Zr4+ 8-fold site"
+  conc_unit = "ppma_all"
+  conc_typical = [1000.0, 8000.0]
+  conc_max = 10000.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 450.0
+    fwhm_cm1 = 250.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0005
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.11 (Ho3+ row, 450 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 540.0
+    fwhm_cm1 = 250.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0004
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.11 (Ho3+ row, 540 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Fe3+ (yellow)"
+  kind = "ion"
+  elements = ["Fe"]
+  site = "Zr4+ site"
+  conc_unit = "wt_pct_oxide:Fe2O3"
+  conc_typical = [0.05, 0.5]
+  conc_max = 1.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 400.0
+    shape = "edge"
+    peak_coeff = 10.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.12 (Fe3+ row, CT edge)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Co2+ (violet-blue)"
+  kind = "ion"
+  elements = ["Co"]
+  site = "8-fold coordinated Zr site"
+  conc_unit = "wt_pct_oxide:CoO"
+  conc_typical = [0.01, 0.2]
+  conc_max = 0.5
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 590.0
+    fwhm_cm1 = 3000.0
+    shape = "gaussian_energy"
+    peak_coeff = 60.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.12 (Co2+ row, 590 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Cr3+ (green)"
+  kind = "ion"
+  elements = ["Cr"]
+  site = "Zr4+ site (the report states 8-fold coordination, see D17)"
+  conc_unit = "wt_pct_oxide:Cr2O3"
+  conc_typical = [0.02, 0.5]
+  conc_max = 1.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 600.0
+    fwhm_cm1 = 3000.0
+    shape = "gaussian_energy"
+    peak_coeff = 10.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.12 (Cr3+ row, 600 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 440.0
+    fwhm_cm1 = 3500.0
+    shape = "gaussian_energy"
+    peak_coeff = 8.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.12 (Cr3+ row, 440 nm)"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = [700.0]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Cu, V, Ti, Mn, Ni dopants (commercial, unverified)"
+  kind = "ion"
+  elements = ["Cu", "V", "Ti"]
+  site = "Zr4+ site"
+  conc_unit = "ppm_site"
+  suspect = "no band data: commercial dopants, unverified (Report p.12)"
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+
+[[host]]
+id = "diamond"
+name = "Diamond"
+formula = "C"
+optical = "isotropic"
+uv_edge_nm = 225.0
+materials = ["Diamond"]
+valence_split = { N = { Ns0 = 0.8, A_aggregate = 0.2 } }  # estimate: nitrogen species; N-V-N (H3/H4) and NV need irradiation + anneal (the irradiation_anneal_* treatments) so they stay unpopulated otherwise
+density_g_cm3 = 3.52
+formula_weight_g_mol = 12.011
+sites_per_fu = 1.0
+cation_site_density_cm3 = 1.764877e+23
+total_atom_density_cm3 = 1.764877e+23
+
+  # Irradiation creates vacancies; annealing at ~800 C lets them migrate and bind to nitrogen
+  # (Report p.3-5). Both treatments convert a fraction of the recipe's nitrogen into the centre
+  # (ESTIMATE: 2 % of N into H3/H4 in type Ia stones; 1 % into NV in type Ib stones), capped at the
+  # centre's conc_max. They leave the remaining nitrogen species untouched.
+  [[host.treatment]]
+  id = "irradiation_anneal_h3"
+  name = "Irradiation + anneal (H3/H4, green-yellow)"
+  conditions = "electron/neutron irradiation, then ~800 C vacuum anneal (vacancies bind to A aggregates)"
+  requires = ["N"]
+    [[host.treatment.effect]]
+    type = "create_centre"
+    centre_id = "H3 / H4 (N-V-N, 2N+V; 4N+2V)"
+    from = "N"
+    fraction = 0.02
+
+  [[host.treatment]]
+  id = "irradiation_anneal_nv"
+  name = "Irradiation + anneal (NV, pink to red)"
+  conditions = "electron irradiation, then ~800 C vacuum anneal (vacancies bind to isolated nitrogen)"
+  requires = ["N"]
+    [[host.treatment.effect]]
+    type = "create_centre"
+    centre_id = "NV0 / NV- (pink)"
+    from = "N"
+    fraction = 0.01
+
+  [[host.chromophore]]
+  id = "C centre / Ns0 (type Ib yellow)"
+  kind = "color_centre"
+  elements = ["N"]
+  site = "isolated substitutional nitrogen N_s0 (donor 1.7 eV below the conduction band, Report p.2)"
+  conc_unit = "ppma_all"
+  valence = "Ns0"
+  conc_typical = [10.0, 300.0]
+  conc_max = 600.0
+  requires = []
+  excludes = ["Boron (type IIb blue)"]
+  quenched_by = ["aggregation by HPHT/annealing > ~1700 C (-> A/B)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 270.0
+    fwhm_cm1 = 5500.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.18
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.3 (C-Centre row, alpha = 0.18 cm-1/ppm); also Dyer 1965 / Kiflawi 1994 recalled"
+
+    [[host.chromophore.band]]
+    centre_nm = 400.0
+    shape = "edge"
+    peak_coeff = 0.0015
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "estimate"
+    source = "onset 560 nm from Report p.2-3 (C-Centre continuum); coefficient tuned to yellow Ib appearance; Collins 1980 continuum coefficient not retrieved"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = [575.0, 637.0]
+    uv = { lw = "inert to weak orange", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "N3/N2 Cape series (A aggregates + vacancies)"
+  kind = "color_centre"
+  elements = ["N"]
+  site = "N3 = three N around a vacancy on a {111} plane (ZPL 415.2 nm); N2 band ~478 nm"
+  conc_unit = "ppma_all"
+  valence = "A_aggregate"
+  conc_typical = [100.0, 1500.0]
+  conc_max = 3500.0
+  requires = ["N aggregates (A/B)"]
+  excludes = ["Boron (type IIb blue)"]
+  quenched_by = ["HPHT > ~2000 C"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 415.2
+    fwhm_cm1 = 1500.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0008
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.3-4 (N3 / N2 row); a Gaussian centred on the ZPL is physically doubtful, see D21"
+
+    [[host.chromophore.band]]
+    centre_nm = 350.0
+    fwhm_cm1 = 4000.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0008
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "estimate"
+    source = "ESTIMATE: the N3 vibronic absorption region 350-410 nm (N3 absorbs well below its 415.2 nm zero-phonon line); same strength as the 415 nm band. It is the excitation of the N3 glow under the 365 nm lamp; its tail adds about 10 % to the 400 nm absorption of Cape diamonds"
+
+    [[host.chromophore.band]]
+    centre_nm = 478.0
+    fwhm_cm1 = 2500.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0004
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.3-4 (N3 / N2 row, N2 478 nm); centre also Zaitsev handbook, recalled"
+
+    # N3 blue emission: the 415.2 nm zero-phonon line (15 % of the photons) and a broad vibronic
+    # band modelled as one Gaussian at 470 nm, FWHM 85 nm (it stands for the N3 phonon replicas
+    # and the blue-green band that accompany it in Cape diamonds; this places the glow at the sky
+    # blue of real stones). Phi_0 = 0.3 is an ESTIMATE.
+    [[host.chromophore.fluorescence]]
+    emission_nm = 415.2
+    emission_fwhm_nm = 1.0
+    sideband = { centre_nm = 470.0, fwhm_nm = 85.0, weight = 0.85 }
+    quantum_yield = 0.3
+    uv = { lw = "blue (often stronger LW)", sw = "blue (weaker)" }
+    confidence = "estimate"
+    source = "Report p.3-4 (N3, ZPL 415.2 nm); band shape and yield are estimates"
+
+  [[host.chromophore]]
+  id = "H3 / H4 (N-V-N, 2N+V; 4N+2V)"
+  kind = "color_centre"
+  elements = ["N"]
+  site = "H3 = two N + vacancy (ZPL 503.2 nm, vibronic 440-500 nm); H4 = four N + two vacancies (ZPL 496 nm)"
+  conc_unit = "ppma_all"
+  valence = "NVN"
+  conc_typical = [100.0, 1500.0]
+  conc_max = 3500.0
+  requires = ["N aggregates (A/B)"]
+  excludes = ["Boron (type IIb blue)", "GR1 (green, radiation)"]
+  quenched_by = ["HPHT > ~1900 C (H4/H3 destroyed; Report p.3)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 503.2
+    fwhm_cm1 = 1800.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0006
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.4 (H3 / H4 row, H3 503.2 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 440.0
+    fwhm_cm1 = 6000.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0006
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "estimate"
+    source = "ESTIMATE: the broad blue-violet vibronic absorption of H3 below its 503.2 nm zero-phonon line; the excitation of the H3 glow under the 365 and 395 nm lamps. H3 only exists after the irradiation + anneal treatment, so no untreated recipe changes"
+
+    [[host.chromophore.band]]
+    centre_nm = 496.0
+    fwhm_cm1 = 2000.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0003
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.4 (H3 / H4 row, H4 496.0 nm)"
+
+    # H3 green emission: 503.2 nm zero-phonon line (25 % of the photons) and the vibronic band at
+    # 525 nm. Phi_0 = 0.6 is an ESTIMATE (H3 is an efficient emitter).
+    [[host.chromophore.fluorescence]]
+    emission_nm = 503.2
+    emission_fwhm_nm = 1.0
+    sideband = { centre_nm = 525.0, fwhm_nm = 40.0, weight = 0.75 }
+    quantum_yield = 0.6
+    uv = { lw = "green (strong)", sw = "green" }
+    confidence = "estimate"
+    source = "Report p.4 (H3, ZPL 503.2 nm); band shape and yield are estimates"
+
+  [[host.chromophore]]
+  id = "Boron acceptor (type IIb blue)"
+  kind = "color_centre"
+  elements = ["B"]
+  site = "substitutional B, acceptor level 0.37 eV above valence band"
+  conc_unit = "ppma_all"
+  conc_typical = [0.05, 1.0]
+  conc_max = 10.0
+  requires = []
+  excludes = ["C centre / Ns0 (type Ib yellow)", "N3/N2 Cape series", "H3 / H4", "NV (pink)"]
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 700.0
+    shape = "edge"
+    peak_coeff = 1.76
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.4 (Boron row, sigma ~ 1.0e-17 cm2, 700 nm onset); onset_nm = Report; conversion to cm-1/ppm is mine"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = [500.0, 660.0]
+    uv = { lw = "inert (weak)", sw = "blue/orange-red phosphorescence after SW exposure (seconds to minutes)" }
+
+  [[host.chromophore]]
+  id = "GR1 (neutral vacancy V0)"
+  kind = "color_centre"
+  elements = []
+  site = "neutral vacancy, ZPL 741.2 nm; vibronic band centred 700 nm, 600-740 nm"
+  conc_unit = "intensity"
+  conc_typical = [0.05, 5.0]
+  conc_max = 50.0
+  requires = []
+  excludes = ["H3 / H4", "NV (pink)"]
+  quenched_by = ["annealing > ~600-700 C (Report p.3)"]
+  confidence = "secondary"
+  suspect = "sigma vs alpha inconsistent by 10x"
+
+    [[host.chromophore.band]]
+    centre_nm = 700.0
+    fwhm_cm1 = 1600.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.6
+    pol = { o = 1.0, e = 1.0 }
+    sigma_cm2 = 3.400000e-17
+    confidence = "secondary"
+    suspect = "sigma vs alpha inconsistent by 10x"
+    source = "Report p.4 (GR1 row, alpha = 0.60 cm-1/ppm; sigma = 3.4e-17 cm2 inconsistent by 10x)"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = [741.2]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "NV0 / NV- (pink)"
+  kind = "color_centre"
+  elements = ["N"]
+  site = "N adjacent to vacancy; NV0 ZPL 575.0 nm, NV- ZPL 637.0 nm"
+  conc_unit = "ppma_all"
+  valence = "NV"
+  conc_typical = [0.1, 5.0]
+  conc_max = 20.0
+  requires = ["C centre / Ns0 (type Ib yellow)"]
+  excludes = ["Boron (type IIb blue)", "GR1 (neutral vacancy V0)"]
+  quenched_by = ["annealing > ~1000 C"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 575.0
+    fwhm_cm1 = 2500.0
+    shape = "gaussian_energy"
+    peak_coeff = 5.3
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.4-5 (NV0 / NV- row, first sigma); conversion to cm-1/ppm is mine"
+
+    [[host.chromophore.band]]
+    centre_nm = 420.0
+    fwhm_cm1 = 8000.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.6
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "estimate"
+    source = "ESTIMATE: the broad blue-UV absorption of the NV centres (about a tenth of the 575 nm peak), the excitation of the NV glow under the UV lamps. NV only exists after the irradiation + anneal treatment, so no untreated recipe changes"
+
+    [[host.chromophore.band]]
+    centre_nm = 560.0
+    fwhm_cm1 = 3000.0
+    shape = "gaussian_energy"
+    peak_coeff = 3.5
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.4-5 (NV0 / NV- row, second sigma) and p.3 prose (560 nm); conversion to cm-1/ppm is mine"
+
+    # NV0 (575 nm) and NV- (637 nm) zero-phonon lines with the NV- vibronic sideband to 750 nm:
+    # orange to red. Phi_0 = 0.7 and the shares are ESTIMATES; the primary abstracts found give
+    # QY ~1 for NV0 and ~1 falling to 0.5 with pump power for NV- (arXiv:1501.03714) against 0.05-0.55
+    # depending on host size in a conflicting study (arXiv:1712.07877): 0.5-1, so 0.7 stays
+    # (research-2026-10-primary-data §8).
+    [[host.chromophore.fluorescence]]
+    emission_nm = [575.0, 637.0]
+    emission_fwhm_nm = 1.0
+    emission_weight = [0.5, 0.5]
+    sideband = { centre_nm = 680.0, fwhm_nm = 65.0, weight = 0.5 }
+    quantum_yield = 0.7
+    uv = { lw = "orange to red (moderate to strong)", sw = "orange to red" }
+    confidence = "estimate"
+    source = "Report p.4-5 (NV0 575.0 nm, NV- 637.0 nm); yield and band shares are estimates; research-2026-10-primary-data §8 (NV QY range 0.5-1)"
+
+  [[host.chromophore]]
+  id = "550 nm plastic-deformation band (pink/brown)"
+  kind = "color_centre"
+  elements = []
+  site = "{111} dislocation-glide vacancy clusters; removed by HPHT above 2000 C"
+  conc_unit = "intensity"
+  conc_typical = [0.1, 3.0]
+  conc_max = 10.0
+  requires = []
+  excludes = ["Boron (type IIb blue)"]
+  quenched_by = ["HPHT > ~2000 C", "annealing > ~1200 C partial"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 550.0
+    fwhm_cm1 = 3500.0
+    shape = "gaussian_energy"
+    peak_coeff = 1.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.5 (Plastic Def. row, 550 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 400.0
+    shape = "edge"
+    peak_coeff = 0.15
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.5 (Plastic Def. row, 400 nm edge, alpha = 0.15 cm-1/unit); onset_nm estimate"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Hydrogen-related 480 nm band (chameleon, olive)"
+  kind = "color_centre"
+  elements = ["N"]
+  site = "unassigned H-related defect; accompanies 3107 cm-1 line; Report: H complex accompanying N"
+  conc_unit = "intensity"
+  conc_typical = [0.1, 2.0]
+  conc_max = 5.0
+  requires = ["N aggregates (A/B)"]
+  excludes = ["Boron (type IIb blue)"]
+  quenched_by = ["HPHT", "heating ~ 200-300 C reversible in chameleons"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 480.0
+    fwhm_cm1 = 3500.0
+    shape = "gaussian_energy"
+    peak_coeff = 1.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.5 (Hydrogen row, 480 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "yellow (chameleon, unverified)", sw = "weak" }
+
+
+[[host]]
+id = "garnet_andradite"
+name = "Garnet (andradite)"
+formula = "Ca3(Fe3+,Cr3+,V3+)2Si3O12"
+optical = "isotropic"
+uv_edge_nm = 400.0
+materials = ["Andradite Garnet", "Demantoid Garnet", "Topazolite", "Andradite Garnet (Demantoid)"]
+density_g_cm3 = 3.86
+formula_weight_g_mol = 508.18
+sites_per_fu = 2.0
+cation_site_density_cm3 = 9.148516e+21
+total_atom_density_cm3 = 9.148516e+22
+rules = ["site_sum: x_And + x_Grs (+ pyralspite components) <= 1.0 (Report p.14)", "end_member concentration: C = n_site * x * rho / M_fu with n_site = 2 for Y; Fe3+ 15.2 mol/L at x_And = 1 (Report p.14, p.16)", "Cr3+ substitutes Fe3+ (up to 0.15 apfu ~ 2.2 wt% Cr2O3, Report p.16); no Cr/V color change in andradite (EST: Fe3+ edge dominates)", "demantoid non-luminescent: concentration quenching across the Fe3+ sublattice (Report p.16, p.39)"]
+
+  [[host.end_member]]
+  id = "grossular"
+  name = "Grossular Ca3Al2Si3O12 (colorless remainder)"
+  ri = 1.734
+  sg = 3.59
+  colorless = true
+
+  [[host.end_member]]
+  id = "andradite"
+  name = "Andradite Ca3Fe2Si3O12"
+  ri = 1.887
+  sg = 3.86
+
+  [[host.chromophore]]
+  id = "Fe3+ (andradite)"
+  kind = "end_member"
+  elements = ["Fe"]
+  end_member = "andradite"
+  site = "Y (octahedral), Fe3+ 2 per f.u. at x = 1; some Fe3+ on tetrahedral Z in Ti-rich (melanite) is not modelled"
+  conc_unit = "mol_fraction"
+  conc_typical = [0.85, 1.0]
+  conc_max = 1.0
+  requires = []
+  excludes = []
+  quenched_by = ["self"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 440.0
+    fwhm_cm1 = 1300.0
+    shape = "gaussian_energy"
+    peak_coeff = 60.0
+    pol = { o = 1.0 }
+    confidence = "secondary"
+    source = "Report p.17 (Andradite Fe3+ (Topazolite) row, 440 nm); prior: verified centre (S8), FWHM/coefficient estimate - same numbers"
+
+    [[host.chromophore.band]]
+    centre_nm = 861.0
+    fwhm_cm1 = 2500.0
+    shape = "gaussian_energy"
+    peak_coeff = 25.0
+    pol = { o = 1.0 }
+    confidence = "secondary"
+    source = "Report p.17 (861 nm, 6A1g -> 4T1g); its tail enters 780 nm only; prior: verified centre (S8)"
+
+    [[host.chromophore.band]]
+    centre_nm = 380.0
+    fwhm_cm1 = 5000.0
+    shape = "gaussian_energy"
+    peak_coeff = 400.0
+    pol = { o = 1.0 }
+    confidence = "secondary"
+    source = "Report p.17 (Andradite row '380.0 (CT)', FWHM 5000, 400.0 cm^-1/x); the report calls it a charge-transfer edge, so the Gaussian is a stand-in (prior: estimate - same numbers)"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = []
+    quantum_yield = 0.0
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Cr3+"
+  kind = "ion"
+  elements = ["Cr"]
+  site = "Y (octahedral); substitutes Fe3+"
+  conc_unit = "wt_pct_oxide:Cr2O3"
+  conc_typical = [0.1, 2.2]
+  conc_max = 2.5
+  requires = ["Fe3+ (andradite)"]
+  excludes = []
+  quenched_by = ["Fe3+"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 623.0
+    fwhm_cm1 = 2800.0
+    shape = "gaussian_energy"
+    peak_coeff = 12.0
+    pol = { o = 1.0 }
+    confidence = "secondary"
+    source = "Report p.17 (Andradite Cr3+ (Demantoid) row, 623 nm); prior: verified centre (S8), estimate coefficient - same numbers"
+
+    [[host.chromophore.band]]
+    centre_nm = 587.0
+    fwhm_cm1 = 2500.0
+    shape = "gaussian_energy"
+    peak_coeff = 6.0
+    pol = { o = 1.0 }
+    confidence = "secondary"
+    source = "Report p.17 (Andradite Cr3+ (Demantoid) row, 587 nm); prior: estimate (assignment ambiguity in S8, half weight) - same numbers"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = []
+    quantum_yield = 0.0
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "V3+"
+  kind = "ion"
+  elements = ["V"]
+  site = "Y (octahedral)"
+  conc_unit = "wt_pct_oxide:V2O3"
+  conc_typical = [0.0, 0.1]
+  conc_max = 0.2
+  requires = ["Fe3+ (andradite)"]
+  excludes = []
+  quenched_by = []
+  confidence = "estimate"
+
+    [[host.chromophore.band]]
+    centre_nm = 610.0
+    fwhm_cm1 = 2800.0
+    shape = "gaussian_energy"
+    peak_coeff = 12.0
+    pol = { o = 1.0 }
+    confidence = "estimate"
+    source = "no V3+ band positions in andradite in the report or S8: value copied from grossular with a +10 nm shift guess"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = []
+    quantum_yield = 0.0
+    uv = { lw = "inert", sw = "inert" }
+
+
+[[host]]
+id = "garnet_grossular"
+name = "Garnet (grossular)"
+formula = "Ca3(Al,V3+,Cr3+,Fe3+)2Si3O12"
+optical = "isotropic"
+uv_edge_nm = 290.0
+materials = ["Grossular Garnet", "Tsavorite", "Hessonite", "Grossular Garnet (Tsavorite)"]
+density_g_cm3 = 3.59
+formula_weight_g_mol = 450.45
+sites_per_fu = 2.0
+cation_site_density_cm3 = 9.599061e+21
+total_atom_density_cm3 = 9.599061e+22
+rules = ["site_sum: x_Grs + x_And (+ pyralspite components) <= 1.0; X site is Ca (non-chromophoric), color from Y-site cations (Report p.14, p.16)", "end_member concentration: C = n_site * x * rho / M_fu with n_site = 2 for Y (Report p.14); alpha linear in x_And (Report p.46)", "no Cr3+/V3+ color change is modelled for grossular (rare Ethiopia chrome grossular, S13, not in the report)"]
+
+  [[host.end_member]]
+  id = "grossular"
+  name = "Grossular Ca3Al2Si3O12 (colorless remainder)"
+  ri = 1.734
+  sg = 3.59
+  colorless = true
+
+  [[host.end_member]]
+  id = "andradite"
+  name = "Andradite Ca3Fe2Si3O12"
+  ri = 1.887
+  sg = 3.86
+
+  [[host.chromophore]]
+  id = "V3+"
+  kind = "ion"
+  elements = ["V"]
+  site = "Y (octahedral Al site)"
+  conc_unit = "wt_pct_oxide:V2O3"
+  conc_typical = [0.1, 1.5]
+  conc_max = 2.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 600.0
+    fwhm_cm1 = 2800.0
+    shape = "gaussian_energy"
+    peak_coeff = 13.0
+    pol = { o = 1.0 }
+    confidence = "secondary"
+    source = "Report p.16 (Grossular V3+ (Tsavorite) row, 600 nm); prior: estimate - same numbers"
+
+    [[host.chromophore.band]]
+    centre_nm = 420.0
+    fwhm_cm1 = 3000.0
+    shape = "gaussian_energy"
+    peak_coeff = 13.0
+    pol = { o = 1.0 }
+    confidence = "secondary"
+    source = "Report p.16 (Grossular V3+ (Tsavorite) row, 420 nm); prior: estimate - same numbers"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = []
+    quantum_yield = 0.0
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Cr3+"
+  kind = "ion"
+  elements = ["Cr"]
+  site = "Y (octahedral Al site)"
+  conc_unit = "wt_pct_oxide:Cr2O3"
+  conc_typical = [0.05, 1.0]
+  conc_max = 1.5
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 610.0
+    fwhm_cm1 = 2800.0
+    shape = "gaussian_energy"
+    peak_coeff = 13.0
+    pol = { o = 1.0 }
+    confidence = "secondary"
+    source = "Report p.16 (Grossular Cr3+ (Tsavorite) row, 610 nm); prior: estimate - same numbers"
+
+    [[host.chromophore.band]]
+    centre_nm = 430.0
+    fwhm_cm1 = 3000.0
+    shape = "gaussian_energy"
+    peak_coeff = 12.0
+    pol = { o = 1.0 }
+    confidence = "secondary"
+    source = "Report p.16 (Grossular Cr3+ (Tsavorite) row, 430 nm); prior: estimate - same numbers"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = []
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Fe3+ (andradite component)"
+  kind = "end_member"
+  elements = ["Fe"]
+  end_member = "andradite"
+  site = "Y (octahedral), Fe3+ 2 per f.u. at x_And = 1"
+  conc_unit = "mol_fraction"
+  conc_typical = [0.02, 0.15]
+  conc_max = 1.0
+  requires = []
+  excludes = ["V3+ (tsavorite green is lost at high Fe3+)"]
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 440.0
+    fwhm_cm1 = 1300.0
+    shape = "gaussian_energy"
+    peak_coeff = 60.0
+    pol = { o = 1.0 }
+    confidence = "secondary"
+    source = "Report p.16-17 (Grossular Fe3+ (Hessonite) row, 440 nm); prior: estimate - same numbers"
+
+    [[host.chromophore.band]]
+    centre_nm = 400.0
+    shape = "edge"
+    peak_coeff = 250.0
+    pol = { o = 1.0 }
+    confidence = "secondary"
+    source = "Report p.16-17 (Grossular Fe3+ (Hessonite) row: '440.0 Edge tail / 25,000 / Edge / 250.0 cm^-1/x_And'); NEW band (prior file had none); prose says the edge rises below 480 nm, table says 400 nm - see Discrepancies"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = []
+    quantum_yield = 0.0
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Mn2+ (grossular trace)"
+  kind = "ion"
+  elements = ["Mn"]
+  site = "X (Ca site)"
+  conc_unit = "wt_pct_oxide:MnO"
+  conc_typical = [0.0, 1.0]
+  conc_max = 3.0
+  requires = []
+  excludes = []
+  quenched_by = ["Fe3+"]
+  confidence = "estimate"
+
+    [[host.chromophore.band]]
+    centre_nm = 430.0
+    fwhm_cm1 = 500.0
+    shape = "gaussian_energy"
+    peak_coeff = 1.0
+    pol = { o = 1.0 }
+    confidence = "estimate"
+    source = "assumes same epsilon as in spessartine (Report p.15 / S2); site in Ca garnet shifts positions by an unknown amount; not in the report"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = [590.0]
+    uv = { lw = "inert", sw = "weak orange (unverified)" }
+
+
+[[host]]
+id = "garnet_pyralspite"
+name = "Garnet (pyralspite)"
+formula = "(Mg,Fe2+,Mn2+)3(Al,Cr3+,V3+,Fe3+)2Si3O12"
+optical = "isotropic"
+uv_edge_nm = 320.0
+materials = ["Pyrope Garnet", "Almandine Garnet", "Spessartine Garnet"]
+density_g_cm3 = 3.8
+formula_weight_g_mol = 450.0
+sites_per_fu = 3.0
+cation_site_density_cm3 = 1.525609e+22
+total_atom_density_cm3 = 1.017073e+23
+rules = ["site_sum: x_Prp + x_Alm + x_Sps (+ x_Grs + x_And + minor Kno) <= 1.0; reject sets with sum x > 1 (Report p.14)", "end_member concentration: C = n_site * x * rho / M_fu, n_site = 3 (X) or 2 (Y); alpha = peak_coeff * x, linear in site occupancy (Report p.14, p.46)", "ivct_product: Fe2+-Fe3+ IVCT scales with x_Alm * x_Fe3+(Y) (Report p.15; product rule p.30)", "color_change: Cr3+/V3+ color change requires x_Alm <= 0.10 (Report p.15, p.46); above 0.10 the Fe2+ bands at 504/527 nm fill the 480-520 nm window and suppress it", "color_change_window: x_Sps ~0.15-0.45 and Cr2O3 + V2O3 ~0.5-1.5 wt% (Report p.15)", "rhodolite: x_Prp 0.55-0.70, x_Alm 0.30-0.45, x_Sps <= 0.05 (Report p.15)"]
+
+  [[host.end_member]]
+  id = "pyrope"
+  name = "Pyrope Mg3Al2Si3O12 (colorless remainder)"
+  ri = 1.714
+  sg = 3.58
+  colorless = true
+
+  [[host.end_member]]
+  id = "almandine"
+  name = "Almandine Fe3Al2Si3O12"
+  ri = 1.830
+  sg = 4.19
+
+  [[host.end_member]]
+  id = "spessartine"
+  name = "Spessartine Mn3Al2Si3O12"
+  ri = 1.800
+  sg = 4.18
+
+  [[host.chromophore]]
+  id = "Fe2+ (almandine)"
+  kind = "end_member"
+  elements = ["Fe"]
+  end_member = "almandine"
+  site = "X (dodecahedral, D2), Fe2+ 3 per f.u. at x=1"
+  conc_unit = "mol_fraction"
+  conc_typical = [0.0, 0.85]
+  conc_max = 1.0
+  requires = []
+  excludes = []
+  quenched_by = ["self (Fe2+ cross-relaxation)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 504.0
+    fwhm_cm1 = 350.0
+    shape = "gaussian_energy"
+    peak_coeff = 15.0
+    pol = { o = 1.0 }
+    confidence = "secondary"
+    source = "Report p.15 (Fe2+ (Almandine) row); 5T2 -> 3T1; prior: estimate for FWHM/coefficient, centre secondary (S2) - same numbers"
+
+    [[host.chromophore.band]]
+    centre_nm = 527.0
+    fwhm_cm1 = 400.0
+    shape = "gaussian_energy"
+    peak_coeff = 20.0
+    pol = { o = 1.0 }
+    confidence = "secondary"
+    source = "Report p.15 (Fe2+ (Almandine) row); 5T2 -> 3T2"
+
+    [[host.chromophore.band]]
+    centre_nm = 576.0
+    fwhm_cm1 = 450.0
+    shape = "gaussian_energy"
+    peak_coeff = 25.0
+    pol = { o = 1.0 }
+    confidence = "secondary"
+    source = "Report p.15 (Fe2+ (Almandine) row); 5T2 -> 3A2"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = []
+    quantum_yield = 0.0
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Fe2+-Fe3+ IVCT"
+  kind = "ivct_pair"
+  elements = ["Fe"]
+  site = "Fe2+ at X (dodecahedral) <-> Fe3+ at Y (octahedral)"
+  conc_unit = "mol_fraction"
+  partners = ["Fe2+", "Fe3+"]
+  pairing = "random"
+  pair_z = 6.0
+  pairing_confidence = "estimate"
+  suspect = "IVCT 20-30x below its own epsilon (plan 2.4); product rule x_Alm*x_Fe3+(Y) has no Fe3+(Y) input"
+  conc_typical = [0.0, 0.05]
+  conc_max = 1.0
+  requires = ["Fe2+ (almandine)"]
+  excludes = ["Cr3+ (pyrope)"]
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 461.0
+    fwhm_cm1 = 7300.0
+    shape = "gaussian_energy"
+    peak_coeff = 400.0
+    pol = { o = 1.0 }
+    confidence = "secondary"
+    source = "Report p.15 (centre, FWHM, epsilon 300-500 in text) and p.15 table (peak 400.0 cm^-1/(x_Alm * x_Fe3+)); prior: verified centre/FWHM (S1), estimate coefficient"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = []
+    quantum_yield = 0.0
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Mn2+ (spessartine)"
+  kind = "end_member"
+  elements = ["Mn"]
+  end_member = "spessartine"
+  site = "X (dodecahedral), Mn2+ 3 per f.u. at x=1"
+  conc_unit = "mol_fraction"
+  conc_typical = [0.0, 0.95]
+  conc_max = 1.0
+  requires = []
+  excludes = []
+  quenched_by = ["Fe2+ (almandine) energy transfer (> ~0.1)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 422.89
+    fwhm_cm1 = 1195.1
+    shape = "gaussian_energy"
+    peak_coeff = 10.292
+    pol = { o = 1.0 }
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+    source = "research-2026-10 §5: Mn2+ 409/422/430 nm merged into one energy Gaussian (area and variance preserving); the research keeps 410 + 485 nm as >95 % of the color"
+
+    [[host.chromophore.band]]
+    centre_nm = 486.0
+    fwhm_cm1 = 600.0
+    shape = "gaussian_energy"
+    peak_coeff = 8.0
+    pol = { o = 1.0 }
+    confidence = "secondary"
+    source = "Report p.15 (Mn2+ (Spessartine) row; 6A1 -> 4T2(G) as assigned by the report)"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = []
+    quantum_yield = 0.0
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Cr3+"
+  kind = "ion"
+  elements = ["Cr"]
+  site = "Y (octahedral Al site, C3i as labelled in the report), Cr3+"
+  conc_unit = "wt_pct_oxide:Cr2O3"
+  conc_typical = [0.0, 1.5]
+  conc_max = 5.0
+  requires = []
+  excludes = ["Fe2+ (almandine) when x_Alm > 0.10 for color change"]
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 571.0
+    fwhm_cm1 = 3000.0
+    shape = "gaussian_energy"
+    peak_coeff = 14.0
+    pol = { o = 1.0 }
+    confidence = "secondary"
+    source = "Report p.15 (Cr3+ row; 4A2g -> 4T2g); prior: verified centre (S6), FWHM/coefficient estimate - same numbers"
+
+    [[host.chromophore.band]]
+    centre_nm = 410.0
+    fwhm_cm1 = 3500.0
+    shape = "gaussian_energy"
+    peak_coeff = 12.0
+    pol = { o = 1.0 }
+    confidence = "secondary"
+    source = "Report p.15 (Cr3+ row; 4A2g -> 4T1g(F)); prior: estimate - same numbers"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = [690.0]
+    uv = { lw = "inert to weak red", sw = "inert to weak red" }
+
+  [[host.chromophore]]
+  id = "V3+"
+  kind = "ion"
+  elements = ["V"]
+  site = "Y (octahedral Al site), V3+"
+  conc_unit = "wt_pct_oxide:V2O3"
+  conc_typical = [0.0, 1.0]
+  conc_max = 2.0
+  requires = []
+  excludes = ["Fe2+ (almandine) when x_Alm > 0.10 for color change"]
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 574.0
+    fwhm_cm1 = 3000.0
+    shape = "gaussian_energy"
+    peak_coeff = 14.0
+    pol = { o = 1.0 }
+    confidence = "secondary"
+    source = "Report p.15-16 (V3+ row; 3T1g -> 3T2g(F) in the prior file); prior: estimate - same numbers"
+
+    [[host.chromophore.band]]
+    centre_nm = 405.0
+    fwhm_cm1 = 3500.0
+    shape = "gaussian_energy"
+    peak_coeff = 12.0
+    pol = { o = 1.0 }
+    confidence = "secondary"
+    source = "Report p.16 (V3+ row, second band); prior: estimate - same numbers"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = []
+    quantum_yield = 0.0
+    uv = { lw = "inert", sw = "inert" }
+
+
+[[host]]
+id = "ggg"
+name = "GGG"
+formula = "Gd3Ga5O12"
+optical = "isotropic"
+uv_edge_nm = 270.0
+materials = ["GGG"]
+density_g_cm3 = 7.08
+formula_weight_g_mol = 1012.38
+sites_per_fu = 3.0
+cation_site_density_cm3 = 1.263461e+22
+total_atom_density_cm3 = 8.423074e+22
+
+  [[host.chromophore]]
+  id = "Cr3+"
+  kind = "ion"
+  elements = ["Cr"]
+  site = "Octahedral Ga (16a)"
+  conc_unit = "ppma_all"
+  conc_typical = [100.0, 1000.0]
+  conc_max = 5000.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 620.0
+    fwhm_cm1 = 2800.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0006
+    pol = { o = 1.0 }
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 450.0
+    fwhm_cm1 = 3300.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0006
+    pol = { o = 1.0 }
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+
+  [[host.chromophore]]
+  id = "Nd3+"
+  kind = "ion"
+  elements = ["Nd"]
+  site = "Dodecahedral Gd (24c)"
+  conc_unit = "ppma_all"
+  conc_typical = [500.0, 3000.0]
+  conc_max = 10000.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 586.0
+    fwhm_cm1 = 40.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.00055
+    pol = { o = 1.0 }
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+
+
+[[host]]
+id = "glass_silicate"
+name = "Glass (silicate)"
+formula = "SiO2-based glass"
+optical = "isotropic"
+uv_edge_nm = 320.0
+materials = ["Glass (N-BK7)", "Glass (F2)"]
+valence_split = { Cu = { "Cu2+" = 0.95, "Cu0" = 0.05 } }  # estimate: dissolved Cu2+ dominates, colloidal Cu0 is a strike product
+density_g_cm3 = 2.5
+formula_weight_g_mol = 60.0
+sites_per_fu = 1.0
+cation_site_density_cm3 = 2.509225e+22
+total_atom_density_cm3 = 7.527676e+22
+
+  [[host.chromophore]]
+  id = "Co2+ (blue)"
+  kind = "ion"
+  elements = ["Co"]
+  site = "tetrahedral network-former-like site (T_d)"
+  conc_unit = "wt_pct_oxide:CoO"
+  conc_typical = [0.001, 0.1]
+  conc_max = 0.5
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 537.0
+    fwhm_cm1 = 1100.0
+    shape = "gaussian_energy"
+    peak_coeff = 80.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.29 (Co2+ row, 537 nm); centre also CoGlass"
+
+    [[host.chromophore.band]]
+    centre_nm = 595.0
+    fwhm_cm1 = 1100.0
+    shape = "gaussian_energy"
+    peak_coeff = 115.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.29 (Co2+ row, 595 nm); centre also CoGlass"
+
+    [[host.chromophore.band]]
+    centre_nm = 640.0
+    fwhm_cm1 = 1100.0
+    shape = "gaussian_energy"
+    peak_coeff = 100.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.29 (Co2+ row, 640 nm); centre also CoGlass"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Cu2+ (blue-turquoise)"
+  kind = "ion"
+  elements = ["Cu"]
+  site = "distorted octahedral modifier site (O_h)"
+  conc_unit = "wt_pct_oxide:CuO"
+  valence = "Cu2+"
+  conc_typical = [0.1, 3.0]
+  conc_max = 8.0
+  requires = []
+  excludes = ["Cu colloid (copper ruby)"]
+  quenched_by = ["reducing melt (-> Cu+, Cu0)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 790.0
+    fwhm_cm1 = 4500.0
+    shape = "gaussian_energy"
+    peak_coeff = 3.6
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.29 (Cu2+ row)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Cr3+ (green) / Cr6+ (yellow)"
+  kind = "ion"
+  elements = ["Cr"]
+  site = "octahedral (Cr3+, reducing melt); chromate tetrahedra [CrO4]2- (Cr6+, oxidising melt)"
+  conc_unit = "wt_pct_oxide:Cr2O3"
+  conc_typical = [0.01, 0.5]
+  conc_max = 1.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 650.0
+    fwhm_cm1 = 2500.0
+    shape = "gaussian_energy"
+    peak_coeff = 11.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.29 (Cr3+ row, 650 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 450.0
+    fwhm_cm1 = 3000.0
+    shape = "gaussian_energy"
+    peak_coeff = 11.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.29 (Cr3+ row, 450 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Fe2+/Fe3+ (green-blue / yellow-brown)"
+  kind = "ion"
+  elements = ["Fe"]
+  site = "octahedral (Fe2+), tetrahedral (Fe3+)"
+  conc_unit = "wt_pct_oxide:Fe2O3"
+  conc_typical = [0.01, 1.0]
+  conc_max = 3.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 1050.0
+    fwhm_cm1 = 5000.0
+    shape = "gaussian_energy"
+    peak_coeff = 12.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.29 (Fe2+/Fe3+ row, 1050 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 380.0
+    shape = "edge"
+    peak_coeff = 8.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.29 (Fe2+/Fe3+ row, CT edge onset 450 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Mn3+ (purple)"
+  kind = "ion"
+  elements = ["Mn"]
+  site = "distorted octahedral (d4)"
+  conc_unit = "wt_pct_oxide:Mn2O3"
+  conc_typical = [0.05, 1.0]
+  conc_max = 3.0
+  requires = []
+  excludes = ["Fe2+/Fe3+ (green-blue / yellow-brown)"]
+  quenched_by = ["reducing melt (-> colorless Mn2+; Report p.28)", "solarisation (Mn2+ -> Mn3+ under UV; Fe3+ yellow decolorised)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 500.0
+    fwhm_cm1 = 3500.0
+    shape = "gaussian_energy"
+    peak_coeff = 70.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.29 (Mn3+ row)"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = [520.0]
+    uv = { lw = "weak", sw = "weak green (Mn2+)" }
+
+  [[host.chromophore]]
+  id = "Ni2+ (brown / purple)"
+  kind = "ion"
+  elements = ["Ni"]
+  site = "octahedral (soda-lime, brown) and tetrahedral/5-coordinate (potash, purple)"
+  conc_unit = "wt_pct_oxide:NiO"
+  conc_typical = [0.05, 0.5]
+  conc_max = 1.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 440.0
+    fwhm_cm1 = 3000.0
+    shape = "gaussian_energy"
+    peak_coeff = 15.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.29 (Ni2+ row, 440 nm); strongly host-dependent"
+
+    [[host.chromophore.band]]
+    centre_nm = 640.0
+    fwhm_cm1 = 3500.0
+    shape = "gaussian_energy"
+    peak_coeff = 10.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.29 (Ni2+ row, 640 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Nd3+ (lilac / dichroic)"
+  kind = "ion"
+  elements = ["Nd"]
+  site = "network-modifier site"
+  conc_unit = "wt_pct_oxide:Nd2O3"
+  conc_typical = [0.5, 5.0]
+  conc_max = 10.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 580.0
+    fwhm_cm1 = 200.0
+    shape = "gaussian_energy"
+    peak_coeff = 3.4
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "line position well-known; not in Report"
+
+    [[host.chromophore.band]]
+    centre_nm = 523.0
+    fwhm_cm1 = 200.0
+    shape = "gaussian_energy"
+    peak_coeff = 1.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "line position recalled; not in Report"
+
+    [[host.chromophore.band]]
+    centre_nm = 745.0
+    fwhm_cm1 = 250.0
+    shape = "gaussian_energy"
+    peak_coeff = 1.5
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "line position recalled; not in Report"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = [1060.0]
+    uv = { lw = "inert (visible)", sw = "inert (visible)" }
+
+  [[host.chromophore]]
+  id = "Er3+ (pink)"
+  kind = "ion"
+  elements = ["Er"]
+  site = "network-modifier site"
+  conc_unit = "wt_pct_oxide:Er2O3"
+  conc_typical = [0.5, 5.0]
+  conc_max = 10.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 521.0
+    fwhm_cm1 = 180.0
+    shape = "gaussian_energy"
+    peak_coeff = 1.5
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "line position recalled (2H11/2); not in Report"
+
+    [[host.chromophore.band]]
+    centre_nm = 653.0
+    fwhm_cm1 = 200.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.5
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "recalled; not in Report"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = [1540.0]
+    uv = { lw = "inert (visible)", sw = "inert (visible)" }
+
+  [[host.chromophore]]
+  id = "Au colloid (gold ruby)"
+  kind = "colloid"
+  elements = ["Au"]
+  site = "Au0 nanoparticles 5-25 nm (Report p.29); plasmon in glass n ~ 1.5"
+  conc_unit = "ppm_site"
+  conc_typical = [50.0, 300.0]
+  conc_max = 500.0
+  requires = ["Sn2+ (reducing agent)"]
+  excludes = ["Cu2+ (blue-turquoise)", "Mn3+ (purple)"]
+  quenched_by = ["oxidising melt", "overheating (particle growth -> violet/blue)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 540.0
+    fwhm_cm1 = 3500.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.03
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.29 (Au0 colloid row)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Ag colloid (yellow stain)"
+  kind = "colloid"
+  elements = ["Ag"]
+  site = "Ag0 nanoparticles 5-20 nm, plasmon 415 nm (Report p.29)"
+  conc_unit = "ppm_site"
+  conc_typical = [100.0, 2000.0]
+  conc_max = 5000.0
+  requires = ["reducing agent"]
+  excludes = ["Cu2+ (blue-turquoise)"]
+  quenched_by = ["oxidising melt"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 415.0
+    fwhm_cm1 = 3500.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.01
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.29 (Ag0 colloid row)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Cu colloid (copper ruby)"
+  kind = "colloid"
+  elements = ["Cu"]
+  site = "Cu0 nanoparticles 10-50 nm, plasmon 570 nm (Report p.29)"
+  conc_unit = "ppm_site"
+  valence = "Cu0"
+  conc_typical = [500.0, 5000.0]
+  conc_max = 10000.0
+  requires = ["Sn2+ (reducing agent)"]
+  excludes = ["Cu2+ (blue-turquoise)"]
+  quenched_by = ["oxidising melt"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 570.0
+    fwhm_cm1 = 3500.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.004
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.29 (Cu0 colloid row)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Se / CdSe-CdS (pink, selenium ruby)"
+  kind = "colloid"
+  elements = ["Se"]
+  site = "Se0 (pink decoloriser) or CdS(1-x)Se(x) nanocrystals / quantum dots (yellow-orange-red cut-off glass, edge tunable 500-650 nm, Report p.29)"
+  conc_unit = "ppm_site"
+  conc_typical = [1.0, 2000.0]
+  conc_max = 10000.0
+  requires = ["Cd (for edge glasses)"]
+  excludes = ["Fe2+/Fe3+ (green-blue / yellow-brown)"]
+  quenched_by = ["oxidising melt (Se volatilises as SeO2)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 500.0
+    fwhm_cm1 = 3000.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.02
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "estimate"
+    source = "centre recalled (~500 nm) for pink Se0; coefficient estimate; not in Report"
+
+    [[host.chromophore.band]]
+    centre_nm = 550.0
+    shape = "edge"
+    peak_coeff = 0.02
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.30 (CdS(1-x)Se(x) edge row, onset 580 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Uranyl UO2 2+ (uranium yellow-green)"
+  kind = "ion"
+  elements = ["U"]
+  site = "uranyl complex ion in network-modifier site"
+  conc_unit = "wt_pct_oxide:UO3"
+  conc_typical = [0.1, 2.0]
+  conc_max = 5.0
+  requires = ["oxidising melt"]
+  excludes = ["Mn3+ (purple)"]
+  quenched_by = ["reducing melt (-> U4+, green-brown)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 420.0
+    fwhm_cm1 = 3000.0
+    shape = "gaussian_energy"
+    peak_coeff = 3.0
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.30 (Uranyl row)"
+
+    # Uranyl vibronic progression (the four lines are the Report's), 12-16 nm wide. Phi_0 = 0.3 is an
+    # ESTIMATE. The data's only band is at 420 nm, so the glow is excited by the 395 nm lamp but
+    # only through the band's tail by the 365 nm one.
+    [[host.chromophore.fluorescence]]
+    emission_nm = [488.0, 510.0, 533.0, 557.0]
+    emission_fwhm_nm = [12.0, 12.0, 14.0, 16.0]
+    emission_weight = [0.2, 0.35, 0.3, 0.15]
+    quantum_yield = 0.3
+    uv = { lw = "strong green", sw = "strong green" }
+    confidence = "estimate"
+    source = "Report p.30 (Uranyl row, emission lines); widths, weights and yield are estimates"
+
+
+[[host]]
+id = "opal"
+name = "Opal"
+formula = "SiO2.nH2O"
+optical = "isotropic"
+uv_edge_nm = 200.0
+materials = ["Opal"]
+density_g_cm3 = 2.1
+formula_weight_g_mol = 65.0
+sites_per_fu = 1.0
+cation_site_density_cm3 = 1.945615e+22
+total_atom_density_cm3 = 6.420529e+22
+
+  [[host.chromophore]]
+  id = "Fe3+ / Fe-oxide nanoinclusions (fire opal)"
+  kind = "ion"
+  elements = ["Fe"]
+  site = "dispersed Fe3+ and goethite/hematite (iron oxyhydroxide) nano-inclusions"
+  conc_unit = "ppm_site"
+  conc_typical = [50.0, 3000.0]
+  conc_max = 10000.0
+  requires = []
+  excludes = []
+  quenched_by = ["dehydration / heating (cracking)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 400.0
+    shape = "edge"
+    peak_coeff = 0.002
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.27-28 (Fire Opal, Fe3+ oxyhydroxides edge row)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Ni2+ (prase / chrysoprase opal, apple green)"
+  kind = "ion"
+  elements = ["Ni"]
+  site = "octahedral silicate network (Report p.28)"
+  conc_unit = "ppm_site"
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 650.0
+    fwhm_cm1 = 3000.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.005
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.28 (Prase Opal, Ni2+ row, 650 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 390.0
+    fwhm_cm1 = 3500.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.004
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.28 (Prase Opal, Ni2+ row, 390 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Cu2+ (chrysocolla inclusions, turquoise blue opal)"
+  kind = "ion"
+  elements = ["Cu"]
+  site = "hydrous Cu-silicate (chrysocolla) clusters (Report p.28)"
+  conc_unit = "ppm_site"
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 700.0
+    fwhm_cm1 = 4000.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.008
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.28 (Blue Opal, Cu2+ chrysocolla row, 700 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+
+[[host]]
+id = "peridot"
+name = "Peridot (forsterite-olivine)"
+formula = "(Mg,Fe2+)2SiO4"
+optical = "biaxial"
+axis_mapping_confidence = "secondary"  # stored by axis length (Pbnm: alpha||b 10.2, beta||c 6.0, gamma||a 4.76 A; Caltech index: 10 A = alpha, 6 A = beta, 4.7 A = gamma)
+ray_axis_angstrom = { a = 10.2, b = 6.0, g = 4.76 }
+uv_edge_nm = 370.0
+materials = ["Peridot"]
+density_g_cm3 = 3.34
+formula_weight_g_mol = 145.0
+sites_per_fu = 2.0
+cation_site_density_cm3 = 2.774338e+22
+total_atom_density_cm3 = 9.710183e+22
+rules = ["alpha scales linearly with x_Fa (Report p.46); peak_coeff given per x_Fa; Fe2+ 2 per f.u. = ~45.2 mol/L per x_Fa (2 x 22.6 mol/L f.u. at Fo90)"]
+
+  [[host.end_member]]
+  id = "forsterite"
+  name = "Forsterite Mg2SiO4 (colorless remainder)"
+  ri = 1.636
+  sg = 3.22
+  colorless = true
+
+  [[host.end_member]]
+  id = "fayalite"
+  name = "Fayalite Fe2SiO4"
+  ri = 1.864
+  sg = 4.39
+
+  [[host.chromophore]]
+  id = "Fe2+ (fayalite component, M1/M2)"
+  kind = "end_member"
+  elements = ["Fe"]
+  end_member = "fayalite"
+  site = "M1 (Ci) and M2 (Cs), octahedral, Fe2+ ; random-ish with slight M1 preference at gem Fo"
+  conc_unit = "mol_fraction"
+  conc_typical = [0.07, 0.12]
+  conc_max = 1.0
+  requires = []
+  excludes = []
+  quenched_by = ["self"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 335.11
+    fwhm_cm1 = 6942.2
+    shape = "gaussian_energy"
+    peak_coeff = 127.74
+    pol = { a = 1.0 }
+    fit_residual_de00 = 0.2
+    transition_class = "charge_transfer"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 418 ol418.a (alpha ray, 10.2 A axis), shape only, no Fa analysis: scale 1.0 at x_Fa = 0.10 (the report table and the Caltech spectrum agree within 1.1-1.4x at 400-500 nm); 5 energy Gaussians fitted in color terms 340-1300 nm, no CIELAB target; UV charge-transfer edge"
+
+    [[host.chromophore.band]]
+    centre_nm = 452.16
+    fwhm_cm1 = 4712.8
+    shape = "gaussian_energy"
+    peak_coeff = 18.82
+    pol = { a = 1.0 }
+    fit_residual_de00 = 0.2
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 418 ol418.a (alpha ray, 10.2 A axis), shape only, no Fa analysis: scale 1.0 at x_Fa = 0.10 (the report table and the Caltech spectrum agree within 1.1-1.4x at 400-500 nm); 5 energy Gaussians fitted in color terms 340-1300 nm, no CIELAB target; spin-forbidden blue band"
+
+    [[host.chromophore.band]]
+    centre_nm = 648.53
+    fwhm_cm1 = 2184.4
+    shape = "gaussian_energy"
+    peak_coeff = 11.226
+    pol = { a = 1.0 }
+    fit_residual_de00 = 0.2
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 418 ol418.a (alpha ray, 10.2 A axis), shape only, no Fa analysis: scale 1.0 at x_Fa = 0.10 (the report table and the Caltech spectrum agree within 1.1-1.4x at 400-500 nm); 5 energy Gaussians fitted in color terms 340-1300 nm, no CIELAB target; weak 650 nm band"
+
+    [[host.chromophore.band]]
+    centre_nm = 801.87
+    fwhm_cm1 = 1991.5
+    shape = "gaussian_energy"
+    peak_coeff = 59.597
+    pol = { a = 1.0 }
+    fit_residual_de00 = 0.2
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 418 ol418.a (alpha ray, 10.2 A axis), shape only, no Fa analysis: scale 1.0 at x_Fa = 0.10 (the report table and the Caltech spectrum agree within 1.1-1.4x at 400-500 nm); 5 energy Gaussians fitted in color terms 340-1300 nm, no CIELAB target; Fe2+ M2 band (red tail of the NIR band)"
+
+    [[host.chromophore.band]]
+    centre_nm = 1055.07
+    fwhm_cm1 = 3666.7
+    shape = "gaussian_energy"
+    peak_coeff = 153.46
+    pol = { a = 1.0 }
+    fit_residual_de00 = 0.2
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 418 ol418.a (alpha ray, 10.2 A axis), shape only, no Fa analysis: scale 1.0 at x_Fa = 0.10 (the report table and the Caltech spectrum agree within 1.1-1.4x at 400-500 nm); 5 energy Gaussians fitted in color terms 340-1300 nm, no CIELAB target; Fe2+ M1 NIR band"
+
+    [[host.chromophore.band]]
+    centre_nm = 265.83
+    fwhm_cm1 = 12999.3
+    shape = "gaussian_energy"
+    peak_coeff = 581.97
+    pol = { b = 1.0 }
+    fit_residual_de00 = 0.2
+    transition_class = "charge_transfer"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 418 ol418.b (beta ray, 6.0 A axis), shape only, no Fa analysis: scale 1.0 at x_Fa = 0.10 (the report table and the Caltech spectrum agree within 1.1-1.4x at 400-500 nm); 5 energy Gaussians fitted in color terms 340-1300 nm, no CIELAB target; UV charge-transfer edge"
+
+    [[host.chromophore.band]]
+    centre_nm = 460.60
+    fwhm_cm1 = 4793.4
+    shape = "gaussian_energy"
+    peak_coeff = 29.775
+    pol = { b = 1.0 }
+    fit_residual_de00 = 0.2
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 418 ol418.b (beta ray, 6.0 A axis), shape only, no Fa analysis: scale 1.0 at x_Fa = 0.10 (the report table and the Caltech spectrum agree within 1.1-1.4x at 400-500 nm); 5 energy Gaussians fitted in color terms 340-1300 nm, no CIELAB target; spin-forbidden blue band"
+
+    [[host.chromophore.band]]
+    centre_nm = 655.07
+    fwhm_cm1 = 3309.0
+    shape = "gaussian_energy"
+    peak_coeff = 21.567
+    pol = { b = 1.0 }
+    fit_residual_de00 = 0.2
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 418 ol418.b (beta ray, 6.0 A axis), shape only, no Fa analysis: scale 1.0 at x_Fa = 0.10 (the report table and the Caltech spectrum agree within 1.1-1.4x at 400-500 nm); 5 energy Gaussians fitted in color terms 340-1300 nm, no CIELAB target; weak 650 nm band"
+
+    [[host.chromophore.band]]
+    centre_nm = 843.19
+    fwhm_cm1 = 2646.0
+    shape = "gaussian_energy"
+    peak_coeff = 69.008
+    pol = { b = 1.0 }
+    fit_residual_de00 = 0.2
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 418 ol418.b (beta ray, 6.0 A axis), shape only, no Fa analysis: scale 1.0 at x_Fa = 0.10 (the report table and the Caltech spectrum agree within 1.1-1.4x at 400-500 nm); 5 energy Gaussians fitted in color terms 340-1300 nm, no CIELAB target; Fe2+ M2 band (red tail of the NIR band)"
+
+    [[host.chromophore.band]]
+    centre_nm = 1108.61
+    fwhm_cm1 = 2469.7
+    shape = "gaussian_energy"
+    peak_coeff = 167.88
+    pol = { b = 1.0 }
+    fit_residual_de00 = 0.2
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 418 ol418.b (beta ray, 6.0 A axis), shape only, no Fa analysis: scale 1.0 at x_Fa = 0.10 (the report table and the Caltech spectrum agree within 1.1-1.4x at 400-500 nm); 5 energy Gaussians fitted in color terms 340-1300 nm, no CIELAB target; Fe2+ M1 NIR band"
+
+    [[host.chromophore.band]]
+    centre_nm = 335.76
+    fwhm_cm1 = 12993.1
+    shape = "gaussian_energy"
+    peak_coeff = 41.482
+    pol = { g = 1.0 }
+    fit_residual_de00 = 0.2
+    transition_class = "charge_transfer"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 418 ol418.g (gamma ray, 4.76 A axis), shape only, no Fa analysis: scale 1.0 at x_Fa = 0.10 (the report table and the Caltech spectrum agree within 1.1-1.4x at 400-500 nm); 5 energy Gaussians fitted in color terms 340-1300 nm, no CIELAB target; UV charge-transfer edge"
+
+    [[host.chromophore.band]]
+    centre_nm = 448.21
+    fwhm_cm1 = 3201.1
+    shape = "gaussian_energy"
+    peak_coeff = 8.5091
+    pol = { g = 1.0 }
+    fit_residual_de00 = 0.2
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 418 ol418.g (gamma ray, 4.76 A axis), shape only, no Fa analysis: scale 1.0 at x_Fa = 0.10 (the report table and the Caltech spectrum agree within 1.1-1.4x at 400-500 nm); 5 energy Gaussians fitted in color terms 340-1300 nm, no CIELAB target; spin-forbidden blue band"
+
+    [[host.chromophore.band]]
+    centre_nm = 648.16
+    fwhm_cm1 = 2302.2
+    shape = "gaussian_energy"
+    peak_coeff = 10.406
+    pol = { g = 1.0 }
+    fit_residual_de00 = 0.2
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 418 ol418.g (gamma ray, 4.76 A axis), shape only, no Fa analysis: scale 1.0 at x_Fa = 0.10 (the report table and the Caltech spectrum agree within 1.1-1.4x at 400-500 nm); 5 energy Gaussians fitted in color terms 340-1300 nm, no CIELAB target; weak 650 nm band"
+
+    [[host.chromophore.band]]
+    centre_nm = 800.00
+    fwhm_cm1 = 2134.0
+    shape = "gaussian_energy"
+    peak_coeff = 57.067
+    pol = { g = 1.0 }
+    fit_residual_de00 = 0.2
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 418 ol418.g (gamma ray, 4.76 A axis), shape only, no Fa analysis: scale 1.0 at x_Fa = 0.10 (the report table and the Caltech spectrum agree within 1.1-1.4x at 400-500 nm); 5 energy Gaussians fitted in color terms 340-1300 nm, no CIELAB target; Fe2+ M2 band (red tail of the NIR band)"
+
+    [[host.chromophore.band]]
+    centre_nm = 1067.65
+    fwhm_cm1 = 2666.1
+    shape = "gaussian_energy"
+    peak_coeff = 470.37
+    pol = { g = 1.0 }
+    fit_residual_de00 = 0.2
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech GRR 418 ol418.g (gamma ray, 4.76 A axis), shape only, no Fa analysis: scale 1.0 at x_Fa = 0.10 (the report table and the Caltech spectrum agree within 1.1-1.4x at 400-500 nm); 5 energy Gaussians fitted in color terms 340-1300 nm, no CIELAB target; Fe2+ M1 NIR band"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = []
+    quantum_yield = 0.0
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Fe3+ / O-Fe CT edge"
+  kind = "ion"
+  elements = ["Fe"]
+  site = "M sites; also Fe3+ in oxidised/heated (iddingsite) olivine"
+  conc_unit = "wt_pct_oxide:Fe2O3"
+  conc_typical = [0.0, 0.3]
+  conc_max = 1.0
+  requires = ["Fe2+ (fayalite component, M1/M2)"]
+  excludes = []
+  quenched_by = []
+  confidence = "estimate"
+
+    [[host.chromophore.band]]
+    centre_nm = 380.0
+    fwhm_cm1 = 6000.0
+    shape = "gaussian_energy"
+    pol = { a = 1.0, b = 1.0, g = 1.0 }
+    confidence = "estimate"
+    source = "placeholder for the UV CT tail; coefficient unknown"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = []
+    quantum_yield = 0.0
+    uv = { lw = "inert", sw = "inert" }
+
+
+[[host]]
+id = "quartz"
+name = "Quartz"
+formula = "SiO2"
+optical = "uniaxial"
+uv_edge_nm = 150.0
+materials = ["Quartz", "Amethyst", "Citrine", "Smoky Quartz", "Prasiolite", "Rose Quartz"]
+valence_split = { Fe = { "Fe2+" = 0.1, "Fe3+" = 0.9 } }  # estimate: gem quartz Fe is mostly Fe3+
+density_g_cm3 = 2.65
+formula_weight_g_mol = 60.08
+sites_per_fu = 1.0
+cation_site_density_cm3 = 2.656237e+22
+total_atom_density_cm3 = 7.968712e+22
+
+  [[host.treatment]]
+  id = "gamma_irradiation"
+  name = "Gamma irradiation"
+  conditions = "γ-irradiation"
+  requires = []
+    [[host.treatment.effect]]
+    type = "create_centre"
+    centre_id = "Fe4+ (amethyst centre)"
+    from = "Fe"
+    fraction = 0.1  # estimate: fraction of Fe converted to [FeO4]0
+    [[host.treatment.effect]]
+    type = "create_centre"
+    centre_id = "Al hole centre (smoky)"
+    from = "Al"
+    fraction = 1.0  # estimate: Al-limited, the hole centre follows the Al content
+
+  [[host.treatment]]
+  id = "thermal_anneal_450"
+  name = "Thermal anneal (450°C)"
+  conditions = "450°C"
+  requires = ["Fe"]
+    [[host.treatment.effect]]
+    type = "remove_centre"
+    centre_id = "Fe4+ (amethyst centre)"
+    factor = 0.0
+    [[host.treatment.effect]]
+    type = "create_centre"
+    centre_id = "Fe3+ (citrine, heated amethyst)"
+    from = "Fe"
+    fraction = 0.5  # estimate: Fe nanoparticle fraction
+
+  [[host.chromophore]]
+  id = "Fe4+ (amethyst centre)"
+  kind = "color_centre"
+  elements = ["Fe"]
+  site = "substitutional Si4+ site, Fe3+ -> Fe4+ by gamma irradiation (d4), formal [FeO4]0 trapped-hole centre"
+  conc_unit = "ppma_all"
+  conc_typical = [0.5, 20.0]
+  conc_max = 50.0
+  requires = ["Fe3+ (interstitial Fe precursor)"]
+  excludes = ["Fe3+ nano-inclusions (citrine, heated)"]
+  quenched_by = ["heating > ~400 C (Report p.27: bleaches at 400 C; p.26: 400-500 C)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 366.06
+    fwhm_cm1 = 6013.1
+    shape = "gaussian_energy"
+    peak_coeff = 1.6113
+    pol = { o = 1.0, e = 1.0 }
+    fit_residual_de00 = 0.5
+    transition_class = "centre"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech amethyst (Anahi, Bolivia, unheated) ameth.bo, o-ray 6.17 mm, shape only, no composition; flat offset alpha(780 nm) = 0.89 cm-1 removed; scaled so that the 540 nm band has the data_version-3 coefficient (0.879 per ppma of all atoms, the equivalent of 0.9 ppma [FeO4]0 in the Caltech slab); 2 energy Gaussians fitted in color terms, no CIELAB target (the data_version 3 band, FWHM 3484 cm-1, was 41 % off the Caltech shape); [FeO4]0 UV band; E-par-c weight is the prior (no E-par-c data)"
+
+    [[host.chromophore.band]]
+    centre_nm = 539.10
+    fwhm_cm1 = 4575.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.89303
+    pol = { o = 1.0, e = 0.7 }
+    fit_residual_de00 = 0.5
+    transition_class = "centre"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §4: Caltech amethyst (Anahi, Bolivia, unheated) ameth.bo, o-ray 6.17 mm, shape only, no composition; flat offset alpha(780 nm) = 0.89 cm-1 removed; scaled so that the 540 nm band has the data_version-3 coefficient (0.879 per ppma of all atoms, the equivalent of 0.9 ppma [FeO4]0 in the Caltech slab); 2 energy Gaussians fitted in color terms, no CIELAB target (the data_version 3 band, FWHM 3484 cm-1, was 41 % off the Caltech shape); [FeO4]0 540 nm band (amethyst color); E-par-c weight is the prior (no E-par-c data)"
+
+    [[host.chromophore.band]]
+    centre_nm = 950.00
+    fwhm_cm1 = 4500.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.04
+    pol = { o = 1.0, e = 0.5 }
+    transition_class = "centre"
+    confidence = "secondary"
+    source = "prior (NIR band, outside the color range; unchanged)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Fe3+ (citrine, heated amethyst)"
+  kind = "ion"
+  elements = ["Fe"]
+  site = "dispersed iron oxide nano-inclusions: Report p.26 says ~100 nm alpha-Fe2O3 (hematite) after heating amethyst above 450 C (prior: interstitial / nano-inclusion Fe3+)"
+  conc_unit = "ppma_all"
+  conc_typical = [5.0, 100.0]
+  conc_max = 300.0
+  requires = ["Fe"]
+  excludes = ["Fe4+ (amethyst centre)"]
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 294.89
+    fwhm_cm1 = 12654.4
+    shape = "gaussian_energy"
+    peak_coeff = 2.4213
+    pol = { o = 1.0, e = 1.0 }
+    fit_residual_de00 = 0.1
+    transition_class = "charge_transfer"
+    confidence = "secondary"
+    source = "research-2026-10 §4, fitted to the citrine_annealed_amethyst table spectrum alone at 10 ppma (all atoms) (no CIELAB target: the stated CIELAB disagrees with the table by dE00 12.7; no Caltech citrine data file exists); 3 energy Gaussians; CT edge (annealed amethyst: monotonic edge rising from 550 nm into the UV)"
+
+    [[host.chromophore.band]]
+    centre_nm = 410.80
+    fwhm_cm1 = 3685.7
+    shape = "gaussian_energy"
+    peak_coeff = 0.10004
+    pol = { o = 1.0, e = 1.0 }
+    fit_residual_de00 = 0.1
+    transition_class = "charge_transfer"
+    confidence = "secondary"
+    source = "research-2026-10 §4, fitted to the citrine_annealed_amethyst table spectrum alone at 10 ppma (all atoms) (no CIELAB target: the stated CIELAB disagrees with the table by dE00 12.7; no Caltech citrine data file exists); 3 energy Gaussians; violet shoulder"
+
+    [[host.chromophore.band]]
+    centre_nm = 469.02
+    fwhm_cm1 = 2079.2
+    shape = "gaussian_energy"
+    peak_coeff = 0.017311
+    pol = { o = 1.0, e = 1.0 }
+    fit_residual_de00 = 0.1
+    transition_class = "charge_transfer"
+    confidence = "secondary"
+    source = "research-2026-10 §4, fitted to the citrine_annealed_amethyst table spectrum alone at 10 ppma (all atoms) (no CIELAB target: the stated CIELAB disagrees with the table by dE00 12.7; no Caltech citrine data file exists); 3 energy Gaussians; blue shoulder"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Al hole centre (smoky)"
+  kind = "color_centre"
+  elements = ["Al"]
+  site = "[AlO4/h+]0, hole on O adjacent to substitutional Al3+, charge-compensated by Li+ or H+"
+  conc_unit = "ppma_all"
+  conc_typical = [1.0, 30.0]
+  conc_max = 100.0
+  requires = ["Al"]
+  excludes = []
+  quenched_by = ["heating > ~300-400 C (Report p.27: bleaches at 350 C; p.26: 300-400 C)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 470.0
+    fwhm_cm1 = 6500.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.05
+    pol = { o = 1.0, e = 0.8 }
+    confidence = "secondary"
+    source = "Report p.27 (Smoky, [AlO4/h+]0 row)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Fe2+-Ti4+ IVCT in dumortierite nanofibres (rose)"
+  kind = "ivct_pair"
+  elements = ["Fe", "Ti"]
+  site = "dumortierite inclusions (Al7BSi3O18), not in quartz lattice"
+  conc_unit = "ppma_all"
+  partners = ["Fe2+", "Ti4+"]
+  pairing = "random"
+  pair_z = 6.0
+  pairing_confidence = "estimate"
+  conc_typical = [10.0, 200.0]
+  conc_max = 500.0
+  requires = ["Fe", "Ti"]
+  excludes = []
+  quenched_by = ["heating > ~575 C (dumortierite pink fades; unverified)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 510.0
+    fwhm_cm1 = 4500.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.01
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.27 (Rose, Fe2+-Ti4+ IVCT row)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Fe2+ (prasiolite)"
+  kind = "ion"
+  elements = ["Fe"]
+  site = "interstitial Fe2+ after heating amethyst (~550 C, Report p.26); some natural Montezuma prasiolite"
+  conc_unit = "ppma_all"
+  valence = "Fe2+"
+  conc_typical = [5.0, 60.0]
+  conc_max = 150.0
+  requires = ["Fe"]
+  excludes = ["Fe4+ (amethyst centre)"]
+  quenched_by = ["strong heating (> ~700 C turns it citrine/brown, unverified)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 720.0
+    fwhm_cm1 = 3500.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.03
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.27 (Prasiolite, Fe2+ interstitial crystal field row)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+
+[[host]]
+id = "rutile"
+name = "Rutile"
+formula = "TiO2"
+optical = "uniaxial"
+uv_edge_nm = 413.0
+materials = ["Rutile"]
+density_g_cm3 = 4.23
+formula_weight_g_mol = 79.87
+sites_per_fu = 1.0
+cation_site_density_cm3 = 3.189390e+22
+total_atom_density_cm3 = 9.568169e+22
+
+  [[host.chromophore]]
+  id = "Ti3+ (reduced rutile, blue-black)"
+  kind = "ion"
+  elements = ["Ti"]
+  site = "interstitial Ti3+ / Ti3+ on lattice site near O vacancy (small-polaron absorption)"
+  conc_unit = "ppma_all"
+  conc_typical = [10.0, 1000.0]
+  conc_max = 10000.0
+  requires = []
+  excludes = []
+  quenched_by = ["oxidising anneal (air, 600-800 C; Report p.13)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 700.0
+    shape = "edge"
+    peak_coeff = 0.002
+    pol = { o = 1.0, e = 0.7 }
+    confidence = "secondary"
+    source = "Report p.14 (Reduced Ti3+/V_O row)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Fe3+ / Cr3+ (yellow-brown, red-brown)"
+  kind = "ion"
+  elements = ["Fe", "Cr"]
+  site = "Ti4+ octahedral site (D2h)"
+  conc_unit = "ppma_all"
+  conc_typical = [10.0, 5000.0]
+  conc_max = 20000.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 400.0
+    shape = "edge"
+    peak_coeff = 0.002
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.14 (Fe3+/Cr3+ edge row)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+
+[[host]]
+id = "spinel"
+name = "Spinel"
+formula = "MgAl2O4"
+optical = "isotropic"
+uv_edge_nm = 340.0
+materials = ["Spinel"]
+density_g_cm3 = 3.6
+formula_weight_g_mol = 142.27
+sites_per_fu = 2.0
+cation_site_density_cm3 = 3.047685e+22
+total_atom_density_cm3 = 1.066690e+23
+
+  [[host.chromophore]]
+  id = "Cr3+"
+  kind = "ion"
+  elements = ["Cr"]
+  site = "Octahedral Al (Oh)"
+  conc_unit = "wt_pct_oxide:Cr2O3"
+  conc_typical = [0.05, 0.5]
+  conc_max = 2.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 545.0
+    fwhm_cm1 = 2600.0
+    shape = "gaussian_energy"
+    peak_coeff = 20.0
+    pol = { o = 1.0 }
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 390.0
+    fwhm_cm1 = 3500.0
+    shape = "gaussian_energy"
+    peak_coeff = 16.0
+    pol = { o = 1.0 }
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+
+    # Spinel Cr3+ lines are broader (1-2 nm) with a strong vibronic sideband (estimate: 35 %).
+    # Phi_0 = 0.9 and the Fe threshold are Report p.31 ("ruby and spinel"); the law is the corundum
+    # estimate (FeO c_half 0.2 wt%, n = 2).
+    [[host.chromophore.fluorescence]]
+    emission_nm = 685.5
+    emission_fwhm_nm = 1.5
+    sideband = { centre_nm = 705.0, fwhm_nm = 30.0, weight = 0.35 }
+    quantum_yield = 0.9
+    quench = [{ by = "Fe", unit = "wt_pct_oxide:FeO", c_half = 0.2, n = 2.0 }]
+    uv = { lw = "strong", sw = "weak" }
+    confidence = "estimate"
+    source = "Report p.10, p.31 (Cr3+ row, Phi 0.90); sideband and the quench law are estimates"
+
+  [[host.chromophore]]
+  id = "Co2+"
+  kind = "ion"
+  elements = ["Co"]
+  site = "Tetrahedral Mg (Td)"
+  conc_unit = "ppm_site"
+  conc_typical = [20.0, 150.0]
+  conc_max = 500.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 580.0
+    fwhm_cm1 = 700.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.02
+    pol = { o = 1.0 }
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 625.0
+    fwhm_cm1 = 700.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.015
+    pol = { o = 1.0 }
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 540.0
+    fwhm_cm1 = 700.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.012
+    pol = { o = 1.0 }
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+
+  [[host.chromophore]]
+  id = "Fe2+"
+  kind = "ion"
+  elements = ["Fe"]
+  site = "Tetrahedral Mg (Td)"
+  conc_unit = "wt_pct_oxide:FeO"
+  conc_typical = [0.5, 3.0]
+  conc_max = 8.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+    [[host.chromophore.band]]
+    centre_nm = 467.30
+    fwhm_cm1 = 1735.7
+    shape = "gaussian_energy"
+    peak_coeff = 1.1062
+    pol = { o = 1.0 }
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+    source = "research-2026-10 §5: Fe2+ 460/480 nm merged into one energy Gaussian (area and variance preserving)"
+
+
+  [[host.chromophore]]
+  id = "V3+"
+  kind = "ion"
+  elements = ["V"]
+  site = "Octahedral Al (Oh)"
+  conc_unit = "wt_pct_oxide:V2O3"
+  conc_typical = [0.1, 0.5]
+  conc_max = 1.5
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 570.0
+    fwhm_cm1 = 3000.0
+    shape = "gaussian_energy"
+    peak_coeff = 12.0
+    pol = { o = 1.0 }
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 415.0
+    fwhm_cm1 = 3200.0
+    shape = "gaussian_energy"
+    peak_coeff = 10.0
+    pol = { o = 1.0 }
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+
+  [[host.chromophore]]
+  id = "Mn2+"
+  kind = "ion"
+  elements = ["Mn"]
+  site = "Tetrahedral Mg (Td)"
+  conc_unit = "ppm_site"
+  conc_typical = [50.0, 300.0]
+  conc_max = 1000.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 450.0
+    fwhm_cm1 = 400.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.001
+    pol = { o = 1.0 }
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+
+    # Tetrahedral Mn2+ green band. Phi_0 is an ESTIMATE (the Report gives no yield); the data's only
+    # absorption band (spin-forbidden 450 nm) is weak, so the glow under the UV lamps is faint.
+    [[host.chromophore.fluorescence]]
+    emission_nm = 515.0
+    emission_fwhm_nm = 40.0
+    quantum_yield = 0.5
+    uv = { lw = "strong", sw = "strong" }
+    confidence = "estimate"
+    source = "Report p.10 (Luminescence column, Mn2+ row, 515 nm); width and yield are estimates"
+
+
+[[host]]
+id = "synthetic_moissanite"
+name = "Synthetic Moissanite"
+formula = "SiC"
+optical = "uniaxial"
+uv_edge_nm = 410.0
+materials = ["Synthetic Moissanite"]
+density_g_cm3 = 3.21
+formula_weight_g_mol = 40.1
+sites_per_fu = 1.0
+cation_site_density_cm3 = 4.820716e+22
+total_atom_density_cm3 = 9.641432e+22
+
+  [[host.chromophore]]
+  id = "N donor (green/olive)"
+  kind = "ion"
+  elements = ["N"]
+  site = "substitutional C site, hexagonal (h) and quasi-cubic (k1, k2) sites, donors 0.10-0.15 eV below the conduction band (Report p.5)"
+  conc_unit = "ppma_all"
+  conc_typical = [1.0, 50.0]
+  conc_max = 500.0
+  requires = []
+  excludes = ["Al acceptor (blue, p-type)"]
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 625.0
+    fwhm_cm1 = 2500.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.5
+    pol = { o = 1.0, e = 0.4 }
+    confidence = "secondary"
+    source = "Report p.6 (Nitrogen donor, 625 nm row); centre also Weingartner et al. 2004 as summarised"
+
+    [[host.chromophore.band]]
+    centre_nm = 410.0
+    shape = "edge"
+    peak_coeff = 0.02
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.6 (Nitrogen donor, 410 nm edge row); onset_nm estimate"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = [480.0]
+    uv = { lw = "weak or none", sw = "weak" }
+
+  [[host.chromophore]]
+  id = "Al acceptor (blue, p-type)"
+  kind = "ion"
+  elements = ["Al"]
+  site = "substitutional Si site, acceptor 0.20 eV above the valence band (Report p.5)"
+  conc_unit = "ppma_all"
+  conc_typical = [1.0, 50.0]
+  conc_max = 500.0
+  requires = []
+  excludes = ["N donor (green/olive)"]
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 415.0
+    fwhm_cm1 = 3000.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.3
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.6 (Aluminium acceptor row); centre also Weingartner 2004 as summarised"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = [420.0]
+    uv = { lw = "violet (weak)", sw = "violet (weak)" }
+
+
+[[host]]
+id = "tanzanite"
+name = "Tanzanite"
+formula = "Ca2Al3(SiO4)(Si2O7)(OH)"
+optical = "biaxial"
+axis_mapping_confidence = "verified"  # stored by axis length: alpha 5.55, beta 10.0, gamma 16.2 A (Pnma b, c, a; other papers write X||a, Y||b, Z||c = the Pmcn relabelling). Ray colors: alpha red-violet, beta blue, gamma yellow-green (Caltech GRR 1265 headers, Hurlbut 1969). research-2026-10-primary-data §7
+ray_axis_angstrom = { a = 5.55, b = 10.0, g = 16.2 }
+uv_edge_nm = 330.0
+materials = ["Tanzanite"]
+density_g_cm3 = 3.35
+formula_weight_g_mol = 454.36
+sites_per_fu = 3.0
+cation_site_density_cm3 = 1.332039e+22
+total_atom_density_cm3 = 1.110032e+23
+
+  [[host.treatment]]
+  id = "air_anneal_550"
+  name = "Air anneal (550°C)"
+  conditions = "550°C, air"
+  requires = ["V"]
+    [[host.treatment.effect]]
+    # Heating bleaches the brown ~440 nm band of the gamma ray (research-2026-10 §4: Ti3+ -> Ti4+; primary-data §3.2: Pluthametwisute 2020, strongest along the 16.2 A axis); coefficient x0, weights unchanged. The 656 nm "brown" band of data_version 3 existed only in the report's table; the Caltech GRR 1265 gamma spectrum has none (its A dips at 680 nm), so it is removed.
+    type = "remove_centre"
+    centre_id = "V3+ (natural unheated, trichroic)"
+    factor = 0.0
+    bands_nm = [441.69]
+
+  [[host.chromophore]]
+  id = "V3+ (natural unheated, trichroic)"
+  kind = "ion"
+  elements = ["V"]
+  site = "octahedral Al site (Al(1) corner-sharing, Al(2) edge-sharing chains)"
+  conc_unit = "ppm_site"
+  conc_typical = [1000.0, 8000.0]
+  conc_max = 8000.0  # research §4 states 0.38 wt% V2O3 = 7670 ppm of Al sites (was 3000)
+  requires = ["V"]
+  excludes = ["V3+ / Ti4+ (heated 550 C, dichroic blue)"]
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 290.00
+    fwhm_cm1 = 9337.6
+    shape = "gaussian_energy"
+    peak_coeff = 0.01461
+    pol = { a = 1.0 }
+    fit_residual_de00 = 2.2
+    transition_class = "charge_transfer"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.2: Caltech GRR 1265 zo1265 alpha ray (E parallel b, 5.55 A axis, red-violet), shape only (V2O3 0.35 in the file header, unit and method not stated); 380-405 nm from the GRR 2292 blue-zone digest; baseline A 0.05 removed; scaled by one factor (3.54) so that the beta 600 nm band equals the data_version-3 value (7670 ppm of Al sites = 0.38 wt% V2O3); UV charge-transfer edge"
+
+    [[host.chromophore.band]]
+    centre_nm = 452.49
+    fwhm_cm1 = 2750.9
+    shape = "gaussian_energy"
+    peak_coeff = 0.00036597
+    pol = { a = 1.0 }
+    fit_residual_de00 = 2.2
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.2: Caltech GRR 1265 zo1265 alpha ray (E parallel b, 5.55 A axis, red-violet), shape only (V2O3 0.35 in the file header, unit and method not stated); 380-405 nm from the GRR 2292 blue-zone digest; baseline A 0.05 removed; scaled by one factor (3.54) so that the beta 600 nm band equals the data_version-3 value (7670 ppm of Al sites = 0.38 wt% V2O3); blue-green shoulder"
+
+    [[host.chromophore.band]]
+    centre_nm = 538.46
+    fwhm_cm1 = 4111.2
+    shape = "gaussian_energy"
+    peak_coeff = 0.00094704
+    pol = { a = 1.0 }
+    fit_residual_de00 = 2.2
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.2: Caltech GRR 1265 zo1265 alpha ray (E parallel b, 5.55 A axis, red-violet), shape only (V2O3 0.35 in the file header, unit and method not stated); 380-405 nm from the GRR 2292 blue-zone digest; baseline A 0.05 removed; scaled by one factor (3.54) so that the beta 600 nm band equals the data_version-3 value (7670 ppm of Al sites = 0.38 wt% V2O3); V3+ 4T2 band (short-wave part)"
+
+    [[host.chromophore.band]]
+    centre_nm = 599.47
+    fwhm_cm1 = 1800.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.00031975
+    pol = { a = 1.0 }
+    fit_residual_de00 = 2.2
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.2: Caltech GRR 1265 zo1265 alpha ray (E parallel b, 5.55 A axis, red-violet), shape only (V2O3 0.35 in the file header, unit and method not stated); 380-405 nm from the GRR 2292 blue-zone digest; baseline A 0.05 removed; scaled by one factor (3.54) so that the beta 600 nm band equals the data_version-3 value (7670 ppm of Al sites = 0.38 wt% V2O3); V3+ 4T2 band (long-wave part)"
+
+    [[host.chromophore.band]]
+    centre_nm = 364.89
+    fwhm_cm1 = 3000.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0058241
+    pol = { b = 1.0 }
+    fit_residual_de00 = 2.2
+    transition_class = "charge_transfer"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.2: Caltech GRR 1265 zo1265 beta ray (E parallel c, 10.0 A axis, blue), shape only (V2O3 0.35 in the file header, unit and method not stated); 380-405 nm from the GRR 2292 blue-zone digest; baseline A 0.05 removed; scaled by one factor (3.54) so that the beta 600 nm band equals the data_version-3 value (7670 ppm of Al sites = 0.38 wt% V2O3); UV charge-transfer edge"
+
+    [[host.chromophore.band]]
+    centre_nm = 418.83
+    fwhm_cm1 = 6000.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.00061284
+    pol = { b = 1.0 }
+    fit_residual_de00 = 2.2
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.2: Caltech GRR 1265 zo1265 beta ray (E parallel c, 10.0 A axis, blue), shape only (V2O3 0.35 in the file header, unit and method not stated); 380-405 nm from the GRR 2292 blue-zone digest; baseline A 0.05 removed; scaled by one factor (3.54) so that the beta 600 nm band equals the data_version-3 value (7670 ppm of Al sites = 0.38 wt% V2O3); violet band"
+
+    [[host.chromophore.band]]
+    centre_nm = 592.25
+    fwhm_cm1 = 5821.4
+    shape = "gaussian_energy"
+    peak_coeff = 0.0008092
+    pol = { b = 1.0 }
+    fit_residual_de00 = 2.2
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.2: Caltech GRR 1265 zo1265 beta ray (E parallel c, 10.0 A axis, blue), shape only (V2O3 0.35 in the file header, unit and method not stated); 380-405 nm from the GRR 2292 blue-zone digest; baseline A 0.05 removed; scaled by one factor (3.54) so that the beta 600 nm band equals the data_version-3 value (7670 ppm of Al sites = 0.38 wt% V2O3); V3+ 4T2 band"
+
+    [[host.chromophore.band]]
+    centre_nm = 857.46
+    fwhm_cm1 = 2500.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0015645
+    pol = { b = 1.0 }
+    fit_residual_de00 = 2.2
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.2: Caltech GRR 1265 zo1265 beta ray (E parallel c, 10.0 A axis, blue), shape only (V2O3 0.35 in the file header, unit and method not stated); 380-405 nm from the GRR 2292 blue-zone digest; baseline A 0.05 removed; scaled by one factor (3.54) so that the beta 600 nm band equals the data_version-3 value (7670 ppm of Al sites = 0.38 wt% V2O3); near-IR band (tail into the red)"
+
+    [[host.chromophore.band]]
+    centre_nm = 378.03
+    fwhm_cm1 = 2500.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.010191
+    pol = { g = 1.0 }
+    fit_residual_de00 = 2.2
+    transition_class = "charge_transfer"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.2: Caltech GRR 1265 zo1265 gamma ray (E parallel a, 16.2 A axis, yellow-green), shape only (V2O3 0.35 in the file header, unit and method not stated); 380-405 nm from the GRR 2292 blue-zone digest; baseline A 0.05 removed; scaled by one factor (3.54) so that the beta 600 nm band equals the data_version-3 value (7670 ppm of Al sites = 0.38 wt% V2O3); UV charge-transfer edge"
+
+    [[host.chromophore.band]]
+    centre_nm = 441.69
+    fwhm_cm1 = 3500.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.00098619
+    pol = { g = 1.0 }
+    fit_residual_de00 = 2.2
+    transition_class = "ivct"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.2: Caltech GRR 1265 zo1265 gamma ray (E parallel a, 16.2 A axis, yellow-green), shape only (V2O3 0.35 in the file header, unit and method not stated); 380-405 nm from the GRR 2292 blue-zone digest; baseline A 0.05 removed; scaled by one factor (3.54) so that the beta 600 nm band equals the data_version-3 value (7670 ppm of Al sites = 0.38 wt% V2O3); brown 440 nm band of the unheated stone (bleached by heating)"
+
+    [[host.chromophore.band]]
+    centre_nm = 599.89
+    fwhm_cm1 = 4833.6
+    shape = "gaussian_energy"
+    peak_coeff = 0.00059458
+    pol = { g = 1.0 }
+    fit_residual_de00 = 2.2
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.2: Caltech GRR 1265 zo1265 gamma ray (E parallel a, 16.2 A axis, yellow-green), shape only (V2O3 0.35 in the file header, unit and method not stated); 380-405 nm from the GRR 2292 blue-zone digest; baseline A 0.05 removed; scaled by one factor (3.54) so that the beta 600 nm band equals the data_version-3 value (7670 ppm of Al sites = 0.38 wt% V2O3); V3+ 4T2 band"
+
+    [[host.chromophore.band]]
+    centre_nm = 879.25
+    fwhm_cm1 = 2500.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0015645
+    pol = { g = 1.0 }
+    fit_residual_de00 = 2.2
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+    source = "research-2026-10-primary-data §3.2: Caltech GRR 1265 zo1265 gamma ray (E parallel a, 16.2 A axis, yellow-green), shape only (V2O3 0.35 in the file header, unit and method not stated); 380-405 nm from the GRR 2292 blue-zone digest; baseline A 0.05 removed; scaled by one factor (3.54) so that the beta 600 nm band equals the data_version-3 value (7670 ppm of Al sites = 0.38 wt% V2O3); near-IR band (tail into the red)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "V3+ / Ti4+ (heated 550 C, dichroic blue)"
+  kind = "ion"
+  elements = ["V", "Ti"]
+  site = "same V3+ on Al(1)/Al(2); trace Ti3+ oxidised to Ti4+ (or V3+/V4+ redistribution), Report p.17, p.31. No separate V4+ or Ti4+ band is given in the report"
+  conc_unit = "ppm_site"
+  suspect = "heated row reduces both coefficients and weights (double counting, plan 2.4); modelled by the air_anneal_550 remove_centre effect instead"
+  conc_typical = [100.0, 1500.0]
+  conc_max = 3000.0
+  requires = ["V"]
+  excludes = ["V3+ (natural unheated, trichroic)"]
+  quenched_by = ["heating > ~600 C (blue degrades; Report p.17)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 595.0
+    fwhm_cm1 = 3000.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.003
+    pol = { a = 0.2, b = 0.8, g = 1.0 }
+    confidence = "secondary"
+    source = "Report p.18 (Heated (550 C), 595 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 455.0
+    fwhm_cm1 = 3500.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0003
+    pol = { a = 0.1, b = 0.1, g = 0.1 }
+    confidence = "secondary"
+    source = "Report p.18 (Heated (550 C), 455 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 520.0
+    fwhm_cm1 = 3000.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0002
+    pol = { a = 0.1, b = 0.1, g = 0.1 }
+    confidence = "secondary"
+    source = "Report p.18 (Heated (550 C), 520 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+
+[[host]]
+id = "topaz"
+name = "Topaz"
+formula = "Al2SiO4(F,OH)2"
+optical = "biaxial"
+axis_mapping_confidence = "secondary"
+uv_edge_nm = 220.0
+materials = ["Imperial Topaz", "Pink Topaz", "Blue Topaz", "Brown Topaz", "Topaz"]
+density_g_cm3 = 3.53
+formula_weight_g_mol = 184.05
+sites_per_fu = 2.0
+cation_site_density_cm3 = 2.310041e+22
+total_atom_density_cm3 = 1.039519e+23
+
+  [[host.treatment]]
+  id = "irradiation_250"
+  name = "Irradiation + 250°C"
+  conditions = "e-/neutron irrad + 250°C"
+  requires = []
+    [[host.treatment.effect]]
+    type = "create_centre"
+    centre_id = "O- hole centre (blue topaz)"
+    max_intensity = 1.0
+
+  [[host.chromophore]]
+  id = "Cr3+"
+  kind = "ion"
+  elements = ["Cr"]
+  site = "Al octahedral (Cs)"
+  conc_unit = "ppm_site"
+  conc_typical = [10.0, 200.0]
+  conc_max = 204.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 530.0
+    fwhm_cm1 = 2800.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.08
+    pol = { a = 0.4, b = 1.0, g = 0.6 }
+    confidence = "secondary"
+    source = "Report p.23 (Topaz table, Cr3+ row, 530 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 420.0
+    fwhm_cm1 = 3200.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.06
+    pol = { a = 0.4, b = 1.0, g = 0.6 }
+    confidence = "secondary"
+    source = "Report p.23 (Topaz table, Cr3+ row, 420 nm)"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = [690.0]
+    uv = { lw = "weak red", sw = "weak red" }
+
+  [[host.chromophore]]
+  id = "O- hole centre (blue topaz)"
+  kind = "color_centre"
+  elements = []
+  site = "O- polaron: unpaired hole on an oxygen adjacent to an Al vacancy or F site"
+  conc_unit = "intensity"
+  requires = []
+  excludes = []
+  quenched_by = ["heat (annealing bleach, 250-500 C per Report p.31)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 620.0
+    fwhm_cm1 = 3500.0
+    shape = "gaussian_energy"
+    peak_coeff = 5.0
+    pol = { a = 0.5, b = 1.0, g = 0.5 }
+    confidence = "secondary"
+    source = "Report p.23 (Topaz table, [O-] Polaron row, 620 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Brown centre (topaz)"
+  kind = "color_centre"
+  elements = []
+  site = "unstable hole centres (report gives no structural model)"
+  conc_unit = "intensity"
+  requires = []
+  excludes = []
+  quenched_by = ["heat (below 250 C)", "sunlight"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 450.0
+    fwhm_cm1 = 5000.0
+    shape = "gaussian_energy"
+    peak_coeff = 6.0
+    pol = { a = 0.6, b = 1.0, g = 0.6 }
+    confidence = "secondary"
+    source = "Report p.23 (Topaz table, Brown Centre row, 450 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+
+[[host]]
+id = "tourmaline"
+name = "Tourmaline"
+formula = "Na(Li,Al)3Al6(BO3)3Si6O18(OH)4"
+optical = "uniaxial"
+uv_edge_nm = 300.0
+materials = ["Tourmaline", "Rubellite", "Indicolite", "Verdelite", "Paraiba Tourmaline", "Chrome Tourmaline", "Schorl", "Dravite"]
+valence_split = { Fe = { "Fe2+" = 0.7, "Fe3+" = 0.3 }, Ti = { "Ti4+" = 1.0 } }  # estimate
+density_g_cm3 = 3.05
+formula_weight_g_mol = 960.0
+sites_per_fu = 9.0
+cation_site_density_cm3 = 1.721956e+22
+total_atom_density_cm3 = 1.090572e+23
+
+  [[host.chromophore]]
+  id = "Cu2+"
+  kind = "ion"
+  elements = ["Cu"]
+  site = "Y distorted octahedral (Jahn-Teller, d9)"
+  conc_unit = "wt_pct_oxide:CuO"
+  requires = ["Mn3+ for violet hues (optional)"]
+  excludes = ["high Fe2+ (dulls)"]
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 700.0
+    fwhm_cm1 = 2500.0
+    shape = "gaussian_energy"
+    peak_coeff = 18.0
+    pol = { o = 0.2, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.24 (Tourmaline table, Paraiba Cu2+ row, 700 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 920.0
+    fwhm_cm1 = 2800.0
+    shape = "gaussian_energy"
+    peak_coeff = 12.0
+    pol = { o = 0.2, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.24 (Tourmaline table, Paraiba Cu2+ row, 920 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Mn3+"
+  kind = "ion"
+  elements = ["Mn"]
+  site = "Y octahedral, distorted (d4)"
+  conc_unit = "wt_pct_oxide:MnO"
+  requires = []
+  excludes = ["high Fe2+ (Report p.24: rubellites must be iron-poor; mechanism given by the report is wrong, see Discrepancies)"]
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 520.0
+    fwhm_cm1 = 3200.0
+    shape = "gaussian_energy"
+    peak_coeff = 22.0
+    pol = { o = 1.0, e = 0.2 }
+    confidence = "secondary"
+    source = "Report p.24 (Tourmaline table, Rubellite Mn3+ row, 520 nm)"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = [580.0]
+    uv = { lw = "inert to weak orange", sw = "inert to weak orange" }
+
+  [[host.chromophore]]
+  id = "Fe2+-Fe3+ IVCT (and Fe2+)"
+  kind = "ivct_pair"
+  elements = ["Fe", "Fe"]
+  site = "Y-Y and Y-Z edge-sharing octahedra"
+  conc_unit = "wt_pct_oxide:FeO"
+  partners = ["Fe2+", "Fe3+"]
+  pairing = "random"
+  pair_z = 6.0
+  pairing_confidence = "estimate"
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 720.0
+    fwhm_cm1 = 3200.0
+    shape = "gaussian_energy"
+    peak_coeff = 35.0
+    pol = { o = 1.0, e = 0.1 }
+    confidence = "secondary"
+    source = "Report p.24 (Tourmaline table, Indicolite row, 720 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 1100.0
+    fwhm_cm1 = 3800.0
+    shape = "gaussian_energy"
+    peak_coeff = 25.0
+    pol = { o = 1.0, e = 0.1 }
+    confidence = "secondary"
+    source = "Report p.24 (Tourmaline table, Indicolite row, 1100 nm); prior revision had 1100 as a mid-range placeholder of 918-1220 nm"
+
+    [[host.chromophore.band]]
+    centre_nm = 430.0
+    shape = "gaussian_energy"
+    pol = { o = 1.0, e = 0.1 }
+    confidence = "secondary"
+    source = "Report p.24 (Indicolite bullet, prose only; absent from the table)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Fe2+-Ti4+ / Mn2+-Ti4+ IVCT"
+  kind = "ivct_pair"
+  elements = ["Fe", "Ti"]
+  site = "Y-Y edge-sharing octahedra"
+  conc_unit = "wt_pct_oxide:TiO2"
+  partners = ["Fe2+", "Ti4+"]
+  pairing = "random"
+  pair_z = 6.0
+  pairing_confidence = "estimate"
+  requires = ["Fe or Mn", "Ti"]
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 450.0
+    fwhm_cm1 = 4000.0
+    shape = "gaussian_energy"
+    peak_coeff = 30.0
+    pol = { o = 1.0, e = 0.2 }
+    confidence = "secondary"
+    source = "Report p.24 (Tourmaline table, Canary row, 450 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Cr3+/V3+ (chrome tourmaline)"
+  kind = "ion"
+  elements = ["Cr", "V"]
+  site = "Y/Z octahedral (Z, Y)"
+  conc_unit = "wt_pct_oxide:Cr2O3"
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 600.0
+    fwhm_cm1 = 2800.0
+    shape = "gaussian_energy"
+    peak_coeff = 20.0
+    pol = { o = 1.0, e = 0.3 }
+    confidence = "secondary"
+    source = "Report p.24 (Tourmaline table, Chrome Cr3+/V3+ row, 600 nm)"
+
+    [[host.chromophore.band]]
+    centre_nm = 420.0
+    fwhm_cm1 = 3200.0
+    shape = "gaussian_energy"
+    peak_coeff = 18.0
+    pol = { o = 1.0, e = 0.3 }
+    confidence = "secondary"
+    source = "Report p.24 (Tourmaline table, Chrome Cr3+/V3+ row, 420 nm)"
+
+    [[host.chromophore.fluorescence]]
+    uv = { lw = "inert", sw = "inert" }
+
+
+[[host]]
+id = "yag"
+name = "YAG"
+formula = "Y3Al5O12"
+optical = "isotropic"
+uv_edge_nm = 215.0
+materials = ["YAG"]
+density_g_cm3 = 4.56
+formula_weight_g_mol = 593.62
+sites_per_fu = 3.0
+cation_site_density_cm3 = 1.387805e+22
+total_atom_density_cm3 = 9.252034e+22
+
+  [[host.chromophore]]
+  id = "Cr3+"
+  kind = "ion"
+  elements = ["Cr"]
+  site = "Octahedral Al (16a)"
+  conc_unit = "ppma_all"
+  conc_typical = [100.0, 1000.0]
+  conc_max = 5000.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 590.0
+    fwhm_cm1 = 2800.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0008
+    pol = { o = 1.0 }
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 430.0
+    fwhm_cm1 = 3300.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0008
+    pol = { o = 1.0 }
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+
+  [[host.chromophore]]
+  id = "Nd3+"
+  kind = "ion"
+  elements = ["Nd"]
+  site = "Dodecahedral Y (24c)"
+  conc_unit = "ppma_all"
+  conc_typical = [500.0, 3000.0]
+  conc_max = 10000.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 586.0
+    fwhm_cm1 = 40.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0006
+    pol = { o = 1.0 }
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 746.0
+    fwhm_cm1 = 40.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0003
+    pol = { o = 1.0 }
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 530.0
+    fwhm_cm1 = 60.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.00025
+    pol = { o = 1.0 }
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+
+  [[host.chromophore]]
+  id = "Ce3+"
+  kind = "ion"
+  elements = ["Ce"]
+  site = "Dodecahedral Y (24c)"
+  conc_unit = "ppma_all"
+  conc_typical = [50.0, 500.0]
+  conc_max = 2000.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 460.0
+    fwhm_cm1 = 2800.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.028
+    pol = { o = 1.0 }
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 340.0
+    fwhm_cm1 = 2500.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.015
+    pol = { o = 1.0 }
+    transition_class = "spin_allowed"
+    confidence = "secondary"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = 540.0
+    emission_fwhm_nm = 100.0
+    quantum_yield = 0.9
+    uv = { lw = "strong", sw = "strong" }
+    confidence = "secondary"
+    source = "Report p.12-13 (YAG:Ce, broad 5d-4f band ~540 nm, Phi 0.9); the 100 nm width is the usual YAG:Ce value"
+
+  [[host.chromophore]]
+  id = "Er3+"
+  kind = "ion"
+  elements = ["Er"]
+  site = "Dodecahedral Y (24c)"
+  conc_unit = "ppma_all"
+  conc_typical = [500.0, 5000.0]
+  conc_max = 15000.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 520.0
+    fwhm_cm1 = 100.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0003
+    pol = { o = 1.0 }
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 652.0
+    fwhm_cm1 = 80.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.00015
+    pol = { o = 1.0 }
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+
+  [[host.chromophore]]
+  id = "Ho3+"
+  kind = "ion"
+  elements = ["Ho"]
+  site = "Dodecahedral Y (24c)"
+  conc_unit = "ppma_all"
+  conc_typical = [500.0, 4000.0]
+  conc_max = 12000.0
+  requires = []
+  excludes = []
+  quenched_by = []
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 450.0
+    fwhm_cm1 = 100.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.00025
+    pol = { o = 1.0 }
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 538.0
+    fwhm_cm1 = 100.0
+    shape = "gaussian_energy"
+    peak_coeff = 0.0002
+    pol = { o = 1.0 }
+    transition_class = "spin_forbidden"
+    confidence = "secondary"
+
+
+[[host]]
+id = "zircon"
+name = "Zircon"
+formula = "ZrSiO4"
+optical = "uniaxial"
+uv_edge_nm = 300.0
+materials = ["Zircon"]
+density_g_cm3 = 4.67
+formula_weight_g_mol = 183.31
+sites_per_fu = 1.0
+cation_site_density_cm3 = 1.534199e+22
+total_atom_density_cm3 = 9.205193e+22
+
+  [[host.treatment]]
+  id = "reducing_anneal_900"
+  name = "Reducing anneal (900-1000°C)"
+  conditions = "900-1000°C, reducing"
+  requires = []
+    [[host.treatment.effect]]
+    type = "create_centre"
+    centre_id = "blue centre (heat-treated)"
+    max_intensity = 1.0
+
+  [[host.chromophore]]
+  id = "U4+"
+  kind = "ion"
+  elements = ["U"]
+  site = "Zr (8-fold, D2d)"
+  conc_unit = "ppm_site"
+  conc_typical = [100.0, 3000.0]
+  conc_max = 20000.0
+  requires = []
+  excludes = []
+  quenched_by = ["metamictisation (line broadening)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 653.5
+    fwhm_cm1 = 20.0
+    shape = "lorentzian"
+    peak_coeff = 0.005
+    pol = { o = 1.0, e = 0.3 }
+    confidence = "secondary"
+    source = "Report p.19-20 (U4+ row, 653.5 nm; Lorentzian 20 cm^-1; 0.005 cm^-1/ppm; {1.0, 0.3}); prior: centre verified (S10), FWHM estimate"
+
+    [[host.chromophore.band]]
+    centre_nm = 690.0
+    fwhm_cm1 = 40.0
+    shape = "lorentzian"
+    peak_coeff = 0.003
+    pol = { o = 1.0, e = 0.3 }
+    confidence = "secondary"
+    source = "Report p.19-20 (U4+ row, 690.0 nm; Lorentzian 40 cm^-1; 0.003 cm^-1/ppm; {1.0, 0.3}); prior: centre verified (S10)"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = []
+    quantum_yield = 0.0
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "blue centre (heat-treated)"
+  kind = "color_centre"
+  elements = ["U"]
+  site = "radiation-damage electron-trap centre associated with U4+ (Report p.19)"
+  conc_unit = "intensity"
+  conc_typical = [0.2, 1.0]
+  conc_max = 1.0
+  requires = ["U4+"]
+  excludes = ["brown centre (pre-heat)"]
+  quenched_by = ["oxidising heat treatment (centre bleaches)", "UV exposure (bleaches back to brown, Report p.19)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 650.0
+    fwhm_cm1 = 3500.0
+    shape = "gaussian_energy"
+    peak_coeff = 8.0
+    pol = { o = 1.0, e = 0.1 }
+    confidence = "secondary"
+    source = "Report p.19-20 (Blue Centre row: 650 nm, FWHM 3500, 8.0 cm^-1/unit, {1.0, 0.1}); prior: verified centre/onset (S9), FWHM/coefficient/e-ray estimate - same numbers"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = []
+    quantum_yield = 0.0
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "brown centre (natural / LWUV-induced)"
+  kind = "color_centre"
+  elements = ["U", "Th"]
+  site = "radiation-damage centre (alpha recoil damage, point-defect clusters)"
+  conc_unit = "intensity"
+  conc_typical = [0.0, 1.0]
+  conc_max = 1.0
+  requires = []
+  excludes = ["blue centre (heat-treated)"]
+  quenched_by = ["heating (bleaches at ~900-1000 C; annealing above 900 C repairs the lattice, Report p.19)"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 485.0
+    fwhm_cm1 = 4500.0
+    shape = "gaussian_energy"
+    peak_coeff = 8.0
+    pol = { o = 1.0, e = 0.5 }
+    confidence = "secondary"
+    source = "Report p.19-20 (Brown Centre row: 485 nm, FWHM 4500, 8.0 cm^-1/unit, {1.0, 0.5}); prior: verified centre (S9), others estimate - same numbers"
+
+    [[host.chromophore.band]]
+    centre_nm = 380.0
+    fwhm_cm1 = 6000.0
+    shape = "gaussian_energy"
+    peak_coeff = 20.0
+    pol = { o = 1.0, e = 0.5 }
+    confidence = "secondary"
+    source = "Report p.19-20 (Brown Centre row: 380 nm, FWHM 6000, 20.0 cm^-1/unit; report text 'continuum rising to 380 nm'); single stand-in Gaussian for the rising UV edge"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = []
+    quantum_yield = 0.0
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "metamict damage"
+  kind = "color_centre"
+  elements = ["U", "Th"]
+  site = "lattice damage (alpha-recoil clusters); amorphous domains"
+  conc_unit = "intensity"
+  conc_typical = [0.0, 0.5]
+  conc_max = 1.0
+  requires = ["U4+"]
+  excludes = []
+  quenched_by = ["thermal annealing at >~ 800-1000 C (partial recovery)"]
+  confidence = "estimate"
+
+    [[host.chromophore.band]]
+    centre_nm = 500.0
+    fwhm_cm1 = 6000.0
+    shape = "gaussian_energy"
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "estimate"
+    source = "band shape and coefficient not available; the report folds damage absorption into the Brown Centre"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = []
+    quantum_yield = 0.0
+    uv = { lw = "inert", sw = "inert" }
+
+  [[host.chromophore]]
+  id = "Dy3+ / REE3+"
+  kind = "ion"
+  elements = ["Dy", "Sm", "Tb", "Nd"]
+  site = "Zr (8-fold)"
+  conc_unit = "ppm_site"
+  conc_typical = [10.0, 1000.0]
+  conc_max = 10000.0
+  requires = []
+  excludes = []
+  quenched_by = ["metamictisation", "U/Th radiation"]
+  confidence = "secondary"
+
+    [[host.chromophore.band]]
+    centre_nm = 580.0
+    fwhm_cm1 = 30.0
+    shape = "lorentzian"
+    pol = { o = 1.0, e = 1.0 }
+    confidence = "secondary"
+    source = "Report p.20 (Dy3+ row: 580 nm, 17,241 cm^-1, FWHM 30, Lorentzian, 'Trace', {1.0, 1.0}); attribution to Dy3+ doubtful, see Discrepancies"
+
+    [[host.chromophore.fluorescence]]
+    emission_nm = [480.0, 575.0]
+    uv = { lw = "yellow to orange (crystalline, low U)", sw = "yellow to orange" }
+

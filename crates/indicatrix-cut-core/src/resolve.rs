@@ -163,7 +163,15 @@ pub fn resolve_after_edit(
         // constraint and is not itself a `TierTarget` input, so it is mast-inert
         // exactly like the other variants in this arm, unconditionally (no
         // `tier_targets`-non-empty exception needed).
-        | Edit::RestoreTierId { .. } => Ok(previous.to_vec()),
+        | Edit::RestoreTierId { .. }
+        // Concave tiers have no mast, meet constraint or target, and the flat
+        // solve never reads them, so none of these can move a flat mast.
+        | Edit::AddConcaveTier { .. }
+        | Edit::RemoveConcaveTier { .. }
+        | Edit::ModifyConcaveTier { .. }
+        | Edit::MoveConcaveTier { .. }
+        | Edit::RestoreConcaveTierId { .. }
+        | Edit::RestoreConcaveIndices { .. } => Ok(previous.to_vec()),
         // Shifts every later tier's index against `previous`, which is keyed by
         // position -- always fully re-solve rather than reason about a moving index space.
         // `MoveTier` renumbers every tier strictly between its two positions the same way.
@@ -240,7 +248,13 @@ fn batch_needs_full_resolve(
             | Edit::SetCheaterOffset { .. }
             | Edit::SetTierNote { .. }
             | Edit::SetTierTarget { .. }
-            | Edit::RestoreTierId { .. } => {}
+            | Edit::RestoreTierId { .. }
+            | Edit::AddConcaveTier { .. }
+            | Edit::RemoveConcaveTier { .. }
+            | Edit::ModifyConcaveTier { .. }
+            | Edit::MoveConcaveTier { .. }
+            | Edit::RestoreConcaveTierId { .. }
+            | Edit::RestoreConcaveIndices { .. } => {}
             Edit::AddTier { .. }
             | Edit::RemoveTier { .. }
             | Edit::MoveTier { .. }

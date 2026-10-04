@@ -328,6 +328,6 @@ fn a_partly_applied_proportions_migration_is_completed_on_open() {
         columns.iter().any(|c| c == "mirror_symmetry"),
         "{columns:?}"
     );
-    assert_eq!(columns.len(), 27, "{columns:?}");
+    assert_eq!(columns.len(), 29, "{columns:?}");
     let _ = std::fs::remove_file(&path);
 }

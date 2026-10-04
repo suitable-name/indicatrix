@@ -1,0 +1,179 @@
+// State and callbacks of the material editor's physics color mode (spec 7). Everything the
+// dialog shows in physics mode is pushed from Rust (`gui::optics::physics_ui`), which owns the
+// recipe, the undo stack and the solver worker; this global is only the view's data.
+//
+// Split out of `ViewportModel` because the physics UI outgrew it: rows, add options,
+// treatments, swatches and the picker's callbacks.
+
+// One element/end-member row of the recipe (an "offered" item that is in the recipe).
+export struct PhysicsRow {
+    id: string,
+    label: string,
+    // "0.20 wt% Cr2O3" -- the effective amount with its unit.
+    amount_text: string,
+    unit: string,
+    // Absolute view: log-scale slider position 0..1, bounded by the host's `element_conc_max`.
+    slider: float,
+    // Strength + fractions view: this item's share of the recipe, 0..1.
+    fraction: float,
+    fraction_text: string,
+    locked: bool,
+    // The data behind this item is an estimate / unknown (an "estimated data" note per item).
+    estimated: bool,
+    confidence: string,
+    // The Sources popover text: confidence, band sources, skipped bands.
+    sources: string,
+}
+
+// One entry of the "+ Add" list: an offered item that is not in the recipe yet. Impossible
+// ones stay in the list, greyed, with the reason.
+export struct PhysicsAddOption {
+    id: string,
+    label: string,
+    enabled: bool,
+    reason: string,
+}
+
+// A treatment valid for the host (`selectable_treatments`).
+export struct PhysicsTreatment {
+    id: string,
+    name: string,
+    conditions: string,
+    active: bool,
+}
+
+export global PhysicscolorModel {
+    // ---- mode ----
+    // True while the dialog's color mode is Physics (false: Fantasy).
+    in-out property <bool> active: false;
+    // The dialog's physics state differs from what it opened with (mode or recipe): part of
+    // the dialog's `is_dirty`, so a recipe edit gets the discard prompt.
+    in property <bool> dirty: false;
+    // The full `colorMode` JSON the Save button hands to `ViewportModel.save_custom_material`
+    // ("" for a material that never had a recipe and is still fantasy).
+    in property <string> mode_json: "";
+
+    // ---- host ----
+    in property <[string]> host_names: [];
+    in-out property <int> host_index: 0;
+    // One data-confidence banner per host; hidden when every coefficient is verified.
+    in property <bool> banner_visible: false;
+    in property <string> banner_text: "";
+    // The recipe was built with older catalogue data (a "color data updated" badge); the stored
+    // resolved bands still render until the user updates.
+    in property <bool> data_updated: false;
+
+    // ---- recipe ----
+    in property <[PhysicsRow]> rows: [];
+    in property <[PhysicsAddOption]> add_options: [];
+    in-out property <bool> view_fractions: true;
+    // `recipe.strength`, a multiplier on every item's absorption (Strength + fractions view).
+    in-out property <float> strength: 1.0;
+    in property <[PhysicsTreatment]> treatments: [];
+    // Reference path in mm, labelled "equivalent path"; defaults to 1.5 x the design's girdle.
+    in-out property <float> reference_path_mm: 5.0;
+    in property <string> path_hint: "";
+
+    // ---- swatches (D65 and 3200 K; unpolarised, o-ray, e-ray, beta-ray) ----
+    in property <color> d65_unpol: #ffffff;
+    in property <color> d65_o: #ffffff;
+    in property <color> d65_e: #ffffff;
+    in property <color> d65_beta: #ffffff;
+    in property <color> a_unpol: #ffffff;
+    in property <color> a_o: #ffffff;
+    in property <color> a_e: #ffffff;
+    in property <color> a_beta: #ffffff;
+    in property <bool> has_beta: false;
+    in property <bool> show_stone: false;
+    in property <color> stone_d65: #ffffff;
+    in property <color> stone_a: #ffffff;
+    in property <string> stone_text: "";
+    in property <string> color_change_text: "";
+
+    // ---- fluorescence (analytic UV glow of the recipe's emitters) ----
+    // "Fluorescence: none / weak / strong <color>" and, when a quencher took more than half of
+    // the yield, "quenched by Fe". The two swatches show the emitted color under a 365 nm and
+    // a 395 nm lamp, darker for a dimmer glow, with the relative brightness as the caption.
+    in property <string> fluorescence_text: "";
+    in property <string> quench_text: "";
+    in property <bool> has_glow: false;
+    in property <color> glow365: #000000;
+    in property <string> glow365_text: "";
+    in property <color> glow395: #000000;
+    in property <string> glow395_text: "";
+
+    // ---- picked color / solver ----
+    in property <bool> has_target: false;
+    in property <color> target_color: #ffffff;
+    // "dE 0.8 from your pick (D65)" and, when not reachable, "closest reachable shown".
+    in property <string> match_text: "";
+    // dE above 2.0: shown in the warning color.
+    in property <bool> match_warn: false;
+    in property <bool> solving: false;
+    in property <string> note_text: "";
+
+    // ---- undo ----
+    in property <bool> can_undo: false;
+    in property <bool> can_redo: false;
+
+    // ---- prefill: a host choice (or a garnet's end-member mix) proposes optics ----
+    // The dialog copies these into its own fields whenever `prefill_serial` changes.
+    in property <int> prefill_serial: 0;
+    in property <float> prefill_ri: 0.0;
+    in property <float> prefill_dispersion: 0.0;
+    in property <float> prefill_birefringence: 0.0;
+    in property <float> prefill_sg: 0.0;
+    in property <int> prefill_crystal_system_idx: 0;
+    in property <int> prefill_optical_character_idx: 0;
+    in property <float> prefill_biaxial_delta: 0.0;
+    // The host fixes crystal system / optical character: the dialog greys those combos.
+    in property <bool> optics_locked: false;
+
+    // ---- fantasy mode's picker ----
+    // The fantasy picker's result: the dialog selects preset `fantasy_idx` (9 = "Custom (keep)")
+    // whenever `fantasy_serial` changes.
+    in property <int> fantasy_serial: 0;
+    in property <int> fantasy_idx: 9;
+
+    // ---- an older build edited the top-level color of an opened file ----
+    // Non-empty while the "keep physics recipe / use edited color" question is open; the
+    // value is the material's name.
+    in-out property <string> color_conflict_name: "";
+
+    // ---- callbacks to Rust ----
+    // The dialog was (re)created: rebuild every piece of physics state from the selected material.
+    callback dialog_opened();
+    // Fantasy <-> Physics. Takes the fantasy preset index the dialog currently has selected and
+    // returns the preset index the dialog should now select (a seeded fantasy color is "Custom").
+    callback set_mode(bool, int) -> int;
+    callback host_selected(int);
+    // A log-slider drag step (`id`, position 0..1) and its release (a history commit).
+    callback amount_changed(string, float);
+    callback amount_released();
+    callback fraction_changed(string, float);
+    // Strength + fractions (true) or absolute amounts (false): how amounts are shown.
+    callback view_changed(bool);
+    callback lock_toggled(string);
+    callback remove_item(string);
+    callback add_item(string);
+    callback strength_changed(float);
+    callback strength_released();
+    callback treatment_toggled(string, bool);
+    callback path_changed(float);
+    callback path_released();
+    // Solve for this picked color (sRGB) on the worker; the latest request wins.
+    callback pick_solve(color);
+    // The fantasy picker's result: fits the three legacy bands on a thread; the preset to select
+    // arrives through `fantasy_idx` / `fantasy_serial`.
+    callback fantasy_pick(color);
+    callback update_data();
+    callback undo();
+    callback redo();
+    // The template selector picked a built-in material: preselect its host in physics mode.
+    callback template_selected(string);
+    // Answer to the "an older build edited the color" question: true keeps the physics recipe.
+    callback color_conflict_resolved(bool);
+    // Pure helpers for the color picker's hex field.
+    pure callback format_hex(color) -> string;
+    pure callback parse_hex(string, color) -> color;
+}

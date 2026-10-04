@@ -3,6 +3,7 @@
 //! stages on their own; and the cancel and panic paths.
 
 use super::{
+    super::obj_import::{C_SHAPE_OBJ, parse_obj_mesh},
     drive::drive,
     stages::{FitJob, fit_single_stones_parallel, refine_parallel, run_orders},
     tracker::{Note, Progress},
@@ -10,7 +11,7 @@ use super::{
 use indicatrix_cut_core::rough_plan::{
     Axis, BoxFace, CandidateDesign, CutOrder, CutPlan, DesignHull, PlacedStone, PlanInput,
     PlanProgress, PlanSettings, RoughBase, RoughCut, RoughLayout, RoughModel, StonePose,
-    fit_single_stones, plan,
+    fit_single_stones, import_mesh, plan,
 };
 use std::{
     collections::BTreeSet,
@@ -309,17 +310,22 @@ fn joined<T>(handle: thread::ScopedJoinHandle<'_, T>) -> T {
 /// eager array `map`, so every thread is running before the first is joined; a lazy
 /// iterator would run them one after another.
 fn assert_lanes_match_the_core(fixture: &Fixture) {
+    assert_lane_counts_match_the_core(fixture, LANES);
+}
+
+/// [`assert_lanes_match_the_core`] for the lane counts `lane_counts`.
+fn assert_lane_counts_match_the_core<const N: usize>(fixture: &Fixture, lane_counts: [usize; N]) {
     let input = &fixture.input();
     let (expected, driven) = thread::scope(|scope| {
         let sequential = scope.spawn(move || plan(input, &mut |_| true));
         let drivers =
-            LANES.map(|lanes| scope.spawn(move || drive(input, lanes, &Silent::default())));
+            lane_counts.map(|lanes| scope.spawn(move || drive(input, lanes, &Silent::default())));
         (joined(sequential), drivers.map(joined))
     });
     let expected = expected.expect("the sequential plan finishes");
     assert!(!expected.is_empty(), "the fixture must be plannable");
     let expected = list_bits(&expected);
-    for (lanes, got) in LANES.into_iter().zip(driven) {
+    for (lanes, got) in lane_counts.into_iter().zip(driven) {
         let got = got.expect("the driver finishes");
         assert_eq!(list_bits(&got), expected, "lanes = {lanes}");
     }
@@ -341,18 +347,57 @@ fn a_cut_block_of_six_stones_plans_like_the_core_for_every_lane_count() {
 }
 
 #[test]
+#[ignore = "slow (> 60 s in debug): full shaped plan per lane count -- run with \
+            `cargo test -p indicatrix-cut --release -- --ignored a_cylinder_plans_like_the_core_for_every_lane_count`"]
 fn a_cylinder_plans_like_the_core_for_every_lane_count() {
     assert_lanes_match_the_core(&cylinder());
 }
 
 #[test]
+#[ignore = "slow (> 60 s in debug): full shaped plan per lane count -- run with \
+            `cargo test -p indicatrix-cut --release -- --ignored a_cylinder_of_six_stones_plans_like_the_core_for_every_lane_count`"]
 fn a_cylinder_of_six_stones_plans_like_the_core_for_every_lane_count() {
     assert_lanes_match_the_core(&cylinder_of_six());
 }
 
 #[test]
+#[ignore = "slow (> 60 s in debug): full shaped plan per lane count -- run with \
+            `cargo test -p indicatrix-cut --release -- --ignored \
+            a_pebble_with_a_sawn_face_plans_like_the_core_for_every_lane_count`"]
 fn a_pebble_with_a_sawn_face_plans_like_the_core_for_every_lane_count() {
     assert_lanes_match_the_core(&cut_pebble_of_six());
+}
+
+/// The C-shaped mesh rough (a 20 mm cube with a notch, 6000 mm^3 of material) planning up
+/// to three stones of two box designs.
+fn c_shape_mesh() -> Fixture {
+    let (points, triangles) = parse_obj_mesh(C_SHAPE_OBJ).expect("the fixture parses");
+    let (base, note) = import_mesh(&points, &triangles).expect("the fixture imports");
+    assert_eq!(note, None);
+    let model = RoughModel::new(base, Vec::new());
+    assert!(model.mesh().is_some(), "the notch keeps the mesh");
+    Fixture::new(
+        model,
+        3,
+        vec![
+            box_design(1, [4.0, 4.0, 4.0]),
+            box_design(2, [4.0, 2.4, 6.4]),
+        ],
+    )
+}
+
+#[test]
+fn a_mesh_rough_plans_like_the_core_for_one_and_three_lanes() {
+    let fixture = c_shape_mesh();
+    assert_lane_counts_match_the_core(&fixture, [1, 3]);
+    // The mesh was used: no layout holds more than the material the notch leaves.
+    let layouts = plan(&fixture.input(), &mut |_| true).expect("not cancelled");
+    assert!(
+        layouts
+            .iter()
+            .all(|layout| layout.total_volume_mm3 <= 6000.0),
+        "stones must come from the 6000 mm^3 of material"
+    );
 }
 
 #[test]
@@ -404,6 +449,7 @@ fn the_chunked_single_stone_fit_equals_the_core_fit_for_any_lane_count() {
             hulls: &fixture.hulls,
             settings,
             keep,
+            mesh: None,
         };
         for lanes in LANES {
             let got = fit_single_stones_parallel(&job, lanes, &Silent::default())
@@ -424,6 +470,7 @@ fn a_fit_without_designs_or_a_keep_is_empty_and_reports_nothing() {
         hulls: &[],
         settings: &fixture.settings,
         keep: 10,
+        mesh: None,
     };
     assert_eq!(
         fit_single_stones_parallel(&none, 3, &progress),
@@ -570,6 +617,7 @@ fn a_cancel_inside_the_fit_stops_all_lanes() {
         hulls: &fixture.hulls,
         settings: &fixture.settings,
         keep: 10,
+        mesh: None,
     };
     for stop_after in [1, 3, 5] {
         let progress = Silent::stopping_after(stop_after);

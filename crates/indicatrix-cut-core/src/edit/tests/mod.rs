@@ -10,6 +10,7 @@ mod annotations;
 mod basic_edits;
 mod batch_and_describe;
 mod coalescing;
+mod concave_flat_interplay;
 mod move_tier;
 mod property_test;
 mod remap_and_schedule;

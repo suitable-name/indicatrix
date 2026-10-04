@@ -3,9 +3,9 @@
 //! [`evaluate_angular_profile`]) and the full `-90..=90°` tilt-away-from-table-up
 //! sweep ([`evaluate_full_axis_profile_at_azimuth`]).
 
-use super::{evaluate::evaluate_gem_optical_metrics, types::PROFILE_ANGLES_DEG};
+use super::{evaluate::evaluate_gem_optical_metrics_geom, types::PROFILE_ANGLES_DEG};
 use crate::{
-    geometry::plane::GpuFacetPlane,
+    geometry::{plane::GpuFacetPlane, tool::StoneGeometry},
     optics::{materials::GemMaterial, raytracer::EnvironmentSource},
 };
 
@@ -35,8 +35,25 @@ pub fn evaluate_angular_profile_at_azimuth(
     cam_yaw: f32,
     environment: EnvironmentSource<'_>,
 ) -> ([f32; 19], [f32; 19], [f32; 19]) {
+    evaluate_angular_profile_at_azimuth_geom(
+        StoneGeometry::planes_only(planes),
+        material,
+        cam_yaw,
+        environment,
+    )
+}
+
+/// [`evaluate_angular_profile_at_azimuth`] for a stone with tools; bit-identical to it
+/// when `geom.tools` is empty.
+#[must_use]
+pub fn evaluate_angular_profile_at_azimuth_geom(
+    geom: StoneGeometry<'_>,
+    material: &GemMaterial,
+    cam_yaw: f32,
+    environment: EnvironmentSource<'_>,
+) -> ([f32; 19], [f32; 19], [f32; 19]) {
     sample_elevation_sweep(
-        planes,
+        geom,
         material,
         cam_yaw,
         &PROFILE_ANGLES_DEG,
@@ -59,7 +76,7 @@ pub fn evaluate_angular_profile_at_azimuth(
 /// discards them). A gate that always answers `true` leaves the sequence of
 /// floating-point operations exactly as it was without one.
 fn sample_elevation_sweep<const N: usize>(
-    planes: &[GpuFacetPlane],
+    geom: StoneGeometry<'_>,
     material: &GemMaterial,
     cam_yaw: f32,
     angles_deg: &[f32; N],
@@ -75,7 +92,8 @@ fn sample_elevation_sweep<const N: usize>(
             break;
         }
         let cam_pitch_rad = deg.to_radians();
-        let m = evaluate_gem_optical_metrics(planes, material, cam_yaw, cam_pitch_rad, environment);
+        let m =
+            evaluate_gem_optical_metrics_geom(geom, material, cam_yaw, cam_pitch_rad, environment);
         brilliance_curve[i] = m.brilliance_pct;
         extinction_curve[i] = m.extinction_pct;
         windowing_curve[i] = m.windowing_pct;
@@ -223,8 +241,25 @@ pub fn evaluate_full_axis_profile_at_azimuth(
     positive_azimuth_deg: f32,
     environment: EnvironmentSource<'_>,
 ) -> ([f32; 181], [f32; 181], [f32; 181]) {
+    evaluate_full_axis_profile_at_azimuth_geom(
+        StoneGeometry::planes_only(planes),
+        material,
+        positive_azimuth_deg,
+        environment,
+    )
+}
+
+/// [`evaluate_full_axis_profile_at_azimuth`] for a stone with tools; bit-identical to it
+/// when `geom.tools` is empty.
+#[must_use]
+pub fn evaluate_full_axis_profile_at_azimuth_geom(
+    geom: StoneGeometry<'_>,
+    material: &GemMaterial,
+    positive_azimuth_deg: f32,
+    environment: EnvironmentSource<'_>,
+) -> ([f32; 181], [f32; 181], [f32; 181]) {
     full_axis_profile(
-        planes,
+        geom,
         material,
         positive_azimuth_deg,
         environment,
@@ -247,6 +282,25 @@ pub fn evaluate_full_axis_profile_at_azimuth_stepped(
     environment: EnvironmentSource<'_>,
     step: &mut dyn FnMut() -> bool,
 ) -> Option<([f32; 181], [f32; 181], [f32; 181])> {
+    evaluate_full_axis_profile_at_azimuth_stepped_geom(
+        StoneGeometry::planes_only(planes),
+        material,
+        positive_azimuth_deg,
+        environment,
+        step,
+    )
+}
+
+/// [`evaluate_full_axis_profile_at_azimuth_stepped`] for a stone with tools;
+/// bit-identical to it when `geom.tools` is empty.
+#[must_use]
+pub fn evaluate_full_axis_profile_at_azimuth_stepped_geom(
+    geom: StoneGeometry<'_>,
+    material: &GemMaterial,
+    positive_azimuth_deg: f32,
+    environment: EnvironmentSource<'_>,
+    step: &mut dyn FnMut() -> bool,
+) -> Option<([f32; 181], [f32; 181], [f32; 181])> {
     let mut stopped = false;
     let mut gate = || {
         if !stopped && !step() {
@@ -254,13 +308,7 @@ pub fn evaluate_full_axis_profile_at_azimuth_stepped(
         }
         !stopped
     };
-    let curves = full_axis_profile(
-        planes,
-        material,
-        positive_azimuth_deg,
-        environment,
-        &mut gate,
-    );
+    let curves = full_axis_profile(geom, material, positive_azimuth_deg, environment, &mut gate);
     (!stopped).then_some(curves)
 }
 
@@ -272,7 +320,7 @@ pub const EVALUATIONS_PER_AXIS: usize = 181;
 /// evaluation (see `sample_elevation_sweep`). The pole is always evaluated, even when the
 /// gate has already said no: one evaluation is cheaper than another code path.
 fn full_axis_profile(
-    planes: &[GpuFacetPlane],
+    geom: StoneGeometry<'_>,
     material: &GemMaterial,
     positive_azimuth_deg: f32,
     environment: EnvironmentSource<'_>,
@@ -283,15 +331,15 @@ fn full_axis_profile(
     // The shared table-up (pitch 90) pole -- see this function's doc comment for why
     // evaluating it once is sound. Evaluated at the positive azimuth by convention
     // (azimuth is provably irrelevant here, but a concrete choice is still needed).
-    let table_up_pole = evaluate_gem_optical_metrics(
-        planes,
+    let table_up_pole = evaluate_gem_optical_metrics_geom(
+        geom,
         material,
         positive_azimuth_deg.to_radians(),
         90.0f32.to_radians(),
         environment,
     );
     let (positive_brilliance, positive_extinction, positive_windowing) = sample_elevation_sweep(
-        planes,
+        geom,
         material,
         positive_azimuth_deg.to_radians(),
         &HALF_AXIS_PITCH_DEG,
@@ -300,7 +348,7 @@ fn full_axis_profile(
     );
     let negative_azimuth_deg = positive_azimuth_deg + 180.0;
     let (negative_brilliance, negative_extinction, negative_windowing) = sample_elevation_sweep(
-        planes,
+        geom,
         material,
         negative_azimuth_deg.to_radians(),
         &HALF_AXIS_PITCH_DEG,
@@ -341,4 +389,15 @@ pub fn evaluate_angular_profile(
     environment: EnvironmentSource<'_>,
 ) -> ([f32; 19], [f32; 19], [f32; 19]) {
     evaluate_angular_profile_at_azimuth(planes, material, 0.0, environment)
+}
+
+/// [`evaluate_angular_profile`] for a stone with tools; bit-identical to it when
+/// `geom.tools` is empty.
+#[must_use]
+pub fn evaluate_angular_profile_geom(
+    geom: StoneGeometry<'_>,
+    material: &GemMaterial,
+    environment: EnvironmentSource<'_>,
+) -> ([f32; 19], [f32; 19], [f32; 19]) {
+    evaluate_angular_profile_at_azimuth_geom(geom, material, 0.0, environment)
 }

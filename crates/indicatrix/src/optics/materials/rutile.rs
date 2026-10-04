@@ -44,9 +44,9 @@ impl GemMaterial {
     /// Near-UV absorption edge (~430nm): rutile's real absorption edge is a steep
     /// semiconductor band edge, not a
     /// molecular-transition Gaussian -- modelled here (this file's existing convention
-    /// for every non-measured band, see e.g. Amethyst's colour-centre band above) as a
+    /// for every non-measured band, see e.g. Amethyst's color-centre band above) as a
     /// single strong band centred at 350nm wide enough to tail audibly into the violet
-    /// by ~430nm, giving rutile's characteristic yellow-to-brown body colour. TUNED
+    /// by ~430nm, giving rutile's characteristic yellow-to-brown body color. TUNED
     /// (aesthetic, not a cited absorption coefficient), like every other inclusion/
     /// pleochroism band in this file that isn't a directly measured spectrum.
     pub(super) fn built_in_material_rutile() -> Self {

@@ -65,6 +65,11 @@ exporting a design of your own.
     live weight check; the plan settings and the first-run measuring pass; the
     3D view; reading the ranked layouts, their metrics and cut plans; library
     links; saved plans, export and import; shortcuts; and the limitations.
+16. [Concave Tiers](16-concave-tiers.md) — tool-cut facets (cylinder, cone,
+    circle, disc, sphere): adding and editing them in the tier table and the
+    inspector's concave form, how they print on the cutting sheet and in the
+    schedule, how they show in the solid view and the render, what `.asc`,
+    `.gcs` and `.indicatrix` keep of them, and the limitations.
 
 ### Appendices
 
@@ -75,7 +80,7 @@ exporting a design of your own.
   shortcuts.
 - [Appendix C: Built-in Render Materials](appendix-c-render-materials.md)
   — every built-in material's refractive index, birefringence, optical
-  character, dispersion, and colour.
+  character, dispersion, and color.
 
 ## How to read this manual
 

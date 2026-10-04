@@ -6,8 +6,8 @@
 //! `built_in_materials_*`/`built_in_material_*` builder function that actually
 //! constructs the built-in table lives in its own file, named for the species it
 //! covers; [`custom`] holds the builder-style constructors
-//! ([`GemMaterial::new_custom`], `with_*`), [`body_colour`] holds the body-colour
-//! preset table [`GemMaterial::with_body_colour`] is fed from, [`lookup`] holds [`GemMaterial::by_name`]
+//! ([`GemMaterial::new_custom`], `with_*`), [`body_color`] holds the body-color
+//! preset table [`GemMaterial::with_body_color`] is fed from, [`lookup`] holds [`GemMaterial::by_name`]
 //! and the convenience accessors, and [`optics`] holds the biaxial-indicatrix/
 //! extraordinary-index/GPU-routing methods. Every path reachable as `materials::X`
 //! before the split is still reachable at exactly that path: [`GemMaterial`],
@@ -19,7 +19,7 @@ use glam::Vec3;
 mod amethyst_through_citrine;
 mod andalusite_through_glass;
 mod aquamarine_through_citrine;
-pub mod body_colour;
+pub mod body_color;
 mod custom;
 mod diamond_through_emerald;
 mod garnets_grossular_and_andradite;

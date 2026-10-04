@@ -80,7 +80,7 @@ Large enough facets are labeled with their tier name directly on the
 diagram, and the same overlays as the Solid view apply here too — a
 selected tier's facets are tinted, a critical-angle-risk facet is hatched,
 and a facet whose edit has not been folded into the shown solid yet is
-outlined in the pending colour.
+outlined in the pending color.
 
 Hovering and clicking work exactly like the Solid view (see above), just
 resolved against the diagram's own layout — click a facet in any of the
@@ -119,7 +119,7 @@ corresponds to on the actual stone.
 Once a tier is selected (by clicking one of its facets, or by clicking its
 row in the tier list) and the design is solved, three handles grow out of
 that facet's centre in **Solid**, **Path-traced**, and **Both** mode. Each
-is a coloured line ending in a marker with a letter beside it, and each
+is a colored line ending in a marker with a letter beside it, and each
 drags the **whole tier** — every facet of its symmetric orbit — not just
 the facet you grabbed:
 
@@ -145,7 +145,7 @@ tier whose mast moves because of your drag is outlined in **orange** while
 you drag, so you can see, before letting go, what else the change is
 pushing around. If the re-solve falls behind the pointer, the last solved
 solid stays on screen with the dragged tier outlined in the same
-"catching up" colour as after any edit; nothing is lost.
+"catching up" color as after any edit; nothing is lost.
 
 **Snapping.** By default an angle snaps to 0.1° and a mast to 0.01. Hold
 **Shift** while dragging for fine steps (0.01° and 0.001). The **Snap**
@@ -231,8 +231,8 @@ Two visual cues appear directly on the solid, independent of hover/click:
   reflecting) at the design's current refractive index. This is the same
   windowing check Chapter 6 and the tier list's margin column use,
   surfaced directly on the geometry.
-- **Outlined-in-a-different-colour facets** — a facet outlined rather than
-  its usual dark edge colour marks a tier whose edit has not been folded
+- **Outlined-in-a-different-color facets** — a facet outlined rather than
+  its usual dark edge color marks a tier whose edit has not been folded
   into the shown solid yet (see "Live update and the 'Not solved' banner"
   below).
 

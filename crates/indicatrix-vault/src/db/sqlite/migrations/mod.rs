@@ -371,6 +371,71 @@ impl Database {
         Ok(())
     }
 
+    /// Adds the concave-tier columns: `diagram_details.concave_tiers` and
+    /// `concave_facets` (`INTEGER NOT NULL DEFAULT 0`), and `angle_settings.tool` and
+    /// `tool_line` (nullable `TEXT`), to a database created before concave tiers
+    /// existed.
+    ///
+    /// The counts get their own columns because `facets_count` keeps its two-component
+    /// `"55+6"` text: `parse_facets_count` splits it into `facets`/`girdle_facets`, so a
+    /// third component would break every stored row. `0` is the right backfill for
+    /// every existing design (none has a concave tier), and NULL tool columns mean a
+    /// flat tier, so no row needs rewriting.
+    ///
+    /// Each column is gated on its own `column_exists`, inside one transaction, so a
+    /// database an interrupted build left with half of them still ends up with all
+    /// four, and an already-migrated (or fresh) database is a no-op. Must run before
+    /// [`Self::migrate_blob_columns_last`], whose rebuild names `diagram_details`'
+    /// columns explicitly and would otherwise drop the new ones.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if probing or adding any column fails; nothing is committed in
+    /// that case.
+    pub(super) fn migrate_concave_columns(&self) -> Result<()> {
+        const COLUMNS: [(&str, &str, &str); 4] = [
+            (
+                "diagram_details",
+                "concave_tiers",
+                "INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
+                "diagram_details",
+                "concave_facets",
+                "INTEGER NOT NULL DEFAULT 0",
+            ),
+            ("angle_settings", "tool", "TEXT"),
+            ("angle_settings", "tool_line", "TEXT"),
+        ];
+        let mut missing = Vec::new();
+        for (table, column, sql_type) in COLUMNS {
+            if !Self::column_exists(&self.conn, table, column)? {
+                missing.push((table, column, sql_type));
+            }
+        }
+        if missing.is_empty() {
+            debug!("Concave columns already present; skipping.");
+            return Ok(());
+        }
+
+        info!("Adding the concave-tier columns...");
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .context("Failed to start the concave-columns migration")?;
+        for (table, column, sql_type) in missing {
+            // Table/column/type come from the constant above, never from input.
+            tx.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {sql_type};"
+            ))
+            .context(format!("Failed to add {table}.{column}"))?;
+        }
+        tx.commit()
+            .context("Failed to commit the concave-columns migration")?;
+        info!("Concave-columns migration complete.");
+        Ok(())
+    }
+
     /// Adds `custom_gem_materials.specific_gravity`, a nullable REAL column holding
     /// the material's density relative to water, so a custom material can carry its
     /// own SG the way the thirteen built-in species already do: without it, Est.
@@ -395,6 +460,29 @@ impl Database {
             .execute_batch("ALTER TABLE custom_gem_materials ADD COLUMN specific_gravity REAL;")
             .context("Failed to add custom_gem_materials.specific_gravity column")?;
         info!("specific_gravity column migration complete.");
+        Ok(())
+    }
+
+    /// Adds `custom_gem_materials.color_recipe_json`, a nullable TEXT column holding
+    /// the serialized `colorRecipe` for physically based chromophore colors.
+    ///
+    /// Purely additive and nullable, same idiom as [`Self::migrate_custom_material_specific_gravity`]:
+    /// `NULL` means legacy fantasy mode or no recipe for every pre-existing row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if checking for the column or adding it fails.
+    pub(super) fn migrate_custom_material_color_recipe(&self) -> Result<()> {
+        if Self::column_exists(&self.conn, "custom_gem_materials", "color_recipe_json")? {
+            debug!("color_recipe_json column already present; skipping the ADD COLUMN step.");
+            return Ok(());
+        }
+
+        info!("Adding custom_gem_materials.color_recipe_json column...");
+        self.conn
+            .execute_batch("ALTER TABLE custom_gem_materials ADD COLUMN color_recipe_json TEXT;")
+            .context("Failed to add custom_gem_materials.color_recipe_json column")?;
+        info!("color_recipe_json column migration complete.");
         Ok(())
     }
 
@@ -652,6 +740,8 @@ impl Database {
                 pdf_file TEXT,
                 gem_file TEXT,
                 shape_category INTEGER,
+                concave_tiers INTEGER NOT NULL DEFAULT 0,
+                concave_facets INTEGER NOT NULL DEFAULT 0,
                 diagram_image_data BLOB,
                 FOREIGN KEY (entry_id) REFERENCES diagram_entries (id) ON DELETE CASCADE
             );",
@@ -664,14 +754,16 @@ impl Database {
                 lw_ratio, refractive_index, index_gear, volume, facets_count, facets,
                 girdle_facets, shape, designer_info, hw_ratio, tw_ratio, uw_ratio,
                 pw_ratio, cw_ratio, symmetry_order, mirror_symmetry, designer,
-                source_citation, pdf_file, gem_file, shape_category, diagram_image_data
+                source_citation, pdf_file, gem_file, shape_category, concave_tiers,
+                concave_facets, diagram_image_data
             )
             SELECT
                 id, entry_id, page_url, diagram_image_name, competition_diagram,
                 lw_ratio, refractive_index, index_gear, volume, facets_count, facets,
                 girdle_facets, shape, designer_info, hw_ratio, tw_ratio, uw_ratio,
                 pw_ratio, cw_ratio, symmetry_order, mirror_symmetry, designer,
-                source_citation, pdf_file, gem_file, shape_category, diagram_image_data
+                source_citation, pdf_file, gem_file, shape_category, concave_tiers,
+                concave_facets, diagram_image_data
             FROM diagram_details;
             DROP TABLE diagram_details;
             ALTER TABLE diagram_details__reordered RENAME TO diagram_details;",

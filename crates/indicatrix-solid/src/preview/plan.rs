@@ -8,6 +8,8 @@
 
 use super::request::{PlanJob, PlannedFrame};
 use crate::{facet_map::FacetMap, live_update, raster::SolidStyle};
+use indicatrix::geometry::{meet_solver::SolvedTier, tool::ToolPrimitive};
+use indicatrix_cut_core::design::{Design, TierRef};
 use std::time::Duration;
 
 /// Runs [`live_update::plan_preview`] (the expensive, potentially multi-second
@@ -61,7 +63,13 @@ pub fn build_planned_frame(
         live_update::Freshness::Stale { pending } => pending,
         _ => &empty_pending,
     };
-    let facet_map = FacetMap::from_design(&design, plan.solved.as_deref().unwrap_or(&[]));
+    let (tools, placements) =
+        concave_tools_for_display(&design, plan.solved.as_deref(), tier_cutoff);
+    let facet_map = FacetMap::from_design_with_tools(
+        &design,
+        plan.solved.as_deref().unwrap_or(&[]),
+        &placements,
+    );
     let overlay = facet_map.overlay_flags(&design, n_d, selected_tier, pending_tiers);
     let unsolvable_status = match &plan.freshness {
         live_update::Freshness::Unsolvable(err) => {
@@ -96,6 +104,8 @@ pub fn build_planned_frame(
     PlannedFrame {
         design,
         planes: plan.planes,
+        tools,
+        placements,
         style,
         solved,
         stale,
@@ -106,5 +116,64 @@ pub fn build_planned_frame(
         generation,
         n_d,
         enlarged_panel,
+    }
+}
+
+/// The concave tools to draw with `design`'s planes, and their `(tier, placement)`
+/// list. Empty for a design without concave tiers (and so for every planar design,
+/// leaving the frame byte-identical), when there is no solve to measure the stone
+/// against, and when the concave tiers do not resolve (an invalid tier, too many
+/// placements): the preview then shows the flat stone rather than failing, and the
+/// editor's own validation reports why.
+///
+/// `tier_cutoff` is the viewport's "show through tier N" slider, an index into the
+/// flat tiers. The tools are those that precede the first hidden flat tier in cutting
+/// order, where "hidden" is [`live_update::visible_flat_tiers`]'s rule -- the one that
+/// truncates the planes of the same frame, so a groove is never drawn into planes the
+/// slider has removed.
+fn concave_tools_for_display(
+    design: &Design,
+    solved: Option<&[SolvedTier]>,
+    tier_cutoff: Option<usize>,
+) -> (Vec<ToolPrimitive>, Vec<(usize, usize)>) {
+    let Some(solved) = solved else {
+        return (Vec::new(), Vec::new());
+    };
+    if design.concave_tiers.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    // The first hidden flat tier in cutting order is the boundary; with no hidden
+    // tier everything is shown.
+    let boundary = tier_cutoff.and_then(|cutoff| {
+        let visible = live_update::visible_flat_tiers(design, cutoff);
+        design
+            .cutting_order()
+            .into_iter()
+            .find(|tier| matches!(tier, TierRef::Flat(i) if !visible[*i]))
+    });
+    let resolved = boundary.map_or_else(
+        || design.concave_tools_from_solved(solved),
+        |first_hidden| design.concave_tools_through_tier(solved, first_hidden),
+    );
+    resolved.unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// With the slider after the stored-first crown tier of a crown-first design, the
+    /// groove (a pavilion tool, cut before every crown tier) is drawn together with the
+    /// pavilion planes it cuts, and the crown dimple, cut after the hidden crown tier, is not.
+    #[test]
+    fn concave_tools_follow_the_same_visible_tiers_as_the_planes() {
+        let mut design = Design::concave_fixture();
+        design.tiers.reverse();
+        let solved = design.solve().expect("the fixture solves");
+        let (all, _) = concave_tools_for_display(&design, Some(&solved), None);
+        let (through, placements) = concave_tools_for_display(&design, Some(&solved), Some(0));
+        assert_eq!(all.len(), 12, "eight groove placements and four dimples");
+        assert_eq!(through.len(), 8);
+        assert!(placements.iter().all(|&(tier, _)| tier == 0));
     }
 }

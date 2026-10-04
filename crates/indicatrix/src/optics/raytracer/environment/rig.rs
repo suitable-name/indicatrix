@@ -277,9 +277,15 @@ fn studio_rig_lighting(
     spot_mult: f32,
     exposure: f32,
     rig: &crate::optics::studio_rig::StudioRig,
+    ambient_fill: bool,
 ) -> DirectionLighting {
-    // 1. Ambient luxury studio backdrop (pure neutral dark charcoal velvet)
-    let bg_val = 0.012f32.mul_add(d.y.mul_add(0.5, 0.5), 0.015).max(0.005) * exposure;
+    // 1. Ambient luxury studio backdrop (pure neutral dark charcoal velvet); absent for
+    //    the UV lamps (dark room).
+    let bg_val = if ambient_fill {
+        0.012f32.mul_add(d.y.mul_add(0.5, 0.5), 0.015).max(0.005) * exposure
+    } else {
+        0.0
+    };
 
     // 2. Main Key Softbox Light
     let key_dot = d.dot(rig.key_dir).max(0.0);
@@ -321,7 +327,13 @@ fn direction_lighting(
     let d = dir.normalize();
     let LightingRigParams { spot_mult, .. } = lighting_preset.params();
     match lighting_preset.model() {
-        LightingModel::Studio => studio_rig_lighting(d, spot_mult, exposure, rig),
+        LightingModel::Studio => studio_rig_lighting(
+            d,
+            spot_mult,
+            exposure,
+            rig,
+            lighting_preset.has_ambient_fill(),
+        ),
         LightingModel::IsoHemisphere => iso_hemisphere_lighting(d, observer),
         LightingModel::LightTent => light_tent_lighting(d, spot_mult, rig, observer),
         LightingModel::DaylightDome => daylight_dome_lighting(d, rig, observer),

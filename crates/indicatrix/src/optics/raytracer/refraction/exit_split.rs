@@ -6,10 +6,38 @@ use super::{R_UNPOL_PDF_MAX, R_UNPOL_PDF_MIN, context::ExitSplitCtx};
 use crate::optics::{
     polarization::{MuellerMatrix, StokesVector},
     raytracer::{
-        camera::Ray, environment::sample_environment_channel, intersect::intersect_polyhedron_soa,
+        camera::Ray, environment::sample_environment_channel, intersect_stone::intersect_stone_soa,
     },
 };
 use glam::Vec3;
+
+#[cfg(debug_assertions)]
+thread_local! {
+    /// Energy `try_split_exit_channel` has dropped on this thread because the exit probe
+    /// re-entered the stone. Debug builds only, so a release build pays nothing.
+    static TRUNCATED_ENERGY: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+}
+
+/// Returns and resets the energy [`try_split_exit_channel`] truncated on this thread.
+///
+/// The v1 exit split declines to follow a channel that re-enters the stone; on a concave
+/// stone that is no longer a corner case (the far wall of a groove is hit by a large
+/// fraction of exits). The concave white-furnace test reads this to report the loss
+/// separately from its gate, so the v1/v2 decision is data-driven. The unit is the
+/// dropped channel's transmitted intensity (one unit is one fully transmitted channel
+/// sample). Always `0.0` in a release build, where the counter does not exist.
+#[doc(hidden)]
+#[must_use]
+pub fn exit_split_truncated_energy_take() -> f64 {
+    #[cfg(debug_assertions)]
+    {
+        TRUNCATED_ENERGY.with(|e| e.replace(0.0))
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        0.0
+    }
+}
 
 /// Channel k's own Fresnel transmission at a refract/exit interface -- the same
 /// per-channel computation [`super::reflect_refract::apply_refract_channel`]'s
@@ -84,7 +112,8 @@ pub(super) fn compute_channel_transmission(
 ///   - k's own ray escapes the gem (the common case): its contribution is folded
 ///     directly into `exit.split_radiance[k]` (`transmitted_intensity * env_spectral`,
 ///     the same product shape `accumulate_miss_radiance` uses for the shared path).
-///   - k's own ray instead re-enters the (necessarily convex) gem: tracing further is
+///   - k's own ray instead re-enters the gem (a convex one, or a concave one whose
+///     cavity it crossed -- the common case there): tracing further is
 ///     unbounded work this design declines, so nothing is added to `split_radiance` --
 ///     a pure energy-loss truncation, exactly like hitting `max_bounces` or a Russian
 ///     roulette kill partway through a sub-path, not a density/pdf event. Unbiased for
@@ -104,8 +133,11 @@ pub(super) fn try_split_exit_channel(
         origin: hit_point + dir_k * 1e-4,
         dir: dir_k,
     };
-    if intersect_polyhedron_soa(probe, exit.plane_soa).is_some() {
-        // Bounded re-entry: decline to trace further (energy-loss truncation only).
+    if intersect_stone_soa(probe, exit.plane_soa, exit.plane_soa.len(), exit.tools).is_some() {
+        // Bounded re-entry: decline to trace further (energy-loss truncation only). On a
+        // concave stone this is the biggest energy risk in transport, so record it.
+        #[cfg(debug_assertions)]
+        TRUNCATED_ENERGY.with(|e| e.set(e.get() + f64::from(transmitted_intensity.max(0.0))));
         return;
     }
     let env_spectral = sample_environment_channel(

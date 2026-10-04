@@ -78,7 +78,7 @@ pub(super) fn sync_one_design(
         url: design.url.clone(),
         design_id: design.design_id.clone().unwrap_or_default(),
     };
-    let detail = build_detail(&design, attached_files);
+    let detail = build_detail(&design, attached_files, summary.concave_tiers);
 
     let db = db.lock().unwrap_or_else(PoisonError::into_inner);
 
@@ -185,12 +185,24 @@ fn fetch_attachments(
 /// Builds the [`FacetingDiagramDetail`] `save_diagram_detail` will fully replace the
 /// existing row with (see that method's own doc comment) -- pulled out of
 /// [`sync_one_design`] purely to keep that function's length down.
-fn build_detail(design: &DesignRecord, attached_files: Vec<AttachedFile>) -> FacetingDiagramDetail {
+fn build_detail(
+    design: &DesignRecord,
+    attached_files: Vec<AttachedFile>,
+    concave_tiers: u32,
+) -> FacetingDiagramDetail {
+    let angle_settings_table: Vec<AngleSetting> =
+        design.angle_settings.iter().map(to_angle_setting).collect();
+    // The wire carries no placement count; a concave row's index text lists them.
+    let concave_facets = angle_settings_table
+        .iter()
+        .filter(|a| a.tool.is_some())
+        .map(|a| a.index.split(',').filter(|i| !i.trim().is_empty()).count() as u32)
+        .sum();
     FacetingDiagramDetail {
         page_url: design.page_url.clone(),
         diagram_image_name: design.diagram_image_name.clone(),
         diagram_image_data: design.diagram_image_data.clone(),
-        angle_settings_table: design.angle_settings.iter().map(to_angle_setting).collect(),
+        angle_settings_table,
         attached_files,
         competition_diagram: design.competition_diagram.clone(),
         lw_ratio: design.lw_ratio.clone(),
@@ -220,6 +232,8 @@ fn build_detail(design: &DesignRecord, attached_files: Vec<AttachedFile>) -> Fac
         pdf_file: design.pdf_file.clone(),
         gem_file: design.gem_file.clone(),
         shape_category: design.shape_category.clone(),
+        concave_tiers,
+        concave_facets,
     }
 }
 
@@ -242,5 +256,12 @@ fn to_angle_setting(a: &AngleSettingWire) -> AngleSetting {
         angle: a.angle.clone(),
         index: a.index.clone(),
         notes: a.notes.clone(),
+        // The wire keeps the formatted tool line only; its first column is the tool code.
+        tool: a
+            .tool_line
+            .as_deref()
+            .and_then(|line| line.split_whitespace().next())
+            .map(str::to_owned),
+        tool_line: a.tool_line.clone(),
     }
 }

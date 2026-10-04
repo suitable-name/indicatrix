@@ -41,7 +41,7 @@
       branch). Without it that lookup returns `None`, winit falls back to creating a
       canvas of its own -- and its web backend does NOT attach that one to the document,
       so the app runs, paints into an element that is not in the DOM, and the page shows
-      nothing but this stylesheet's background colour. That was the symptom: a dark page,
+      nothing but this stylesheet's background color. That was the symptom: a dark page,
       no canvas in the DOM, and no error beyond winit's own "Using exceptions for control
       flow" notice (which is expected on every Slint web app -- see README).
     -->

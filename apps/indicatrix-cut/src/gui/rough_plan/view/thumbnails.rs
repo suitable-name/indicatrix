@@ -27,7 +27,7 @@ use std::{
 /// The size of a result thumbnail in pixels.
 pub(super) const THUMBNAIL_SIZE: (u32, u32) = (176, 132);
 
-/// The colour of the placeholder that stands in for a thumbnail that could not be drawn.
+/// The color of the placeholder that stands in for a thumbnail that could not be drawn.
 const PLACEHOLDER: [u8; 4] = [0x2a, 0x2e, 0x3a, 0xff];
 
 /// One result to draw.
@@ -198,10 +198,7 @@ mod tests {
             Ok(Arc::new(DesignMesh {
                 facets: box_faces(DVec3::splat(-0.5), DVec3::splat(0.5))
                     .iter()
-                    .map(|(normal, ring)| DesignFacet {
-                        normal: *normal,
-                        ring: ring.to_vec(),
-                    })
+                    .map(|(normal, ring)| DesignFacet::new(*normal, ring.to_vec()))
                     .collect(),
             }))
         }

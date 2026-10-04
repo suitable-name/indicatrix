@@ -8,7 +8,8 @@ use crate::{
     bridge::render_thread::RenderContext,
     gui::editor::view::{ReplanSource, submit_preview_replan_for},
 };
-use indicatrix_cut_core::Design;
+use indicatrix::geometry::{ToolPrimitive, meet_solver::SolvedTier};
+use indicatrix_cut_core::{Design, design::ToolPlacements};
 use indicatrix_editor::solve_policy::IDLE_REPLAN_DEBOUNCE;
 use slint::ComponentHandle;
 use std::{
@@ -21,6 +22,28 @@ use std::{
 // its old path. `IDLE_REPLAN_DEBOUNCE` is how long a "one edit behind" frame waits
 // for a follow-up edit before [`schedule_idle_replan_if_stale`] fires.
 pub(in crate::gui::editor) use indicatrix_editor::solve_policy::design_to_gpu_planes_from_solved;
+
+/// The concave tools (and each one's `(concave tier, placement)`) that go with
+/// [`design_to_gpu_planes_from_solved`]'s planes, from the SAME solve.
+///
+/// `solved` is the design's own mast list (`None` when it does not solve, which has no
+/// planes either, so nothing to cut). A design without concave tiers returns empty
+/// vectors without touching the geometry, so planar callers pay nothing. When the tiers
+/// do not resolve (an invalid tier, too many placements) the tools are empty too: the
+/// flat stone is truthful, a half-resolved set of tools is not. The tier table's
+/// manufacturability warnings are what tell the cutter why the tools are missing.
+#[must_use]
+pub(in crate::gui::editor) fn design_to_gpu_tools_from_solved(
+    design: &Design,
+    solved: Option<&[SolvedTier]>,
+) -> (Vec<ToolPrimitive>, ToolPlacements) {
+    if design.concave_tiers.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    solved
+        .and_then(|solved| design.concave_tools_from_solved(solved).ok())
+        .unwrap_or_default()
+}
 
 /// Records `design`/`multi_selected` alongside the `generation` they were
 /// snapshotted at. Called by `view::submit_preview_replan` on every replan, with

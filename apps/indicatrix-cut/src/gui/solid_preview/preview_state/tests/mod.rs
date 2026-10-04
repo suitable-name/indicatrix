@@ -9,6 +9,7 @@ use super::{
     *,
 };
 use glam::Vec3;
+use indicatrix_solid::preview::StoneGeometryBuf;
 use std::{
     sync::{Arc, Condvar, Mutex, PoisonError},
     time::Duration,
@@ -94,7 +95,7 @@ const CAMERA: CameraPose = CameraPose {
 fn a_single_request_eventually_reaches_the_sink() {
     let sink = FakeSink::new();
     let state = SolidPreviewState::new(sink.clone());
-    state.request_redraw(box_planes(0.6), CAMERA, (16, 16), 0);
+    state.request_redraw(&box_planes(0.6), CAMERA, (16, 16), 0);
 
     let calls = sink.wait_until("the single frame", DEADLINE, |c| !c.is_empty());
     assert_eq!(calls.len(), 1);
@@ -109,9 +110,9 @@ fn coalesces_a_burst_of_requests_to_the_latest() {
     // Nine requests that never close, then one that does -- if coalescing works,
     // the LAST frame the sink sees must be the closed one.
     for _ in 0..9 {
-        state.request_redraw(unbounded_planes(), CAMERA, (16, 16), 0);
+        state.request_redraw(&unbounded_planes(), CAMERA, (16, 16), 0);
     }
-    state.request_redraw(box_planes(0.6), CAMERA, (16, 16), 0);
+    state.request_redraw(&box_planes(0.6), CAMERA, (16, 16), 0);
 
     // The closed request was submitted last, so its frame is the last one delivered.
     let calls = sink.wait_until("the closed frame", DEADLINE, |c| {
@@ -133,7 +134,7 @@ fn coalesces_a_burst_of_requests_to_the_latest() {
 fn a_non_closed_request_reports_has_solid_false_with_a_reason() {
     let sink = FakeSink::new();
     let state = SolidPreviewState::new(sink.clone());
-    state.request_redraw(unbounded_planes(), CAMERA, (16, 16), 0);
+    state.request_redraw(&unbounded_planes(), CAMERA, (16, 16), 0);
 
     let calls = sink.wait_until("the unbounded frame", DEADLINE, |c| !c.is_empty());
     let (has_solid, status) = calls.last().unwrap();
@@ -147,11 +148,11 @@ fn a_non_closed_request_reports_has_solid_false_with_a_reason() {
 fn an_unbounded_request_after_a_closed_one_keeps_showing_the_last_solid() {
     let sink = FakeSink::new();
     let state = SolidPreviewState::new(sink.clone());
-    state.request_redraw(box_planes(0.6), CAMERA, (16, 16), 0);
+    state.request_redraw(&box_planes(0.6), CAMERA, (16, 16), 0);
     let first = sink.wait_until("the first frame", DEADLINE, |c| !c.is_empty());
     assert!(first.last().unwrap().0, "the first frame must close");
 
-    state.request_redraw(unbounded_planes(), CAMERA, (16, 16), 0);
+    state.request_redraw(&unbounded_planes(), CAMERA, (16, 16), 0);
     let calls = sink.wait_until("the second frame", DEADLINE, |c| c.len() >= 2);
     let (has_solid, status) = calls.last().unwrap().clone();
     assert!(
@@ -193,7 +194,11 @@ fn facet_overlay_update_reuses_the_last_context_and_applies_to_both_styles() {
          arriving before the first Planned/Reproject request",
     );
 
-    assert_eq!(planes, box_planes(0.6), "must reuse the last-known planes");
+    assert_eq!(
+        planes.halfspaces(),
+        box_planes(0.6),
+        "must reuse the last-known planes"
+    );
     assert_eq!(camera, CAMERA, "must reuse the last-known camera pose");
     assert_eq!(size, (16, 16), "must reuse the last-known viewport size");
     assert_eq!(view_mode, 0, "must reuse the last-known view mode");
@@ -226,7 +231,7 @@ fn an_ordinary_reproject_does_not_clear_a_facet_overlay() {
         &mut memory,
         &mut mesh_cache,
         RedrawRequest::Reproject {
-            planes: box_planes(0.6),
+            geometry: StoneGeometryBuf::from_halfspaces(&box_planes(0.6)),
             camera: CAMERA,
             size: (16, 16),
             view_mode: 0,
@@ -246,7 +251,7 @@ fn an_ordinary_reproject_does_not_clear_a_facet_overlay() {
         &mut memory,
         &mut mesh_cache,
         RedrawRequest::Reproject {
-            planes: box_planes(0.6),
+            geometry: StoneGeometryBuf::from_halfspaces(&box_planes(0.6)),
             camera: CAMERA,
             size: (16, 16),
             view_mode: 0,

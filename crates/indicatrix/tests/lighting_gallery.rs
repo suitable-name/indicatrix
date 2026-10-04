@@ -324,7 +324,7 @@ rendered on the GPU by crates/indicatrix/tests/lighting_gallery.rs. Look for:
     head-shadow pattern in the table -- the GemRay ISO picture.
   * Light tent + black cards: grey-to-white gradation across the facets, black card
     reflections for contrast, one hard spark; Rutile keeps a saturated yellow body
-    colour with dark facets instead of a pale wash; Sapphire stays deep blue.
+    color with dark facets instead of a pale wash; Sapphire stays deep blue.
   * Daylight sky + sun: grey sky facets, white sun flashes with rainbow fringes,
     dark head shadow, dark ground.
 The exposure and key-light elevation variants show how far the light tent moves with
@@ -363,7 +363,7 @@ the two controls the editor exposes.
                 }
             }
         }
-        // A saturated coloured stone, tilted, under the two presentation models.
+        // A saturated colored stone, tilted, under the two presentation models.
         for preset in [LightingPreset::LightTent, LightingPreset::DaylightDome] {
             shots.push(Shot::standard("Sapphire", TILTED, preset));
         }

@@ -107,6 +107,10 @@ fn centroid_of(centroids: &[Option<glam::Vec3>], facet_id: u32) -> Option<glam::
 /// belongs to the tier, else the tier's first facet with a centroid. `None` when the
 /// map and the frame hold different facet-id spaces, no facet of the tier is on screen,
 /// or a handle would land behind the camera.
+///
+/// `tier` is a flat tier: concave tiers have no drag handles in v1, and a facet of a
+/// concave tool has no flat tier (`FacetMap::tier_of` is `None` for it), so picking one
+/// never produces a target.
 #[must_use]
 pub fn target_for(
     geometry: &FrameGeometry,

@@ -5,7 +5,7 @@
 
 use super::meet_name_is_asc_safe;
 use crate::{
-    design::{ConstraintTier, Design, ScheduleMeta},
+    design::{ConcaveTier, ConcaveTool, ConstraintTier, Design, ScheduleMeta, ToolMotion},
     material::MaterialSelection,
     preform::PreformSpec,
 };
@@ -290,7 +290,7 @@ fn effective_refractive_index_with_prefers_the_override_over_a_custom_entry() {
         name: Some("My Garnet".to_string()),
         specific_gravity_override: None,
         refractive_index_override: Some(1.70),
-        body_colour_override: None,
+        body_color_override: None,
     };
     let custom = [custom_garnet(1.90)];
     assert_eq!(design.effective_refractive_index_with(&custom), 1.70);
@@ -307,7 +307,7 @@ fn effective_refractive_index_with_resolves_a_custom_material_by_name() {
         name: Some("My Garnet".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     // The built-ins-only version has no idea what "My Garnet" is and falls all
     // the way back to the legacy schedule RI.
@@ -329,7 +329,7 @@ fn effective_refractive_index_with_falls_back_to_a_built_in_when_no_custom_entry
         name: Some("Quartz".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     let custom: [GemMaterial; 0] = [];
     assert_eq!(
@@ -364,7 +364,7 @@ fn to_asc_schedule_with_resolves_a_custom_materials_own_refractive_index() {
         name: Some("My Garnet".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     let custom = [custom_garnet(1.9)];
 
@@ -392,7 +392,7 @@ fn to_asc_schedule_from_solved_with_resolves_a_custom_materials_own_refractive_i
         name: Some("My Garnet".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     let custom = [custom_garnet(1.9)];
     let solved = design
@@ -425,7 +425,7 @@ fn to_asc_schedule_with_matches_the_old_entry_point_byte_for_byte_on_a_built_in(
         name: Some("Diamond".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     // A custom catalogue with an unrelated entry must not perturb a design named
     // after a built-in -- built-ins take precedence over nothing here, since
@@ -489,4 +489,166 @@ fn planes_through_tier_still_panics_on_a_mismatch() {
     let design = round_brilliant_design();
     let bogus_solved: Vec<SolvedTier> = Vec::new();
     let _ = design.planes_through_tier(&bogus_solved, 0);
+}
+
+fn concave_pair(design: &mut Design) {
+    design.concave_tiers = vec![
+        ConcaveTier {
+            name: "Groove".to_string(),
+            angle_deg: -62.0,
+            indices: vec![3.0, 11.5, 19.0],
+            instructions: "cut to depth".to_string(),
+            tool: ConcaveTool::Cylinder,
+            tool_azimuth_deg: 90.0,
+            displacement: [0.0, 0.12, 0.05],
+            diameter_ratio: 0.25,
+            tool_angle_deg: None,
+            motion: ToolMotion::Reciprocating,
+        },
+        ConcaveTier {
+            name: "Pit".to_string(),
+            angle_deg: 40.0,
+            indices: vec![0.0],
+            instructions: String::new(),
+            tool: ConcaveTool::Cone,
+            tool_azimuth_deg: 0.0,
+            displacement: [0.0; 3],
+            diameter_ratio: 0.5,
+            tool_angle_deg: Some(60.0),
+            motion: ToolMotion::Plunge,
+        },
+    ];
+}
+
+#[test]
+fn asc_export_omits_concave_tiers_and_appends_two_footnotes_per_tier() {
+    let planar = round_brilliant_design();
+    let mut design = round_brilliant_design();
+    design.meta.footnotes = vec!["my own note".to_string()];
+    concave_pair(&mut design);
+    let solved = design.solve().expect("solves");
+    let schedule = design.to_asc_schedule_for_export(&solved);
+
+    assert_eq!(schedule.tiers.len(), planar.tiers.len());
+    // Pavilion-side tier first (cutting order), then the crown-side one.
+    assert_eq!(
+        schedule.footnotes,
+        vec![
+            "my own note".to_string(),
+            "Groove  -62.00  3 11.50 19  cut to depth".to_string(),
+            "CYL  +90.00°  X = 0.000, Y = 0.120, Z = 0.050  D/W = 0.250, reciprocating".to_string(),
+            "Pit  40.00  0".to_string(),
+            "CON  0.00°  X = 0.000, Y = 0.000, Z = 0.000  D/W = 0.500, angle = 60.00°, plunge"
+                .to_string(),
+        ]
+    );
+    // The writer accepts every line, and the plain schedule is untouched.
+    indicatrix_formats::asc::to_asc_string(&schedule).expect("every footnote is one line");
+    assert_eq!(
+        design.to_asc_schedule_from_solved(&solved).footnotes,
+        vec!["my own note".to_string()]
+    );
+    assert!(planar.export_warnings().is_empty());
+    assert_eq!(
+        design.export_warnings(),
+        vec![
+            crate::manufacturability::ManufacturabilityWarning::ConcaveTiersOmittedFromExport {
+                count: 2
+            }
+        ]
+    );
+}
+
+#[test]
+fn asc_export_then_import_then_export_does_not_duplicate_concave_footnotes() {
+    let mut design = round_brilliant_design();
+    design.meta.footnotes = vec!["my own note".to_string()];
+    concave_pair(&mut design);
+    let solved = design.solve().expect("solves");
+    let first = design.to_asc_schedule_for_export(&solved);
+    let text = indicatrix_formats::asc::to_asc_string(&first).expect("writes");
+
+    let parsed = indicatrix_formats::asc::parse_asc(&text).expect("parses");
+    let mut reimported = Design::from_asc_schedule(PreformSpec::block(2.0, 1.0, 2.0), &parsed);
+    assert_eq!(
+        reimported.meta.footnotes, first.footnotes,
+        "footnotes import"
+    );
+    // Re-importing leaves them as footnotes only; the author re-adds the tiers.
+    concave_pair(&mut reimported);
+    let solved = reimported.solve().expect("solves");
+    let second = reimported.to_asc_schedule_for_export(&solved);
+    assert_eq!(second.footnotes, first.footnotes);
+    // The design's own footnote list was never mutated by the strip.
+    assert_eq!(reimported.meta.footnotes, first.footnotes);
+}
+
+/// Editing a tier after an export must not leave the old export's lines beside the
+/// new ones: the reimported footnotes are recognised by their shape and replaced,
+/// leaving exactly two lines per tier and the user's own notes.
+#[test]
+fn an_edited_concave_tier_leaves_no_stale_footnotes_on_the_next_export() {
+    let mut design = round_brilliant_design();
+    design.meta.footnotes = vec!["my own note".to_string()];
+    concave_pair(&mut design);
+    let solved = design.solve().expect("solves");
+    let first = design.to_asc_schedule_for_export(&solved);
+    let text = indicatrix_formats::asc::to_asc_string(&first).expect("writes");
+
+    let parsed = indicatrix_formats::asc::parse_asc(&text).expect("parses");
+    let mut reimported = Design::from_asc_schedule(PreformSpec::block(2.0, 1.0, 2.0), &parsed);
+    concave_pair(&mut reimported);
+    // Edit Z of the first tier, its instructions and the second tier's tool.
+    reimported.concave_tiers[0].displacement[2] = 0.2;
+    reimported.concave_tiers[0].instructions = "cut deeper".to_string();
+    reimported.concave_tiers[1].diameter_ratio = 0.45;
+    let solved = reimported.solve().expect("solves");
+    let second = reimported.to_asc_schedule_for_export(&solved);
+
+    assert_eq!(
+        second.footnotes,
+        vec![
+            "my own note".to_string(),
+            "Groove  -62.00  3 11.50 19  cut deeper".to_string(),
+            "CYL  +90.00°  X = 0.000, Y = 0.120, Z = 0.200  D/W = 0.250, reciprocating".to_string(),
+            "Pit  40.00  0".to_string(),
+            "CON  0.00°  X = 0.000, Y = 0.000, Z = 0.000  D/W = 0.450, angle = 60.00°, plunge"
+                .to_string(),
+        ]
+    );
+    // A third round is stable.
+    let text = indicatrix_formats::asc::to_asc_string(&second).expect("writes");
+    let parsed = indicatrix_formats::asc::parse_asc(&text).expect("parses");
+    let mut again = Design::from_asc_schedule(PreformSpec::block(2.0, 1.0, 2.0), &parsed);
+    again.concave_tiers = reimported.concave_tiers.clone();
+    again.concave_tier_ids = reimported.concave_tier_ids.clone();
+    let solved = again.solve().expect("solves");
+    assert_eq!(
+        again.to_asc_schedule_for_export(&solved).footnotes,
+        second.footnotes
+    );
+}
+
+#[test]
+fn only_generated_shaped_footnotes_are_stripped() {
+    let mut notes: Vec<String> = [
+        "Cut slowly, 45.00 rpm",
+        "Groove  -62.00  3 11.50 19  cut to depth",
+        "CYL  +90.00°  X = 0.000, Y = 0.120, Z = 0.050  D/W = 0.250, reciprocating",
+        "SPH note: CYL  not a tool line",
+        "Pit  40.00  0",
+        "DSC  -3.50°  X = 1.000, Y = -0.500, Z = 0.000  D/W = 0.500, angle = 60.00°, plunge",
+        "keep me",
+    ]
+    .map(String::from)
+    .to_vec();
+    super::schedule::strip_generated_concave_footnotes(&mut notes);
+    assert_eq!(
+        notes,
+        vec![
+            "Cut slowly, 45.00 rpm".to_string(),
+            "SPH note: CYL  not a tool line".to_string(),
+            "keep me".to_string(),
+        ]
+    );
 }

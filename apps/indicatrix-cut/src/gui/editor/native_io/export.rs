@@ -18,6 +18,7 @@ use crate::{
     gui::{editor::state::EditorState, show_toast},
 };
 use indicatrix::geometry::meet_solver::SolvedTier;
+use indicatrix_cut_core::Design;
 use slint::ComponentHandle;
 use std::{
     cell::RefCell,
@@ -335,7 +336,7 @@ fn export_edited_schedule(
         // means the same "add a Scale Reference tier" problem the validation
         // banner already reports, so it is surfaced the same way (a toast)
         // rather than exporting a schedule with fabricated masts.
-        let (mut schedule, default_file_name, design, used_placeholder, generation) = {
+        let (mut schedule, default_file_name, design, used_placeholder, generation, omitted) = {
             let st = state.borrow();
             let mut schedule = match st.design.to_asc_schedule_with(&custom_materials) {
                 Ok(schedule) => schedule,
@@ -344,6 +345,12 @@ fn export_edited_schedule(
                     return;
                 }
             };
+            // `.asc`/`.gcs` have no concave record, so the concave tiers ride along as two
+            // footnotes each -- the same ones `Design::to_asc_schedule_for_export` adds.
+            // That method builds from an already-solved list with the legacy RI, so this
+            // path keeps its catalogue-aware `to_asc_schedule_with` and appends the same
+            // footnotes through the public step both share. A no-op for a planar design.
+            st.design.append_concave_footnotes(&mut schedule);
             // Recorded so a LATER re-import of this exact file can match it
             // back to its source row instead of creating a second,
             // same-titled duplicate -- see `stamp_source_entry_footnote`'s
@@ -355,6 +362,7 @@ fn export_edited_schedule(
                 st.design.clone(),
                 st.used_placeholder,
                 st.generation.load(Ordering::Relaxed),
+                concave_export_notice(&st.design),
             )
         };
         // The same marker Save writes, for the plain-export path --
@@ -385,12 +393,21 @@ fn export_edited_schedule(
                         &design,
                         solved_result.as_deref().map_err(String::as_str),
                     ) {
-                        StatusDecision::Fine => {
-                            finish_export_schedule(ui, &schedule, default_file_name, format);
-                        }
+                        StatusDecision::Fine => finish_export_after_notice(
+                            ui,
+                            schedule,
+                            default_file_name,
+                            format,
+                            omitted,
+                        ),
                         StatusDecision::NeedsConfirm(message) => {
+                            // One dialog for both questions, so the cutter is never asked twice.
+                            let shown = omitted.map_or_else(
+                                || message.clone(),
+                                |notice| format!("{message}\n\n{notice}"),
+                            );
                             let heading_message = format!(
-                                "{message}\n\nExport anyway? The written file will note this in \
+                                "{shown}\n\nExport anyway? The written file will note this in \
                                  its own header."
                             );
                             ask_write_confirm(
@@ -420,6 +437,44 @@ fn export_edited_schedule(
             },
         );
     });
+}
+
+/// What a file export of `design` loses, as one dialog paragraph; `None` for a planar
+/// design. `.asc` and `.gcs` hold no concave tier, so the cutter is told before the
+/// file is written rather than discovering it when the sheet comes back short.
+fn concave_export_notice(design: &Design) -> Option<String> {
+    let warnings = design.export_warnings();
+    (!warnings.is_empty()).then(|| {
+        warnings
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
+}
+
+/// [`export_edited_schedule`]'s tail for a design that raised no write-status question:
+/// finishes straight away for a planar design, and after the cutter accepts the loss
+/// of the concave tiers (`omitted`, see [`concave_export_notice`]) otherwise.
+fn finish_export_after_notice(
+    ui: &MainWindow,
+    schedule: indicatrix_formats::asc::AscSchedule,
+    default_file_name: String,
+    format: ScheduleFormat,
+    omitted: Option<String>,
+) {
+    match omitted {
+        // A planar design: nothing is lost, so no question is asked.
+        None => finish_export_schedule(ui, &schedule, default_file_name, format),
+        Some(notice) => ask_write_confirm(
+            ui,
+            "Concave tiers are not part of this format",
+            format!("{notice}\n\nExport anyway?"),
+            "Export Anyway",
+            None,
+            move |ui| finish_export_schedule(ui, &schedule, default_file_name, format),
+        ),
+    }
 }
 
 /// [`export_edited_schedule`]'s tail once the status question is settled

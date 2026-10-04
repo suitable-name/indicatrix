@@ -74,7 +74,7 @@ const MAX_SOLID_EDGE: u32 = 4096;
 /// would let the other side show through around the stone.
 const SOLID_BACKGROUND: [u8; 4] = [0x12, 0x14, 0x1c, 0xff];
 
-/// The placeholder hatch's two colours and stripe period (pixels), for a side with
+/// The placeholder hatch's two colors and stripe period (pixels), for a side with
 /// nothing honest to draw.
 const PLACEHOLDER_DARK: [u8; 4] = SOLID_BACKGROUND;
 const PLACEHOLDER_LIGHT: [u8; 4] = [0x25, 0x2b, 0x3b, 0xff];

@@ -56,6 +56,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         backdrop: BACKDROP_GREY,
         environment: SceneEnvironment::Studio,
         surface_glare: 1.0,
+        tools: Vec::new(),
+        fluorescence: Default::default(),
     };
 
     let file = File::create(&out)?;

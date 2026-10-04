@@ -5,7 +5,8 @@ use glam::DVec3;
 use super::{
     Axis, BarCut, CandidateDesign, CutOrder, CutPlan, DesignHull, FINAL_TOP, LayoutGroup,
     PlacedStone, PlanProgress, PlanSettings, REFINE_TOP, RoughBlock, RoughLayout, RoughModel,
-    SHAPED_UNIFORM_DESIGNS, SingleFit, SlabCut, fit_single_stones, merge_and_rank,
+    SHAPED_UNIFORM_DESIGNS, SingleFit, SlabCut, fit_single_stones, fit_single_stones_with,
+    merge_and_rank,
     pareto::{pareto_front, sanitize},
     plan_rough,
     rank::{best_layout, flatten_groups, rank_indices},
@@ -249,6 +250,7 @@ fn run_shaped_dp(
         grid: &grid,
         front,
         non_box_planes: &ctx.non_box,
+        mesh: ctx.mesh.as_deref(),
         size_table: &size_table,
         settings,
         slice: 0..grid.cells[0],
@@ -338,12 +340,13 @@ fn plan_shaped(
     };
 
     let mut groups = run_shaped_dp(input, &ctx, &clean, &front, on_progress)?;
-    let single_fits = fit_single_stones(
+    let single_fits = fit_single_stones_with(
         &ctx.usable,
         &coarse_region,
         input.hulls,
         input.settings,
         SHAPED_SINGLE_FITS,
+        ctx.fit_mesh(),
         on_progress,
     )?;
 

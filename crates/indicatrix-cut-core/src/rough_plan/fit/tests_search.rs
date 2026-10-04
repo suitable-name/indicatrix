@@ -139,6 +139,7 @@ fn a_cube_in_a_cube_keeps_distinct_orientations() {
         &region,
         &pairs,
         &mut workspace,
+        None,
         &mut || true,
     )
     .expect("not cancelled");
@@ -232,12 +233,26 @@ fn pruning_leaves_the_search_result_bit_identical() {
         assert_eq!(pairs.len(), 3, "fixture {index}");
         let mut workspace = SupportWorkspace::new(region.len());
 
-        let (full, full_solves) =
-            search_orientations(hull, &orients, region, &[], &mut workspace, &mut || true)
-                .expect("not cancelled");
-        let (pruned, pruned_solves) =
-            search_orientations(hull, &orients, region, &pairs, &mut workspace, &mut || true)
-                .expect("not cancelled");
+        let (full, full_solves) = search_orientations(
+            hull,
+            &orients,
+            region,
+            &[],
+            &mut workspace,
+            None,
+            &mut || true,
+        )
+        .expect("not cancelled");
+        let (pruned, pruned_solves) = search_orientations(
+            hull,
+            &orients,
+            region,
+            &pairs,
+            &mut workspace,
+            None,
+            &mut || true,
+        )
+        .expect("not cancelled");
 
         assert_eq!(full_solves, EXACT_ORIENTATIONS, "fixture {index}");
         assert!(!full.is_empty(), "fixture {index} found nothing");
@@ -363,6 +378,7 @@ fn the_polish_ends_within_half_a_step_of_a_ridge() {
         &hull.vertices,
         &region,
         &mut workspace,
+        None,
     );
     assert!(k_end >= 0.999, "polish stopped at k = {k_end}");
     assert!(k_end <= 1.0 + 1e-9, "k = {k_end} exceeds the ridge");

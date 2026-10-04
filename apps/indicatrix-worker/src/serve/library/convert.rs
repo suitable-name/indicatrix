@@ -62,6 +62,7 @@ pub(super) fn from_range_wire(r: &RangeFilterWire) -> Result<RangeFilter, Librar
         ri_tolerance: r.ri_tolerance,
         include_ignored: r.include_ignored,
         performance,
+        has_concave: None,
     })
 }
 
@@ -101,11 +102,13 @@ pub(super) const fn to_ranges_wire(r: AttributeRanges) -> AttributeRangesWire {
     }
 }
 
-/// Builds the summary of one search row. [`DesignSummary::design_version`] is left all
-/// zero: the vault's list row carries no revision stamp, so the caller fills it with
-/// [`stamp_design_versions`] once the whole reply is built.
+/// Builds the summary of one search row. [`DesignSummary::version`],
+/// [`DesignSummary::design_version`] and [`DesignSummary::concave_tiers`] are left
+/// zero: the vault's list row carries none of them, so the caller fills them with
+/// [`stamp_design_versions`] once the whole reply is built (`version` last, because it
+/// hashes `concave_tiers`).
 pub(super) fn to_summary(item: &DiagramListItem) -> DesignSummary {
-    let mut summary = DesignSummary {
+    DesignSummary {
         entry_id: item.id,
         title: item.title.clone(),
         url: item.url.clone(),
@@ -121,17 +124,29 @@ pub(super) fn to_summary(item: &DiagramListItem) -> DesignSummary {
         ignored: item.ignored,
         version: [0u8; 32],
         design_version: [0u8; 32],
-    };
-    summary.version = hash_summary(&summary);
-    summary
+        concave_tiers: 0,
+    }
 }
 
-/// Fills [`DesignSummary::design_version`] on every row with the design's revision token:
-/// one primary-key lookup of the revision stamp per row, never a record load. A row
-/// whose stamp cannot be read keeps the all-zero token, which a client treats as "changed".
+/// Fills the per-design fields the vault's list row lacks on every row:
+/// [`DesignSummary::design_version`] (the revision token), [`DesignSummary::concave_tiers`]
+/// and, last since it hashes the latter, [`DesignSummary::version`]. Two primary-key
+/// lookups per row, never a record load. A row whose stamp cannot be read keeps the
+/// all-zero token, which a client treats as "changed"; one whose concave count cannot be
+/// read counts as planar.
 pub(super) fn stamp_design_versions(summaries: &mut [DesignSummary], db: &Database) {
     for summary in summaries {
         summary.design_version = revision_token(&summary.url, Revision::read(db, summary.entry_id));
+        summary.concave_tiers = db
+            .entry_concave_tiers(summary.entry_id)
+            .unwrap_or_else(|e| {
+                tracing::debug!(
+                    "library: no readable concave_tiers for entry {}: {e:#}",
+                    summary.entry_id
+                );
+                0
+            });
+        summary.version = hash_summary(summary);
     }
 }
 
@@ -152,6 +167,7 @@ pub(super) fn to_record(
             angle: a.angle.clone(),
             index: a.index.clone(),
             notes: a.notes.clone(),
+            tool_line: a.tool_line.clone(),
         })
         .collect();
     let attachments = meta

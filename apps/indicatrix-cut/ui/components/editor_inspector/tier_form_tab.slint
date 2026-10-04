@@ -200,15 +200,16 @@ export component TierFormTab inherits VerticalLayout {
         spacing: 6px;
         Rectangle {
             width: 104px;
-            Tooltip { text: @markdown("Angle from the girdle plane in degrees. Negative is pavilion, zero or positive is crown. Exactly 90 (or -90) is a girdle facet. A signed zero (\"-0.0\") inherits the previous tier's side instead of defaulting to crown."); }
-            // Live side hint from the typed value. An approximation (can't see
-            // the previous tier), so exact zero shows no hint.
+            Tooltip { text: @markdown("Angle from the girdle plane in degrees (0\u{b0} to 90\u{b0}). Pavilion tiers are cut on the pavilion side (P/PF), crown on crown (C/Table), exactly 90\u{b0} is girdle (G)."); }
+            // Live side hint from the typed value or loaded tier.
             Text {
                 text: "Angle (deg)" + (Math.abs(root.angle_value) == 90
                     ? "  -- girdle"
-                    : (root.angle_value < 0
+                    : (root.loaded_tier_index >= 0 && root.loaded_tier_index < EditorModel.tiers.length && EditorModel.tiers[root.loaded_tier_index].block == "Pavilion"
                         ? "  -- pavilion"
-                        : (root.angle_value > 0 ? "  -- crown" : "")));
+                        : (root.angle_value < 0
+                            ? "  -- pavilion"
+                            : (root.angle_value > 0 ? "  -- crown" : ""))));
                 font-size: 10px;
                 color: Theme.text-muted;
                 wrap: word-wrap;

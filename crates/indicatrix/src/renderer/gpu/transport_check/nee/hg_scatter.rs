@@ -237,6 +237,7 @@ pub fn run_nee_hg_scatter(
     let nee_ctx = NeeContext {
         environment: EnvironmentSource::HdrMap(&map),
         plane_soa: &plane_soa,
+        tools: &[],
         enabled: true,
     };
 

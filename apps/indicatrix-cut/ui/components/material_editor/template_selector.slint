@@ -1,5 +1,6 @@
 import { ComboBox, LineEdit } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
+import { PhysicscolorModel } from "../../models/physics_color.slint";
 
 // Base Template Selector (a preset picker that fills in every optics field at
 // once) and the Material Name input -- split out of `material_editor_dialog.slint`
@@ -157,6 +158,9 @@ export component MaterialTemplateSelector inherits HorizontalLayout {
                         root.selected_optical_character_idx = 0; // Isotropic
                         root.biaxial_delta_beta_alpha_val = 0.0;
                     }
+                    // In Physics mode a built-in template also preselects its host crystal
+                    // (the catalogue maps built-in materials to hosts); a no-op otherwise.
+                    PhysicscolorModel.template_selected(val);
                 }
             }
         }

@@ -7,13 +7,18 @@
 use super::compositing::{AccumSnapshot, PoseAndGeometry, render_merged_frame};
 use crate::bridge::{
     frame_cache::guide_pass::{
-        GuideBuffers, GuideCache, GuideKey, generate_guide_buffers_cancellable,
+        GuideBuffers, GuideCache, GuideKey, generate_guide_buffers_cancellable_geom,
     },
     render_thread::DenoiseScratch,
 };
 use glam::Vec3;
 use indicatrix::{
-    geometry::plane::GpuFacetPlane, optics::raytracer::Camera, renderer::denoise::AtrousDenoiser,
+    geometry::{
+        plane::GpuFacetPlane,
+        tool::{StoneGeometry, ToolPrimitive},
+    },
+    optics::raytracer::Camera,
+    renderer::denoise::AtrousDenoiser,
 };
 use std::sync::{Arc, Mutex, PoisonError, atomic::AtomicBool};
 
@@ -25,7 +30,7 @@ use std::sync::{Arc, Mutex, PoisonError, atomic::AtomicBool};
 ///
 /// Cancellation mirrors `bridge::export_thread::ExportHandle`'s cooperative
 /// `Arc<AtomicBool>` pattern: setting `cancel` doesn't tear down the background thread
-/// forcibly, it just asks `generate_guide_buffers_cancellable`'s per-row check to stop
+/// forcibly, it just asks `generate_guide_buffers_cancellable_geom`'s per-row check to stop
 /// early.
 ///
 /// A superseded generation can never overwrite a newer one's result: every call to
@@ -59,6 +64,7 @@ pub(super) fn spawn_guide_generation(
     key: GuideKey,
     camera: Camera,
     planes: Vec<GpuFacetPlane>,
+    tools: Vec<ToolPrimitive>,
     width: u32,
     height: u32,
 ) -> PendingGuideGeneration {
@@ -68,9 +74,16 @@ pub(super) fn spawn_guide_generation(
     let result_worker = Arc::clone(&result);
 
     std::thread::spawn(move || {
-        if let Some(buffers) =
-            generate_guide_buffers_cancellable(width, height, &camera, &planes, &cancel_worker)
-        {
+        if let Some(buffers) = generate_guide_buffers_cancellable_geom(
+            width,
+            height,
+            &camera,
+            StoneGeometry {
+                planes: &planes,
+                tools: &tools,
+            },
+            &cancel_worker,
+        ) {
             *result_worker.lock().unwrap_or_else(PoisonError::into_inner) = Some(buffers);
         }
         // A `None` (cancelled) result is simply dropped: `pending_guide_gen` has
@@ -164,6 +177,8 @@ pub(super) struct DenoiseGenerationJob {
     pub(super) pitch: f32,
     pub(super) distance: f32,
     pub(super) planes: Vec<GpuFacetPlane>,
+    /// The concave tools cut out of `planes`; empty for a planar stone.
+    pub(super) tools: Vec<ToolPrimitive>,
 }
 
 /// Kicks off one full denoise-and-tonemap pass on a background thread for `key`'s pose,
@@ -204,6 +219,7 @@ pub(super) fn spawn_denoise_generation(
                 pitch: job.pitch,
                 distance: job.distance,
                 planes: &job.planes,
+                tools: &job.tools,
             },
             &mut guide_cache,
             &mut DenoiseScratch {

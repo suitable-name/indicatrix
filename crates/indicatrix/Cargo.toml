@@ -31,11 +31,12 @@ image = { workspace = true, optional = true, features = ["hdr", "png"] }
 # indicatrix's own dependency tree beyond itself.
 indicatrix-formats = { workspace = true }
 pollster = { workspace = true, optional = true }
-# Only pulled in behind the `serde` feature, for `indicatrix-net`'s wire protocol (which
-# needs `Serialize`/`Deserialize` on `GemMaterial`, `GpuFacetPlane`, `LightingPreset`
-# and their nested types). Off by default so the base `indicatrix` dependency count (the
-# five listed above) stays publishable.
-serde = { workspace = true, optional = true }
+# Unconditional: the chromophore catalogue and recipe types derive `Serialize`/
+# `Deserialize` unconditionally, so this crate always depends on serde (and `toml`).
+# The `serde` feature below therefore no longer gates this dependency; the base
+# dependency count is no longer minimal.
+serde = { workspace = true }
+toml = { workspace = true }
 tracing = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -107,9 +108,9 @@ hdr = ["dep:image"]
 # over the wire to a remote render worker: `GemMaterial` and its nested types
 # (`CrystalSystem`, `OpticalCharacter`, `DispersionModel`, `AbsorptionBand`,
 # `AbsorptionTensor`), `geometry::GpuFacetPlane`, and `optics::raytracer::LightingPreset`.
-# Also turns on glam's own `serde` feature, needed for `GemMaterial::c_axis: Vec3`.
-# Off by default -- see the `serde` dependency comment above.
-serde = ["dep:serde", "glam/serde"]
+# This feature only toggles `glam/serde` (needed for `GemMaterial::c_axis: Vec3`); the
+# `serde` crate itself is always a dependency -- see the `serde` dependency comment above.
+serde = ["glam/serde"]
 
 [[example]]
 name = "gpu_equivalence_harness"

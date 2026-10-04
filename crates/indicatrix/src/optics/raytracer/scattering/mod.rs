@@ -39,13 +39,17 @@ pub(crate) use hg::nee_contribution_hg_scatter;
 pub(crate) use frosted::nee_contribution_frosted_exterior;
 pub(crate) use frosted::{apply_frosted_bounce, cosine_weighted_hemisphere};
 
+/// Most boundary crossings the Henyey-Greenstein NEE shadow probe follows on a concave
+/// stone before it drops the sample. A groove or dimple costs two crossings (out and
+/// back in) per exit, so four covers one cavity plus the final exit.
+pub(crate) const HG_NEE_MAX_CROSSINGS: usize = 4;
+
 /// Bundles the per-trace next-event-estimation inputs
 /// [`nee_contribution_hg_scatter`] and [`nee_contribution_frosted_exterior`] need -- the
 /// environment (only [`EnvironmentSource::HdrMap`] has an importance distribution to
 /// sample; see `sample_environment_for_nee`), the intersection arena a shadow ray from
-/// an interior scattering point probes against (used by the HG path only --
-/// [`nee_contribution_frosted_exterior`] never needs it, see that function's doc
-/// comment), and whether NEE is switched on for this trace at all.
+/// an interior scattering point probes against (the exterior frosted NEE uses it only for
+/// a concave stone's shadow probe, see that function's doc comment), and whether NEE is switched on for this trace at all.
 ///
 /// `enabled = false` (every procedural-rig scene, and any trace that otherwise opts out)
 /// skips every NEE draw entirely -- no RNG consumption, no accumulator touched -- so
@@ -64,6 +68,11 @@ pub(crate) use frosted::{apply_frosted_bounce, cosine_weighted_hemisphere};
 pub(crate) struct NeeContext<'a> {
     pub(crate) environment: EnvironmentSource<'a>,
     pub(crate) plane_soa: &'a crate::simd::PlanesSoA32,
+    /// Convex volumes subtracted from the polyhedron `plane_soa` holds; empty for a
+    /// planar stone, which keeps every NEE path on its old convex shortcut. With tools
+    /// the shadow probes are real: the exterior NEE must find the sampled direction
+    /// unoccluded, and the HG probe walks up to [`HG_NEE_MAX_CROSSINGS`] boundaries.
+    pub(crate) tools: &'a [crate::geometry::tool::ToolPrimitive],
     /// `optics::raytracer::transport::trace_spectral_ray_inner`'s own `enable_nee`
     /// parameter -- `true` only at every PUBLIC entry point when `environment` is
     /// `HdrMap` (never `Studio`: the analytic rig has no importance distribution to draw
@@ -88,7 +97,7 @@ pub(super) fn balance_heuristic(pdf_a: f32, pdf_b: f32) -> f32 {
 /// A stable orthonormal basis `(t, b)` perpendicular to unit vector `n` -- the same
 /// branch-minimal construction `birefringence::stable_orthonormal_basis` uses, kept as
 /// its own local copy rather than exposing that private helper across modules.
-fn frosted_orthonormal_basis(n: Vec3) -> (Vec3, Vec3) {
+pub(in crate::optics::raytracer) fn frosted_orthonormal_basis(n: Vec3) -> (Vec3, Vec3) {
     let a = if n.x.abs() > 0.9 { Vec3::Y } else { Vec3::X };
     let t = (a - n * n.dot(a)).normalize_or_zero();
     let b = n.cross(t);

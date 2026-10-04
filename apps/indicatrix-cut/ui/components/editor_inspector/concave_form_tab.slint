@@ -1,0 +1,417 @@
+import { Button, CheckBox, ComboBox, LineEdit } from "std-widgets.slint";
+import { EditorTierItem } from "../../types.slint";
+import { Theme } from "../../theme.slint";
+import { EditorModel } from "../../models/editor.slint";
+
+// The Inspector's "Tier" tab for a CONCAVE tier -- the tool-cut counterpart of
+// `TierFormTab`. A concave tier is authored as two lines (a facet line and a tool
+// line), so the form has both: name, angle, indices and instructions for the facet,
+// then tool, theta, X/Y/Z, D/W, tool angle and motion for the tool.
+//
+// Like `TierFormTab` this component only renders the scratch state `EditorInspector`
+// owns (its `c_*` properties, dirty snapshot and dirty-draft banner all reuse the flat
+// form's) and reports edits back through two-way properties and callbacks. Every
+// field is a string: Rust parses them (`parse_concave_tier_form`) and prefixes each
+// error with its field, which `EditorModel.tier_form_error_field` carries back here
+// to put a red border on the offending control, exactly as the flat form does. The
+// error buckets are "name", "angle", "indices", "tool", "theta", "x", "y", "z",
+// "diameter" and "tool_angle".
+//
+// `unlocked` is `GuideModel.allows_concave_tier()` (see `GuideAllow`): every input and
+// button ANDs it into its own `enabled:`.
+export component ConcaveFormTab inherits VerticalLayout {
+    in property <bool> unlocked: true;
+
+    in-out property <string> c_name;
+    in-out property <string> c_angle;
+    in-out property <string> c_indices;
+    in-out property <string> c_instructions;
+    // The tool combo's index: 0 CYL, 1 CON, 2 CIR, 3 DSC, 4 SPH (`EditorInspector` maps
+    // it to and from the tool code `parse_concave_tier_form` accepts).
+    in-out property <int> c_tool;
+    in-out property <string> c_theta;
+    in-out property <string> c_x;
+    in-out property <string> c_y;
+    in-out property <string> c_z;
+    in-out property <string> c_diameter;
+    in-out property <string> c_tool_angle;
+    in-out property <bool> c_reciprocating;
+
+    // The concave tier's table position, or -1 for an "Add" draft.
+    in property <int> loaded_tier_index: -1;
+    in property <bool> show_dirty_warning: false;
+    in property <bool> show_external_change: false;
+    in property <int> pending_load_index: -1;
+
+    callback keep_draft();
+    callback confirm_discard_and_load();
+    callback reload_from_design();
+    callback dismiss_external_change();
+    // Commits the draft (Enter in a field) -- forwarded to `EditorInspector.save_form()`.
+    callback save_form();
+
+    // Only a cone and a disc have an included angle; for the other tools the field is
+    // disabled (and Rust rejects a value typed for them).
+    property <bool> has_tool_angle: root.c_tool == 1 || root.c_tool == 3;
+    property <string> field_error: EditorModel.tier_form_error_field;
+
+    // Clears a stale validation-error marker the moment the field it points at is
+    // retyped, the same rule as `TierFormTab.clear_field_error`: used from each
+    // field's own user-edit event, never a `changed` handler (which would also fire
+    // for `EditorInspector`'s own programmatic seeding).
+    function clear_field_error(field: string) {
+        if EditorModel.tier_form_error_field == field {
+            EditorModel.tier_form_error_field = "";
+            EditorModel.tier_form_error = "";
+        }
+    }
+
+    spacing: 8px;
+    Text {
+        text: root.loaded_tier_index < 0
+            ? "Add Concave Tier"
+            : "Edit Concave Tier #" + (root.loaded_tier_index + 1) + (root.c_name == "" ? "" : " -- " + root.c_name);
+        font-size: 12px;
+        font-weight: 700;
+        color: Theme.text-primary;
+    }
+    if root.show_dirty_warning: Rectangle {
+        background: Theme.bg-input;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.accent-amber;
+        VerticalLayout {
+            padding: 6px;
+            spacing: 4px;
+            Text {
+                text: "\u{26A0} You have unsaved changes to "
+                    + (root.loaded_tier_index < 0 ? "the new tier draft" : "Tier #" + (root.loaded_tier_index + 1))
+                    + ". The table's selection has moved on, but this form still shows your draft.";
+                font-size: 10px;
+                font-weight: 700;
+                color: Theme.accent-amber;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                Button {
+                    enabled: root.unlocked;
+                    text: "Keep Draft";
+                    clicked => { root.keep_draft(); }
+                }
+                Button {
+                    enabled: root.unlocked;
+                    text: root.pending_load_index < 0
+                        ? "Discard Draft, Start New"
+                        : "Discard Draft, Load #" + (root.pending_load_index + 1);
+                    clicked => { root.confirm_discard_and_load(); }
+                }
+            }
+        }
+    }
+    if root.show_external_change && !root.show_dirty_warning: Rectangle {
+        background: Theme.bg-input;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.accent-amber;
+        VerticalLayout {
+            padding: 6px;
+            spacing: 4px;
+            Text {
+                text: "\u{26A0} Tier #" + (root.loaded_tier_index + 1)
+                    + " changed in the design after you started this draft. Saving writes your draft over that change.";
+                font-size: 10px;
+                font-weight: 700;
+                color: Theme.accent-amber;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                Button {
+                    enabled: root.unlocked;
+                    text: "Reload From Design";
+                    clicked => { root.reload_from_design(); }
+                }
+                Button {
+                    enabled: root.unlocked;
+                    text: "Keep Draft";
+                    clicked => { root.dismiss_external_change(); }
+                }
+            }
+        }
+    }
+
+    // --- The facet line: what the tier is called and where it sits on the gear.
+    Text { text: "Facet"; font-size: 10px; font-weight: 700; color: Theme.text-secondary; }
+    HorizontalLayout {
+        spacing: 6px;
+        Rectangle {
+            width: 104px;
+            Tooltip { text: @markdown("Facet name. A concave tier may not reuse a flat tier's name, and nothing can meet it by name."); }
+            Text { text: "Name"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            border-width: root.field_error == "name" ? 1px : 0px;
+            border-color: Theme.danger;
+            border-radius: Theme.radius-sm;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> root.c_name;
+                accepted => { root.save_form(); }
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                edited => { root.clear_field_error("name"); }
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        Rectangle {
+            width: 104px;
+            Tooltip { text: @markdown("Angle of the facet the tool leaves behind, in degrees from the girdle plane. Negative is pavilion, positive is crown."); }
+            Text { text: "Angle (deg)"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            border-width: (Math.abs(root.c_angle.to-float()) > 90 || root.field_error == "angle") ? 1px : 0px;
+            border-color: Theme.danger;
+            border-radius: Theme.radius-sm;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> root.c_angle;
+                placeholder-text: "e.g. -42";
+                accepted => { root.save_form(); }
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                edited => { root.clear_field_error("angle"); }
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        Rectangle {
+            width: 104px;
+            Tooltip { text: @markdown("Gear positions the tool is placed at, comma-separated. One tool placement is cut at each."); }
+            Text { text: "Indices"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            border-width: root.field_error == "indices" ? 1px : 0px;
+            border-color: Theme.danger;
+            border-radius: Theme.radius-sm;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> root.c_indices;
+                placeholder-text: "e.g. 0, 24, 48, 72";
+                accepted => { root.save_form(); }
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                edited => { root.clear_field_error("indices"); }
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        Rectangle {
+            width: 104px;
+            Tooltip { text: @markdown("Free-text cutting instructions, printed on the facet line of the cutting sheet."); }
+            Text { text: "Instructions"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+        }
+        LineEdit {
+            horizontal-stretch: 1;
+            enabled: root.unlocked;
+            text <=> root.c_instructions;
+            accepted => { root.save_form(); }
+            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+        }
+    }
+
+    // --- The tool line: which tool, where it sits and how it moves.
+    Text { text: "Tool"; font-size: 10px; font-weight: 700; color: Theme.text-secondary; }
+    HorizontalLayout {
+        spacing: 6px;
+        Rectangle {
+            width: 104px;
+            Tooltip { text: @markdown("The tool's shape: cylinder, cone, circle (a ring), disc or sphere."); }
+            Text { text: "Tool"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            border-width: root.field_error == "tool" ? 1px : 0px;
+            border-color: Theme.danger;
+            border-radius: Theme.radius-sm;
+            ComboBox {
+                enabled: root.unlocked;
+                model: [
+                    "Cylinder (CYL)",
+                    "Cone (CON)",
+                    "Circle (CIR)",
+                    "Disc (DSC)",
+                    "Sphere (SPH)",
+                ];
+                current-index <=> root.c_tool;
+                selected => { root.clear_field_error("tool"); root.clear_field_error("tool_angle"); }
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        Rectangle {
+            width: 104px;
+            Tooltip { text: @markdown("Azimuth of the tool's axis around the stone, in degrees. Blank is 0."); }
+            Text { text: "Theta (deg)"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            border-width: root.field_error == "theta" ? 1px : 0px;
+            border-color: Theme.danger;
+            border-radius: Theme.radius-sm;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> root.c_theta;
+                placeholder-text: "0";
+                accepted => { root.save_form(); }
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                edited => { root.clear_field_error("theta"); }
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        Rectangle {
+            width: 104px;
+            Tooltip { text: @markdown("Displacement of the tool from its default position, as ratios of the stone width. Blank is 0."); }
+            Text { text: "X / Y / Z"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            border-width: root.field_error == "x" ? 1px : 0px;
+            border-color: Theme.danger;
+            border-radius: Theme.radius-sm;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> root.c_x;
+                placeholder-text: "X";
+                accepted => { root.save_form(); }
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                edited => { root.clear_field_error("x"); }
+            }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            border-width: root.field_error == "y" ? 1px : 0px;
+            border-color: Theme.danger;
+            border-radius: Theme.radius-sm;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> root.c_y;
+                placeholder-text: "Y";
+                accepted => { root.save_form(); }
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                edited => { root.clear_field_error("y"); }
+            }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            border-width: root.field_error == "z" ? 1px : 0px;
+            border-color: Theme.danger;
+            border-radius: Theme.radius-sm;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> root.c_z;
+                placeholder-text: "Z";
+                accepted => { root.save_form(); }
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                edited => { root.clear_field_error("z"); }
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        Rectangle {
+            width: 104px;
+            Tooltip { text: @markdown("Tool diameter over stone width (D/W). Must be positive."); }
+            Text { text: "D/W"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            border-width: root.field_error == "diameter" ? 1px : 0px;
+            border-color: Theme.danger;
+            border-radius: Theme.radius-sm;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> root.c_diameter;
+                placeholder-text: "e.g. 0.25";
+                accepted => { root.save_form(); }
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                edited => { root.clear_field_error("diameter"); }
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        opacity: root.has_tool_angle ? 1.0 : 0.5;
+        Rectangle {
+            width: 104px;
+            Tooltip { text: @markdown("Included angle of a cone or disc, in degrees. Only those two tools have one; leave it blank for the others."); }
+            Text { text: "Tool angle (deg)"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            border-width: root.field_error == "tool_angle" ? 1px : 0px;
+            border-color: Theme.danger;
+            border-radius: Theme.radius-sm;
+            LineEdit {
+                enabled: root.unlocked && root.has_tool_angle;
+                text <=> root.c_tool_angle;
+                placeholder-text: root.has_tool_angle ? "e.g. 60" : "n/a";
+                accepted => { root.save_form(); }
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                edited => { root.clear_field_error("tool_angle"); }
+            }
+        }
+    }
+    Rectangle {
+        height: motion_box.preferred-height;
+        Tooltip { text: @markdown("Reciprocating: the tool is stroked back and forth. Unticked, it is plunged straight in."); }
+        motion_box := CheckBox {
+            enabled: root.unlocked;
+            text: "Reciprocating (stroked back and forth)";
+            checked <=> root.c_reciprocating;
+        }
+    }
+
+    // The same inline message the flat form shows, beside the corner toast.
+    if EditorModel.tier_form_error != "": Text {
+        text: EditorModel.tier_form_error;
+        font-size: 10px;
+        font-weight: 700;
+        color: Theme.accent-ruby;
+        wrap: word-wrap;
+    }
+
+    // --- Read-only: the tool line the cutting sheet prints, and any warning, for a
+    // saved tier. Not shown for an "Add" draft, which has nothing resolved yet.
+    if root.loaded_tier_index >= 0 && root.loaded_tier_index < EditorModel.tiers.length: VerticalLayout {
+        property <EditorTierItem> tier_row: EditorModel.tiers[root.loaded_tier_index];
+        spacing: 4px;
+        Rectangle { height: 1px; background: Theme.border-subtle; }
+        Text { text: "Sheet line"; font-size: 11px; font-weight: 700; color: Theme.text-primary; }
+        Text {
+            text: tier_row.tool_line;
+            font-size: 10px;
+            color: Theme.text-secondary;
+            wrap: word-wrap;
+        }
+        if tier_row.orbit_status != "": Text {
+            text: "Orbit: " + tier_row.orbit_status;
+            font-size: 10px;
+            color: tier_row.orbit_incomplete ? Theme.accent-amber : Theme.accent-emerald;
+        }
+        if tier_row.warning_text != "": Text {
+            text: "\u{26A0} " + tier_row.warning_text;
+            font-size: 10px;
+            font-weight: 700;
+            color: Theme.accent-amber;
+            wrap: word-wrap;
+        }
+    }
+}

@@ -1,6 +1,6 @@
 //! `spectral_absorption` / `AbsorptionBand` tests: real material band orientation,
 //! single-band peak/symmetry and additive band-summing behaviour, and the
-//! colourless built-ins' exact zero-absorption guarantee.
+//! colorless built-ins' exact zero-absorption guarantee.
 
 use glam::Vec3;
 use indicatrix::{
@@ -78,14 +78,14 @@ fn test_absorption_band_peaks_at_its_own_centre_and_bands_sum() {
     );
 }
 
-/// Diamond, Moissanite and Cubic Zirconia are colourless -- their
+/// Diamond, Moissanite and Cubic Zirconia are colorless -- their
 /// `AbsorptionTensor`s must be empty band sets, giving EXACTLY zero absorption at every
 /// wavelength (not merely "small"), which is what makes their rendering unchanged from
 /// the earlier RGB-triple model (the old `[0.0, 0.0, 0.0]` triple also always evaluated
 /// to exactly 0.0 in the old `spectral_absorption`, so this is a genuine equivalence,
 /// not just a superficially-similar new behaviour).
 #[test]
-fn test_colourless_materials_have_zero_absorption_everywhere() {
+fn test_colorless_materials_have_zero_absorption_everywhere() {
     for name in ["Diamond", "Synthetic Moissanite", "Cubic Zirconia"] {
         let material = GemMaterial::by_name(name)
             .unwrap_or_else(|| panic!("{name} must be a built-in material"));
@@ -112,10 +112,10 @@ fn test_colourless_materials_have_zero_absorption_everywhere() {
     }
 
     // And the end-to-end consequence: Beer-Lambert transmittance is exp(-0*path_len) =
-    // 1.0 for every colourless material regardless of path length, so a full render
+    // 1.0 for every colorless material regardless of path length, so a full render
     // must be bit-identical to a build with absorption forcibly zeroed out -- exercised
     // here via Diamond through an actual gem cut, matching the "assert a
-    // colourless material's output is unchanged" requirement end-to-end rather than
+    // colorless material's output is unchanged" requirement end-to-end rather than
     // only at the `spectral_absorption` unit level above.
     let planes = StandardGemCuts::standard_round_brilliant();
     let diamond = GemMaterial::diamond();

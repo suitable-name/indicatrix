@@ -10,7 +10,7 @@ import { LibraryModel } from "../models/library.slint";
 
 // The Edit sub-tab's full detail-width status line -- see `app.slint`'s
 // Edit-mode layout doc comment. Shows only the single highest-priority
-// message as a coloured dot + one line -- the solver's own state
+// message as a colored dot + one line -- the solver's own state
 // (solving/stale/failed/solved) always leads, see
 // `EditorStatusStrip::strip_text`'s own doc comment for the full order;
 // "Details" (a current-state snapshot, not a history a cutter could
@@ -495,7 +495,7 @@ export component EditorStatusStrip inherits Rectangle {
         : root.has_material_suggestion ? EditorModel.material_suggestion_text
         : "Nothing to report.";
 
-    // Labels/colours the persistent solver-state segment above, keyed off
+    // Labels/colors the persistent solver-state segment above, keyed off
     // `EditorModel.solve_state` (set from `gui::editor::view`/
     // `gui::editor::auto_solve`, per that global's own doc comment).
     property <string> solver_state_label: EditorModel.solve_state == "solving" ? "Solving"

@@ -1,12 +1,15 @@
 import { Theme } from "../theme.slint";
 import { ComboBox, Slider, LineEdit, ScrollView } from "std-widgets.slint";
 import { ViewportModel } from "../models/viewport.slint";
+import { PhysicscolorModel } from "../models/physics_color.slint";
 import { ConfirmActionDialog } from "confirm_action_dialog.slint";
 // Split-out sections of this dialog -- see each component's own doc comment.
 import { MaterialTemplateSelector } from "material_editor/template_selector.slint";
 import { MaterialOpticsSliders } from "material_editor/optics_sliders.slint";
 import { MaterialCrystalClassification } from "material_editor/crystal_classification.slint";
 import { MaterialColorPresets } from "material_editor/color_presets.slint";
+import { ChromophorePicker } from "material_editor/chromophore_picker.slint";
+import { colorPicker } from "material_editor/color_picker.slint";
 
 export component MaterialEditorDialog inherits Rectangle {
     // Delete gates behind an explicit "Are you sure" step, the same modal idiom
@@ -110,8 +113,13 @@ export component MaterialEditorDialog inherits Rectangle {
         || root.selected_template_idx != root.baseline_template_idx
         || root.selected_crystal_system_idx != root.baseline_crystal_system_idx
         || root.selected_optical_character_idx != root.baseline_optical_character_idx
-        || Math.abs(root.biaxial_delta_beta_alpha_val - root.baseline_biaxial_delta_beta_alpha_val) > 0.0001;
+        || Math.abs(root.biaxial_delta_beta_alpha_val - root.baseline_biaxial_delta_beta_alpha_val) > 0.0001
+        // The physics color mode and recipe (kept in Rust, rebuilt on every open): a recipe
+        // edit or a mode switch dirties the dialog, so closing it asks before discarding.
+        || PhysicscolorModel.dirty;
     property <bool> discard_confirm_open: false;
+    // The fantasy mode's free color picker (spec 7), inline under the preset row.
+    property <bool> fantasy_picker_open: false;
 
     // Pre-fills every optics field from the currently selected
     // CUSTOM material's own saved values the moment this dialog is created for that
@@ -139,13 +147,13 @@ export component MaterialEditorDialog inherits Rectangle {
             root.selected_crystal_system_idx = ViewportModel.selected_custom_material_crystal_system_idx;
             root.selected_optical_character_idx = ViewportModel.selected_custom_material_optical_character_idx;
             root.biaxial_delta_beta_alpha_val = ViewportModel.selected_custom_material_biaxial_delta_beta_alpha;
-            // Pre-fills the swatch row from the row's own saved colour (0-8 for one
+            // Pre-fills the swatch row from the row's own saved color (0-8 for one
             // of the nine fixed presets, 9 = "Custom (keep)" when it matches none --
             // see `ViewportModel.selected_custom_material_color_idx`'s own doc
             // comment). Without this, `selected_color_preset`'s literal default (0,
             // "Clear") stayed selected on every reopen regardless of the material's
-            // real saved colour, so a plain re-save silently flattened it to
-            // colourless -- the bug this whole property exists to fix.
+            // real saved color, so a plain re-save silently flattened it to
+            // colorless -- the bug this whole property exists to fix.
             root.selected_color_preset = ViewportModel.selected_custom_material_color_idx;
             root.baseline_mat_name = root.mat_name;
             root.baseline_ri_val = root.ri_val;
@@ -157,6 +165,27 @@ export component MaterialEditorDialog inherits Rectangle {
             root.baseline_biaxial_delta_beta_alpha_val = root.biaxial_delta_beta_alpha_val;
             root.baseline_color_preset = root.selected_color_preset;
         }
+        // Every open rebuilds the physics state from the selected material (nothing leaks
+        // from a previous open): mode, recipe, undo stack, locks and picked color.
+        PhysicscolorModel.dialog_opened();
+    }
+
+    // A host choice (or a garnet's end-member mix) proposes RI, dispersion, birefringence, SG
+    // and the crystal classification; the physics state pushes them here as one proposal.
+    property <int> prefill_serial: PhysicscolorModel.prefill_serial;
+    changed prefill_serial => {
+        root.ri_val = PhysicscolorModel.prefill_ri;
+        root.disp_val = PhysicscolorModel.prefill_dispersion;
+        root.biref_val = PhysicscolorModel.prefill_birefringence;
+        root.sg_val = PhysicscolorModel.prefill_sg;
+        root.selected_crystal_system_idx = PhysicscolorModel.prefill_crystal_system_idx;
+        root.selected_optical_character_idx = PhysicscolorModel.prefill_optical_character_idx;
+        root.biaxial_delta_beta_alpha_val = PhysicscolorModel.prefill_biaxial_delta;
+    }
+    // The fantasy picker's fit selects the matching preset (or "Custom (keep)").
+    property <int> fantasy_serial: PhysicscolorModel.fantasy_serial;
+    changed fantasy_serial => {
+        root.selected_color_preset = PhysicscolorModel.fantasy_idx;
     }
 
     function request_close() {
@@ -257,7 +286,10 @@ export component MaterialEditorDialog inherits Rectangle {
     // save_gem_material`, so a typed SG is never silently dropped.
     callback save_material(string, float, float, float, int, int, int, float, float, bool);
     save_material(name, ri, disp, biref, color_idx, crystal_system_idx, optical_character_idx, biaxial_delta_beta_alpha, sg, apply) => {
-        ViewportModel.save_custom_material(name, ri, disp, biref, color_idx, crystal_system_idx, optical_character_idx, biaxial_delta_beta_alpha, sg, apply);
+        ViewportModel.save_custom_material(
+            name, ri, disp, biref, color_idx, crystal_system_idx, optical_character_idx, biaxial_delta_beta_alpha, sg, apply,
+            PhysicscolorModel.mode_json
+        );
         ViewportModel.material_editor_open = false;
     }
     callback delete_material(string);
@@ -295,6 +327,18 @@ export component MaterialEditorDialog inherits Rectangle {
             if event.text == Key.Return {
                 root.request_save(false);
                 return accept;
+            }
+            // Ctrl-Z / Ctrl-Y (Ctrl-Shift-Z): the dialog's own recipe undo stack (50 entries),
+            // active only in Physics mode; the design's undo underneath is not reachable here.
+            if (event.modifiers.control || event.modifiers.meta) && PhysicscolorModel.active {
+                if event.text == "z" && !event.modifiers.shift {
+                    PhysicscolorModel.undo();
+                    return accept;
+                }
+                if event.text == "y" || (event.text == "z" && event.modifiers.shift) {
+                    PhysicscolorModel.redo();
+                    return accept;
+                }
             }
             accept
         }
@@ -422,13 +466,117 @@ export component MaterialEditorDialog inherits Rectangle {
                 optics_validation_message: root.optics_validation_message;
                 name_collides_with_builtin: root.name_collides_with_builtin;
                 mat_name: root.mat_name;
+                locked_by_host: PhysicscolorModel.optics_locked;
             }
 
-            // 6. Body Color & Transmission Preset Swatches -- see
-            // `MaterialColorPresets`'s own doc comment
-            // (`material_editor/color_presets.slint`) for why this is split out.
-            MaterialColorPresets {
-                selected_color_preset <=> root.selected_color_preset;
+            // 6. color Mode Selector & Controls: Fantasy (the nine presets or a free pick,
+            // fitted to the three legacy bands) or Physics (host + elements, see
+            // `ChromophorePicker`). Switching keeps BOTH payloads: the recipe survives a trip
+            // through Fantasy and a saved fantasy color survives a trip through Physics.
+            VerticalLayout {
+                spacing: 8px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: start;
+                    Text {
+                        text: "color Mode:";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: Theme.text-secondary;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        width: 70px;
+                        height: 22px;
+                        border-radius: Theme.radius-sm;
+                        background: !PhysicscolorModel.active ? Theme.surface-raised : Theme.surface-sunken;
+                        border-width: 1px;
+                        border-color: !PhysicscolorModel.active ? Theme.accent-cyan : Theme.border-dialog;
+                        TouchArea {
+                            clicked => {
+                                // Physics -> Fantasy returns the preset to show (a recipe-seeded
+                                // fantasy color is "Custom (keep)").
+                                root.selected_color_preset = PhysicscolorModel.set_mode(false, root.selected_color_preset);
+                            }
+                        }
+                        Text {
+                            text: "Fantasy";
+                            font-size: 10px;
+                            font-weight: 600;
+                            color: !PhysicscolorModel.active ? Theme.accent-cyan : Theme.text-secondary;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Rectangle {
+                        width: 70px;
+                        height: 22px;
+                        border-radius: Theme.radius-sm;
+                        background: PhysicscolorModel.active ? Theme.surface-raised : Theme.surface-sunken;
+                        border-width: 1px;
+                        border-color: PhysicscolorModel.active ? Theme.accent-cyan : Theme.border-dialog;
+                        TouchArea {
+                            clicked => {
+                                // The first switch solves the current fantasy color into the
+                                // host on the solver worker (never on this thread).
+                                root.selected_color_preset = PhysicscolorModel.set_mode(true, root.selected_color_preset);
+                            }
+                        }
+                        Text {
+                            text: "Physics";
+                            font-size: 10px;
+                            font-weight: 600;
+                            color: PhysicscolorModel.active ? Theme.accent-cyan : Theme.text-secondary;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                if !PhysicscolorModel.active : VerticalLayout {
+                    spacing: 6px;
+                    MaterialColorPresets {
+                        selected_color_preset <=> root.selected_color_preset;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        Rectangle {
+                            width: 100px;
+                            height: 26px;
+                            border-radius: Theme.radius-sm;
+                            background: fantasy_pick_touch.has-hover ? Theme.accent-cyan : Theme.surface-raised;
+                            border-width: 1px;
+                            border-color: Theme.border-dialog;
+                            fantasy_pick_touch := TouchArea { clicked => { root.fantasy_picker_open = !root.fantasy_picker_open; } }
+                            Text {
+                                text: "Pick\u{2026}";
+                                font-size: 10px;
+                                font-weight: 600;
+                                color: fantasy_pick_touch.has-hover ? Theme.text-on-accent : Theme.text-primary;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Text {
+                            text: "closest reachable with three bands";
+                            font-size: 9px;
+                            color: Theme.text-muted;
+                            vertical-alignment: center;
+                        }
+                    }
+                    if root.fantasy_picker_open : colorPicker {
+                        apply_label: "Apply";
+                        applied(c) => {
+                            root.fantasy_picker_open = false;
+                            PhysicscolorModel.fantasy_pick(c);
+                        }
+                        cancelled => { root.fantasy_picker_open = false; }
+                    }
+                }
+
+                if PhysicscolorModel.active : ChromophorePicker {
+                }
             }
                 } // end body_col
             } // end body := ScrollView

@@ -7,7 +7,7 @@ use crate::{AppWindow, DesignSettingsModel, app::state::DesignState, editor::ins
 use indicatrix_cut_core::critical_angle_deg;
 use indicatrix_editor::{
     material::{
-        body_colour_index_for, body_colour_options, design_material_index_from_name,
+        body_color_index_for, body_color_options, design_material_index_from_name,
         design_material_options, gear_index_from_teeth, ri_source_text,
     },
     material_lookup::material_guess,
@@ -69,13 +69,13 @@ pub fn push(pcx: &PushCtx<'_>) {
     let design = pcx.design;
 
     // The material combo (built-ins, then custom materials, then "Custom RI...") follows
-    // the session's custom materials; the colour list is static.
+    // the session's custom materials; the color list is static.
     let options = design_material_options(pcx.custom);
     set_options_if_changed(&model.get_material_options(), &options, |m| {
         model.set_material_options(m);
     });
-    set_options_if_changed(&model.get_colour_options(), &body_colour_options(), |m| {
-        model.set_colour_options(m);
+    set_options_if_changed(&model.get_color_options(), &body_color_options(), |m| {
+        model.set_color_options(m);
     });
     if pcx.delta.material {
         model.set_material_index(design_material_index_from_name(
@@ -89,7 +89,7 @@ pub fn push(pcx: &PushCtx<'_>) {
                 .map_or_else(String::new, |v| format!("{v:.4}"))
                 .into(),
         );
-        model.set_colour_index(body_colour_index_for(design.material.body_colour_override));
+        model.set_color_index(body_color_index_for(design.material.body_color_override));
         model.set_material_pending(false);
     }
     model.set_effective_ri_text(format!("{:.4}", pcx.n_d).into());

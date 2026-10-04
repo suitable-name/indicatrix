@@ -207,6 +207,17 @@ pub(super) fn install_base(host: &Rc<Host>, base: RoughBase) {
     resync(host, true);
 }
 
+/// [`install_base`] for an imported file: when the import fell back or changed something,
+/// `note` is shown on the window's status line in the warning color.
+pub(super) fn install_imported_base(host: &Rc<Host>, base: RoughBase, note: Option<&str>) {
+    install_base(host, base);
+    if let Some(note) = note {
+        let model = host.window.global::<RoughPlanModel>();
+        model.set_status_text(note.into());
+        model.set_status_level(1);
+    }
+}
+
 /// What committing the typed size fields did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BaseCommit {

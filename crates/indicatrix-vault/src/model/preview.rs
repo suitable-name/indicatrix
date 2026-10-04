@@ -24,7 +24,7 @@ pub struct PreviewImages {
     /// The `indicatrix::optics::materials::GemMaterial` preset name these previews were
     /// (or will be) rendered with -- see
     /// `crate::db::sqlite::Database::ensure_preview_material` for the "rolled once,
-    /// reused forever" contract that keeps a design's rendered colour stable. Can be
+    /// reused forever" contract that keeps a design's rendered color stable. Can be
     /// `Some` even while `front`/`top` are both `None`: the material is chosen and
     /// persisted before rendering happens.
     pub material: Option<String>,

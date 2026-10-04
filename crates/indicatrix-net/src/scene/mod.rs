@@ -15,8 +15,8 @@
 //! work (the `samples` field on the `RENDER` message in [`crate::messages`]).
 
 use indicatrix::{
-    geometry::GpuFacetPlane,
-    optics::{materials::GemMaterial, raytracer::LightingPreset},
+    geometry::{GpuFacetPlane, ToolPrimitive},
+    optics::{fluorescence::Fluorescence, materials::GemMaterial, raytracer::LightingPreset},
 };
 
 /// Everything a remote render worker needs to trace samples for one frame, fully
@@ -76,6 +76,27 @@ pub struct SceneState {
     /// reason as `girdle_frosted`.
     #[serde(default = "default_surface_glare")]
     pub surface_glare: f32,
+    /// Concave-facet tool primitives (v19) the stone is cut by, in cutting order; empty
+    /// for an ordinary convex stone, which then costs one zero length byte on the wire.
+    ///
+    /// Appended last: postcard is not self-describing, so a field earlier in the struct
+    /// would shift every byte after it. Deliberately NOT `skip_serializing_if`: postcard
+    /// decodes by field count, so omitting an empty `Vec` on write would make the reader
+    /// run off the end of the struct (or into the next message field). `#[serde(default)]`
+    /// is for the self-describing `scene.json`, so one predating this field still loads.
+    /// Bounded by `indicatrix::geometry::MAX_TOOL_PRIMITIVES` and validated by the worker.
+    #[serde(default)]
+    pub tools: Vec<ToolPrimitive>,
+    /// The material's fluorescent emitters (v20), beside [`Self::material`] rather than
+    /// inside it; empty for a non-fluorescent material, which then costs one zero length
+    /// byte on the wire and renders bit-identically to a build without the field. A
+    /// scene with any emitter (or a UV lamp preset) is traced on the CPU only.
+    ///
+    /// Appended last for the same postcard reason as [`Self::tools`], and
+    /// `#[serde(default)]` for the same `scene.json` reason. Bounded and validated by
+    /// the worker (`Fluorescence::validate`).
+    #[serde(default)]
+    pub fluorescence: Fluorescence,
 }
 
 /// The unscaled surface-glare value (`1.0`), the serde default of

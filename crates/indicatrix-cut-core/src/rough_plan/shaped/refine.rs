@@ -11,13 +11,13 @@ use std::cell::RefCell;
 use glam::DVec3;
 
 use super::{
-    clip::{CLASS_EXTERIOR, CLASS_INTERIOR, classify_box_into},
+    clip::{CLASS_EXTERIOR, CLASS_INTERIOR, classify_box_in},
     ctx::ShapedCtx,
     rows::{ClipRegion, PartialSolver, caliper_extents},
     tree::layout_from_tree_shaped,
 };
 use crate::rough_plan::{
-    CandidateDesign, PASSES, PlanSettings, REL_TOL, RoughLayout,
+    CandidateDesign, FitMesh, PASSES, PlanSettings, REL_TOL, RoughLayout,
     piece::{ASSIGNMENTS, Norm, stone_value},
     refine::{KinkFrame, optimise_boundary_samples},
     tree::{Bar, Leaf, Slab, Tree, orient_of_pose, to_canonical},
@@ -47,6 +47,8 @@ struct LeafEval<'a> {
     min_width: f64,
     norms: Vec<Norm>,
     non_box: &'a [(DVec3, f64)],
+    /// The rough's mesh, which a leaf's stone must also stay inside.
+    mesh: Option<FitMesh<'a>>,
     work: RefCell<EvalWork>,
 }
 
@@ -77,7 +79,7 @@ impl LeafEval<'_> {
         let norm = &self.norms[design_idx];
         let mut guard = self.work.borrow_mut();
         let work = &mut *guard;
-        match classify_box_into(b_min, b_max, self.non_box, &mut work.violated) {
+        match classify_box_in(b_min, b_max, self.non_box, self.mesh, &mut work.violated) {
             CLASS_INTERIOR => {
                 let v = stone_value(norm, orient, usable, self.min_width);
                 if v > 0.0 { v } else { 0.0 }
@@ -90,7 +92,10 @@ impl LeafEval<'_> {
                     planes: self.non_box,
                     violated: &work.violated,
                 };
-                match work.solver.solve(&region, caliper_extents(norm, orient)) {
+                match work
+                    .solver
+                    .solve_with(&region, caliper_extents(norm, orient), self.mesh)
+                {
                     Some((k, _)) if k >= self.min_width => norm.f * (k * k * k),
                     _ => 0.0,
                 }
@@ -351,6 +356,7 @@ pub fn refine_shaped(
         min_width: settings.min_width_mm,
         norms: pool.iter().map(Norm::of).collect(),
         non_box: &ctx.non_box,
+        mesh: ctx.fit_mesh(),
         work: RefCell::new(EvalWork {
             solver: PartialSolver::new(),
             violated: Vec::new(),
@@ -430,6 +436,7 @@ mod tests {
             min_width,
             norms: designs.iter().map(Norm::of).collect(),
             non_box: &[],
+            mesh: None,
             work: RefCell::new(EvalWork {
                 solver: PartialSolver::new(),
                 violated: Vec::new(),

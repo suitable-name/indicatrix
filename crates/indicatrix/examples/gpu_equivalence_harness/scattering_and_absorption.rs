@@ -97,7 +97,7 @@ pub fn run_task1_scattering_checks(ctx: &GpuContext) -> bool {
 /// [`run_phase0_and_phase1_checks`]) now covers the new `absorption_path_scale` field via
 /// `layout_check::sample_material`'s own non-1.0 value -- neither needs a separate call
 /// here. This function adds the Tier 3 statistical image comparison the physics change
-/// itself specifically calls for: a coloured (chromatically absorbing) stone at a
+/// itself specifically calls for: a colored (chromatically absorbing) stone at a
 /// genuinely non-1.0 scale.
 pub fn run_p1_absorption_path_scale_checks(ctx: &GpuContext) -> bool {
     println!();

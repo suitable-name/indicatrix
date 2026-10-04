@@ -3,13 +3,17 @@
 //! and the cheater/azimuth-offset rotation ([`apply_cheater_offsets`]) that
 //! keeps every production plane consumer agreeing with the cut sheet.
 
+use super::ConcaveResolveError;
 use crate::design::{Design, DesignSolveError, SolveMismatch};
 use glam::DVec3;
 use indicatrix::geometry::{
     GpuFacetPlane,
     cuts::StandardGemCuts,
     meet_solver::SolvedTier,
-    stone_metrics::{SolidMetrics, SolidStatus, build_solid_mesh, measure_solid},
+    stone_metrics::{
+        SolidMetrics, SolidStatus, build_solid_mesh, build_solid_mesh_geom, measure_solid,
+        mesh_volume,
+    },
 };
 use indicatrix_formats::asc::AscSchedule;
 
@@ -75,6 +79,61 @@ impl Design {
     /// Propagates [`Self::planes`]'s error.
     pub fn measure(&self) -> Result<Option<SolidMetrics>, DesignSolveError> {
         Ok(measure_solid(&self.planes()?))
+    }
+
+    /// [`Self::status`]'s concave twin for an already-solved design: the mesh of
+    /// the flat stone minus every concave tool ([`build_solid_mesh_geom`]).
+    /// Identical to `build_solid_mesh(&self.planes_from_solved(solved))` when the
+    /// design has no concave tiers.
+    ///
+    /// # Errors
+    ///
+    /// [`ConcaveResolveError`] when the concave tiers cannot be resolved.
+    ///
+    /// # Panics
+    ///
+    /// Same alignment contract as [`Self::planes_from_solved`].
+    pub fn status_from_solved_geom(
+        &self,
+        solved: &[SolvedTier],
+    ) -> Result<SolidStatus, ConcaveResolveError> {
+        let (planes, tools, _) = self.geometry_from_solved(solved)?;
+        Ok(build_solid_mesh_geom(&planes, &tools))
+    }
+
+    /// [`Self::measure`]'s concave twin for an already-solved design: the flat
+    /// stone's metrics with `volume` replaced by the carved mesh's volume, which
+    /// is what carat weight and yield must see. Width, length and heights stay
+    /// the flat stone's: concave cuts never add material, and `W` is defined on
+    /// the flat stone (plan §4.4). Equal to `measure_solid` of the planes when the
+    /// design has no concave tiers.
+    ///
+    /// `Ok(None)` when the flat stone is not a closed solid, or when the tools
+    /// remove all of it.
+    ///
+    /// # Errors
+    ///
+    /// [`ConcaveResolveError`] when the concave tiers cannot be resolved.
+    ///
+    /// # Panics
+    ///
+    /// Same alignment contract as [`Self::planes_from_solved`].
+    pub fn measure_from_solved_geom(
+        &self,
+        solved: &[SolvedTier],
+    ) -> Result<Option<SolidMetrics>, ConcaveResolveError> {
+        let (planes, tools, _) = self.geometry_from_solved(solved)?;
+        let flat = measure_solid(&planes);
+        if tools.is_empty() {
+            return Ok(flat);
+        }
+        Ok(match build_solid_mesh_geom(&planes, &tools) {
+            SolidStatus::Closed(mesh) => flat.map(|metrics| SolidMetrics {
+                volume: mesh_volume(&mesh),
+                ..metrics
+            }),
+            _ => None,
+        })
     }
 
     /// [`Self::planes_from_solved`] restricted to the first `through_tier + 1`

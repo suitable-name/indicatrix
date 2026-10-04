@@ -95,7 +95,9 @@ fn push_form_reseed_pulse(ui: &crate::MainWindow, tier_count_changed: bool) {
 pub(super) fn sync_tier_form_with_design(ui: &crate::MainWindow, state: &EditorState) {
     let now = FormSyncMark {
         generation: state.generation.load(AtomicOrdering::Relaxed),
-        tier_count: state.design.tiers.len(),
+        // Concave tiers count too: a concave row is a selectable table row, and adding or
+        // removing one is as structural as it is for a flat tier.
+        tier_count: state.design.tiers.len() + state.design.concave_tiers.len(),
     };
     let previous = LAST_FORM_SYNC.with(|cell| cell.replace(Some(now)));
     let selected = ui.global::<EditorModel>().get_selected_tier_index();

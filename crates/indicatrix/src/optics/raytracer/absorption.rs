@@ -26,7 +26,7 @@ use crate::optics::{
 
 /// Evaluates a material's absorption coefficient at `lambda_nm` as the sum of its
 /// individual chromophore [`AbsorptionBand`](crate::optics::absorption::AbsorptionBand)s.
-/// An empty band slice sums to `0.0` (colourless material).
+/// An empty band slice sums to `0.0` (colorless material).
 #[must_use]
 pub fn spectral_absorption(bands: &[AbsorptionBand], lambda_nm: f32) -> f32 {
     bands.iter().map(|band| band.evaluate(lambda_nm)).sum()

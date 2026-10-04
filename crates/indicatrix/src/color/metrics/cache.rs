@@ -1,5 +1,5 @@
-//! The gemological-metrics cache: recomputing [`evaluate_gem_optical_metrics`] /
-//! [`evaluate_angular_profile`] is expensive (single-threaded analytical raytracing), and
+//! The gemological-metrics cache: recomputing [`super::evaluate_gem_optical_metrics`] /
+//! [`super::evaluate_angular_profile`] is expensive (single-threaded analytical raytracing), and
 //! their results depend only on a handful of inputs that do not change between
 //! progressive-accumulation samples -- see [`compute_or_reuse_metrics`].
 //!
@@ -7,16 +7,18 @@
 //! recompute on exactly the same changes.
 
 use super::{
-    GemOpticalMetrics, evaluate_angular_profile, evaluate_gem_optical_metrics,
+    GemOpticalMetrics,
+    evaluate::evaluate_gem_optical_metrics_geom,
     lighting::{HEMISPHERE_DIRECTIONS, hemisphere_direction},
+    profile::evaluate_angular_profile_geom,
 };
 use crate::{
-    geometry::plane::GpuFacetPlane,
+    geometry::{plane::GpuFacetPlane, tool::StoneGeometry},
     optics::{
         materials::GemMaterial,
         raytracer::{EnvironmentSource, LightingPreset},
     },
-    render_setup::hash_planes,
+    render_setup::hash_geometry,
     renderer::env_map::EnvironmentMap,
 };
 use std::{
@@ -132,12 +134,32 @@ impl MetricsCacheKey {
         pitch: f32,
         environment: EnvironmentSource<'_>,
     ) -> Self {
+        Self::new_geom(
+            StoneGeometry::planes_only(active_planes),
+            material,
+            yaw,
+            pitch,
+            environment,
+        )
+    }
+
+    /// [`Self::new`] for a stone with tools. [`hash_geometry`] feeds the tool bytes into
+    /// the key only when there are tools, so a planar key is exactly what [`Self::new`]
+    /// always produced.
+    #[must_use]
+    pub fn new_geom(
+        geom: StoneGeometry<'_>,
+        material: &GemMaterial,
+        yaw: f32,
+        pitch: f32,
+        environment: EnvironmentSource<'_>,
+    ) -> Self {
         Self {
             yaw,
             pitch,
             environment: EnvironmentKey::new(environment),
             material_fingerprint: material_fingerprint(material),
-            planes_hash: hash_planes(active_planes),
+            planes_hash: hash_geometry(geom),
         }
     }
 
@@ -171,13 +193,13 @@ pub struct MetricsCache {
 /// only used when its own key still matches.
 fn ensure_pose<'a>(
     slot: &'a mut Option<MetricsCache>,
-    active_planes: &[GpuFacetPlane],
+    geom: StoneGeometry<'_>,
     current_mat: &GemMaterial,
     pose: [f32; 2],
     environment: EnvironmentSource<'_>,
 ) -> &'a mut MetricsCache {
     let [yaw, pitch] = pose;
-    let key = MetricsCacheKey::new(active_planes, current_mat, yaw, pitch, environment);
+    let key = MetricsCacheKey::new_geom(geom, current_mat, yaw, pitch, environment);
     // An entry for other inputs is dropped first (keeping its profile), so the entry is
     // then either the matching one or empty, and one `get_or_insert_with` serves both.
     let kept_profile = if slot.as_ref().is_some_and(|cache| cache.key != key) {
@@ -186,7 +208,7 @@ fn ensure_pose<'a>(
         None
     };
     slot.get_or_insert_with(|| MetricsCache {
-        metrics: evaluate_gem_optical_metrics(active_planes, current_mat, yaw, pitch, environment),
+        metrics: evaluate_gem_optical_metrics_geom(geom, current_mat, yaw, pitch, environment),
         key,
         profile: kept_profile,
     })
@@ -204,14 +226,26 @@ pub fn compute_or_reuse_pose_metrics(
     pitch: f32,
     environment: EnvironmentSource<'_>,
 ) -> GemOpticalMetrics {
-    ensure_pose(
+    compute_or_reuse_pose_metrics_geom(
         metrics_cache,
-        active_planes,
+        StoneGeometry::planes_only(active_planes),
         current_mat,
-        [yaw, pitch],
+        yaw,
+        pitch,
         environment,
     )
-    .metrics
+}
+
+/// [`compute_or_reuse_pose_metrics`] for a stone with tools.
+pub fn compute_or_reuse_pose_metrics_geom(
+    metrics_cache: &mut Option<MetricsCache>,
+    geom: StoneGeometry<'_>,
+    current_mat: &GemMaterial,
+    yaw: f32,
+    pitch: f32,
+    environment: EnvironmentSource<'_>,
+) -> GemOpticalMetrics {
+    ensure_pose(metrics_cache, geom, current_mat, [yaw, pitch], environment).metrics
 }
 
 /// Evaluates (or reuses, from `metrics_cache`) the gemological metrics and the angular
@@ -224,17 +258,30 @@ pub fn compute_or_reuse_metrics(
     pitch: f32,
     environment: EnvironmentSource<'_>,
 ) -> (GemOpticalMetrics, [f32; 19], [f32; 19], [f32; 19]) {
-    let cache = ensure_pose(
+    compute_or_reuse_metrics_geom(
         metrics_cache,
-        active_planes,
+        StoneGeometry::planes_only(active_planes),
         current_mat,
-        [yaw, pitch],
+        yaw,
+        pitch,
         environment,
-    );
+    )
+}
+
+/// [`compute_or_reuse_metrics`] for a stone with tools.
+pub fn compute_or_reuse_metrics_geom(
+    metrics_cache: &mut Option<MetricsCache>,
+    geom: StoneGeometry<'_>,
+    current_mat: &GemMaterial,
+    yaw: f32,
+    pitch: f32,
+    environment: EnvironmentSource<'_>,
+) -> (GemOpticalMetrics, [f32; 19], [f32; 19], [f32; 19]) {
+    let cache = ensure_pose(metrics_cache, geom, current_mat, [yaw, pitch], environment);
     let profile: Profile = match &cache.profile {
         Some((key, profile)) if key.same_profile_inputs(&cache.key) => *profile,
         _ => {
-            let profile = evaluate_angular_profile(active_planes, current_mat, environment);
+            let profile = evaluate_angular_profile_geom(geom, current_mat, environment);
             cache.profile = Some((cache.key.clone(), profile));
             profile
         }
@@ -245,7 +292,10 @@ pub fn compute_or_reuse_metrics(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::cuts::StandardGemCuts;
+    use crate::{
+        color::metrics::{evaluate_angular_profile, evaluate_gem_optical_metrics},
+        geometry::cuts::StandardGemCuts,
+    };
 
     /// The environment the cache tests score under unless a test varies it.
     const fn studio() -> EnvironmentSource<'static> {

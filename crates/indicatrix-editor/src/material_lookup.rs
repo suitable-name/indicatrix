@@ -96,16 +96,16 @@ impl MaterialLookup for EditorMaterialLookup<'_> {
 ///
 /// Unlike [`MaterialSelection::resolve`] alone, this makes `refractive_index_override`
 /// actually show up in the returned material's own dispersion, not just in the
-/// caller-visible `n_d` scalar, and applies `body_colour_override` to its absorption.
+/// caller-visible `n_d` scalar, and applies `body_color_override` to its absorption.
 ///
 /// When no override is set, this is exactly `selection.resolve(lookup).gem` -- the
-/// resolved material's own real dispersion curve and colour, unchanged. Otherwise the
+/// resolved material's own real dispersion curve and color, unchanged. Otherwise the
 /// overrides are applied by [`MaterialSelection::apply_overrides`], the one shared
 /// resolution point every "selection -> `GemMaterial`" path in this crate goes
 /// through: an RI override replaces the dispersion with a flat (non-dispersive)
 /// `DispersionModel::Cauchy { a: n_d, b: 0.0, c: 0.0 }` fit at exactly the override
-/// value, and a body colour replaces the absorption with the isotropic band set of
-/// that colour (`GemMaterial::with_body_colour`) -- everything else about the
+/// value, and a body color replaces the absorption with the isotropic band set of
+/// that color (`GemMaterial::with_body_color`) -- everything else about the
 /// resolved material (name, crystal system, birefringence, c-axis) is left untouched.
 #[must_use]
 pub fn resolved_gem_material(
@@ -151,14 +151,14 @@ pub fn material_for_refractive_index(n_d: f64) -> Option<(String, GemMaterial)> 
 /// `MaterialSelection::name`, and refuses instead of substituting. The render path
 /// needs this because `MaterialSelection::resolve` falls back to diamond for a
 /// selection with no name (every untouched import and new design). Diamond's empty
-/// absorption bands rendered every such design colourless, so direct refusal prevents
+/// absorption bands rendered every such design colorless, so direct refusal prevents
 /// silently mis-rendering by species. `RenderContext::material_override` beats the
 /// by-name lookup and must honor the same rule.
 ///
 /// `selection` is consulted only for its `refractive_index_override` and
-/// `body_colour_override`, applied exactly as [`resolved_gem_material`] applies them
+/// `body_color_override`, applied exactly as [`resolved_gem_material`] applies them
 /// (through the same [`MaterialSelection::apply_overrides`]) -- see that function's own
-/// doc comment. This is what carries a design's colour variant into the linked
+/// doc comment. This is what carries a design's color variant into the linked
 /// viewport's `RenderContext::material_override`, and from there into the live render,
 /// the solid view's traced mode, the tilt sweep, the hover preview and the export.
 #[must_use]
@@ -438,7 +438,7 @@ mod tests {
     /// A design with no material name (every untouched import) must trace as the
     /// material `view::traced_material_for` picked, not as diamond (the fallback for
     /// unnamed selections). Diamond's empty absorption bands caused every imported
-    /// design to render colourless regardless of its RI.
+    /// design to render colorless regardless of its RI.
     #[test]
     fn traced_gem_material_honours_the_traced_name_for_an_unnamed_selection() {
         let custom_list: [GemMaterial; 0] = [];
@@ -462,7 +462,7 @@ mod tests {
             name: None,
             specific_gravity_override: None,
             refractive_index_override: Some(1.66),
-            body_colour_override: None,
+            body_color_override: None,
         };
         let custom_list: [GemMaterial; 0] = [];
         let lookup = EditorMaterialLookup::new(&custom_list);
@@ -471,18 +471,18 @@ mod tests {
         assert!((f64::from(gem.dispersion.evaluate(700.0)) - 1.66).abs() < 1e-6);
     }
 
-    /// A body-colour override reaches BOTH resolution paths -- the optimizer/tilt
+    /// A body-color override reaches BOTH resolution paths -- the optimizer/tilt
     /// curve's `resolved_gem_material` and the render's `traced_gem_material` -- and
     /// changes only the absorption: the name (and so every SG/RI lookup by name) and
     /// the dispersion stay sapphire's own.
     #[test]
-    fn a_body_colour_override_reaches_both_resolution_paths() {
+    fn a_body_color_override_reaches_both_resolution_paths() {
         let yellow = [0.2f32, 0.4, 2.8];
         let selection = MaterialSelection {
             name: Some("Sapphire".to_string()),
             ..MaterialSelection::none()
         }
-        .with_body_colour(Some(yellow));
+        .with_body_color(Some(yellow));
         let custom_list: [GemMaterial; 0] = [];
         let lookup = EditorMaterialLookup::new(&custom_list);
         let expected_absorption = AbsorptionTensor::isotropic(legacy_rgb_bands(yellow));
@@ -503,16 +503,16 @@ mod tests {
     }
 
     /// With both overrides set, both apply: flat dispersion at the typed RI AND the
-    /// colour's absorption.
+    /// color's absorption.
     #[test]
-    fn ri_and_body_colour_overrides_compose() {
+    fn ri_and_body_color_overrides_compose() {
         let blue = [2.8f32, 1.2, 0.1];
         let selection = MaterialSelection {
             name: Some("Quartz".to_string()),
             refractive_index_override: Some(1.60),
             ..MaterialSelection::none()
         }
-        .with_body_colour(Some(blue));
+        .with_body_color(Some(blue));
         let custom_list: [GemMaterial; 0] = [];
         let lookup = EditorMaterialLookup::new(&custom_list);
         let gem = resolved_gem_material(&selection, &lookup);
@@ -540,7 +540,7 @@ mod tests {
             name: Some("Quartz".to_string()),
             specific_gravity_override: None,
             refractive_index_override: None,
-            body_colour_override: None,
+            body_color_override: None,
         };
         let custom_list: [GemMaterial; 0] = [];
         let lookup = EditorMaterialLookup::new(&custom_list);
@@ -555,7 +555,7 @@ mod tests {
             name: Some("Diamond".to_string()),
             specific_gravity_override: None,
             refractive_index_override: Some(1.70),
-            body_colour_override: None,
+            body_color_override: None,
         };
         let custom_list: [GemMaterial; 0] = [];
         let lookup = EditorMaterialLookup::new(&custom_list);
@@ -658,7 +658,7 @@ mod tests {
                 name: Some(entry.name.clone()),
                 specific_gravity_override: None,
                 refractive_index_override: None,
-                body_colour_override: None,
+                body_color_override: None,
             };
             let resolved = resolved_gem_material(&selection, &lookup);
             assert_eq!(

@@ -40,7 +40,40 @@ pub(in crate::bridge::export_thread) fn scene_state_from_snapshot(
         girdle_frosted: !snapshot.facet_finishes.is_empty(),
         backdrop: snapshot.backdrop,
         surface_glare: snapshot.surface_glare,
+        // The concave tools, so the worker traces the same stone as the local tracer; empty
+        // (and so absent from the wire's meaning) for a planar design.
+        tools: snapshot.tools.clone(),
         // The loaded HDR map by content hash, else the studio rig.
         environment: crate::bridge::remote::hdr_asset::scene_environment(snapshot.env_map.as_ref()),
+        // The material's emitters, so the worker traces the same glow as the local tracer.
+        fluorescence: snapshot.fluorescence.as_ref().clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bridge::render_thread::RenderContext;
+    use indicatrix::geometry::tool::ToolPrimitive;
+    use std::sync::{Arc, Mutex};
+
+    fn state_for(tools: Vec<ToolPrimitive>) -> SceneState {
+        let ctx = Mutex::new(RenderContext {
+            active_tools: Arc::new(tools),
+            ..RenderContext::default()
+        });
+        let snapshot = SceneSnapshot::capture(&ctx).expect("the default material resolves");
+        scene_state_from_snapshot(&snapshot, 32, 24, snapshot.yaw, snapshot.pitch)
+    }
+
+    #[test]
+    fn a_remote_scene_carries_the_designs_concave_tools_so_the_worker_traces_the_same_stone() {
+        let tools = vec![ToolPrimitive::ball(glam::Vec3::new(0.0, 0.3, 0.0), 0.1)];
+        assert_eq!(state_for(tools.clone()).tools, tools);
+    }
+
+    #[test]
+    fn a_planar_remote_scene_sends_no_tools() {
+        assert!(state_for(Vec::new()).tools.is_empty());
     }
 }

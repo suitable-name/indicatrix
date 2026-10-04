@@ -16,7 +16,7 @@ component Row inherits HorizontalLayout {
     @children
 }
 
-// File > Export PNG: size, samples, colour space and denoise, then a progress bar
+// File > Export PNG: size, samples, color space and denoise, then a progress bar
 // with Cancel while the export renders through the render Workers
 // (`src/render/export.rs`). Covers the window; the live render pauses meanwhile.
 export component ExportDialog inherits Rectangle {
@@ -98,7 +98,7 @@ export component ExportDialog inherits Rectangle {
                 }
             }
             Row {
-                label: "Colour space";
+                label: "color space";
                 ComboBox {
                     horizontal-stretch: 1;
                     enabled: !RenderModel.export-running;

@@ -1,0 +1,44 @@
+# sample: S-Bas basaltic (Australia)
+# host: corundum (Al2O3), uniaxial; E_perp_c = o-ray, E_par_c = e-ray
+# composition: Fe 2800 ppmw, Ti 180 ppmw, Mg 22 ppmw (research: Fe 5100 ppma, Ti 383 ppma, Mg 92 ppma, Ti_active 291 ppma; per Al2O3 formula unit)
+# units: lambda_nm; alpha in cm^-1, Napierian (T = exp(-alpha*L), L in cm)
+# path_cm: 0.20
+# source: research-2026-10-polarized-spectra.md section 2 "Napierian alpha" table (user-delivered, secondary, unverified)
+# lab: E_perp_c | D65 | 0.2 | 48.6 | -12.4 | -28.6
+# lab: E_perp_c | A | 0.2 | 46.2 | -8.1 | -22.4
+# lab: E_perp_c | D65 | 0.5 | 21.5 | -14.8 | -16.2
+lambda_nm,E_perp_c,E_par_c
+350,12.45,9.80
+360,13.50,10.40
+370,14.80,11.20
+377,24.10,15.60
+380,18.20,12.80
+388,26.50,17.10
+400,10.90,7.40
+410,7.80,5.40
+420,5.80,4.10
+430,5.10,3.60
+440,4.60,3.20
+450,11.85,5.40
+460,3.90,2.65
+470,3.75,2.50
+480,3.65,2.45
+490,3.80,2.55
+500,4.10,2.70
+520,5.25,3.20
+540,7.45,4.15
+560,10.60,5.50
+578,12.35,6.75
+600,12.20,8.20
+620,11.15,9.75
+640,9.70,11.20
+660,8.45,12.30
+680,7.40,13.05
+700,6.65,13.45
+730,6.10,13.25
+760,5.85,11.85
+800,5.95,9.40
+840,6.45,7.20
+880,7.10,5.60
+950,5.40,3.80
+1050,2.80,1.95

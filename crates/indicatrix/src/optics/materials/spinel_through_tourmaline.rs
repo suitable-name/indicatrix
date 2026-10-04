@@ -79,10 +79,10 @@ impl GemMaterial {
                     c: [0.0, 0.010_058_6, 100.0],
                 },
                 birefringence_delta: 0.0091,
-                // This entry is the colourless rock-crystal reference: empty band set
+                // This entry is the colorless rock-crystal reference: empty band set
                 // (zero absorption at every wavelength). Rock crystal quartz
                 // genuinely has no visible-range chromophore; its tinted varieties
-                // (Amethyst: a hole-colour-centre defect; Citrine: Fe3+) are their own
+                // (Amethyst: a hole-color-centre defect; Citrine: Fe3+) are their own
                 // separate built-ins (see
                 // [`Self::built_in_materials_aquamarine_through_citrine`]), sharing
                 // this exact dispersion/birefringence data (same SiO2 host crystal)

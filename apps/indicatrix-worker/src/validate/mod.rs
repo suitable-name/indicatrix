@@ -133,6 +133,30 @@ pub fn validate_scene(scene: &SceneState) -> Result<(), String> {
         }
     }
 
+    // Concave tools (v19). The count bound is the shared cap the kernel's tool scan is
+    // sized for; each primitive is checked by the same validator the desktop applies, so
+    // a worker never feeds the tracer a tool with a non-finite, degenerate or
+    // out-of-range field.
+    if scene.tools.len() > indicatrix::geometry::MAX_TOOL_PRIMITIVES {
+        return Err(format!(
+            "scene.tools has {} primitive(s), exceeding the maximum of {}",
+            scene.tools.len(),
+            indicatrix::geometry::MAX_TOOL_PRIMITIVES
+        ));
+    }
+    for (i, tool) in scene.tools.iter().enumerate() {
+        tool.validate()
+            .map_err(|e| format!("scene.tools[{i}] is invalid: {e}"))?;
+    }
+
+    // Fluorescent emitters (v20): at most `MAX_EMITTERS` of at most `MAX_BANDS` excitation
+    // and emission bands each, every value finite, quantum yields in [0, 1] -- the
+    // tracer builds per-emitter sampling tables from them.
+    scene
+        .fluorescence
+        .validate()
+        .map_err(|e| format!("scene.fluorescence is invalid: {e}"))?;
+
     if !scene.material.c_axis.is_finite() {
         return Err(format!(
             "scene.material.c_axis is non-finite: {}",
@@ -389,6 +413,8 @@ mod tests {
             backdrop: 0.0,
             environment: indicatrix_net::scene::SceneEnvironment::Studio,
             surface_glare: 1.0,
+            tools: Vec::new(),
+            fluorescence: Default::default(),
         }
     }
 
@@ -591,6 +617,84 @@ mod tests {
         let mut scene = valid_scene();
         scene.planes = vec![scene.planes[0]; MAX_PLANES];
         assert!(validate_scene(&scene).is_ok());
+    }
+
+    #[test]
+    fn validate_scene_rejects_too_many_or_invalid_tools() {
+        use indicatrix::geometry::{MAX_TOOL_PRIMITIVES, ToolPrimitive};
+
+        let tool = ToolPrimitive::ball(Vec3::new(0.0, 0.0, 0.4), 0.2);
+        assert!(
+            tool.validate().is_ok(),
+            "the fixture tool must itself be valid"
+        );
+
+        let mut scene = valid_scene();
+        scene.tools = vec![tool];
+        assert!(validate_scene(&scene).is_ok());
+
+        scene.tools = vec![tool; MAX_TOOL_PRIMITIVES];
+        assert!(
+            validate_scene(&scene).is_ok(),
+            "exactly the cap is accepted"
+        );
+
+        scene.tools = vec![tool; MAX_TOOL_PRIMITIVES + 1];
+        let err = validate_scene(&scene).unwrap_err();
+        assert!(
+            err.contains("scene.tools") && err.contains("maximum"),
+            "{err}"
+        );
+
+        scene.tools = vec![tool, ToolPrimitive::ball(Vec3::ZERO, f32::NAN)];
+        let err = validate_scene(&scene).unwrap_err();
+        assert!(err.contains("scene.tools[1]"), "{err}");
+    }
+
+    #[test]
+    fn validate_scene_rejects_invalid_fluorescence() {
+        use indicatrix::optics::{
+            absorption::AbsorptionBand,
+            fluorescence::{
+                EmissionBand, Fluorescence, FluorescentEmitter, MAX_BANDS, MAX_EMITTERS,
+            },
+        };
+
+        let emitter = FluorescentEmitter {
+            excitation: vec![AbsorptionBand::new(410.0, 20.0, 1.0)],
+            emission: vec![EmissionBand::new(694.0, 2.0, 1.0)],
+            quantum_yield: 0.9,
+        };
+        let mut scene = valid_scene();
+        scene.fluorescence = Fluorescence::new(vec![emitter.clone(); MAX_EMITTERS]);
+        assert!(
+            validate_scene(&scene).is_ok(),
+            "exactly the cap is accepted"
+        );
+
+        scene.fluorescence = Fluorescence::new(vec![emitter.clone(); MAX_EMITTERS + 1]);
+        let err = validate_scene(&scene).unwrap_err();
+        assert!(err.contains("scene.fluorescence"), "{err}");
+
+        let mut bad = emitter.clone();
+        bad.quantum_yield = 1.5;
+        scene.fluorescence = Fluorescence::new(vec![bad]);
+        assert!(validate_scene(&scene).is_err(), "quantum yield above 1");
+
+        let mut bad = emitter.clone();
+        bad.quantum_yield = f32::NAN;
+        scene.fluorescence = Fluorescence::new(vec![bad]);
+        assert!(validate_scene(&scene).is_err(), "NaN quantum yield");
+
+        let mut bad = emitter.clone();
+        bad.emission[0].fwhm_nm = f32::INFINITY;
+        scene.fluorescence = Fluorescence::new(vec![bad]);
+        assert!(validate_scene(&scene).is_err(), "non-finite emission width");
+
+        let mut bad = emitter.clone();
+        bad.excitation = vec![AbsorptionBand::new(410.0, 20.0, 1.0); MAX_BANDS + 1];
+        scene.fluorescence = Fluorescence::new(vec![bad]);
+        assert!(validate_scene(&scene).is_err(), "too many bands");
     }
 
     #[test]

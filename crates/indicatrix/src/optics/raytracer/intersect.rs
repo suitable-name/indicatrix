@@ -546,7 +546,7 @@ mod edge_rounding_tests {
         );
     }
 
-    /// White furnace, applied to edge rounding: a perfectly colourless, non-absorbing gem with
+    /// White furnace, applied to edge rounding: a perfectly colorless, non-absorbing gem with
     /// rounded edges immersed in a uniform environment must still render at exactly
     /// that environment's own radiance -- edge rounding only perturbs the shading
     /// normal fed into the ALREADY energy-conserving Fresnel reflect/transmit split, it

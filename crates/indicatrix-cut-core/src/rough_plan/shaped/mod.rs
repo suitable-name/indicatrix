@@ -27,12 +27,14 @@ mod tests_dp;
 #[cfg(test)]
 mod tests_hulls;
 #[cfg(test)]
+mod tests_mesh;
+#[cfg(test)]
 mod tests_plan;
 
 pub use clip::{
     BuildClipParams, CLASS_EXTERIOR, CLASS_INTERIOR, CLASS_PARTIAL, CLIP_SHORTLIST,
     CLIP_SHORTLIST_MAX, ClippedTable, GRID_POLL_PIECES, PLANE_EPS_MM, build_clipped_table,
-    build_clipped_table_lanes, classify_box, classify_box_into, grid_poll_events,
+    build_clipped_table_lanes, classify_box, classify_box_in, classify_box_into, grid_poll_events,
     slice_entry_range,
 };
 pub use ctx::ShapedCtx;

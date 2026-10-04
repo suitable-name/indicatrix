@@ -11,6 +11,7 @@ import { MaterialEditorDialog } from "../material_editor_dialog.slint";
 import { PerformanceGraphDialog } from "../performance_graph_dialog.slint";
 import { TiltModel } from "../../models/tilt.slint";
 import { ViewportModel } from "../../models/viewport.slint";
+import { PhysicscolorModel } from "../../models/physics_color.slint";
 import { EditorModel } from "../../models/editor.slint";
 import { RetargetModel } from "../../models/retarget.slint";
 import { LibraryModel } from "../../models/library.slint";
@@ -211,6 +212,23 @@ export component GlobalDialogsOverlay inherits Rectangle {
         width: 100%;
         height: 100%;
         z: 300;
+    }
+
+    // An opened file's custom material carries a physics recipe, but an older build changed its
+    // top-level color since: ask whether the recipe or the edited color wins (the edited
+    // color is already in use until the user answers).
+    if PhysicscolorModel.color_conflict_name != "": ConfirmActionDialog {
+        width: 100%;
+        height: 100%;
+        z: 400;
+        heading: "color changed by an older version";
+        message: "The material \"" + PhysicscolorModel.color_conflict_name
+            + "\" has a physical color recipe, but its color was edited in an older version of Indicatrix Cut after the recipe was saved. Keep the physics recipe, or use the edited color?";
+        primary_label: "Keep physics recipe";
+        secondary_label: "Use edited color";
+        primary => { PhysicscolorModel.color_conflict_resolved(true); }
+        secondary => { PhysicscolorModel.color_conflict_resolved(false); }
+        cancel => { PhysicscolorModel.color_conflict_resolved(false); }
     }
 
     // The tilt-performance chart, opened by both viewports' "Tilt Curve" pills and

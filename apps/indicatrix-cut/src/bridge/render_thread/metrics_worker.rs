@@ -19,16 +19,19 @@
 use super::{
     display_thread::FrameMetricsSnapshot,
     frame_helpers::push_metrics_to_ui,
-    hash_planes,
-    metrics::{MetricsCache, compute_or_reuse_metrics},
+    metrics::{MetricsCache, compute_or_reuse_metrics_geom},
 };
 use indicatrix::{
     color::metrics::GemOpticalMetrics,
-    geometry::plane::GpuFacetPlane,
+    geometry::{
+        plane::GpuFacetPlane,
+        tool::{StoneGeometry, ToolPrimitive},
+    },
     optics::{
         materials::GemMaterial,
         raytracer::{EnvironmentSource, LightingPreset},
     },
+    render_setup::hash_geometry,
     renderer::env_map::EnvironmentMap,
 };
 use slint::{ComponentHandle, Weak};
@@ -84,6 +87,8 @@ const NOT_YET_EVALUATED: EvaluatedMetrics = EvaluatedMetrics {
 /// Everything one evaluation reads.
 struct Request {
     planes: Arc<Vec<GpuFacetPlane>>,
+    /// The concave tools cut out of `planes`; empty for a planar stone.
+    tools: Arc<Vec<ToolPrimitive>>,
     material: GemMaterial,
     /// `[yaw, pitch, light_yaw, light_pitch]`.
     pose: [f32; 4],
@@ -215,9 +220,12 @@ fn run(shared: &Shared) {
     while let Some(request) = shared.next_due() {
         let [yaw, pitch, ..] = request.pose;
         let (metrics, graph_brilliance, graph_extinction, graph_windowing) =
-            compute_or_reuse_metrics(
+            compute_or_reuse_metrics_geom(
                 &mut cache,
-                &request.planes,
+                StoneGeometry {
+                    planes: &request.planes,
+                    tools: &request.tools,
+                },
                 &request.material,
                 yaw,
                 pitch,
@@ -234,6 +242,8 @@ fn run(shared: &Shared) {
 
 /// What the last queued request was built from, to tell whether the next inputs differ.
 struct Submitted {
+    /// `hash_geometry` of the planes and tools: the planes' own `hash_planes` for a
+    /// planar stone, so nothing keyed on it moves.
     planes_hash: u64,
     material: GemMaterial,
     pose: [f32; 4],
@@ -273,17 +283,18 @@ impl MetricsWorker {
     /// `lighting_preset` and `env_map` are the lighting the viewport renders with (the
     /// panorama, when one is loaded, replaces the preset's rig).
     ///
-    /// Costs one hash of the facet planes and a material comparison on the calling
+    /// Costs one hash of the facet planes (and tools) and a material comparison on the calling
     /// thread; the material is cloned only when it actually changed.
     pub(super) fn request(
         &mut self,
         planes: &Arc<Vec<GpuFacetPlane>>,
+        tools: &Arc<Vec<ToolPrimitive>>,
         material: &GemMaterial,
         pose: [f32; 4],
         lighting_preset: LightingPreset,
         env_map: Option<&Arc<EnvironmentMap>>,
     ) {
-        let planes_hash = hash_planes(planes);
+        let planes_hash = hash_geometry(StoneGeometry { planes, tools });
         if self.submitted.as_ref().is_some_and(|last| {
             last.planes_hash == planes_hash
                 && last.pose == pose
@@ -309,6 +320,7 @@ impl MetricsWorker {
         }
         self.shared.submit(Request {
             planes: Arc::clone(planes),
+            tools: Arc::clone(tools),
             material: material.clone(),
             pose,
             lighting_preset,
@@ -368,6 +380,7 @@ mod tests {
         Pending {
             request: Request {
                 planes: Arc::new(Vec::new()),
+                tools: Arc::new(Vec::new()),
                 material: GemMaterial::diamond(),
                 pose: [0.0; 4],
                 lighting_preset: LightingPreset::RingLights,
@@ -407,11 +420,12 @@ mod tests {
             submitted: None,
         };
         let planes = Arc::new(Vec::new());
+        let tools = Arc::new(Vec::new());
         let material = GemMaterial::diamond();
         let pose = [0.1, 0.2, 0.3, 0.4];
         let preset = LightingPreset::RingLights;
 
-        worker.request(&planes, &material, pose, preset, None);
+        worker.request(&planes, &tools, &material, pose, preset, None);
         let first = worker
             .shared
             .lock()
@@ -420,7 +434,7 @@ mod tests {
             .map(|pending| pending.last_changed);
         assert!(first.is_some(), "the first request must queue");
 
-        worker.request(&planes, &material, pose, preset, None);
+        worker.request(&planes, &tools, &material, pose, preset, None);
         let second = worker
             .shared
             .lock()
@@ -430,7 +444,14 @@ mod tests {
         assert_eq!(first, second, "identical inputs must not re-queue");
 
         thread::sleep(Duration::from_millis(2));
-        worker.request(&planes, &material, [0.1, 0.2, 0.3, 0.5], preset, None);
+        worker.request(
+            &planes,
+            &tools,
+            &material,
+            [0.1, 0.2, 0.3, 0.5],
+            preset,
+            None,
+        );
         let third = worker
             .shared
             .lock()
@@ -442,6 +463,7 @@ mod tests {
         thread::sleep(Duration::from_millis(2));
         worker.request(
             &planes,
+            &tools,
             &material,
             [0.1, 0.2, 0.3, 0.5],
             LightingPreset::LightTent,
@@ -459,6 +481,7 @@ mod tests {
         let map = Arc::new(EnvironmentMap::uniform(4, 2, [1.0, 1.0, 1.0]));
         worker.request(
             &planes,
+            &tools,
             &material,
             [0.1, 0.2, 0.3, 0.5],
             LightingPreset::LightTent,
@@ -471,5 +494,29 @@ mod tests {
             .as_ref()
             .map(|pending| pending.last_changed);
         assert_ne!(fourth, fifth, "a loaded HDR map must re-queue");
+
+        thread::sleep(Duration::from_millis(2));
+        let cut = Arc::new(vec![ToolPrimitive::ball(
+            glam::Vec3::new(0.0, 0.3, 0.0),
+            0.1,
+        )]);
+        worker.request(
+            &planes,
+            &cut,
+            &material,
+            [0.1, 0.2, 0.3, 0.5],
+            LightingPreset::LightTent,
+            Some(&map),
+        );
+        let sixth = worker
+            .shared
+            .lock()
+            .pending
+            .as_ref()
+            .map(|pending| pending.last_changed);
+        assert_ne!(
+            fifth, sixth,
+            "adding a concave tool changes the stone, so the metrics must be re-evaluated"
+        );
     }
 }

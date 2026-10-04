@@ -77,9 +77,9 @@ impl PreviewPipeline {
         view_mode: u8,
         gear: Option<(u32, f32)>,
     ) -> Option<RenderedFrame> {
-        let planes = self.memory.planes.clone()?;
+        let geometry = self.memory.geometry()?;
         self.render(RedrawRequest::Reproject {
-            planes,
+            geometry,
             camera,
             size,
             view_mode,

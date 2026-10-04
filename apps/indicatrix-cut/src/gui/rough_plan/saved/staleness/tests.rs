@@ -91,6 +91,48 @@ fn figures_of_another_measuring_rule_cannot_be_compared() {
     assert!(comparable(&ratios(SAVED)), "0 means the file did not say");
 }
 
+#[test]
+fn adding_a_concave_tier_turns_an_unchanged_design_into_a_changed_one() {
+    // The fingerprint's third ratio is V / W^3, and V is now the carved volume: the same
+    // facets with a tool cut out of them have a smaller V at the same W, L and H.
+    let flat = extents(0.7, 0.9, 1.0);
+    let mut carved = flat;
+    carved.volume *= 0.97;
+    let saved = design_shape(&flat);
+    assert_eq!(
+        status_for_existing(&saved, Some(&design_shape(&flat))),
+        DesignStatus::Unchanged
+    );
+    assert_eq!(
+        status_for_existing(&saved, Some(&design_shape(&carved))),
+        DesignStatus::Changed,
+        "the carved volume moves V/W^3"
+    );
+    let (flat_print, carved_print) = (saved.fingerprint, design_shape(&carved).fingerprint);
+    assert_eq!(
+        flat_print[..2],
+        carved_print[..2],
+        "only the volume ratio moves"
+    );
+    assert!(carved_print[2] < flat_print[2]);
+}
+
+#[test]
+fn a_plan_saved_under_the_convex_volume_rule_is_not_compared() {
+    // A version-2 plan holds the convex V/W^3. The current rule cannot compare against
+    // it, so the design is neither flagged nor trusted as measured identically.
+    let flat = extents(0.7, 0.9, 1.0);
+    let mut carved = flat;
+    carved.volume *= 0.97;
+    let mut saved = design_shape(&flat);
+    saved.extents_version = 2;
+    assert!(!comparable(&saved));
+    assert_eq!(
+        status_for_existing(&saved, Some(&design_shape(&carved))),
+        DesignStatus::Unchanged
+    );
+}
+
 fn candidate(entry_id: i64, shape: DesignShape) -> TitleCandidate {
     TitleCandidate { entry_id, shape }
 }

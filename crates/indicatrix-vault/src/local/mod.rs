@@ -249,20 +249,93 @@ fn strip_asc_extension(file_name: &str) -> &str {
 }
 
 fn angle_settings_from_tiers(tiers: &[AscTier]) -> Vec<AngleSetting> {
+    let mut g_count = 0usize;
+    let mut c_count = 0usize;
+    let mut p_count = 0usize;
     tiers
         .iter()
         .enumerate()
-        .map(|(order_index, tier)| AngleSetting {
-            order_index: order_index as u32,
-            facet: tier.name.clone(),
-            angle: format!("{}\u{b0}", tier.angle_deg),
-            index: tier
-                .indices
-                .iter()
-                .map(f64::to_string)
-                .collect::<Vec<_>>()
-                .join(", "),
-            notes: tier.notes.clone(),
+        .map(|(order_index, tier)| {
+            let is_girdle = tier.angle_deg.abs() == 90.0;
+            let is_culet = tier.is_culet();
+            let is_table = tier.angle_deg == 0.0 && !is_culet;
+            let is_crown = tier.angle_deg > 0.0;
+
+            let facet = if tier.name.is_empty() {
+                if is_girdle {
+                    g_count += 1;
+                    format!("G{g_count}")
+                } else if is_table {
+                    "Table".to_string()
+                } else if is_crown {
+                    c_count += 1;
+                    format!("C{c_count}")
+                } else if is_culet {
+                    "Culet".to_string()
+                } else {
+                    p_count += 1;
+                    format!("P{p_count}")
+                }
+            } else {
+                let trimmed = tier.name.trim();
+                let is_digits = !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit());
+                let is_single_letter = trimmed.len() == 1
+                    && trimmed
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_alphabetic());
+                if is_girdle {
+                    g_count += 1;
+                    if trimmed.eq_ignore_ascii_case("g")
+                        || trimmed.eq_ignore_ascii_case("girdle")
+                        || is_digits
+                    {
+                        format!("G{g_count}")
+                    } else {
+                        tier.name.clone()
+                    }
+                } else if is_table
+                    || trimmed.eq_ignore_ascii_case("table")
+                    || trimmed.eq_ignore_ascii_case("t")
+                {
+                    "Table".to_string()
+                } else if is_culet || trimmed.eq_ignore_ascii_case("culet") {
+                    "Culet".to_string()
+                } else if is_crown {
+                    c_count += 1;
+                    if is_single_letter {
+                        let letter = trimmed.chars().next().unwrap().to_ascii_uppercase();
+                        let idx = (letter as u8).saturating_sub(b'A') + 1;
+                        format!("C{idx}")
+                    } else if is_digits {
+                        format!("C{c_count}")
+                    } else {
+                        tier.name.clone()
+                    }
+                } else {
+                    // Pavilion
+                    p_count += 1;
+                    if is_digits {
+                        format!("P{trimmed}")
+                    } else {
+                        tier.name.clone()
+                    }
+                }
+            };
+
+            AngleSetting {
+                order_index: order_index as u32,
+                facet,
+                angle: format!("{}\u{b0}", tier.angle_deg.abs()),
+                index: tier
+                    .indices
+                    .iter()
+                    .map(f64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                notes: tier.notes.clone(),
+                ..Default::default()
+            }
         })
         .collect()
 }
@@ -323,12 +396,18 @@ pub fn reconstruct_asc_schedule(
     index_gear: Option<&str>,
     angle_settings: &[AngleSetting],
 ) -> Result<Option<AscSchedule>, String> {
-    if angle_settings.is_empty() {
+    // A concave row (one that carries a tool) is not a flat facet: reading it as one
+    // would invent a plane the stone does not have.
+    let mut flat = angle_settings
+        .iter()
+        .filter(|a| a.tool.is_none())
+        .peekable();
+    if flat.peek().is_none() {
         return Ok(None);
     }
 
     let mut tiers = Vec::with_capacity(angle_settings.len());
-    for a in angle_settings {
+    for a in flat {
         let angle_deg = parse_angle_deg(&a.angle).ok_or_else(|| {
             format!(
                 "tier '{}' (order index {}): angle '{}' is not a valid number",
@@ -340,8 +419,18 @@ pub fn reconstruct_asc_schedule(
         // facet text instead, so carry that onto the sign.
         let is_culet_row = a.index.trim().eq_ignore_ascii_case("culet")
             || a.facet.to_ascii_lowercase().contains("culet");
+        let is_pavilion_row = a.facet.trim().to_ascii_uppercase().starts_with("PF")
+            || (a.facet.trim().to_ascii_uppercase().starts_with('P')
+                && a.facet
+                    .trim()
+                    .chars()
+                    .nth(1)
+                    .is_some_and(|c| c.is_ascii_digit()))
+            || a.facet.to_ascii_lowercase().contains("pavilion");
         let angle_deg = if angle_deg == 0.0 && is_culet_row {
             -0.0
+        } else if angle_deg > 0.0 && angle_deg < 90.0 && is_pavilion_row {
+            -angle_deg
         } else {
             angle_deg
         };
@@ -412,8 +501,8 @@ a 41.000000 0.5 92 n T\n";
         assert_eq!(imported.entry.title, "Round Trichecker-12");
         assert_eq!(imported.entry.url, "local://trichecker.asc");
         assert_eq!(imported.detail.angle_settings_table.len(), 2);
-        assert_eq!(imported.detail.angle_settings_table[0].facet, "1");
-        assert_eq!(imported.detail.angle_settings_table[0].angle, "-41\u{b0}");
+        assert_eq!(imported.detail.angle_settings_table[0].facet, "P1");
+        assert_eq!(imported.detail.angle_settings_table[0].angle, "41\u{b0}");
         assert_eq!(imported.detail.refractive_index.as_deref(), Some("1.72"));
         assert_eq!(imported.detail.index_gear.as_deref(), Some("96"));
         assert_eq!(imported.detail.attached_files.len(), 1);
@@ -529,6 +618,7 @@ a 41.000000 0.5 92 n T\n"
             angle: "0\u{b0}".to_string(),
             index: "0, 24, 48, 72".to_string(),
             notes: String::new(),
+            ..Default::default()
         }];
         let schedule = reconstruct_asc_schedule("Test Design", Some("1.76"), Some("96"), &settings)
             .expect("must not error")
@@ -563,6 +653,7 @@ a 41.000000 0.5 92 n T\n"
             angle: "41\u{b0}".to_string(),
             index: "96-08-16-24-32-40-48-56-64-72-80-88".to_string(),
             notes: String::new(),
+            ..Default::default()
         }];
         let schedule = reconstruct_asc_schedule("Hyphen Test", Some("1.76"), Some("96"), &settings)
             .expect("must not error")
@@ -585,6 +676,7 @@ a 41.000000 0.5 92 n T\n"
             angle: "not-a-number".to_string(),
             index: "0".to_string(),
             notes: String::new(),
+            ..Default::default()
         }];
         let err = reconstruct_asc_schedule("Bad Angle", Some("1.76"), Some("96"), &settings)
             .expect_err("an unparsable angle must be a hard error, never a silent 0.0");
@@ -604,6 +696,7 @@ a 41.000000 0.5 92 n T\n"
             angle: "0\u{b0}".to_string(),
             index: "0".to_string(),
             notes: String::new(),
+            ..Default::default()
         }];
         let err = reconstruct_asc_schedule("Bad RI", Some("garbage"), Some("96"), &settings)
             .expect_err("an unparsable refractive index must be a hard error, never a silent 0.0");
@@ -624,6 +717,7 @@ a 41.000000 0.5 92 n T\n"
             angle: "0\u{b0}".to_string(),
             index: "0".to_string(),
             notes: String::new(),
+            ..Default::default()
         }];
         let schedule = reconstruct_asc_schedule("No RI", None, Some("96"), &settings)
             .expect("a missing refractive index must not error")

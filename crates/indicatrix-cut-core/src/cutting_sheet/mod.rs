@@ -27,5 +27,6 @@ mod sheet;
 #[cfg(test)]
 mod tests;
 
-pub use diff::{TierDelta, diff_tiers};
-pub use sheet::{CutSheetRow, CuttingSheet};
+pub use diff::{ConcaveTierDelta, TierDelta, diff_concave_tiers, diff_tiers};
+pub(crate) use sheet::format_index;
+pub use sheet::{ConcaveRowInfo, CutSheetRow, CuttingSheet, SHEET_NAME_WIDTH};

@@ -245,7 +245,7 @@ fn linked_sapphire_with_every_override_and_a_frosted_girdle_matches_the_desktop(
     let selection = MaterialSelection {
         name: Some("Sapphire".to_string()),
         refractive_index_override: Some(1.77),
-        body_colour_override: Some([0.8, 0.6, 0.1]),
+        body_color_override: Some([0.8, 0.6, 0.1]),
         ..MaterialSelection::default()
     };
     check_parity(
@@ -281,6 +281,7 @@ fn a_custom_material_wins_over_the_catalogue_like_the_desktop() {
         dispersion_delta: 0.024,
         birefringence_delta: 0.0,
         absorption_rgb: None,
+        color_recipe: None,
     };
     let desktop_custom = vec![spec.to_gem_material()];
     let web_custom = desktop_custom.clone();
@@ -308,20 +309,20 @@ fn a_custom_material_wins_over_the_catalogue_like_the_desktop() {
 }
 
 #[test]
-fn a_custom_material_spec_keeps_its_snapshots_body_colour() {
+fn a_custom_material_spec_keeps_its_snapshots_body_color() {
     let snapshot = CustomMaterialSnapshot::new(1.74, 0.024, 0.0, None, "Cubic", "Isotropic")
         .with_absorption_rgb(Some([0.25, 0.5, 1.5]));
     let spec = CustomMaterialSpec::from_snapshot("Garnet 1.74", &snapshot);
     assert_eq!(spec.absorption_rgb, Some([0.25, 0.5, 1.5]));
-    let coloured = spec.to_gem_material();
+    let colored = spec.to_gem_material();
     let expected = GemMaterial::new_custom("Garnet 1.74", 1.74, 0.024, 0.0, [0.25, 0.5, 1.5]);
-    assert_eq!(coloured.absorption, expected.absorption);
+    assert_eq!(colored.absorption, expected.absorption);
     let clear = CustomMaterialSpec {
         absorption_rgb: None,
         ..spec
     }
     .to_gem_material();
-    assert_ne!(coloured.absorption, clear.absorption);
+    assert_ne!(colored.absorption, clear.absorption);
 }
 
 #[test]

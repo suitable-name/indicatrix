@@ -172,8 +172,21 @@ whole trace:
   For an optically isotropic material the coefficient is the midpoint of the two
   eigen-directions' quadratic forms, which equals `alpha_o` for every built-in because
   `alpha_o == alpha_e` there. Path lengths are multiplied by
-  `GemMaterial::absorption_path_scale` (1.0 for every built-in). There is no
-  fluorescence: nothing is re-emitted at another wavelength.
+  `GemMaterial::absorption_path_scale` (1.0 for every built-in). Nothing is re-emitted at
+  another wavelength unless the scene carries a `Fluorescence` beside the material
+  (section 3.1); a material without one has no fluorescence.
+- **Fluorescence** is described in section 3.1.
+- **Physical chromophore mode (`optics::chromophore`).** Custom materials can specify a physical
+  gem recipe (`colorRecipe`) combining a host crystal (24 supported hosts) with real mineralogical
+  chromophores (transition metals, intervalence charge-transfer pairs, radiation centres). The CPU
+  forward model resolves the recipe into $\le 8$ energy-domain Gaussian bands
+  (`BandShape::GaussianEnergy`) per eigenmode (ordinary, extraordinary, and optional beta ray for
+  biaxial hosts), converting catalogue coefficients ($\text{cm}^{-1}$) to model units ($\text{mm}^{-1}$).
+  Colorimetry (`color::body_color`) integrates transmittance at 1 nm resolution (380–780 nm) against
+  CIE 1931 2° observer functions under CIE Standard Illuminant D65 and Incandescent (Planckian 3200 K),
+  using CIEDE2000 ($\Delta E_{00}$) for color matching and color-change quantification.
+  When stone width is unset (`0.0 mm`), materials with physics color default to
+  `PHYSICS_DEFAULT_STONE_WIDTH_MM = 7.0 mm` via `effective_stone_width_mm`.
 - **Inclusion scattering (opt-in, `scattering_sigma_s > 0`).** Homogeneous
   Henyey-Greenstein medium: one free-path distance and one scattered direction are drawn
   from the hero's `sigma_t` and shared by all channels; each channel's weight carries its
@@ -195,6 +208,71 @@ whole trace:
   planes. With radius `0.0` (every built-in) the function returns the facet normal
   untouched.
 
+### 3.1 Fluorescence and the spectral range below 380 nm
+
+CPU only (`optics/fluorescence.rs`, `raytracer/transport/inner.rs`). A material glows
+through a `Fluorescence` that travels **beside** the `GemMaterial` (as the concave tools
+travel beside the planes): `trace_spectral_ray_geom`, `trace_spectral_ray_with_finish_soa_geom`
+and `trace_pixels_interleaved_geom` take a `&Fluorescence`, and `SceneState::fluorescence`
+(net v20) carries it to a worker. An empty `Fluorescence` is the old renderer bit for bit:
+no extra RNG draw, no change of the wavelength comb, `scene_routes_to_gpu` unchanged.
+
+A `FluorescentEmitter` is one chromophore: `excitation` (its own absorption bands
+`alpha_c(lambda)`, per mm), `emission` (Gaussian lines `f_c(lambda)`, weights normalised to
+`Int f_c = 1`, lines narrower than 1 nm widened to 1 nm) and the effective quantum yield
+`Phi_c`.
+
+**Transport (backward, single wavelength).** The camera path runs at a visible `lambda_em`.
+The emission term of the transfer equation, with isotropic emission, is
+`Int dt T(t) Sum_c Phi_c f_c(lambda_em) Int_{300}^{lambda_em} alpha_c(l) (l / lambda_em) L_in(l) dl`;
+the factor `l / lambda_em` is the photon-energy ratio, so a Stokes shift loses its energy to
+heat and never gains any. It is estimated with one in-medium vertex per path:
+
+1. The pseudo-extinction `mu_f(lambda_em) = Sum_c Phi_c f_c(lambda_em) A_c(lambda_em)`, with
+   `A_c = Int_{300}^{lambda_em} alpha_c`, is the rate of a vertex along the path. `A_c` and the
+   excitation distribution come from a per-emitter table at 1 nm steps (the bin average of
+   the analytic bands), built lazily and cached in the `Fluorescence`.
+2. On each interior segment a vertex distance is drawn from a truncated exponential, competing
+   with the Henyey-Greenstein scatter sample (which stops at the vertex distance, so the two
+   clocks race by memorylessness) and the boundary. The sampling rate is
+   `mu_s = min(mu_f, 2 / segment)`: a strongly emitting line (`mu_f * segment` in the tens, a
+   ruby R line) would otherwise give the paths that go on weights of `exp(mu_f * segment)`. The
+   estimator weights compensate exactly: `mu_f / mu_s * exp(mu_s t)` at a vertex and
+   `exp(mu_s ell)` for a path that reaches the boundary (or a scatter event) at `ell`. The
+   medium's Beer-Lambert extinction up to the vertex is applied as for any segment.
+3. At the vertex the emitter is chosen proportional to `Phi_c f_c A_c`, `lambda_ex` proportional
+   to `alpha_c` on `[300, lambda_em)`, the new direction is isotropic and unpolarized, the weight
+   is multiplied by `lambda_ex / lambda_em`, and the path continues at `lambda_ex`: refraction,
+   Beer-Lambert, dispersion and the lamp are all evaluated there. The result is integrated at
+   `lambda_em` (the camera wavelength).
+4. A scene with fluorescence traces **single-wavelength** paths: all eight channels carry the
+   one `lambda_em` over 380-780 nm, so the 8-channel hero comb and exit-event splitting
+   are off. `lambda_em` is drawn from a 50/50 mixture of the uniform density and one
+   proportional to `mu_f(lambda)`, and the path is weighted by `1 / (400 p(lambda_em))`
+   (`Fluorescence::camera_wavelength`): a uniform draw would almost never land on a 2 nm line,
+   and the uniform half keeps every wavelength reachable, so the image is still unbiased. (The channels are redundant but keep every other code path unchanged; the image
+   converges unbiased.) At most one vertex per path; `lambda_ex < lambda_em` only; no delayed
+   emission. RNG: five new hash streams (`FLUORESCENCE_*_STREAM`), drawn only when a vertex is
+   sampled.
+
+A UV lamp (`LightingPreset::UvLamp365`/`UvLamp395`, section 5.1) is CPU-only too.
+`scene_routes_to_gpu(material, geom, fluorescence, lighting)` is false for a non-empty
+`Fluorescence` or a UV lamp, as for tools.
+
+**Spectral range.** Visible camera wavelengths stay 380-780 nm. Everything a fluorescence path
+evaluates must be valid down to `lambda_ex = 300 nm`:
+
+- *Illuminants:* `d65_relative_spectral_power` is extended to 300 nm with the CIE 15:2004 table
+  (10 nm steps, 0.0341 at 300 nm to 49.9755 at 380 nm); the values at and above 380 nm are
+  bit-identical (the extension is a separate branch below 380 nm). Blackbody is analytic; the UV
+  lamps are Gaussians. (The WGSL port keeps the 380 nm clamp: UV scenes never reach the GPU.)
+- *Dispersion:* `DispersionModel::evaluate` holds the index at `min_valid_nm()` below that
+  wavelength: 380 nm for a `Cauchy` fit (visible-range-only, its `1/lambda^4` term runs away in
+  the UV), 300 nm for a Sellmeier curve (or 5 % above its nearest UV resonance when that lies
+  above 285 nm). A flat deep-UV index is a bounded approximation; at and above 380 nm nothing
+  changes.
+- *Absorption:* `AbsorptionBand::evaluate` is analytic and needs no change.
+
 ## 4. Next-event estimation and light/BSDF MIS
 
 NEE exists only for an `EnvironmentSource::HdrMap`: the analytic studio rig has no
@@ -207,10 +285,20 @@ It fires at two kinds of event:
   sampled direction through that facet, the medium transmittance, then a balance-heuristic
   weight against the phase-function density. Frosted exit facets are skipped here (they
   are handled by the frosted NEE). The exit transmittance is **one scalar computed at the
-  hero's index** and shared by every channel, not a per-channel value.
+  hero's index** and shared by every channel, not a per-channel value. On a **concave**
+  stone (tools present) the probe walks up to four boundary crossings: every exit
+  multiplies in its own Fresnel transmittance, an entry into a cavity's far wall carries
+  no factor, and the sample is dropped above the cap, on total internal reflection or a
+  frosted exit at any crossing. The walk keeps the interior direction through the air
+  gaps and bends it once, at the last exit, where the environment is looked up: an
+  approximation, exact only when no cavity is in the way.
 - **Frosted exterior events** (`scattering/frosted.rs::nee_contribution_frosted_exterior`):
   only for the two outcomes that leave the surface into the outward half-space, against a
-  Lambertian `cos / pi` density. No shadow ray is needed for a convex stone. A frosted
+  Lambertian `cos / pi` density. No shadow ray is needed for a convex stone: a surface
+  point moving outward along its own outward normal cannot re-enter a convex solid. That
+  argument fails for a concave stone, whose groove walls face a cavity, so with tools a
+  real shadow probe is cast against the whole stone and the sample is deposited only on a
+  miss. A frosted
   *entry* transmit (into the crystal) is deliberately not NEE-sampled.
 
 The competing (phase / BSDF-sampled) continuation carries its density in
@@ -224,9 +312,9 @@ design (the continuation keeps full weight there).
 
 ## 5. Lighting
 
-### 5.1 Four models, seven presets
+### 5.1 Four models, nine presets
 
-`environment/mod.rs::LightingPreset` has seven presets over four
+`environment/mod.rs::LightingPreset` has nine presets over four
 `LightingModel`s. The CPU radiance is `environment/rig.rs::direction_lighting`; the WGSL
 twins live under `renderer/shaders/` (see [gpu.md](gpu.md)).
 
@@ -239,10 +327,19 @@ twins live under `renderer/shaders/` (see [gpu.md](gpu.md)).
 | IsoHemisphere | IsoHemisphere | tabulated CIE D65 | identity |
 | LightTent | LightTent | Planckian 5000 K | Planckian -> D65 |
 | DaylightDome | DaylightDome | tabulated CIE D65 | identity |
+| UvLamp365 | Studio | Gaussian 365 nm, FWHM 10 nm | none (identity) |
+| UvLamp395 | Studio | Gaussian 395 nm, FWHM 12 nm | none (identity) |
 
-`LightingPreset::params` gives each preset's colour temperature and `spot_mult`
+`LightingPreset::params` gives each preset's color temperature and `spot_mult`
 (Incandescent 1.2, RingLights 1.6, DarkSpotlight 2.4, all others 1.0). The D65 curve is
 the CIE 15:2004 table, not a 6500 K blackbody (`environment/spectral.rs::d65_relative_spectral_power`).
+
+The two UV lamps (appended at the end of the enum, indices 7 and 8, so every earlier postcard
+index is unchanged) use the analytic studio geometry of Daylight (key softbox, fill, ring) with
+a unit-peak Gaussian lamp spectrum in place of D65 and **no ambient backdrop term**
+(`LightingPreset::has_ambient_fill`). The 395 nm LED's tail reaches 380-420 nm, so it lights a
+non-fluorescent stone faintly violet; that is kept. They are CPU-only (section 3.1);
+`LightingPreset::params` returns the placeholder 6500 K for them (unused).
 
 ### 5.2 What each model computes
 
@@ -298,11 +395,12 @@ and the `mul_add` order are mirrored by the WGSL twins
 For `EnvironmentSource::Studio` the final XYZ is multiplied by a Bradford-LMS von Kries
 scale that maps the preset's illuminant white to D65 at equal luminance
 (`color.rs::compute_illuminant_white_balance`, `apply_von_kries_white_balance`, applied in
-`transport/inner.rs::trace_spectral_ray_inner`). The scale is the identity for the
-presets that sample the tabulated D65 curve (`LightingPreset::uses_d65`: Daylight,
-IsoHemisphere, DaylightDome; `color.rs::illuminant_white_balance`), so only the four
-presets with a Planckian illuminant are adapted: Incandescent, RingLights, DarkSpotlight
-and LightTent. `HdrMap` skips the transform entirely (the Bradford matrices are not exact
+`transport/inner.rs::trace_spectral_ray_inner`). The rule is explicit:
+`LightingPreset::uses_white_balance()` is true only for the presets with a Planckian
+illuminant, so only those four are adapted: Incandescent, RingLights, DarkSpotlight and
+LightTent. The scale is the identity for the presets that sample the tabulated D65 curve
+(`uses_d65`: Daylight, IsoHemisphere, DaylightDome) and for the UV lamps, which have no white
+point to adapt from (the stone shows the lamp's own color; `color.rs::illuminant_white_balance`). `HdrMap` skips the transform entirely (the Bradford matrices are not exact
 inverses, so running it at scale one would not be the identity in `f32`).
 
 ## 6. Tone mapping and encoding
@@ -350,6 +448,10 @@ incompatible material can opt out, not a per-scene check that currently discrimi
 Whether the GPU actually reproduces the CPU is what [gpu.md](gpu.md) and the recorded
 harness run are for.
 
+`renderer::gpu_backend::scene_routes_to_gpu(material, geom, fluorescence, lighting)` is the
+per-scene predicate: it is false for a stone with tools, a non-empty `Fluorescence`, or a UV
+lamp lighting (section 3.1), all of which only the CPU tracer handles.
+
 ## 9. Deliberate deviations from physical truth — do not "fix" these
 
 - **The reflect/transmit selection clamp** (section 2.2) — `[0.02, 0.98]`, used for the
@@ -369,7 +471,7 @@ harness run are for.
   two different indices differ by orders of magnitude more; the tolerance separates those
   two cases and is not exact float equality.
 - **Luminance-only tone mapping** (section 6) — a per-channel tonemap is a hue-shifting
-  operator, exactly wrong for saturated dispersion colours.
+  operator, exactly wrong for saturated dispersion colors.
 - **Bounded exit-split probe** — one extra intersection test per split channel, with a
   re-entering probe declined rather than recursed (section 2.6).
 
@@ -389,7 +491,7 @@ harness run are for.
   channel as hero.
 - **Mismatched-direction re-entry** at an exit probe is truncated (energy loss, section 2.6).
 - **Mueller depolarisation** at scatter and frosted events is total.
-- **HDR spectral lift** has no round-trip guarantee for saturated colours (section 5.3).
+- **HDR spectral lift** has no round-trip guarantee for saturated colors (section 5.3).
 - **Metrics** do not model the renderer's lighting, birefringence, absorption or the
   crown rim (section 7).
 
@@ -415,3 +517,28 @@ drifted when nobody meant it to.
 A default `cargo test -p indicatrix` does not compile the `gpu`-gated pins; run
 `cargo test -p indicatrix --features gpu` after touching anything under `renderer::gpu`
 (see the README).
+
+## Concave stones: transport shortcuts
+
+A stone with tools (`StoneGeometry::is_convex() == false`) is traced by the same loop as a
+planar one; every convexity shortcut is gated on that predicate, so a planar design takes
+the old code and stays bit-identical.
+
+- **Bounce loop.** `intersect_stone_soa` replaces `intersect_polyhedron_soa`. `inside_gem`
+  still toggles per crossing, which stays correct because every boundary of the material is
+  a crossing; a hit after an exit is a legitimate re-entry across a cavity. Debug builds
+  assert the flag against a point classification just before the hit.
+- **Exit split.** `try_split_exit_channel` still drops a channel whose exit probe re-enters
+  the stone. On a concave stone that is the largest energy risk, so debug builds count the
+  dropped intensity (`exit_split_truncated_energy_take`) and the concave white-furnace test
+  reports it next to its gate. If the measured loss is above the gate, the v2 fix is a
+  bounded (four-crossing) continuation of the split channel through the re-entry.
+- **Edge rounding.** `shading_normal_near_edge` blends toward the nearest *plane*, so it is
+  skipped for a hit on a tool surface and for a plane hit within the rounding radius of a
+  tool.
+- **Metrics.** The grid, scintillation and tilt-sweep tracers use the same intersector. Their
+  single-wavelength loop still ends at the first exit, so a ray that would re-enter across a
+  groove counts as having left. The 18 x 18 fan is a fixed sample set and under-samples a
+  narrow groove just as it under-samples a narrow facet.
+- **Caches.** `hash_geometry` extends `hash_planes` with the tool bytes only when tools are
+  present, so a planar key is unchanged.

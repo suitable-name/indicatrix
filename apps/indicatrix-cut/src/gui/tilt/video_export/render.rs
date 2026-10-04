@@ -76,7 +76,7 @@ pub(super) enum FrameOutcome {
 #[expect(
     clippy::too_many_arguments,
     reason = "every argument is a distinct piece of one frame's own render request \
-              (scene/pose, dimensions/samples, colour space, the whole-video compute \
+              (scene/pose, dimensions/samples, color space, the whole-video compute \
               config/GPU backend/calibration carry, cancellation, and progress \
               reporting) -- bundling them into a struct would just move the same \
               count into field access, not reduce it, matching \

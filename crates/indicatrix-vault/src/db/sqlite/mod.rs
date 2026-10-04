@@ -363,6 +363,7 @@ impl Database {
         db.migrate_crystal_optics_columns()?;
         db.migrate_per_axis_dispersion_column()?;
         db.migrate_custom_material_specific_gravity()?;
+        db.migrate_custom_material_color_recipe()?;
         db.migrate_shape_vocabulary()?;
         db.migrate_ignored_column()?;
         db.migrate_diagram_entries_timestamps()?;
@@ -375,6 +376,10 @@ impl Database {
         db.migrate_planner_exclusion_table()?;
         db.migrate_mirror_state_tombstone_column()?;
         db.migrate_prune_tilt_curve_aggregate_columns()?;
+        // Before `migrate_blob_columns_last`: that rebuild names diagram_details'
+        // columns explicitly (the concave ones included), so they must already
+        // exist on an old table when it copies the rows across.
+        db.migrate_concave_columns()?;
         // After every diagram_details/diagram_previews/diagram_tilt_curves column-add
         // migration above, so it rebuilds each table's FINAL column set exactly once
         // rather than needing to re-detect a moving target.

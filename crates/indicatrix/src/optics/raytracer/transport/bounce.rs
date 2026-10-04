@@ -140,6 +140,7 @@ pub(super) fn dispatch_bounce(
                     ctx,
                     geo,
                     normal,
+                    hit_point,
                     *inside_gem,
                     *is_extraordinary,
                     rng_seed,

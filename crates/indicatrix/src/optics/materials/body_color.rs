@@ -1,17 +1,17 @@
-//! Body-colour presets: the nine fixed absorption-RGB triples a design (or the
-//! custom-material editor) can pick from to recolour a material without authoring a
+//! Body-color presets: the nine fixed absorption-RGB triples a design (or the
+//! custom-material editor) can pick from to recolor a material without authoring a
 //! new one.
 //!
 //! Each triple is the same `[R, G, B]` absorption input [`super::GemMaterial::new_custom`]
-//! and [`super::GemMaterial::with_body_colour`] take (expanded through
+//! and [`super::GemMaterial::with_body_color`] take (expanded through
 //! `absorption::legacy_rgb_bands`): a HIGH value in a channel absorbs that channel,
 //! so "Blue" absorbs red and green. The table is data only -- the order is part of the
 //! contract, since the desktop editor stores a swatch as its index into this table.
 
-/// One body-colour preset: a stable machine key, the short label shown to a cutter,
+/// One body-color preset: a stable machine key, the short label shown to a cutter,
 /// and the absorption triple it applies.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BodyColourPreset {
+pub struct BodycolorPreset {
     /// Stable lowercase identifier (`"yellow"`), never shown to a cutter.
     pub key: &'static str,
     /// Short display label (`"Yellow"`), e.g. for `Sapphire (Yellow)`.
@@ -20,66 +20,66 @@ pub struct BodyColourPreset {
     pub absorption_rgb: [f32; 3],
 }
 
-/// The nine body-colour presets, in their fixed order.
+/// The nine body-color presets, in their fixed order.
 ///
 /// Clear, Blue, Red, Green, Violet, Yellow, Pink, Teal, Amber. The custom-material
 /// editor's swatch row uses the same order
 /// (index 0 "Clear" through 8 "Amber"), so an index into this table is also a valid
 /// swatch index there.
-pub const BODY_COLOUR_PRESETS: [BodyColourPreset; 9] = [
-    BodyColourPreset {
+pub const BODY_color_PRESETS: [BodycolorPreset; 9] = [
+    BodycolorPreset {
         key: "clear",
         label: "Clear",
         absorption_rgb: [0.0, 0.0, 0.0],
     },
-    BodyColourPreset {
+    BodycolorPreset {
         key: "blue",
         label: "Blue",
         absorption_rgb: [2.8, 1.2, 0.1],
     },
-    BodyColourPreset {
+    BodycolorPreset {
         key: "red",
         label: "Red",
         absorption_rgb: [0.1, 2.5, 2.2],
     },
-    BodyColourPreset {
+    BodycolorPreset {
         key: "green",
         label: "Green",
         absorption_rgb: [2.2, 0.2, 2.0],
     },
-    BodyColourPreset {
+    BodycolorPreset {
         key: "violet",
         label: "Violet",
         absorption_rgb: [1.8, 1.6, 0.2],
     },
-    BodyColourPreset {
+    BodycolorPreset {
         key: "yellow",
         label: "Yellow",
         absorption_rgb: [0.2, 0.4, 2.8],
     },
-    BodyColourPreset {
+    BodycolorPreset {
         key: "pink",
         label: "Pink",
         absorption_rgb: [0.4, 2.2, 1.6],
     },
-    BodyColourPreset {
+    BodycolorPreset {
         key: "teal",
         label: "Teal",
         absorption_rgb: [1.2, 0.4, 0.1],
     },
-    BodyColourPreset {
+    BodycolorPreset {
         key: "amber",
         label: "Amber",
         absorption_rgb: [0.2, 0.6, 1.8],
     },
 ];
 
-/// The index into [`BODY_COLOUR_PRESETS`] whose triple equals `rgb` exactly, or
-/// `None` when `rgb` matches no preset (a colour authored elsewhere, e.g. a
+/// The index into [`BODY_color_PRESETS`] whose triple equals `rgb` exactly, or
+/// `None` when `rgb` matches no preset (a color authored elsewhere, e.g. a
 /// hand-edited design file).
 #[must_use]
 pub fn preset_index_for_rgb(rgb: [f32; 3]) -> Option<usize> {
-    BODY_COLOUR_PRESETS
+    BODY_color_PRESETS
         .iter()
         .position(|preset| preset.absorption_rgb == rgb)
 }
@@ -88,7 +88,7 @@ pub fn preset_index_for_rgb(rgb: [f32; 3]) -> Option<usize> {
 /// [`preset_index_for_rgb`]), or `None` when it matches no preset.
 #[must_use]
 pub fn preset_label_for_rgb(rgb: [f32; 3]) -> Option<&'static str> {
-    preset_index_for_rgb(rgb).map(|index| BODY_COLOUR_PRESETS[index].label)
+    preset_index_for_rgb(rgb).map(|index| BODY_color_PRESETS[index].label)
 }
 
 #[cfg(test)]
@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn every_preset_finds_its_own_index() {
-        for (index, preset) in BODY_COLOUR_PRESETS.iter().enumerate() {
+        for (index, preset) in BODY_color_PRESETS.iter().enumerate() {
             assert_eq!(preset_index_for_rgb(preset.absorption_rgb), Some(index));
             assert_eq!(
                 preset_label_for_rgb(preset.absorption_rgb),
@@ -125,10 +125,10 @@ mod tests {
     /// most and Amber (orange-brown) must absorb blue most.
     #[test]
     fn teal_absorbs_red_and_amber_absorbs_blue() {
-        let teal = BODY_COLOUR_PRESETS[7].absorption_rgb;
-        let amber = BODY_COLOUR_PRESETS[8].absorption_rgb;
-        assert_eq!(BODY_COLOUR_PRESETS[7].key, "teal");
-        assert_eq!(BODY_COLOUR_PRESETS[8].key, "amber");
+        let teal = BODY_color_PRESETS[7].absorption_rgb;
+        let amber = BODY_color_PRESETS[8].absorption_rgb;
+        assert_eq!(BODY_color_PRESETS[7].key, "teal");
+        assert_eq!(BODY_color_PRESETS[8].key, "amber");
 
         let (teal_red, teal_green, teal_blue) = (
             absorption_at(teal, 620.0),
@@ -153,8 +153,8 @@ mod tests {
 
     #[test]
     fn keys_and_labels_are_unique() {
-        for (i, a) in BODY_COLOUR_PRESETS.iter().enumerate() {
-            for b in &BODY_COLOUR_PRESETS[i + 1..] {
+        for (i, a) in BODY_color_PRESETS.iter().enumerate() {
+            for b in &BODY_color_PRESETS[i + 1..] {
                 assert_ne!(a.key, b.key);
                 assert_ne!(a.label, b.label);
             }

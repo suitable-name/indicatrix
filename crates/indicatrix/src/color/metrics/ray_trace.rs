@@ -5,7 +5,11 @@
 
 use glam::Vec3;
 
-use crate::optics::raytracer::{Ray, intersect_polyhedron_soa};
+use crate::{
+    geometry::tool::ToolPrimitive,
+    optics::raytracer::{HitRecord, Ray, intersect_stone::intersect_stone_soa},
+    simd::PlanesSoA32,
+};
 
 /// Outcome of refracting an incident ray into the gemstone at a known entry point/normal
 /// (for one specific refractive index) and following it through up to 10 internal
@@ -73,6 +77,25 @@ fn fresnel_transmittance(n1: f32, n2: f32, cos_i: f32, cos_t: f32) -> f32 {
     (1.0 - r).clamp(0.0, 1.0)
 }
 
+/// The stone every metrics ray is traced against: the plane arena built once per
+/// evaluation, plus the tools subtracted from it (empty for a planar stone).
+///
+/// Bundled so the contexts and [`trace_wavelength`] gain one field instead of two, and
+/// so every metrics tracer calls the one intersector [`intersect_stone_soa`], which is
+/// `intersect_polyhedron_soa` exactly when `tools` is empty.
+#[derive(Clone, Copy)]
+pub(super) struct StoneArena<'a> {
+    pub(super) plane_soa: &'a PlanesSoA32,
+    pub(super) tools: &'a [ToolPrimitive],
+}
+
+impl StoneArena<'_> {
+    /// First surface `ray` meets; see [`intersect_stone_soa`].
+    pub(super) fn intersect(&self, ray: Ray) -> Option<HitRecord> {
+        intersect_stone_soa(ray, self.plane_soa, self.plane_soa.len(), self.tools)
+    }
+}
+
 /// Refracts `incoming_dir` into the gem at `entry_point`/`n_entry` using Snell's law for
 /// `index`, then follows up to 10 internal bounces (TIR vs refract-out) exactly as the
 /// original single-wavelength trace did. This is the physical core shared by the d-line,
@@ -83,7 +106,7 @@ pub(super) fn trace_wavelength(
     incoming_dir: Vec3,
     n_entry: Vec3,
     cos_i: f32,
-    plane_soa: &crate::simd::PlanesSoA32,
+    stone: StoneArena<'_>,
     index: f32,
 ) -> RayFate {
     let sin2_t = (1.0 / (index * index)) * cos_i.mul_add(-cos_i, 1.0);
@@ -113,7 +136,7 @@ pub(super) fn trace_wavelength(
             origin: hit_point,
             dir: curr_dir,
         };
-        let next_hit = intersect_polyhedron_soa(inside_ray, plane_soa);
+        let next_hit = stone.intersect(inside_ray);
         let Some(next_rec) = next_hit else { break };
         let next_point = inside_ray.origin + next_rec.t * inside_ray.dir;
         let n_out = next_rec.normal; // outward-pointing facet normal

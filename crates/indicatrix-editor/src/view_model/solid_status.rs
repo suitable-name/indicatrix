@@ -2,18 +2,18 @@
 //!
 //! [`status_text_and_is_problem`]/ [`status_text_and_is_problem_from_solved`] turn
 //! [`Design::status`] (or an already-solved mast list) into the Edit tab's one-sentence
-//! verdict, and [`design_to_gpu_planes`]/[`tier_matches_filter`] are the two small,
+//! verdict, and [`design_to_gpu_planes`]/[`design_to_gpu_geometry`]/[`tier_matches_filter`] are the small,
 //! unrelated view-model helpers left with no better home once the rest of `state/mod.rs`
 //! was split by topic.
 
 use super::row_format::tier_label;
 use crate::solve_policy;
 use indicatrix::geometry::{
-    GpuFacetPlane,
+    GpuFacetPlane, ToolPrimitive,
     meet_solver::SolvedTier,
     stone_metrics::{SolidMetrics, SolidStatus, build_solid_mesh, measure_solid},
 };
-use indicatrix_cut_core::{Design, degenerate_suspects};
+use indicatrix_cut_core::{Design, degenerate_suspects, design::ToolPlacements};
 
 /// [`SolidStatus::Unbounded`]'s escaping
 /// plane indices, named by the tier that contributed each one
@@ -318,6 +318,34 @@ pub fn design_to_gpu_planes(design: &Design) -> Vec<GpuFacetPlane> {
         .into_iter()
         .map(|(normal, offset)| GpuFacetPlane::new(normal.as_vec3(), -offset as f32))
         .collect()
+}
+
+/// [`design_to_gpu_planes`] plus the design's concave tools and where each came from:
+/// everything the viewport needs to draw the whole stone.
+///
+/// The planes are exactly [`design_to_gpu_planes`]'s. The tools are
+/// [`Design::concave_tools_from_solved`] of the design's own solve, with the
+/// `(concave tier, placement)` of each primitive alongside. A design with no concave
+/// tiers returns empty tool vectors without solving a second time, so a planar caller
+/// pays nothing and sees nothing new. When the design does not solve, or its concave
+/// tiers do not resolve (an invalid tier, too many placements), the tools are empty
+/// too, for the same reason [`design_to_gpu_planes`] goes blank on an unsolvable
+/// design: drawing the flat stone alone is truthful, a half-resolved set of tools is
+/// not.
+#[must_use]
+pub fn design_to_gpu_geometry(
+    design: &Design,
+) -> (Vec<GpuFacetPlane>, Vec<ToolPrimitive>, ToolPlacements) {
+    let planes = design_to_gpu_planes(design);
+    if design.concave_tiers.is_empty() {
+        return (planes, Vec::new(), Vec::new());
+    }
+    let (tools, placements) = design
+        .solve()
+        .ok()
+        .and_then(|solved| design.concave_tools_from_solved(&solved).ok())
+        .unwrap_or_default();
+    (planes, tools, placements)
 }
 
 /// The tier search/filter box's substring test.

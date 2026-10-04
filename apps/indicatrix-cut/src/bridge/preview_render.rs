@@ -233,6 +233,9 @@ pub fn render_view(job: &PreviewJob<'_>, view: PreviewView, gpu: &GpuBackend) ->
         exposure: PREVIEW_EXPOSURE,
         backdrop: PREVIEW_BACKDROP,
         active_planes: job.planes.to_vec(),
+        // A catalogue row's stored design is planar.
+        tools: Vec::new(),
+        fluorescence: Default::default(),
         // No frosted-girdle finish for a catalogue thumbnail -- matches the export's
         // own "empty means every facet Polished" convention
         // (`trace_spectral_ray_with_finish`'s doc comment) rather than reading a
@@ -321,6 +324,9 @@ pub fn render_rgba_at_pose(
         exposure: PREVIEW_EXPOSURE,
         backdrop: PREVIEW_BACKDROP,
         active_planes: planes.to_vec(),
+        // The compare window hands over planes alone (see `gui::editor::compare`).
+        tools: Vec::new(),
+        fluorescence: Default::default(),
         // Same "every facet Polished, analytic studio rig" reasoning as
         // `render_view`'s own snapshot.
         facet_finishes: Vec::new(),
@@ -423,6 +429,8 @@ fn dispatch_remote_view(
         backdrop: PREVIEW_BACKDROP,
         environment: indicatrix_net::scene::SceneEnvironment::Studio,
         surface_glare: 1.0,
+        tools: Vec::new(),
+        fluorescence: Default::default(),
     };
     let accumulator = Arc::new(Mutex::new(Accumulator::new(job.size, job.size)));
     let (tx, rx) = mpsc::channel::<RemoteUpdate>();
@@ -563,7 +571,7 @@ fn await_cancel_ack(rx: &mpsc::Receiver<RemoteUpdate>) {
 /// PNG-encodes `rgba` (`width * height * 4` bytes) into an in-memory buffer -- the
 /// preview path's counterpart of `export_thread::tonemap_png::save_png`'s `Srgb` branch,
 /// duplicated in miniature (no ICC profile, no file I/O) because a cached preview is
-/// always sRGB (there is no colour-space picker for a background thumbnail the way
+/// always sRGB (there is no color-space picker for a background thumbnail the way
 /// `export_dialog.slint` offers one for a deliberate export) and is stored as bytes in
 /// SQLite, never written to a path on disk.
 fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {

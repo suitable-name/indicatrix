@@ -1,4 +1,4 @@
-//! Wide-gamut colour-space definitions.
+//! Wide-gamut color-space definitions.
 //!
 //! XYZ->RGB matrices, reference white points, and transfer functions for sRGB, Display
 //! P3, Rec.2020, and `ACEScg`, plus [`ColorSpace::encode`] -- a single entry point
@@ -110,7 +110,7 @@ pub enum ToneMap {
     /// ACES filmic tonemap (Narkowicz 2015 fit, matching `optics::raytracer::aces_tonemap`),
     /// applied to luminance only then rescaled back into RGB so hue/saturation survive --
     /// per-channel tone mapping shifts hue, which is wrong for saturated dispersion
-    /// "fire" colours (see `aces_tonemap`'s docs).
+    /// "fire" colors (see `aces_tonemap`'s docs).
     ///
     /// `exposure` is a linear multiplier applied before the curve; `1.0` reproduces
     /// `xyz_to_srgb_gamma`'s tone-mapping step exactly.
@@ -120,7 +120,7 @@ pub enum ToneMap {
     },
 }
 
-/// A target RGB colour space: its XYZ->RGB matrix, reference white point, and transfer
+/// A target RGB color space: its XYZ->RGB matrix, reference white point, and transfer
 /// function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorSpace {
@@ -149,9 +149,9 @@ impl ColorSpace {
     ///   reaches these same constants through [`ColorSpace::encode`] rather than
     ///   keeping its own.
     /// - **Display P3**: primaries R(0.680, 0.320) G(0.265, 0.690) B(0.150, 0.060), D65
-    ///   white, per SMPTE EG 432-1; cross-checked against `colour-science`.
+    ///   white, per SMPTE EG 432-1; cross-checked against `color-science`.
     /// - **Rec.2020**: primaries R(0.708, 0.292) G(0.170, 0.797) B(0.131, 0.046), D65
-    ///   white, per ITU-R BT.2020-2 Table 3; cross-checked against `colour-science`.
+    ///   white, per ITU-R BT.2020-2 Table 3; cross-checked against `color-science`.
     /// - **`ACEScg`**: AP1 primaries R(0.713, 0.293) G(0.165, 0.830) B(0.128, 0.044),
     ///   D60 white (x=0.32168, y=0.33767), per Academy S-2014-004 Table 1; cross-checked
     ///   against the Academy's published `XYZ_to_AP1` matrix.
@@ -244,7 +244,7 @@ impl ColorSpace {
                 let exposed_luminance = (luminance * exposure).max(0.0);
                 let y_tm = crate::optics::raytracer::aces_tonemap(exposed_luminance);
                 // Scaling `xyz` before gamut-projecting (rather than scaling the
-                // projected RGB) is equivalent for in-range colours since gamut
+                // projected RGB) is equivalent for in-range colors since gamut
                 // projection is linear in luminance -- letting one bounded projection
                 // call handle both compression and desaturation together.
                 let luminance_scale = (y_tm / exposed_luminance.max(1e-5)) * exposure;

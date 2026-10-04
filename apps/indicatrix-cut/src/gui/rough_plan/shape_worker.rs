@@ -16,13 +16,16 @@ use crate::{RoughPlanModel, RoughPlannerWindow, gui::latest_worker::LatestWorker
 use glam::DVec3;
 use indicatrix::geometry::stone_metrics::{SolidMesh, SolidStatus, build_solid_mesh};
 use indicatrix_cut_core::{
-    rough_plan::{RoughBase, RoughMeasure, RoughModel, ShapeError},
+    rough_plan::{
+        RoughBase, RoughMeasure, RoughModel, ShapeError,
+        shape::{ClippedSurface, SurfaceCap},
+    },
     yield_metrics::carat_weight,
 };
 use slint::{ComponentHandle, Model, Timer, TimerMode, Weak};
 use std::{
     cell::RefCell,
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     rc::Rc,
     sync::{Arc, Mutex, PoisonError},
     time::Duration,
@@ -141,9 +144,146 @@ fn mesh_of_planes(planes: &[(DVec3, f64)], centre: DVec3) -> Result<SolidMesh, S
     }
 }
 
+/// The sharpest crease between two triangles of one surface that is still drawn as flat
+/// shading: a crease with a larger angle than this gets an edge line (in degrees).
+const CREASE_DEGREES: f64 = 30.0;
+
+/// A point as a hashable grid cell, for matching the corners of triangles that were
+/// clipped one at a time. The cell is `1e-6` of the mesh's size.
+fn corner_key(point: DVec3, cell: f64) -> [i64; 3] {
+    [point.x, point.y, point.z].map(|c| (c / cell).round() as i64)
+}
+
+/// The mesh of a non-convex rough clipped by its cuts, with `centre` moved to the origin.
+///
+/// The rough's own triangles are facet `0` and each cap is `base_facets + cut`, so a cut's
+/// face keeps the id `ModelScene::cut_of_facet` maps back
+/// to the cut. One ring per triangle; `piece_normals` gives each its own normal, and
+/// `edge_visible` draws an edge where two surface triangles meet at more than
+/// [`CREASE_DEGREES`] and wherever a cap meets another face, and hides the seams of a flat
+/// run of triangles.
+///
+/// # Errors
+///
+/// Returns [`ShapeError::NothingLeft`] when the cuts leave no surface.
+fn mesh_of_surface(
+    surface: &ClippedSurface,
+    base_facets: usize,
+    centre: DVec3,
+) -> Result<SolidMesh, ShapeError> {
+    // (facet id, normal, corners) per triangle, in a fixed order: surface, then caps.
+    let mut pieces: Vec<(usize, DVec3, [DVec3; 3])> = Vec::new();
+    for &[a, b, c] in &surface.triangles {
+        let normal = (b - a).cross(c - a).normalize_or_zero();
+        if normal != DVec3::ZERO {
+            pieces.push((0, normal, [a - centre, b - centre, c - centre]));
+        }
+    }
+    for SurfaceCap {
+        cut,
+        normal,
+        triangles,
+    } in &surface.caps
+    {
+        for &[a, b, c] in triangles {
+            pieces.push((
+                base_facets + cut,
+                *normal,
+                [a - centre, b - centre, c - centre],
+            ));
+        }
+    }
+    if pieces.is_empty() {
+        return Err(ShapeError::NothingLeft);
+    }
+
+    let (mut low, mut high) = (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY));
+    for (_, _, corners) in &pieces {
+        for &p in corners {
+            low = low.min(p);
+            high = high.max(p);
+        }
+    }
+    let cell = ((high - low).length() * 1e-6).max(1e-12);
+
+    // Which pieces meet along every edge (an edge is its two corners' cells, ordered).
+    let mut edges: BTreeMap<([i64; 3], [i64; 3]), Vec<usize>> = BTreeMap::new();
+    let edge_key = |corners: &[DVec3; 3], side: usize| {
+        let from = corner_key(corners[side], cell);
+        let to = corner_key(corners[(side + 1) % 3], cell);
+        (from.min(to), from.max(to))
+    };
+    for (index, (_, _, corners)) in pieces.iter().enumerate() {
+        for side in 0..3 {
+            edges
+                .entry(edge_key(corners, side))
+                .or_default()
+                .push(index);
+        }
+    }
+    let crease = CREASE_DEGREES.to_radians().cos();
+    let edge_drawn = |index: usize, side: usize| {
+        let (id, normal, corners) = &pieces[index];
+        match edges[&edge_key(corners, side)].as_slice() {
+            [first, second] => {
+                let other = if *first == index { *second } else { *first };
+                let (other_id, other_normal, _) = &pieces[other];
+                // Two triangles of one cap never draw their seam; other pairs draw a
+                // cap boundary, and the rough's own triangles a sharp crease.
+                if id != other_id {
+                    true
+                } else if *id == 0 {
+                    normal.dot(*other_normal) < crease
+                } else {
+                    false
+                }
+            }
+            // An edge of one triangle or of three: not a flat run, so show it.
+            _ => true,
+        }
+    };
+
+    let mut mesh = SolidMesh::default();
+    let mut piece_normals = Vec::with_capacity(pieces.len());
+    let mut visible = Vec::with_capacity(pieces.len());
+    for (index, (id, normal, corners)) in pieces.iter().enumerate() {
+        let first = u32::try_from(mesh.positions.len()).map_err(|_| ShapeError::NothingLeft)?;
+        for &corner in corners {
+            mesh.positions.push(corner);
+            mesh.normals.push(*normal);
+            mesh.facet_id.push(*id);
+        }
+        mesh.indices.extend([first, first + 1, first + 2]);
+        mesh.rings.push((*id, corners.to_vec()));
+        piece_normals.push(*normal);
+        visible.push((0..3).map(|side| edge_drawn(index, side)).collect());
+    }
+    mesh.piece_normals = Some(piece_normals);
+    mesh.edge_visible = Some(visible);
+    Ok(mesh)
+}
+
+/// The mesh of `model` whose halfspaces are `planes`, centred on the base's bounding-box
+/// centre. A convex rough is the mesh its planes bound (facet ids index `planes`); a
+/// non-convex one is its own clipped surface (see [`mesh_of_surface`]).
+///
+/// # Errors
+///
+/// Returns why the model is invalid, or [`ShapeError::NothingLeft`] when nothing is left.
+fn mesh_of_model(model: &RoughModel, planes: &[(DVec3, f64)]) -> Result<SolidMesh, ShapeError> {
+    let centre = model.base.bounding_box_centre();
+    let Some(rough) = model.mesh() else {
+        return mesh_of_planes(planes, centre);
+    };
+    let base_facets = model.base.to_halfspaces(false)?.len();
+    let cuts = planes.get(base_facets..).unwrap_or_default();
+    mesh_of_surface(&rough.clipped_surface(cuts), base_facets, centre)
+}
+
 /// The model's planes translated so the base's bounding-box centre is the origin, and
 /// the mesh they bound. The mesh's facet ids index the model's halfspaces: the base's
-/// planes first, then one per cut.
+/// planes first, then one per cut. A non-convex rough's surface is facet `0` and its caps
+/// keep the ids of their cuts.
 ///
 /// # Errors
 ///
@@ -151,7 +291,7 @@ fn mesh_of_planes(planes: &[(DVec3, f64)], centre: DVec3) -> Result<SolidMesh, S
 /// close into a solid.
 pub(super) fn centred_mesh(model: &RoughModel) -> Result<SolidMesh, ShapeError> {
     let planes = model.halfspaces()?;
-    mesh_of_planes(&planes, model.base.bounding_box_centre())
+    mesh_of_model(model, &planes)
 }
 
 /// The volume cut `index` removes: the model's volume without it minus with it.
@@ -184,7 +324,7 @@ impl Solid {
     fn build(model: &RoughModel) -> Result<Self, ShapeError> {
         let planes = model.halfspaces()?;
         let measure = model.measure_with_halfspaces(&planes)?;
-        let mesh = mesh_of_planes(&planes, model.base.bounding_box_centre())?;
+        let mesh = mesh_of_model(model, &planes)?;
         Ok(Self {
             model: model.clone(),
             measure,
@@ -621,6 +761,67 @@ mod tests {
         }
         assert!((low + high).length() < 1e-9, "the box centre is the origin");
         assert!((high - low - DVec3::new(10.0, 8.0, 6.0)).length() < 1e-9);
+    }
+
+    /// The C-shaped mesh rough (a 20 mm cube with a 10 x 10 x 20 mm notch in its `+x`
+    /// face) with its top 2 mm sawn off by a face cut.
+    fn cut_c_shape() -> RoughModel {
+        RoughModel::new(
+            crate::gui::rough_plan::obj_import::mesh_base_of(
+                crate::gui::rough_plan::obj_import::C_SHAPE_OBJ,
+            ),
+            vec![RoughCut::Face {
+                normal: [0.0, 1.0, 0.0],
+                depth_mm: 2.0,
+            }],
+        )
+    }
+
+    #[test]
+    fn a_mesh_rough_is_drawn_from_its_clipped_surface_with_cut_faces_by_cut() {
+        let model = cut_c_shape();
+        let output = evaluate(&request(model))
+            .outcome
+            .expect("a valid mesh rough");
+        // The mesh volume, less the 20 x 2 x 20 mm slab: the notch is not in the slab.
+        assert!(
+            (output.measure.volume_mm3 - 5200.0).abs() < 1e-6,
+            "{}",
+            output.measure.volume_mm3
+        );
+        let mesh = &output.mesh;
+        let pieces = mesh.piece_normals.as_ref().expect("one normal per ring");
+        let visible = mesh.edge_visible.as_ref().expect("one flag list per ring");
+        assert_eq!(pieces.len(), mesh.rings.len());
+        assert_eq!(visible.len(), mesh.rings.len());
+        assert!(visible.iter().all(|flags| flags.len() == 3));
+        // The cube has six hull planes, so the cut's face is facet 6 and faces +y; every
+        // other triangle is the surface, facet 0.
+        let cap: Vec<usize> = (0..mesh.rings.len())
+            .filter(|&i| mesh.rings[i].0 == 6)
+            .collect();
+        assert!(!cap.is_empty(), "the cut leaves a face");
+        assert!(cap.iter().all(|&i| (pieces[i] - DVec3::Y).length() < 1e-9));
+        assert!(
+            mesh.rings.iter().all(|(id, _)| *id == 0 || *id == 6),
+            "ids: {:?}",
+            mesh.rings
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<BTreeSet<_>>()
+        );
+        // Flat runs hide their seams; creases and cap boundaries are drawn.
+        let drawn = visible.iter().flatten().filter(|&&d| d).count();
+        let hidden = visible.iter().flatten().filter(|&&d| !d).count();
+        assert!(drawn > 0 && hidden > 0, "drawn {drawn}, hidden {hidden}");
+        // The notch's back wall is in the mesh: x = 10 in the rough frame, 0 centred, over
+        // 5 < y < 15 (-5 < y < 5 centred).
+        assert!(mesh.rings.iter().any(|(id, ring)| {
+            *id == 0
+                && ring
+                    .iter()
+                    .all(|p| p.x.abs() < 1e-9 && p.y.abs() < 5.0 + 1e-9)
+        }));
     }
 
     #[test]

@@ -12,6 +12,7 @@ use super::{
 };
 use crate::geometry::{cuts::StandardGemCuts, plane::GpuFacetPlane};
 
+mod concave;
 mod dedup;
 mod measure;
 mod mesh;

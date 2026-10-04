@@ -2,7 +2,7 @@
 //! comparison (e.g. a saved snapshot against a design's current state) for a
 //! "compare two designs" view.
 
-use crate::design::ConstraintTier;
+use crate::design::{ConcaveTier, ConstraintTier};
 use indicatrix::geometry::meet_solver::SolvedTier;
 
 /// One tier's before/after comparison, position by position -- see
@@ -121,6 +121,52 @@ pub fn diff_tiers(
                 mast_before: before_masts.and_then(|s| s.get(index)).map(|s| s.mast),
                 mast_after: after_masts.and_then(|s| s.get(index)).map(|s| s.mast),
             }
+        })
+        .collect()
+}
+
+/// One concave tier's before/after comparison, position by position -- see
+/// [`diff_concave_tiers`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConcaveTierDelta {
+    /// Position in both [`crate::design::Design::concave_tiers`] lists.
+    pub position: usize,
+    /// The tier in `before`, or `None` when it was added.
+    pub before: Option<ConcaveTier>,
+    /// The tier in `after`, or `None` when it was removed.
+    pub after: Option<ConcaveTier>,
+}
+
+impl ConcaveTierDelta {
+    /// `true` iff the tier exists on both sides and differs in any field
+    /// (tool code, θ, displacement, diameter, angle, motion, facet angle,
+    /// indices, name).
+    #[must_use]
+    pub fn changed(&self) -> bool {
+        matches!((&self.before, &self.after), (Some(b), Some(a)) if b != a)
+    }
+}
+
+/// Compares two concave tier lists position by position and reports only the
+/// positions that differ.
+///
+/// A tier present on one side only (added or removed) or present on both with
+/// any field changed is reported. Unchanged positions are left out, so two
+/// designs that agree on every concave tier compare as an empty list.
+///
+/// Positional for the same reason [`diff_tiers`] is: inserting a tier shifts
+/// every later position. Without this, a compare between two snapshots that
+/// differ only in a concave tier would read as "no change".
+#[must_use]
+pub fn diff_concave_tiers(before: &[ConcaveTier], after: &[ConcaveTier]) -> Vec<ConcaveTierDelta> {
+    (0..before.len().max(after.len()))
+        .filter_map(|position| {
+            let (b, a) = (before.get(position), after.get(position));
+            (b != a).then(|| ConcaveTierDelta {
+                position,
+                before: b.cloned(),
+                after: a.cloned(),
+            })
         })
         .collect()
 }

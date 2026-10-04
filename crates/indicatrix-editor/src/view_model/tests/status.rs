@@ -147,3 +147,19 @@ fn status_text_reports_the_girdle_diameter_remedy_for_an_unresolvable_depth_targ
          sentence in the status strip text, got: {text}"
     );
 }
+
+#[test]
+fn design_to_gpu_geometry_has_empty_tools_for_a_planar_design() {
+    let design = indicatrix_cut_core::Design::concave_fixture();
+    let mut planar = design.clone();
+    planar.concave_tiers.clear();
+    let (planes, tools, placements) = design_to_gpu_geometry(&planar);
+    assert_eq!(planes.len(), design_to_gpu_planes(&planar).len());
+    assert!(tools.is_empty() && placements.is_empty());
+
+    // With the concave tiers the planes are unchanged and one tool per placement joins.
+    let (concave_planes, tools, placements) = design_to_gpu_geometry(&design);
+    assert_eq!(concave_planes.len(), planes.len());
+    assert_eq!(tools.len(), design.concave_placement_count());
+    assert_eq!(placements.len(), tools.len());
+}

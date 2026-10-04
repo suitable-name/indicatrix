@@ -3,7 +3,7 @@ import { Theme } from "../components/theme.slint";
 import { AppModel } from "../models/app_model.slint";
 import { GuideModel } from "../models/guide_model.slint";
 
-// The dock's own colour tokens and its small button, kept next to the tier table so the
+// The dock's own color tokens and its small button, kept next to the tier table so the
 // shared `Theme` (edited by several lanes) does not have to grow. Same values as the
 // desktop's `theme.slint`.
 export global TableStyle {
@@ -31,7 +31,7 @@ export component MiniField inherits LineEdit {
 }
 
 // A compact text button for the command bar and the table toolbar (the std `Button` is
-// too wide for a 340px dock). `accent` picks the label colour.
+// too wide for a 340px dock). `accent` picks the label color.
 export component ToolButton inherits Rectangle {
     in property <string> text;
     in property <bool> enabled: true;

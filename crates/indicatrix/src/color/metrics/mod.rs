@@ -75,17 +75,20 @@ mod types;
 mod visibility;
 
 pub use cache::{
-    MetricsCache, MetricsCacheKey, compute_or_reuse_metrics, compute_or_reuse_pose_metrics,
+    MetricsCache, MetricsCacheKey, compute_or_reuse_metrics, compute_or_reuse_metrics_geom,
+    compute_or_reuse_pose_metrics, compute_or_reuse_pose_metrics_geom,
 };
 pub use camera::camera_view_basis;
-pub use evaluate::evaluate_gem_optical_metrics;
+pub use evaluate::{evaluate_gem_optical_metrics, evaluate_gem_optical_metrics_geom};
 pub use profile::{
     EVALUATIONS_PER_AXIS, PROFILE_AZIMUTHS_DEG, TILT_ANGLES_DEG, evaluate_angular_profile,
-    evaluate_angular_profile_at_azimuth, evaluate_full_axis_profile_at_azimuth,
-    evaluate_full_axis_profile_at_azimuth_stepped,
+    evaluate_angular_profile_at_azimuth, evaluate_angular_profile_at_azimuth_geom,
+    evaluate_angular_profile_geom, evaluate_full_axis_profile_at_azimuth,
+    evaluate_full_axis_profile_at_azimuth_geom, evaluate_full_axis_profile_at_azimuth_stepped,
+    evaluate_full_axis_profile_at_azimuth_stepped_geom,
 };
 pub use sweep::{
-    AxisProfile, SweepProgress, evaluate_all_axes_profiles, evaluate_all_axes_profiles_stepped,
-    total_evaluations,
+    AxisProfile, SweepProgress, evaluate_all_axes_profiles, evaluate_all_axes_profiles_geom,
+    evaluate_all_axes_profiles_stepped, evaluate_all_axes_profiles_stepped_geom, total_evaluations,
 };
 pub use types::{GemOpticalMetrics, PROFILE_ANGLES_DEG};

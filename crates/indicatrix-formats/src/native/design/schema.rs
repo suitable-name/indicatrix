@@ -24,11 +24,12 @@
 //! | `draft` | `true` when the design did not solve at save time; informational. |
 //! | `[meta]` | Descriptive facts that cannot be recomputed: id, title, designer, source, notes, tags, rights, dates ([`DesignMetadata`]). |
 //! | `[preform]` | Rough shape and size ([`PreformTable`]). |
-//! | `[material]` | Material name, SG/RI overrides, custom snapshot, body colour ([`MaterialTable`]). |
+//! | `[material]` | Material name, SG/RI overrides, custom snapshot, body color ([`MaterialTable`]). |
 //! | `[schedule]` | Gear, symmetry, mirror, version banner, authored RI, headers, footnotes ([`ScheduleTable`]). |
 //! | `[source]` | Printed Vol/W^3, L/W, C/W, P/W, H/W of a catalogue row ([`SourceTable`]). |
 //! | `[history]` | Bounded trail of edit descriptions ([`HistoryTable`]). |
 //! | `[[tiers]]` | Every tier in full, in cutting order ([`TierTable`]). |
+//! | `[[concave_tiers]]` | Concave (fantasy-cut) tiers with their tool lines, only when present; the file is then `version = 2` and carries `concave_frame = "v0"` ([`ConcaveTierTable`]). |
 //! | `[[attachments]]` | Files that cannot be recomputed, as base64 with size and SHA-256 ([`AttachmentTable`]). |
 //!
 //! # Tiers
@@ -165,7 +166,9 @@
 //! ```
 
 use super::{DesignMetadata, attachment::AttachmentTable};
-use crate::native::{HistoryTable, MaterialTable, PreformTable, SourceTable, TierTable};
+use crate::native::{
+    ConcaveTierTable, HistoryTable, MaterialTable, PreformTable, SourceTable, TierTable,
+};
 
 /// The value of the `format` header key.
 pub const DESIGN_FORMAT: &str = "indicatrix-design";
@@ -176,7 +179,23 @@ pub const DESIGN_FORMAT: &str = "indicatrix-design";
 /// optional key) does not bump it, because unknown keys are preserved.
 pub const DESIGN_VERSION: u32 = 1;
 
-/// Upper bound on the number of tiers a file may hold.
+/// The schema version of a file that carries concave tiers.
+///
+/// Written only when [`DesignFile::concave_tiers`] is non-empty, so every planar
+/// file stays version 1 and byte-identical, and a build that predates concave
+/// tiers refuses the file with `UnsupportedVersion` instead of silently showing
+/// the stone without its concave cuts (plan §6.1, decision Q5).
+pub const DESIGN_VERSION_CONCAVE: u32 = 2;
+
+/// The concave-tier frame convention this build writes and reads (plan §11a).
+///
+/// It fixes where X, Y, Z are measured from and what θ is relative to. Stored next to the
+/// tiers because the numbers mean nothing without it; a reader that meets any
+/// other string refuses the file. `indicatrix-cut-core`'s `concave_frame`
+/// module owns the convention itself and asserts it equals this string.
+pub const CONCAVE_FRAME_V0: &str = "v0";
+
+/// Upper bound on the number of tiers a file may hold (flat and concave together).
 pub const MAX_DESIGN_TIERS: usize = 10_000;
 
 fn default_format() -> String {
@@ -226,7 +245,8 @@ pub struct DesignFile {
     /// The format name; always [`DESIGN_FORMAT`] for a file this build writes.
     #[serde(default = "default_format")]
     pub format: String,
-    /// The major schema version; always [`DESIGN_VERSION`] for a file this build writes.
+    /// The major schema version: [`DESIGN_VERSION`], or [`DESIGN_VERSION_CONCAVE`] for a
+    /// file with concave tiers (see [`DesignFile::with_concave_tiers`]).
     #[serde(default = "default_version")]
     pub version: u32,
     /// Real-world girdle diameter in millimetres, when the design is anchored.
@@ -236,6 +256,12 @@ pub struct DesignFile {
     /// every tier carries its full geometry either way.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub draft: bool,
+    /// The frame convention the concave tiers are expressed in: [`CONCAVE_FRAME_V0`]
+    /// when [`Self::concave_tiers`] is non-empty, empty otherwise. Declared
+    /// ahead of every table: a TOML scalar written after a table header would
+    /// belong to that table.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub concave_frame: String,
     /// Descriptive metadata; nothing is written when it is empty.
     #[serde(default, skip_serializing_if = "DesignMetadata::is_empty")]
     pub meta: DesignMetadata,
@@ -254,6 +280,10 @@ pub struct DesignFile {
     /// Every tier in full, in cutting order.
     #[serde(default)]
     pub tiers: Vec<TierTable>,
+    /// Concave (fantasy-cut) tiers in cutting order within their groups; empty (and
+    /// not written) for a planar design. Non-empty makes the file version 2.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub concave_tiers: Vec<ConcaveTierTable>,
     /// Files kept byte for byte (see the module documentation), in the order given.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<AttachmentTable>,
@@ -285,6 +315,8 @@ impl DesignFile {
             source: None,
             history: None,
             tiers,
+            concave_tiers: Vec::new(),
+            concave_frame: String::new(),
             attachments: Vec::new(),
             unknown: toml::Table::new(),
         }
@@ -316,6 +348,24 @@ impl DesignFile {
     #[must_use]
     pub fn with_history(mut self, history: HistoryTable) -> Self {
         self.history = (!history.is_empty()).then_some(history);
+        self
+    }
+
+    /// Sets [`Self::concave_tiers`] and keeps the two fields that depend on them
+    /// consistent: a non-empty list makes the file [`DESIGN_VERSION_CONCAVE`] with
+    /// [`CONCAVE_FRAME_V0`]; an empty one restores the planar header (version
+    /// [`DESIGN_VERSION`], no frame), so a planar design can never be written as
+    /// version 2.
+    #[must_use]
+    pub fn with_concave_tiers(mut self, concave_tiers: Vec<ConcaveTierTable>) -> Self {
+        if concave_tiers.is_empty() {
+            self.version = DESIGN_VERSION;
+            self.concave_frame = String::new();
+        } else {
+            self.version = DESIGN_VERSION_CONCAVE;
+            self.concave_frame = CONCAVE_FRAME_V0.to_string();
+        }
+        self.concave_tiers = concave_tiers;
         self
     }
 

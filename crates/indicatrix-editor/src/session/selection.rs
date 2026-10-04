@@ -55,20 +55,31 @@ impl Shift {
 ///
 /// Built from the `Edit` BEFORE it is applied: `Edit::AddTier`, `Edit::RemoveTier` and
 /// `Edit::MoveTier` (alone or inside an `Edit::Batch`, which `History` records for
-/// undoing a removal) are the only edits that move rows; every other edit leaves every
-/// tier where it was.
+/// undoing a removal), and their concave twins for the concave list, are the only
+/// edits that move rows; every other edit leaves every tier where it was.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TierIndexMap {
     shifts: Vec<Shift>,
+    /// The same for `design.concave_tiers`, which numbers independently of the flat
+    /// list: a concave edit never shifts a flat row and vice versa.
+    concave_shifts: Vec<Shift>,
 }
 
 impl TierIndexMap {
     /// The renumbering `edit` causes when applied.
     #[must_use]
     pub fn of(edit: &Edit) -> Self {
-        let mut shifts = Vec::new();
-        collect_shifts(edit, &mut shifts);
-        Self { shifts }
+        let mut map = Self::default();
+        collect_shifts(edit, &mut map);
+        map
+    }
+
+    /// [`Self::map`] for a position in `design.concave_tiers`.
+    #[must_use]
+    pub fn map_concave(&self, index: usize) -> Option<usize> {
+        self.concave_shifts
+            .iter()
+            .try_fold(index, |current, shift| shift.apply(current))
     }
 
     /// Where the tier that sat at `index` before the edit sits after it, or `None`
@@ -91,20 +102,27 @@ impl TierIndexMap {
     }
 }
 
-/// Appends `edit`'s row shifts to `shifts`, sub-edits of a batch in application order.
-fn collect_shifts(edit: &Edit, shifts: &mut Vec<Shift>) {
+/// Appends `edit`'s row shifts to `map`, sub-edits of a batch in application order.
+fn collect_shifts(edit: &Edit, map: &mut TierIndexMap) {
     match edit {
-        Edit::AddTier { index, .. } => shifts.push(Shift::Insert(*index)),
-        Edit::RemoveTier { index } => shifts.push(Shift::Remove(*index)),
-        Edit::MoveTier { from, to } => shifts.push(Shift::Move {
+        Edit::AddTier { index, .. } => map.shifts.push(Shift::Insert(*index)),
+        Edit::RemoveTier { index } => map.shifts.push(Shift::Remove(*index)),
+        Edit::MoveTier { from, to } => map.shifts.push(Shift::Move {
+            from: *from,
+            to: *to,
+        }),
+        Edit::AddConcaveTier { index, .. } => map.concave_shifts.push(Shift::Insert(*index)),
+        Edit::RemoveConcaveTier { index } => map.concave_shifts.push(Shift::Remove(*index)),
+        Edit::MoveConcaveTier { from, to } => map.concave_shifts.push(Shift::Move {
             from: *from,
             to: *to,
         }),
         Edit::Batch(edits) => {
             for sub_edit in edits {
-                collect_shifts(sub_edit, shifts);
+                collect_shifts(sub_edit, map);
             }
         }
+        // Every other edit moves no row of either list.
         _ => {}
     }
 }
@@ -185,6 +203,53 @@ mod tests {
     }
 
     #[test]
+    fn tier_index_map_is_identity_for_concave_edits() {
+        use indicatrix_cut_core::{
+            TierId,
+            design::{ConcaveTier, ConcaveTool, ToolMotion},
+        };
+        let concave = ConcaveTier {
+            name: "Groove".to_owned(),
+            angle_deg: -40.0,
+            indices: vec![0.0],
+            instructions: String::new(),
+            tool: ConcaveTool::Cylinder,
+            tool_azimuth_deg: 0.0,
+            displacement: [0.0; 3],
+            diameter_ratio: 0.5,
+            tool_angle_deg: None,
+            motion: ToolMotion::Reciprocating,
+        };
+        let edits = [
+            Edit::AddConcaveTier {
+                index: 0,
+                tier: concave.clone(),
+            },
+            Edit::RemoveConcaveTier { index: 0 },
+            Edit::ModifyConcaveTier {
+                index: 0,
+                tier: concave,
+            },
+            Edit::MoveConcaveTier { from: 0, to: 1 },
+            Edit::RestoreConcaveTierId {
+                index: 0,
+                id: TierId(3),
+            },
+            Edit::RestoreConcaveIndices {
+                tiers: vec![(0, vec![1.0])],
+            },
+        ];
+        for edit in &edits {
+            let map = TierIndexMap::of(edit);
+            assert_eq!(
+                [0, 1, 2, 3].map(|index| map.map(index)),
+                [Some(0), Some(1), Some(2), Some(3)],
+                "{edit:?} must not move flat rows"
+            );
+        }
+    }
+
+    #[test]
     fn edits_that_do_not_move_rows_leave_the_selection_alone() {
         let map = TierIndexMap::of(&Edit::RetargetAngles {
             changes: vec![(1, -40.0, -41.0)],
@@ -201,5 +266,33 @@ mod tests {
             BTreeSet::from([0]),
             "row 0 is gone and row 1 is now row 0"
         );
+    }
+
+    #[test]
+    fn concave_edits_renumber_the_concave_list_only() {
+        let concave = indicatrix_cut_core::Design::concave_fixture()
+            .concave_tiers
+            .remove(0);
+        let insert = TierIndexMap::of(&Edit::AddConcaveTier {
+            index: 1,
+            tier: concave,
+        });
+        assert_eq!(
+            [0, 1, 2].map(|index| insert.map_concave(index)),
+            [Some(0), Some(2), Some(3)]
+        );
+        let remove = TierIndexMap::of(&Edit::RemoveConcaveTier { index: 0 });
+        assert_eq!(
+            [0, 1].map(|index| remove.map_concave(index)),
+            [None, Some(0)]
+        );
+        let mv = TierIndexMap::of(&Edit::MoveConcaveTier { from: 0, to: 1 });
+        assert_eq!(
+            [0, 1, 2].map(|index| mv.map_concave(index)),
+            [Some(1), Some(0), Some(2)]
+        );
+        // A flat edit leaves the concave list alone.
+        let flat = TierIndexMap::of(&Edit::RemoveTier { index: 0 });
+        assert_eq!(flat.map_concave(0), Some(0));
     }
 }

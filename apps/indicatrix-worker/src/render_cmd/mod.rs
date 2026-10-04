@@ -183,6 +183,8 @@ mod tests {
             backdrop: 0.0,
             environment: indicatrix_net::scene::SceneEnvironment::Studio,
             surface_glare: 1.0,
+            tools: Vec::new(),
+            fluorescence: Default::default(),
         };
         let path = dir.join("scene.json");
         std::fs::write(&path, serde_json::to_string(&scene).unwrap()).unwrap();
@@ -284,6 +286,8 @@ mod tests {
             backdrop: 0.0,
             environment: indicatrix_net::scene::SceneEnvironment::Studio,
             surface_glare: 1.0,
+            tools: Vec::new(),
+            fluorescence: Default::default(),
         };
         scene.environment =
             indicatrix_net::scene::SceneEnvironment::Hdr(indicatrix_net::scene::HdrEnvironment {
@@ -338,6 +342,8 @@ mod tests {
             backdrop: 0.0,
             environment: indicatrix_net::scene::SceneEnvironment::Studio,
             surface_glare: 1.0,
+            tools: Vec::new(),
+            fluorescence: Default::default(),
         };
         scene.planes[0].normal = [0.0, 0.0, 0.0];
         let scene_path = dir.join("scene.json");

@@ -79,6 +79,7 @@ fn model(volume_mm3: f64, planes: Vec<(DVec3, f64)>) -> ModelGeometry {
         volume_mm3,
         extents_mm: [10.0; 3],
         planes,
+        mesh: None,
     }
 }
 
@@ -124,14 +125,73 @@ fn a_piece_crossing_a_cut_is_measured_by_the_part_inside_the_rough() {
         fill(&layout, &cube_without_a_corner()).as_deref(),
         Some("stone uses 54 % of its piece")
     );
-    let volume = piece_model_volume(&cube_without_a_corner().planes, [6.0; 3], [4.0; 3]);
+    let volume = piece_model_volume(&cube_without_a_corner(), [6.0; 3], [4.0; 3]);
     assert!(
         volume.is_some_and(|v| (v - 59.5).abs() < 1e-9),
         "clipped piece volume {volume:?}"
     );
     // A piece the cut plane only touches is still its full box.
-    let clear = piece_model_volume(&cube_without_a_corner().planes, [0.0; 3], [4.0; 3]);
+    let clear = piece_model_volume(&cube_without_a_corner(), [0.0; 3], [4.0; 3]);
     assert_eq!(clear, Some(64.0));
+}
+
+#[test]
+fn a_piece_over_a_notch_is_measured_by_the_mesh() {
+    use crate::gui::rough_plan::obj_import::{C_SHAPE_OBJ, parse_obj_mesh};
+    use indicatrix_cut_core::rough_plan::{RoughModel, import_mesh};
+    let (points, triangles) = parse_obj_mesh(C_SHAPE_OBJ).expect("parses");
+    let (base, _) = import_mesh(&points, &triangles).expect("imports");
+    let geometry = ModelGeometry::of(&RoughModel::new(base, Vec::new())).expect("valid");
+    assert!(geometry.mesh.is_some());
+    // The piece x 8..12 over all of y and z loses the notch (x > 10, 5 < y < 15).
+    let over = piece_model_volume(&geometry, [8.0, 0.0, 0.0], [4.0, 20.0, 20.0]);
+    assert!(over.is_some_and(|v| (v - 1200.0).abs() < 1e-3), "{over:?}");
+    let solid = piece_model_volume(&geometry, [0.0; 3], [10.0, 20.0, 20.0]);
+    assert!(
+        solid.is_some_and(|v| (v - 4000.0).abs() < 1e-3),
+        "{solid:?}"
+    );
+    // A piece wholly inside the notch holds no material.
+    assert_eq!(
+        piece_model_volume(&geometry, [12.0, 6.0, 1.0], [4.0, 4.0, 4.0]),
+        None
+    );
+}
+
+#[test]
+fn a_mesh_piece_volume_is_measured_once_per_box() {
+    use crate::gui::rough_plan::obj_import::{C_SHAPE_OBJ, parse_obj_mesh};
+    use indicatrix_cut_core::rough_plan::{RoughModel, import_mesh};
+    let (points, triangles) = parse_obj_mesh(C_SHAPE_OBJ).expect("parses");
+    let (base, _) = import_mesh(&points, &triangles).expect("imports");
+    let geometry = ModelGeometry::of(&RoughModel::new(base, Vec::new())).expect("valid");
+    let cache = || {
+        geometry
+            .mesh
+            .as_ref()
+            .expect("a mesh")
+            .volumes
+            .lock()
+            .unwrap()
+            .len()
+    };
+    assert_eq!(cache(), 0);
+    let first = piece_model_volume(&geometry, [8.0, 0.0, 0.0], [4.0, 20.0, 20.0]);
+    assert_eq!(cache(), 1);
+    // The same box again, and a box with no material, are answered from the cache, bit
+    // for bit; a different box is measured on its own.
+    let again = piece_model_volume(&geometry, [8.0, 0.0, 0.0], [4.0, 20.0, 20.0]);
+    assert_eq!(first.map(f64::to_bits), again.map(f64::to_bits));
+    assert_eq!(cache(), 1);
+    assert_eq!(
+        piece_model_volume(&geometry, [12.0, 6.0, 1.0], [4.0, 4.0, 4.0]),
+        None
+    );
+    assert_eq!(
+        piece_model_volume(&geometry, [12.0, 6.0, 1.0], [4.0, 4.0, 4.0]),
+        None
+    );
+    assert_eq!(cache(), 2);
 }
 
 #[test]
@@ -141,10 +201,7 @@ fn a_piece_outside_the_rough_has_no_fill_figure() {
     let halved = model(500.0, planes);
     let layout = layout(vec![stone(1.0, UP, 10.0, [6.0, 0.0, 0.0], [4.0; 3])]);
     assert_eq!(fill(&layout, &halved), None);
-    assert_eq!(
-        piece_model_volume(&halved.planes, [1.0; 3], [0.0, 1.0, 1.0]),
-        None
-    );
+    assert_eq!(piece_model_volume(&halved, [1.0; 3], [0.0, 1.0, 1.0]), None);
 }
 
 #[test]

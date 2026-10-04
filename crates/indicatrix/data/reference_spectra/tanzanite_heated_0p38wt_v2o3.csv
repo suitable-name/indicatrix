@@ -1,0 +1,27 @@
+# sample: heated tanzanite
+# host: zoisite (Pnma), biaxial; alpha || a, beta || b, gamma || c
+# composition: 0.38 wt% V2O3
+# units: lambda_nm; alpha in cm^-1, Napierian (T = exp(-alpha*L), L in cm)
+# path_cm: 0.40
+# source: research-2026-10-polarized-spectra.md section 4 "Napierian alpha" table (user-delivered, secondary, unverified; sparse 19-point grid)
+# lab: beta_par_b | D65 | 0.4 | 45.2 | 8.5 | -46.2
+lambda_nm,beta_par_b
+350,3.40
+370,2.60
+400,1.85
+425,1.25
+450,0.85
+475,0.65
+500,0.95
+520,1.60
+545,2.95
+585,5.80
+605,5.40
+635,4.10
+660,3.20
+683.5,2.65
+740,4.90
+800,2.10
+850,0.85
+950,0.30
+1050,0.15

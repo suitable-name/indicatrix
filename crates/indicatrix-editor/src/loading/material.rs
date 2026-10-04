@@ -74,7 +74,7 @@ pub fn ri_override_for_material_pick(
 /// suggestion (`super::material_lookup::nearest_built_in_material`) is offered in the
 /// first place.
 ///
-/// `current`'s `specific_gravity_override` and `body_colour_override` are
+/// `current`'s `specific_gravity_override` and `body_color_override` are
 /// carried through unchanged -- this only ever touches
 /// `name`/`refractive_index_override`; see [`ri_override_to_preserve`] for why
 /// the override is pinned at all.
@@ -88,7 +88,7 @@ pub fn material_selection_for_accepted_suggestion(
         name: Some(name.to_string()),
         specific_gravity_override: current.specific_gravity_override,
         refractive_index_override: ri_override_to_preserve(name, schedule_ri),
-        body_colour_override: current.body_colour_override,
+        body_color_override: current.body_color_override,
     }
 }
 

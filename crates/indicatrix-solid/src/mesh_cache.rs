@@ -18,10 +18,18 @@
 //! pattern, in slice order: [`Vec3`]/`f32` do not implement `Hash`, so [`hash_planes`]
 //! hashes `to_bits()` of each component directly. Deterministic, which only matters
 //! for reproducible tests, not correctness.
+//!
+//! A concave stone ([`StoneGeometryBuf`] with tools) keys on
+//! [`StoneGeometryBuf::cache_key`], which continues the same FNV stream over the tool
+//! bytes and is *equal* to the planar key when there are none, so a tool-free stone
+//! behaves exactly as before.
 
-use super::raster;
+use super::{preview::StoneGeometryBuf, raster};
 use glam::{DVec3, Vec3};
-use indicatrix::geometry::stone_metrics::{SolidMesh, SolidStatus, build_solid_mesh};
+use indicatrix::geometry::{
+    ToolPrimitive,
+    stone_metrics::{SolidMesh, SolidStatus, build_solid_mesh_geom},
+};
 use std::sync::Arc;
 
 /// The 64-bit FNV-1a hash of `bytes` (offset basis `0xcbf29ce484222325`, prime
@@ -99,6 +107,34 @@ fn facet_centroids_of(rings: &[PreparedRing], plane_count: usize) -> Vec<Option<
     centroids
 }
 
+/// `centroids[facet_id]` for a concave stone: the mean of the simplified ring of that
+/// facet's *largest* piece (3-D area, first piece wins a tie).
+///
+/// A facet cut by a tool has several convex pieces, and the last-ring-wins rule of
+/// [`facet_centroids_of`] would hand back an arbitrary small one; the largest piece
+/// is where a hit-test or a label is most likely to land on the facet.
+fn largest_piece_centroids(rings: &[PreparedRing], facet_count: usize) -> Vec<Option<Vec3>> {
+    let mut best: Vec<Option<(f64, Vec3)>> = vec![None; facet_count];
+    for (facet_id, ring) in rings {
+        let Some(slot) = best.get_mut(*facet_id) else {
+            continue;
+        };
+        let origin = ring[0];
+        let doubled_area = ring
+            .windows(2)
+            .map(|pair| (pair[0] - origin).cross(pair[1] - origin))
+            .sum::<DVec3>()
+            .length();
+        if slot.is_none_or(|(area, _)| doubled_area > area) {
+            let sum: DVec3 = ring.iter().copied().sum();
+            *slot = Some((doubled_area, (sum / ring.len() as f64).as_vec3()));
+        }
+    }
+    best.into_iter()
+        .map(|entry| entry.map(|(_, centroid)| centroid))
+        .collect()
+}
+
 /// A [`SolidMesh`] plus every facet's pre-simplified ring, ready for
 /// [`SolidRasterizer::render_prepared`]. Only [`MeshCache::get_or_build`] builds one.
 #[derive(Debug)]
@@ -108,31 +144,58 @@ pub struct CachedMesh {
     /// `(facet_id, simplified ring)`, skipping any facet whose ring has fewer than 3
     /// points after simplification, in [`SolidMesh::rings`]'s own order.
     pub(super) rings: Vec<PreparedRing>,
+    /// For each entry of `rings`, its index in [`SolidMesh::rings`] (and so in
+    /// `piece_normals` / `edge_visible`), since a ring that collapses below three
+    /// corners is skipped and the two lists drift apart.
+    pub(super) ring_source: Vec<usize>,
+    /// Per entry of `rings`, per simplified edge `i -> i + 1`: whether it is drawn
+    /// (see [`SolidMesh::edge_visible`]). `None` on the planar path.
+    pub(super) edge_visible: Option<Vec<Vec<bool>>>,
     /// Every distinct corner of the simplified rings (merged within 1e-6 world
     /// units), built once with the mesh and shared by `Arc` with every frame drawn
     /// from it.
     pub corner_points: Arc<Vec<Vec3>>,
-    /// Facet id -> mean of that facet's simplified ring (`None` for a plane with no
-    /// ring), one entry per plane the mesh was built from; built once, `Arc`-shared.
+    /// Facet id -> mean of that facet's simplified ring (`None` for a facet with no
+    /// ring), one entry per facet (plane or tool) the mesh was built from; built
+    /// once, `Arc`-shared. On a concave stone the ring is the facet's largest piece.
     pub facet_centroids: Arc<Vec<Option<Vec3>>>,
 }
 
 impl CachedMesh {
-    fn build(mesh: SolidMesh, plane_count: usize) -> Self {
+    pub(crate) fn build(mesh: SolidMesh, facet_count: usize) -> Self {
         let mut dedup_scratch = Vec::new();
         let mut rings = Vec::with_capacity(mesh.rings.len());
-        for (facet_id, ring) in &mesh.rings {
+        let mut ring_source = Vec::with_capacity(mesh.rings.len());
+        let mut edge_visible = mesh
+            .edge_visible
+            .as_ref()
+            .map(|_| Vec::with_capacity(mesh.rings.len()));
+        for (source, (facet_id, ring)) in mesh.rings.iter().enumerate() {
             let mut simplified = Vec::new();
             raster::simplify_ring(ring, &mut dedup_scratch, &mut simplified);
             if simplified.len() >= 3 {
+                if let (Some(flags), Some(visible)) = (&mut edge_visible, &mesh.edge_visible) {
+                    flags.push(raster::simplified_edge_flags(
+                        ring,
+                        &simplified,
+                        visible.get(source).map_or(&[], Vec::as_slice),
+                    ));
+                }
+                ring_source.push(source);
                 rings.push((*facet_id, simplified));
             }
         }
         let corner_points = Arc::new(distinct_corners(&rings));
-        let facet_centroids = Arc::new(facet_centroids_of(&rings, plane_count));
+        let facet_centroids = Arc::new(if mesh.piece_normals.is_some() {
+            largest_piece_centroids(&rings, facet_count)
+        } else {
+            facet_centroids_of(&rings, facet_count)
+        });
         Self {
             mesh,
             rings,
+            ring_source,
+            edge_visible,
             corner_points,
             facet_centroids,
         }
@@ -189,9 +252,8 @@ impl MeshCache {
     /// [`Self::last_closed`] first so it survives the failed rebuild.
     pub fn get_or_build(&mut self, planes: &[(Vec3, f32)]) -> Option<&CachedMesh> {
         let key = hash_planes(planes);
-        if self.key != Some(key) {
-            self.key = Some(key);
-            let widened: Vec<(DVec3, f64)> = planes
+        self.get_or_build_keyed(key, planes.len(), &[], || {
+            planes
                 .iter()
                 .map(|&(n, m)| {
                     (
@@ -199,10 +261,46 @@ impl MeshCache {
                         f64::from(m),
                     )
                 })
-                .collect();
-            let new_entry = match build_solid_mesh(&widened) {
+                .collect()
+        })
+    }
+
+    /// [`Self::get_or_build`] for a stone that may carry concave tools.
+    ///
+    /// Keyed on [`StoneGeometryBuf::cache_key`], which equals the planar key when
+    /// `geometry.tools` is empty, so a tool-free `geometry` shares its cache slot
+    /// with the same planes passed to [`Self::get_or_build`] and builds the
+    /// identical mesh. Tool `k` is facet id `planes.len() + k`.
+    pub fn get_or_build_geometry(&mut self, geometry: &StoneGeometryBuf) -> Option<&CachedMesh> {
+        let key = geometry.cache_key();
+        self.get_or_build_keyed(
+            key,
+            geometry.as_geometry().facet_count(),
+            &geometry.tools,
+            || {
+                geometry
+                    .planes
+                    .iter()
+                    .map(|plane| plane.to_halfspace_f64())
+                    .collect()
+            },
+        )
+    }
+
+    /// The shared body of both `get_or_build*` entry points: rebuild only when
+    /// `key` changed, keeping the outgoing `Closed` entry as `last_closed`.
+    fn get_or_build_keyed(
+        &mut self,
+        key: u64,
+        facet_count: usize,
+        tools: &[ToolPrimitive],
+        widened_planes: impl FnOnce() -> Vec<(DVec3, f64)>,
+    ) -> Option<&CachedMesh> {
+        if self.key != Some(key) {
+            self.key = Some(key);
+            let new_entry = match build_solid_mesh_geom(&widened_planes(), tools) {
                 SolidStatus::Closed(mesh) => {
-                    CacheEntry::Closed(CachedMesh::build(mesh, planes.len()))
+                    CacheEntry::Closed(CachedMesh::build(mesh, facet_count))
                 }
                 other => CacheEntry::Other(other),
             };
@@ -275,7 +373,7 @@ impl MeshCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use indicatrix::optics::raytracer::Camera;
+    use indicatrix::{geometry::stone_metrics::build_solid_mesh, optics::raytracer::Camera};
     use raster::{SolidRasterizer, SolidStyle};
 
     fn box_planes(y_half: f32) -> Vec<(Vec3, f32)> {
@@ -293,6 +391,76 @@ mod tests {
     /// `x`/`z`); `build_solid_mesh` reports it `Unbounded`.
     fn unbounded_planes() -> Vec<(Vec3, f32)> {
         vec![(Vec3::X, 1.0), (Vec3::NEG_X, 1.0)]
+    }
+
+    /// A cylinder along `z` lying across the top of the unit box of [`box_planes`]:
+    /// a groove, so the stone is genuinely concave.
+    fn groove() -> ToolPrimitive {
+        ToolPrimitive::cylinder(Vec3::new(0.0, 0.6, 0.0), Vec3::Z, 0.3, 2.0)
+    }
+
+    fn grooved_box() -> StoneGeometryBuf {
+        StoneGeometryBuf {
+            tools: vec![groove()],
+            placements: vec![(0, 0)],
+            ..StoneGeometryBuf::from_halfspaces(&box_planes(0.6))
+        }
+    }
+
+    #[test]
+    fn cache_key_equals_the_planar_key_when_tools_are_empty() {
+        let planes = box_planes(0.6);
+        let planar = StoneGeometryBuf::from_halfspaces(&planes);
+        assert_eq!(planar.cache_key(), hash_planes(&planes));
+        assert_eq!(planar.halfspaces(), planes, "the plane conversion is exact");
+
+        let grooved = grooved_box();
+        assert_ne!(grooved.cache_key(), planar.cache_key());
+        let mut other_tool = grooved_box();
+        other_tool.tools[0].origin[1] = 0.5;
+        assert_ne!(other_tool.cache_key(), grooved.cache_key());
+        let mut renamed = grooved_box();
+        renamed.placements = vec![(3, 4)];
+        assert_eq!(
+            renamed.cache_key(),
+            grooved.cache_key(),
+            "placements are bookkeeping, not geometry"
+        );
+    }
+
+    #[test]
+    fn a_tool_free_geometry_shares_the_planar_cache_slot() {
+        let mut cache = MeshCache::default();
+        let planes = box_planes(0.6);
+        let planar = cache.get_or_build(&planes).unwrap().mesh.positions.clone();
+        let geometry = StoneGeometryBuf::from_halfspaces(&planes);
+        let via_geometry = cache.get_or_build_geometry(&geometry).unwrap();
+        assert_eq!(via_geometry.mesh.positions, planar);
+        assert!(via_geometry.mesh.piece_normals.is_none());
+        assert!(
+            cache.last_closed().is_none(),
+            "the same key is a hit, not a rebuild"
+        );
+    }
+
+    #[test]
+    fn a_grooved_box_builds_a_concave_mesh_with_one_centroid_per_facet() {
+        let mut cache = MeshCache::default();
+        let stone = grooved_box();
+        let cached = cache.get_or_build_geometry(&stone).expect("closes");
+        assert!(cached.mesh.piece_normals.is_some());
+        assert!(cached.edge_visible.is_some());
+        assert_eq!(cached.ring_source.len(), cached.rings.len());
+        assert_eq!(cached.facet_centroids.len(), 7, "six planes plus one tool");
+        assert!(
+            cached.facet_centroids[6].is_some(),
+            "the tool surface has a centroid"
+        );
+        let planar_top = cached.facet_centroids[2].expect("the +Y facet survives");
+        assert!(
+            planar_top.y > 0.5,
+            "taken from a piece lying on the top plane"
+        );
     }
 
     #[test]

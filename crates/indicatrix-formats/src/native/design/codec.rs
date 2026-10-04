@@ -6,7 +6,9 @@
 
 use super::{
     attachment::{AttachmentsError, validate_attachments},
-    schema::{DESIGN_FORMAT, DESIGN_VERSION, DesignFile, MAX_DESIGN_TIERS},
+    schema::{
+        CONCAVE_FRAME_V0, DESIGN_FORMAT, DESIGN_VERSION_CONCAVE, DesignFile, MAX_DESIGN_TIERS,
+    },
 };
 use crate::asc::AscParseError;
 use std::{collections::BTreeSet, fmt};
@@ -40,6 +42,18 @@ pub enum DesignFileError {
     TierMissingGeometry {
         /// Zero-based position of the tier in the file.
         index: usize,
+    },
+    /// A concave tier has no tool code or no finite diameter. Refused rather than
+    /// defaulted: a guessed tool would cut a different stone than the one saved.
+    ConcaveTierMissingGeometry {
+        /// Zero-based position of the concave tier in the file.
+        index: usize,
+    },
+    /// The file carries concave tiers in a frame convention this build does not know
+    /// (or none at all), so their X, Y, Z and θ cannot be interpreted.
+    UnsupportedConcaveFrame {
+        /// The `concave_frame` value the file carries (empty when it has none).
+        frame: String,
     },
     /// Two tiers carry the same `tier_id`.
     DuplicateTierId(u64),
@@ -78,6 +92,19 @@ impl fmt::Display for DesignFileError {
             Self::TierMissingGeometry { index } => {
                 write!(f, "tier {} has no angle_deg or indices recorded", index + 1)
             }
+            Self::ConcaveTierMissingGeometry { index } => write!(
+                f,
+                "concave tier {} has no tool code or diameter recorded",
+                index + 1
+            ),
+            Self::UnsupportedConcaveFrame { frame } if frame.is_empty() => write!(
+                f,
+                "the design has concave tiers but no 'concave_frame'; this Indicatrix reads frame '{CONCAVE_FRAME_V0}'"
+            ),
+            Self::UnsupportedConcaveFrame { frame } => write!(
+                f,
+                "the design's concave frame '{frame}' is unknown; this Indicatrix reads frame '{CONCAVE_FRAME_V0}'; update Indicatrix to open it"
+            ),
             Self::DuplicateTierId(id) => write!(f, "tier_id {id} is used by more than one tier"),
             Self::InvalidField { field, reason } => write!(f, "'{field}' is invalid: {reason}"),
             Self::Attachments(e) => write!(f, "the design file's attachments are invalid: {e}"),
@@ -163,10 +190,12 @@ pub fn check_header(text: &str) -> Result<u32, DesignFileError> {
     }
     match header.version {
         None => Err(DesignFileError::MissingVersion),
-        Some(v) if v > i64::from(DESIGN_VERSION) => Err(DesignFileError::UnsupportedVersion {
-            found: v,
-            supported: DESIGN_VERSION,
-        }),
+        Some(v) if v > i64::from(DESIGN_VERSION_CONCAVE) => {
+            Err(DesignFileError::UnsupportedVersion {
+                found: v,
+                supported: DESIGN_VERSION_CONCAVE,
+            })
+        }
         Some(v) if v < 1 => Err(DesignFileError::InvalidVersion(v)),
         Some(v) => u32::try_from(v).map_err(|_| DesignFileError::InvalidVersion(v)),
     }
@@ -191,6 +220,7 @@ pub fn validate_extras(file: &DesignFile) -> Result<(), DesignFileError> {
 /// # Errors
 ///
 /// [`DesignFileError::InvalidField`], [`DesignFileError::TierMissingGeometry`],
+/// [`DesignFileError::ConcaveTierMissingGeometry`], [`DesignFileError::UnsupportedConcaveFrame`],
 /// [`DesignFileError::DuplicateTierId`] or [`DesignFileError::Attachments`].
 pub fn validate(file: &DesignFile) -> Result<(), DesignFileError> {
     let teeth = file.schedule.gear_teeth.unsigned_abs();
@@ -204,14 +234,23 @@ pub fn validate(file: &DesignFile) -> Result<(), DesignFileError> {
             ),
         });
     }
-    if file.tiers.len() > MAX_DESIGN_TIERS {
+    let tier_count = file.tiers.len() + file.concave_tiers.len();
+    if tier_count > MAX_DESIGN_TIERS {
         return Err(DesignFileError::InvalidField {
             field: "tiers",
-            reason: format!(
-                "{} tiers; a design holds at most {MAX_DESIGN_TIERS}",
-                file.tiers.len()
-            ),
+            reason: format!("{tier_count} tiers; a design holds at most {MAX_DESIGN_TIERS}"),
         });
+    }
+    let frame_known = file.concave_frame == CONCAVE_FRAME_V0;
+    if !frame_known && (!file.concave_tiers.is_empty() || !file.concave_frame.is_empty()) {
+        return Err(DesignFileError::UnsupportedConcaveFrame {
+            frame: file.concave_frame.clone(),
+        });
+    }
+    for (index, tier) in file.concave_tiers.iter().enumerate() {
+        if tier.tool.trim().is_empty() || !tier.diameter_ratio.is_finite() {
+            return Err(DesignFileError::ConcaveTierMissingGeometry { index });
+        }
     }
     let mut seen = BTreeSet::new();
     for (index, tier) in file.tiers.iter().enumerate() {

@@ -100,9 +100,10 @@ impl Database {
                 competition_diagram, lw_ratio, refractive_index, index_gear,
                 volume, facets_count, facets, girdle_facets, shape, designer_info,
                 hw_ratio, tw_ratio, uw_ratio, pw_ratio, cw_ratio, symmetry_order, mirror_symmetry,
-                designer, source_citation, pdf_file, gem_file, shape_category
+                designer, source_citation, pdf_file, gem_file, shape_category,
+                concave_tiers, concave_facets
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21,
-                      ?22, ?23, ?24, ?25, ?26)",
+                      ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
         )?;
 
         stmt_detail
@@ -133,6 +134,8 @@ impl Database {
                 detail.pdf_file,
                 detail.gem_file,
                 detail.shape_category,
+                detail.concave_tiers,
+                detail.concave_facets,
             ])
             .context(format!(
                 "Failed to insert diagram detail for entry_id: {entry_id}"
@@ -191,8 +194,9 @@ impl Database {
         angle_settings: &[crate::model::angle::AngleSetting],
     ) -> Result<()> {
         let mut stmt_angle = conn.prepare_cached(
-            "INSERT INTO angle_settings (detail_id, order_idx, facet, angle, index_val, notes)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO angle_settings
+                (detail_id, order_idx, facet, angle, index_val, notes, tool, tool_line)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )?;
         for setting in angle_settings {
             stmt_angle
@@ -203,6 +207,8 @@ impl Database {
                     setting.angle,
                     setting.index,
                     setting.notes,
+                    setting.tool,
+                    setting.tool_line,
                 ])
                 .context(format!(
                     "Failed to insert angle setting for detail_id: {detail_id}"

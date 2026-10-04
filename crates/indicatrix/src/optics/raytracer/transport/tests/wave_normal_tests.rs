@@ -86,6 +86,7 @@ fn trace_forced_extraordinary_slab(
     let mut split_radiance = [0.0f32; NUM_CHANNELS];
     let mut exit_ctx = ExitSplitCtx {
         plane_soa: &plane_soa,
+        tools: &[],
         environment: EnvironmentSource::Studio {
             preset: LightingPreset::RingLights,
             exposure: 1.0,

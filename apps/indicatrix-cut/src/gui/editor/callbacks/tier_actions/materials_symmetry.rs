@@ -18,7 +18,7 @@ use crate::{
         editor::{
             guide,
             state::{
-                EditorState, body_colour_from_index, parse_design_material_form,
+                EditorState, body_color_from_index, parse_design_material_form,
                 tiers_incomplete_under_proposed_symmetry,
             },
             view::{SolidLastSolved, refresh_editor_panel_stale, submit_preview_replan},
@@ -33,13 +33,13 @@ use crate::{
 // `super::tests` exercises.
 pub(super) use indicatrix_editor::loading::ri_override_for_material_pick;
 
-/// The design settings panel's material combo + RI override field + Colour combo --
+/// The design settings panel's material combo + RI override field + color combo --
 /// applies [`Edit::SetMaterial`] via [`parse_design_material_form`], reading the combo's
 /// current option list from `editor_material_combo_options` (pushed fresh every
 /// refresh, so this always parses against the SAME list the user actually saw). The
-/// Colour combo is authoritative: its index becomes the selection's
-/// `body_colour_override` through [`body_colour_from_index`] (`0` = the material's
-/// own colour).
+/// color combo is authoritative: its index becomes the selection's
+/// `body_color_override` through [`body_color_from_index`] (`0` = the material's
+/// own color).
 pub(in crate::gui::editor) fn setup_apply_design_material_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -53,7 +53,7 @@ pub(in crate::gui::editor) fn setup_apply_design_material_callback(
     let solid_last_solved = Arc::clone(solid_last_solved);
     let ui_weak = ui.as_weak();
     ui.global::<EditorModel>().on_apply_design_material(
-        move |combo_index: i32, ri_override_text: SharedString, body_colour_index: i32| {
+        move |combo_index: i32, ri_override_text: SharedString, body_color_index: i32| {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
@@ -72,7 +72,7 @@ pub(in crate::gui::editor) fn setup_apply_design_material_callback(
             ) {
                 Ok(material) => {
                     let mut material =
-                        material.with_body_colour(body_colour_from_index(body_colour_index));
+                        material.with_body_color(body_color_from_index(body_color_index));
                     // A plain material
                     // pick (no typed RI override -- that path is left alone, it
                     // is an explicit choice) must not silently change what the

@@ -1,0 +1,50 @@
+# sample: synthetic V-corundum
+# host: corundum (Al2O3), uniaxial; E_perp_c = o-ray
+# composition: 0.26 wt% V2O3 (research: "305 ppma V"; the arithmetic gives about 1700 ppma per atom basis, see tests)
+# units: lambda_nm; alpha in cm^-1, Napierian (T = exp(-alpha*L), L in cm)
+# path_cm: 0.20
+# note: no measured CIELAB is given for this sample
+# source: research-2026-10-polarized-spectra.md section 3 "Napierian alpha" table, column V-corundum E_perp_c (user-delivered, secondary, unverified)
+lambda_nm,E_perp_c
+350,2.10
+360,2.75
+370,3.65
+380,4.90
+390,6.50
+398,7.35
+400,7.42
+405,7.38
+410,7.15
+415,6.60
+420,5.80
+430,3.90
+440,2.25
+450,1.20
+460,0.70
+470,0.48
+480,0.42
+490,0.51
+500,0.82
+510,1.35
+520,2.10
+530,3.25
+540,4.65
+550,5.95
+560,6.80
+570,7.25
+575,7.35
+580,7.20
+590,6.45
+600,5.30
+610,4.10
+620,2.90
+630,1.85
+640,1.10
+650,0.65
+660,0.40
+670,0.28
+678.5,0.22
+680.4,0.18
+700,0.08
+750,0.02
+800,0.01

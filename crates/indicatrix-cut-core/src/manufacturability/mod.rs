@@ -22,6 +22,10 @@
 //!    NAME would not survive a plain `.asc` export/re-import --
 //!    geometrically fine today, but silently loses or mis-targets the reference
 //!    the moment the design round-trips through `.asc` text.
+//! 6. [`mesh_checks::check_concave_tools`]: only for a design with concave tiers, the
+//!    tool warnings of plan §9.1 (a tool that misses the stone, breaks through it,
+//!    removes a meet or hull vertex, overlaps another, or leaves a sliver). Absent
+//!    for a planar design, so its output is unchanged.
 //!
 //! [`check_manufacturability`] runs all five together over an
 //! **already-solved** [`crate::design::Design`] (see its own doc comment for why that
@@ -61,7 +65,8 @@ use indicatrix::geometry::meet_solver::SolvedTier;
 
 pub use authored_checks::{check_cut_order, check_gear_quantization, check_meet_name_asc_safety};
 pub use mesh_checks::{
-    DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, check_manufacturability, degenerate_suspects,
+    DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, check_concave_tools, check_manufacturability,
+    concave_tool_warnings, degenerate_suspects,
 };
 pub use warning::ManufacturabilityWarning;
 

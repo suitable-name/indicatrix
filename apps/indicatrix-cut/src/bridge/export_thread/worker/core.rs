@@ -17,8 +17,9 @@ use crate::{
 };
 use glam::Vec3;
 use indicatrix::{
+    geometry::tool::StoneGeometry,
     optics::raytracer::{Camera, DEFAULT_FOV_DEG, EnvironmentSource},
-    renderer::gpu_backend::{GpuBackend, GpuSceneRef},
+    renderer::gpu_backend::{GpuBackend, GpuSceneRef, scene_routes_to_gpu},
 };
 use lanes::{RenderJob, render_on_ctx};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -75,6 +76,24 @@ fn with_export_ctx<R>(
     // sweeping many frames retries the GPU on every frame even after a panic on an
     // earlier one, rather than writing it off for the rest of the sweep.
     let gpu_retired = AtomicBool::new(false);
+    // A stone with tools is the CPU tracer's alone (the WGSL kernels know nothing of
+    // them): swapping in a backend with no device makes every GPU attempt below decline,
+    // which each batch already answers by tracing the full share on the CPU, exactly as
+    // a build without the `gpu` feature does.
+    let no_gpu = GpuBackend::disabled();
+    let gpu = if scene_routes_to_gpu(
+        &scene.material,
+        StoneGeometry {
+            planes: &scene.active_planes,
+            tools: &scene.tools,
+        },
+        &scene.fluorescence,
+        environment.lighting_preset().unwrap_or_default(),
+    ) {
+        gpu
+    } else {
+        &no_gpu
+    };
     let ctx = ExportCtx {
         width,
         height,

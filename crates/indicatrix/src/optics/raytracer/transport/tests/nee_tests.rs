@@ -221,7 +221,7 @@ fn frosted_girdle_nee_on_and_off_converge_to_the_same_mean_on_a_uniform_hdr_map(
     let planes = StandardGemCuts::standard_round_brilliant();
     let plane_soa = build_plane_soa(&planes);
     let finishes = crate::geometry::girdle_facet_finishes(&planes);
-    // Colourless, non-dispersive, no volumetric scattering -- isolates the
+    // colorless, non-dispersive, no volumetric scattering -- isolates the
     // frosted-facet NEE machinery from both chromatic absorption and the HG
     // scattering NEE path.
     let material =
@@ -296,14 +296,14 @@ fn frosted_girdle_nee_on_and_off_converge_to_the_same_mean_on_a_uniform_hdr_map(
     );
 }
 
-/// Regression: the two tests above use a colourless, NON-dispersive scattering
+/// Regression: the two tests above use a colorless, NON-dispersive scattering
 /// probe, which cannot see either bug fixed alongside this test -- (a) the exit-split
 /// radiance a scatter event's continuation picks up had no MIS weight against a live
 /// NEE carry, and (b) the scattering-point NEE deposit was weighted by the FINAL
 /// post-loop `path_pdf` rather than its own moment's `path_pdf`/`compat`. Both biases
 /// are chromatic MIS-family effects that a same-index-every-channel material cannot
 /// exercise (every channel shares one family). `GemMaterial::diamond()` is genuinely
-/// dispersive (`Sellmeier3`) and colourless (`sigma_a == 0`), isolating both fixes from
+/// dispersive (`Sellmeier3`) and colorless (`sigma_a == 0`), isolating both fixes from
 /// chromatic absorption -- see `ruby_scattering_nee_on_and_off_agree_within_half_a_percent`
 /// below for the absorbing-medium companion. Before the fix this measured NEE-on/NEE-off
 /// disagreeing by several percent (review-measured: 1.0598 vs 0.9911 relative to the

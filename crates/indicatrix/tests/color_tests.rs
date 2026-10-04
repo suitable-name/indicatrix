@@ -1,4 +1,4 @@
-//! Tests for the wide-gamut colour module (`indicatrix::color::space`, `indicatrix::color::gamut`).
+//! Tests for the wide-gamut color module (`indicatrix::color::space`, `indicatrix::color::gamut`).
 //!
 //! This module is deliberately self-contained and not wired into the renderer (see the
 //! module docs on `indicatrix::color::space`), so these tests exercise it directly rather
@@ -20,7 +20,7 @@ const ALL_SPACES: [ColorSpace; 4] = [
 ];
 
 /// Simple max-min saturation metric on an `[u8; 4]` encoded pixel: 0 for a neutral
-/// colour, approaching 1 for a fully saturated one.
+/// color, approaching 1 for a fully saturated one.
 ///
 /// Only meaningful for comparing two pixels encoded in the **same** [`ColorSpace`]:
 /// equal RGB ratios correspond to different chromaticities in different primaries, so
@@ -509,27 +509,27 @@ fn zero_radiance_encodes_to_opaque_black() {
 }
 
 // ---------------------------------------------------------------------------------
-// 6. `project_to_srgb` / `project_to_gamut` sanity: in-gamut colours pass through
-//    unchanged, and out-of-gamut colours are actually gamut-mapped, not passed through.
+// 6. `project_to_srgb` / `project_to_gamut` sanity: in-gamut colors pass through
+//    unchanged, and out-of-gamut colors are actually gamut-mapped, not passed through.
 // ---------------------------------------------------------------------------------
 
 #[test]
-fn project_to_gamut_passes_in_gamut_colours_through_unchanged() {
-    // A colour comfortably inside every gamut here (a warm, fairly desaturated tone).
+fn project_to_gamut_passes_in_gamut_colors_through_unchanged() {
+    // A color comfortably inside every gamut here (a warm, fairly desaturated tone).
     let xyz = Vec3::new(0.4, 0.38, 0.3);
     for &space in &ALL_SPACES {
         let mapped = project_to_gamut(xyz, space);
         let direct = space.xyz_to_linear(xyz);
         assert!(
             (mapped - direct).length() < 1e-5,
-            "{space:?}: in-gamut colour should pass through project_to_gamut unchanged, got {mapped:?} vs direct {direct:?}"
+            "{space:?}: in-gamut color should pass through project_to_gamut unchanged, got {mapped:?} vs direct {direct:?}"
         );
         assert!(mapped.x >= 0.0 && mapped.y >= 0.0 && mapped.z >= 0.0);
     }
 }
 
 #[test]
-fn project_to_srgb_actually_compresses_out_of_gamut_colours() {
+fn project_to_srgb_actually_compresses_out_of_gamut_colors() {
     let [x, y, z] = cie_1931_cmf(520.0);
     let xyz = Vec3::new(x, y, z);
     let mapped = indicatrix::color::gamut::project_to_srgb(xyz);
@@ -565,7 +565,7 @@ fn project_to_srgb_actually_compresses_out_of_gamut_colours() {
 /// Gamut-projecting at the original luminance, scaling by the luminance-only ACES
 /// ratio, then hard-clamping each channel to `[0, 1]` independently would reintroduce
 /// the per-channel clipping the luminance-only ACES design is meant to avoid. Instead,
-/// the tone-mapped colour routes through
+/// the tone-mapped color routes through
 /// [`indicatrix::color::gamut::project_to_gamut_bounded`], which desaturates toward
 /// white -- measurably LOWER max-min saturation than a hard-clamped result would give,
 /// for the identical input.

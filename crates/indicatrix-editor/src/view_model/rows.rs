@@ -19,9 +19,12 @@ use super::row_format::{
 fn full_precision(value: f64) -> String {
     format!("{value}")
 }
-use super::TierRow;
+use super::{TierRow, TierRowKind};
 use indicatrix::geometry::meet_solver::{Block, SolveStrategy, SolvedTier, classify_blocks};
-use indicatrix_cut_core::{ConstraintTier, Design, DesignSolveError, MissingAnchor};
+use indicatrix_cut_core::{
+    ConstraintTier, Design, DesignSolveError, ManufacturabilityWarning, MissingAnchor,
+    design::ConcaveTier,
+};
 use std::collections::BTreeMap;
 
 /// The mast/strategy-derived half of one tier row -- [`build_tier_row`]'s only
@@ -53,6 +56,7 @@ struct RowContext<'a> {
     warnings: &'a BTreeMap<usize, String>,
     /// See [`tier_margin_and_risk`]'s own doc comment.
     pavilion_partner_deg: Option<f64>,
+    tier_labels: &'a [indicatrix_cut_core::TierLabelInfo],
 }
 
 /// Builds one [`TierRow`] row from `tier`'s own fields plus its
@@ -86,11 +90,20 @@ fn build_tier_row(
         n_d,
         pavilion_partner_deg,
     );
+    let name = if tier.name.trim().is_empty() || indicatrix_cut_core::is_legacy_123_abc(&tier.name)
+    {
+        row_context
+            .tier_labels
+            .get(index)
+            .map_or_else(|| tier.name.clone(), |l| l.code.clone())
+    } else {
+        tier.name.clone()
+    };
     TierRow {
         index: index as i32,
-        angle_deg: format_angle_cell(tier.angle_deg),
-        angle_full: full_precision(tier.angle_deg),
-        name: tier.name.clone(),
+        angle_deg: format_angle_cell(tier.angle_deg.abs()),
+        angle_full: full_precision(tier.angle_deg.abs()),
+        name,
         indices: tier
             .indices
             .iter()
@@ -127,6 +140,98 @@ fn build_tier_row(
         // Patched in place afterward, once there is a whole row list to patch --
         // see `apply_proposed_angles`'s own doc comment.
         proposed_angle: String::new(),
+        kind: TierRowKind::Flat,
+        tool_line: String::new(),
+    }
+}
+
+/// The tool line a concave row carries: the four
+/// [`ConcaveTier::second_line_fields`] columns, joined with two spaces.
+#[must_use]
+pub fn concave_tool_line(tier: &ConcaveTier) -> String {
+    tier.second_line_fields().join("  ")
+}
+
+/// One [`TierRow`] per concave tier, in storage order, appended after the flat rows.
+///
+/// The tier table is an editing view, so (like the flat rows, which keep their
+/// stored order rather than cutting order) it lists concave tiers as authored; the
+/// cutting schedule ([`super::yield_report::cutting_instructions_rows`]) is the one
+/// view in `cutting_order()`. A concave tier has no mast, strategy, meet constraint
+/// or critical-angle margin, so those cells read as "not applicable" (`"-"`, an empty
+/// string, risk `-1`). `warnings` is [`TierWarnings::concave`].
+fn concave_tier_rows(design: &Design, warnings: &BTreeMap<usize, String>) -> Vec<TierRow> {
+    design
+        .concave_tiers
+        .iter()
+        .enumerate()
+        .map(|(index, tier)| {
+            let units = indicatrix_cut_core::orbit_units(&tier.indices, &design.meta);
+            let (orbit_status, orbit_incomplete) = orbit_status_text(&units);
+            TierRow {
+                index: index as i32,
+                angle_deg: format_angle_cell(tier.angle_deg.abs()),
+                angle_full: full_precision(tier.angle_deg.abs()),
+                name: tier.name.clone(),
+                indices: tier
+                    .indices
+                    .iter()
+                    .copied()
+                    .map(format_index_value)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                indices_full: tier
+                    .indices
+                    .iter()
+                    .copied()
+                    .map(full_precision)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                mast: "-".to_string(),
+                strategy: "Tool cut".to_string(),
+                strategy_detail: tier.instructions.clone(),
+                orbit_status,
+                orbit_incomplete,
+                block: if tier.is_crown_side() {
+                    "Crown"
+                } else {
+                    "Pavilion"
+                }
+                .to_string(),
+                risk_level: -1,
+                warning_text: warnings.get(&index).cloned().unwrap_or_default(),
+                kind: TierRowKind::Concave,
+                tool_line: concave_tool_line(tier),
+                ..TierRow::default()
+            }
+        })
+        .collect()
+}
+
+/// [`manufacturability_warnings_tagged`]'s findings split by what they are about:
+/// flat tier rows, concave tier rows (each grouped and `"; "`-joined like
+/// [`warning_text_by_tier`]), and nothing for the design-wide findings (tool
+/// overlaps, slivers, the export notice), which belong to the banner, not a row.
+/// One manufacturability pass feeds both, since its mesh checks are the costly part.
+struct TierWarnings {
+    flat: BTreeMap<usize, String>,
+    concave: BTreeMap<usize, String>,
+}
+
+impl TierWarnings {
+    fn of(design: &Design, solved: Option<&[SolvedTier]>) -> Self {
+        let (mut flat, mut concave) = (Vec::new(), Vec::new());
+        for finding in tagged_findings(design, solved) {
+            match finding.target {
+                WarningTarget::Flat(index) => flat.push((index, finding.text)),
+                WarningTarget::Concave(index) => concave.push((index, finding.text)),
+                WarningTarget::Design => {}
+            }
+        }
+        Self {
+            flat: warning_text_by_tier(&flat),
+            concave: warning_text_by_tier(&concave),
+        }
     }
 }
 
@@ -144,14 +249,16 @@ pub fn tier_items_stale(design: &Design, n_d: f64) -> Vec<TierRow> {
     // Never solved here (see this function's own doc comment), so only the two
     // mast-free manufacturability checks can run -- tagged "(pre-solve)" since
     // that is the whole design's state right now, not a completed pass.
-    let warnings = warning_text_by_tier(&manufacturability_warnings_tagged(design, None));
+    let warnings = TierWarnings::of(design, None);
     let (_, pavilion_partner_deg) = representative_crown_and_pavilion_angles_deg(design);
+    let tier_labels = indicatrix_cut_core::compute_tier_labels(&design.tiers);
     let row_context = RowContext {
         tier_blocks: &tier_blocks,
-        warnings: &warnings,
+        warnings: &warnings.flat,
         pavilion_partner_deg,
+        tier_labels: &tier_labels,
     };
-    design
+    let mut rows: Vec<TierRow> = design
         .tiers
         .iter()
         .enumerate()
@@ -171,7 +278,9 @@ pub fn tier_items_stale(design: &Design, n_d: f64) -> Vec<TierRow> {
             };
             build_tier_row(design, index, tier, n_d, info, &row_context)
         })
-        .collect()
+        .collect();
+    rows.extend(concave_tier_rows(design, &warnings.concave));
+    rows
 }
 
 /// [`tier_items_stale`]'s counterpart for a caller that still has the LAST real solve's
@@ -227,15 +336,17 @@ pub fn tier_items_stale_with_last_solved(
     // it may now be one edit old -- tagged "(pre-solve)" regardless, same as
     // `tier_items_stale`, since a fresh edit landed since it ran and nothing here
     // re-verifies it still holds.
-    let warnings = warning_text_by_tier(&manufacturability_warnings_tagged(design, None));
+    let warnings = TierWarnings::of(design, None);
     let mm_per_unit = design.yield_report(last_solved).mm_per_unit;
     let (_, pavilion_partner_deg) = representative_crown_and_pavilion_angles_deg(design);
+    let tier_labels = indicatrix_cut_core::compute_tier_labels(&design.tiers);
     let row_context = RowContext {
         tier_blocks: &tier_blocks,
-        warnings: &warnings,
+        warnings: &warnings.flat,
         pavilion_partner_deg,
+        tier_labels: &tier_labels,
     };
-    design
+    let mut rows: Vec<TierRow> = design
         .tiers
         .iter()
         .enumerate()
@@ -266,7 +377,9 @@ pub fn tier_items_stale_with_last_solved(
             };
             build_tier_row(design, index, tier, n_d, info, &row_context)
         })
-        .collect()
+        .collect();
+    rows.extend(concave_tier_rows(design, &warnings.concave));
+    rows
 }
 
 /// Patches `TierRow::proposed_angle` (`ui/types.slint`) onto each row one of `changes`'
@@ -291,7 +404,7 @@ pub fn tier_items_stale_with_last_solved(
 pub fn apply_proposed_angles(tiers: &mut [TierRow], changes: &[indicatrix_cut_core::AngleChange]) {
     for change in changes {
         if let Some(row) = tiers.get_mut(change.index) {
-            row.proposed_angle = format_angle_cell(change.to_deg);
+            row.proposed_angle = format_angle_cell(change.to_deg.abs());
         }
     }
 }
@@ -398,14 +511,16 @@ pub fn tier_items(design: &Design, n_d: f64) -> Vec<TierRow> {
             let tier_blocks = classify_blocks(&design.meet_tier_inputs());
             // Tagged "(pre-solve)" -- see `manufacturability_warnings_tagged`'s
             // own doc comment; there is no real solve to show warnings from yet.
-            let warnings = warning_text_by_tier(&manufacturability_warnings_tagged(design, None));
+            let warnings = TierWarnings::of(design, None);
             let (_, pavilion_partner_deg) = representative_crown_and_pavilion_angles_deg(design);
+            let tier_labels = indicatrix_cut_core::compute_tier_labels(&design.tiers);
             let row_context = RowContext {
                 tier_blocks: &tier_blocks,
-                warnings: &warnings,
+                warnings: &warnings.flat,
                 pavilion_partner_deg,
+                tier_labels: &tier_labels,
             };
-            design
+            let mut rows: Vec<TierRow> = design
                 .tiers
                 .iter()
                 .enumerate()
@@ -432,16 +547,18 @@ pub fn tier_items(design: &Design, n_d: f64) -> Vec<TierRow> {
                     );
                     build_tier_row(design, index, tier, n_d, info, &row_context)
                 })
-                .collect()
+                .collect();
+            rows.extend(concave_tier_rows(design, &warnings.concave));
+            rows
         }
     }
 }
 
-/// [`tier_items`]'s counterpart for a caller that already has an up-to-date
-/// `solved` mast list on hand -- builds every row's mast/strategy/detail straight
-/// from it instead of calling [`Design::solve`] again.
+/// [`tier_items`]'s counterpart for a caller that already has an up-to-date `solved`
+/// mast list on hand.
 ///
-/// Exists so the
+/// Builds every row's mast/strategy/detail straight from it instead of calling
+/// [`Design::solve`] again. Exists so the
 /// solid-preview worker's own replan solve (`solid_preview::live_update::
 /// plan_preview`, run off the UI thread) can feed the SAME masts into the tier
 /// table instead of a second, separately dispatched full solve recomputing them.
@@ -457,18 +574,20 @@ pub fn tier_items(design: &Design, n_d: f64) -> Vec<TierRow> {
 #[must_use]
 pub fn tier_items_from_solved(design: &Design, solved: &[SolvedTier], n_d: f64) -> Vec<TierRow> {
     let tier_blocks = classify_blocks(&design.meet_tier_inputs());
-    let warnings = warning_text_by_tier(&manufacturability_warnings_tagged(design, Some(solved)));
+    let warnings = TierWarnings::of(design, Some(solved));
     // `None` whenever the design carries no girdle diameter, which is
     // the only thing that anchors model units to a real size. Computed once here
     // rather than per row -- `yield_report` measures the whole solid.
     let mm_per_unit = design.yield_report(solved).mm_per_unit;
     let (_, pavilion_partner_deg) = representative_crown_and_pavilion_angles_deg(design);
+    let tier_labels = indicatrix_cut_core::compute_tier_labels(&design.tiers);
     let row_context = RowContext {
         tier_blocks: &tier_blocks,
-        warnings: &warnings,
+        warnings: &warnings.flat,
         pavilion_partner_deg,
+        tier_labels: &tier_labels,
     };
-    design
+    let mut rows: Vec<TierRow> = design
         .tiers
         .iter()
         .enumerate()
@@ -487,7 +606,9 @@ pub fn tier_items_from_solved(design: &Design, solved: &[SolvedTier], n_d: f64) 
             };
             build_tier_row(design, index, tier, n_d, info, &row_context)
         })
-        .collect()
+        .collect();
+    rows.extend(concave_tier_rows(design, &warnings.concave));
+    rows
 }
 
 /// [`TierRow::block`]'s one-word label for a [`Block`] -- shared by
@@ -502,54 +623,103 @@ const fn block_label(block: Block) -> &'static str {
     }
 }
 
+/// What a manufacturability finding is about, for attributing it to a row.
+enum WarningTarget {
+    /// A flat tier, by position in `design.tiers`.
+    Flat(usize),
+    /// A concave tier, by position in `design.concave_tiers`.
+    Concave(usize),
+    /// The design as a whole (tool overlaps, slivers, the export notice): no row.
+    Design,
+}
+
+/// One manufacturability finding, attributed.
+struct Finding {
+    target: WarningTarget,
+    text: String,
+}
+
 /// [`indicatrix_cut_core::manufacturability::check_manufacturability_available`]'s
-/// findings against `design`'s current state, as `(tier_index, display_text)`
-/// pairs -- lets a caller attribute a warning to its row
-/// (`ManufacturabilityWarning::tier_index`) instead of only a flattened
-/// `String`. `solved` is an already-[`Design::solve`]'d
+/// findings against `design`'s current state, each attributed to the flat tier, the
+/// concave tier or the design it is about -- lets a caller badge a row
+/// instead of only showing a flattened `String`. `solved` is an already-[`Design::solve`]'d
 /// mast list when one is available; passing `None` still runs the two
 /// mast-free checks (gear quantization, cut order) -- see
 /// [`check_manufacturability_available`](indicatrix_cut_core::manufacturability::check_manufacturability_available)'s
 /// own doc comment: a design that has never solved, or no
 /// longer does, must not lose every finding, only the two that genuinely need
 /// a mesh.
-fn manufacturability_warnings_by_tier(
-    design: &Design,
-    solved: Option<&[SolvedTier]>,
-) -> Vec<(usize, String)> {
+///
+/// `ManufacturabilityWarning::tier_index` reads `0` for every concave variant, so
+/// attributing by it alone would badge flat tier 0 with a tool's warning; the
+/// variants are matched here instead.
+fn manufacturability_findings(design: &Design, solved: Option<&[SolvedTier]>) -> Vec<Finding> {
     indicatrix_cut_core::manufacturability::check_manufacturability_available(
         design,
         solved,
         indicatrix_cut_core::manufacturability::DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2,
     )
     .iter()
-    .map(|warning| (warning.tier_index(), warning.to_string()))
+    .map(|warning| Finding {
+        target: match (warning, warning.concave_tier()) {
+            (_, Some(tier)) => WarningTarget::Concave(tier),
+            (
+                ManufacturabilityWarning::VanishingFacet { .. }
+                | ManufacturabilityWarning::UndersizedFacet { .. }
+                | ManufacturabilityWarning::FractionalIndex { .. }
+                | ManufacturabilityWarning::OutOfOrderMeet { .. }
+                | ManufacturabilityWarning::MeetNameNotAscSafe { .. },
+                None,
+            ) => WarningTarget::Flat(warning.tier_index()),
+            // `ToolsOverlap`, `ConcaveSliver`, the export notice (and any later
+            // variant that names no tier): about the whole design.
+            (_, None) => WarningTarget::Design,
+        },
+        text: warning.to_string(),
+    })
     .collect()
 }
 
-/// [`manufacturability_warnings_by_tier`], with each finding's text prefixed
-/// `"(pre-solve) "` when `solved` is `None`.
+/// [`manufacturability_findings`] with each text prefixed `"(pre-solve) "` when
+/// `solved` is `None` -- see [`manufacturability_warnings_tagged`] for why.
+fn tagged_findings(design: &Design, solved: Option<&[SolvedTier]>) -> Vec<Finding> {
+    let findings = manufacturability_findings(design, solved);
+    if solved.is_some() {
+        return findings;
+    }
+    findings
+        .into_iter()
+        .map(|finding| Finding {
+            text: format!("(pre-solve) {}", finding.text),
+            ..finding
+        })
+        .collect()
+}
+
+/// The findings about FLAT tiers, as `(tier_index, display_text)` pairs, each text
+/// prefixed `"(pre-solve) "` when `solved` is `None`.
 ///
 /// Every caller that shows these findings without a completed solve backing them must say
 /// so: the two mast-free checks are real and actionable before Solve ever runs, but must
 /// never be mistaken for a full manufacturability pass once the mesh checks are back in
-/// play too.
+/// play too. Findings about concave tiers or the design as a whole are not included
+/// (they have no flat row to land on); [`tier_items`] and its siblings put the concave
+/// ones on the concave rows.
 #[must_use]
 pub fn manufacturability_warnings_tagged(
     design: &Design,
     solved: Option<&[SolvedTier]>,
 ) -> Vec<(usize, String)> {
-    let pairs = manufacturability_warnings_by_tier(design, solved);
-    if solved.is_some() {
-        return pairs;
-    }
-    pairs
+    tagged_findings(design, solved)
         .into_iter()
-        .map(|(index, text)| (index, format!("(pre-solve) {text}")))
+        .filter_map(|finding| match finding.target {
+            WarningTarget::Flat(index) => Some((index, finding.text)),
+            WarningTarget::Concave(_) | WarningTarget::Design => None,
+        })
         .collect()
 }
 
-/// Groups [`manufacturability_warnings_by_tier`]/[`manufacturability_warnings_tagged`]'s
+/// Groups [`manufacturability_warnings_tagged`]'s
 /// pairs by tier index, joining more than one finding for the same tier with
 /// `"; "` -- what [`tier_items`]/[`tier_items_stale`] feed into each row's
 /// [`TierRow::warning_text`].

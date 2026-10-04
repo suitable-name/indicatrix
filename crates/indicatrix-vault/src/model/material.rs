@@ -50,4 +50,7 @@ pub struct CustomMaterialRow {
     /// the same way `crystal_system`/`optical_character` do -- infer or leave blank,
     /// never guess a number.
     pub specific_gravity: Option<f32>,
+    /// Optional serialized `colorRecipe` (as JSON) for physically based chromophore colors.
+    /// `None` for fantasy materials.
+    pub color_recipe_json: Option<String>,
 }

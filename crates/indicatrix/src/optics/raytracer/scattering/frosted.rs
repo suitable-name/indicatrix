@@ -7,7 +7,9 @@
 use super::{
     super::{
         NUM_CHANNELS,
+        camera::Ray,
         environment::sample_environment_for_nee,
+        intersect_stone::intersect_stone_soa,
         refraction::{
             BounceRefractionGeometry, R_UNPOL_PDF_MAX, R_UNPOL_PDF_MIN, RayMaterialContext,
         },
@@ -42,7 +44,9 @@ pub(crate) fn cosine_weighted_hemisphere(u1: f32, u2: f32, n: Vec3) -> Vec3 {
 /// doc comment ("Sign convention for NEE eligibility") for exactly which two branches
 /// those are and why.
 ///
-/// # Why this needs no shadow ray, unlike `nee_contribution_hg_scatter`
+/// # Why a convex stone needs no shadow ray, unlike `nee_contribution_hg_scatter`
+///
+/// (A concave stone does: see "Concave stones" below.)
 ///
 /// [`nee_contribution_hg_scatter`](super::nee_contribution_hg_scatter)'s scattering
 /// point sits somewhere in the INTERIOR of the (necessarily convex) polyhedron, so it
@@ -56,6 +60,16 @@ pub(crate) fn cosine_weighted_hemisphere(u1: f32, u2: f32, n: Vec3) -> Vec3 {
 /// `dir.dot(ext_normal) > 0`, with no occlusion test and no second Fresnel interface to
 /// cross (the interface AT this point was already paid for by the caller's
 /// `r_unpol`/`t_unpol` branch-selection division before `stokes` reached here).
+///
+/// # Concave stones
+///
+/// With tools the convexity argument fails: a point on a groove wall moving along its
+/// outward normal enters the cavity and can meet the opposite wall. So when
+/// `nee.tools` is non-empty this casts a real shadow probe from `origin` against the
+/// whole stone and deposits only on a miss. Any hit, even one past a cavity, is an
+/// occluder: the escaping BSDF-sampled continuation sees the same visibility, so the two
+/// MIS techniques stay consistent. The probe runs after the RNG draws, so the stream
+/// consumption is the same as for a convex stone.
 ///
 /// # Simplification, mirroring `nee_contribution_hg_scatter`
 ///
@@ -75,8 +89,15 @@ pub(crate) fn cosine_weighted_hemisphere(u1: f32, u2: f32, n: Vec3) -> Vec3 {
 /// `/t_unpol` rescale, exactly like
 /// [`nee_contribution_hg_scatter`](super::nee_contribution_hg_scatter)'s identical
 /// precondition on its own `stokes` argument).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the surface point joined the existing NEE inputs (context, light-sample \
+              RNG state, the branch's own throughput and the output radiance) so the \
+              concave shadow probe has an origin; bundling them would only move the count"
+)]
 pub(crate) fn nee_contribution_frosted_exterior(
     nee: NeeContext<'_>,
+    origin: Vec3,
     lambdas: &[f32; NUM_CHANNELS],
     ext_normal: Vec3,
     rng_seed: u32,
@@ -103,6 +124,17 @@ pub(crate) fn nee_contribution_frosted_exterior(
     let cos_light = sample.dir.dot(ext_normal);
     if cos_light <= 0.0 {
         return;
+    }
+
+    // Concave stone: the sampled direction may run into the far side of a cavity.
+    if !nee.tools.is_empty() {
+        let probe = Ray {
+            origin: origin + sample.dir * 1e-4,
+            dir: sample.dir,
+        };
+        if intersect_stone_soa(probe, nee.plane_soa, nee.plane_soa.len(), nee.tools).is_some() {
+            return;
+        }
     }
 
     // The competing (BSDF) technique's own density at this SAME light-sampled
@@ -257,6 +289,7 @@ pub(crate) fn apply_frosted_bounce(
     ctx: &RayMaterialContext,
     geo: &BounceRefractionGeometry,
     normal: Vec3,
+    hit_point: Vec3,
     inside_gem: bool,
     is_extraordinary: bool,
     rng_seed: u32,
@@ -302,7 +335,7 @@ pub(crate) fn apply_frosted_bounce(
         // outside the gem -- see "Sign convention for NEE eligibility" above.
         let phase_pdf_for_mis = if nee.enabled && !inside_gem {
             nee_contribution_frosted_exterior(
-                nee, lambdas, normal, rng_seed, bounce, stokes, radiance,
+                nee, hit_point, lambdas, normal, rng_seed, bounce, stokes, radiance,
             );
             Some(new_dir.dot(normal) / std::f32::consts::PI)
         } else {
@@ -340,7 +373,7 @@ pub(crate) fn apply_frosted_bounce(
         // eligibility" above.
         let phase_pdf_for_mis = if nee.enabled && inside_gem {
             nee_contribution_frosted_exterior(
-                nee, lambdas, ext_normal, rng_seed, bounce, stokes, radiance,
+                nee, hit_point, lambdas, ext_normal, rng_seed, bounce, stokes, radiance,
             );
             Some(new_dir.dot(ext_normal) / std::f32::consts::PI)
         } else {

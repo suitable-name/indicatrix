@@ -12,11 +12,17 @@
 //! matching this app's `gui::optics::c_axis`/`gui::render::sample_scale` precedent for
 //! where such a helper lives.
 
-use indicatrix::optics::materials::{CrystalSystem, GemMaterial, OpticalCharacter};
+use indicatrix::optics::{
+    chromophore::ChromophoreCatalogue,
+    fluorescence::Fluorescence,
+    materials::{CrystalSystem, GemMaterial, OpticalCharacter},
+};
+use indicatrix_cut_core::material::colorMode;
 use indicatrix_vault::{
     db::sqlite::{CustomMaterialParams, Database},
     model::material::CustomMaterialRow,
 };
+use std::sync::Arc;
 
 /// `CrystalSystem`'s 7 variants, in the exact order `material_editor_dialog.slint`'s
 /// crystal-system `ComboBox` lists them -- a combo index round-trips through this
@@ -185,6 +191,16 @@ pub fn gem_material_from_row(row: &CustomMaterialRow) -> GemMaterial {
     if let Some(delta) = row.biaxial_delta_beta_alpha {
         material.biaxial_delta_beta_alpha = Some(delta);
     }
+    // A stored recipe renders from its `resolved_bands` while physics is the active mode
+    // (the fantasy payload and the parked recipe are both kept in the JSON).
+    if let Some(mode) = row
+        .color_recipe_json
+        .as_deref()
+        .and_then(colorMode::from_json)
+        && mode.is_physics()
+    {
+        material.absorption = mode.resolve_tensor();
+    }
     material
 }
 
@@ -208,6 +224,10 @@ pub fn gem_material_from_row(row: &CustomMaterialRow) -> GemMaterial {
 /// # Errors
 ///
 /// Returns whatever [`Database::save_custom_material`] returns.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors the vault row's columns; a params struct would only move the list"
+)]
 pub fn save_gem_material(
     db: &Database,
     material: &GemMaterial,
@@ -215,12 +235,8 @@ pub fn save_gem_material(
     dispersion: f32,
     birefringence: f32,
     absorption_rgb: [f32; 3],
-    // The Material Editor dialog collects this as `sg_val`
-    // (`material_editor_dialog.slint`) and carries it through as the tenth argument
-    // of `ViewportModel.save_custom_material`; `apply_custom_material_save`
-    // (`gui::optics::custom_materials`) is the single call site, converting the
-    // dialog's `0.0` "not recorded" sentinel to `None` before it reaches here.
     specific_gravity: Option<f32>,
+    color_recipe_json: Option<&str>,
 ) -> anyhow::Result<()> {
     db.save_custom_material(&CustomMaterialParams {
         name: &material.name,
@@ -236,7 +252,41 @@ pub fn save_gem_material(
         // state every row saved before this column existed already has.
         per_axis_dispersion_json: None,
         specific_gravity,
+        color_recipe_json,
     })
+}
+
+/// The names of the custom materials in `rows` whose stored color mode is Physics: the value
+/// of `RenderContext::custom_material_physics`, so the render, export and remote scene paths
+/// know which materials take the 7 mm default stone width.
+#[must_use]
+pub fn custom_material_physics_from_rows(rows: &[CustomMaterialRow]) -> Vec<String> {
+    rows.iter()
+        .filter(|row| {
+            row.color_recipe_json
+                .as_deref()
+                .and_then(colorMode::from_json)
+                .is_some_and(|m| m.is_physics())
+        })
+        .map(|row| row.name.clone())
+        .collect()
+}
+
+/// The fluorescence of the custom materials in `rows` whose stored color mode is Physics,
+/// resolved from their recipes: the value of `RenderContext::custom_material_fluorescence`.
+/// Materials without an emitter are left out.
+#[must_use]
+pub fn custom_material_fluorescence_from_rows(
+    rows: &[CustomMaterialRow],
+) -> Vec<(String, Arc<Fluorescence>)> {
+    let catalogue = ChromophoreCatalogue::global();
+    rows.iter()
+        .filter_map(|row| {
+            let mode = colorMode::from_json(row.color_recipe_json.as_deref()?)?;
+            let glow = mode.fluorescence(catalogue);
+            (!glow.is_empty()).then(|| (row.name.clone(), Arc::new(glow)))
+        })
+        .collect()
 }
 
 /// Builds `RenderContext::custom_material_specific_gravity`'s value from a set of
@@ -369,6 +419,7 @@ mod tests {
             biaxial_delta_beta_alpha: None,
             per_axis_dispersion_json: None,
             specific_gravity: None,
+            color_recipe_json: None,
         };
         let from_row = gem_material_from_row(&row);
         let inferred = GemMaterial::new_custom(
@@ -416,6 +467,7 @@ mod tests {
             biaxial_delta_beta_alpha: Some(0.0070),
             per_axis_dispersion_json: None,
             specific_gravity: None,
+            color_recipe_json: None,
         };
         let material = gem_material_from_row(&row);
         assert_eq!(material.crystal_system, CrystalSystem::Orthorhombic);
@@ -441,6 +493,7 @@ mod tests {
             biaxial_delta_beta_alpha: None,
             per_axis_dispersion_json: None,
             specific_gravity,
+            color_recipe_json: None,
         }
     }
 

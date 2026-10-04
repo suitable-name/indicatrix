@@ -24,8 +24,9 @@ use crate::{
 };
 use glam::Vec3;
 use indicatrix::{
-    geometry::{cuts::StandardGemCuts, plane::GpuFacetPlane},
+    geometry::{cuts::StandardGemCuts, plane::GpuFacetPlane, tool::ToolPrimitive},
     optics::{
+        fluorescence::Fluorescence,
         materials::GemMaterial,
         raytracer::{DEFAULT_MAX_BOUNCES, DEFAULT_POSE, LightingPreset},
     },
@@ -121,6 +122,22 @@ pub struct RenderContext {
     /// actual deep copy on the rare frame where a render-loop snapshot is still
     /// outstanding.
     pub active_planes: Arc<Vec<GpuFacetPlane>>,
+    /// The concave tools that cut into [`Self::active_planes`], in cutting order; empty
+    /// for every planar design (the overwhelmingly common case, so the default and every
+    /// writer that knows nothing about tools leave the stone convex).
+    ///
+    /// Lives beside the planes rather than inside them because the planes are the convex
+    /// polyhedron the tools are subtracted from, and the GPU, the guide pass and the
+    /// stone-width measurement all want that polyhedron alone. Written only through
+    /// [`Self::claim_active_geometry`] (or [`Self::claim_active_planes`], which clears
+    /// it) so the two can never describe different stones. An `Arc` for the same reason
+    /// `active_planes` is one: it is cloned into every frame's inputs.
+    pub active_tools: Arc<Vec<ToolPrimitive>>,
+    /// `(concave tier, placement)` of each of [`Self::active_tools`], parallel to it:
+    /// bookkeeping the solid preview needs to name a tool's facet when a camera drag
+    /// re-issues the geometry (`gui::render::camera_lighting`). Not scene-defining, so
+    /// it is not part of the scene identity.
+    pub active_placements: Vec<(usize, usize)>,
     /// The active design's gear tooth count and reference angle -- meant to be kept
     /// in sync with `active_planes` by every one of its writers (Grep `active_planes
     /// =` for the current list: `gui::editor::view::refresh_viewport`, `gui::editor::
@@ -168,6 +185,24 @@ pub struct RenderContext {
     /// `gui::optics::custom_materials`'s callbacks and `gui::mod`'s startup load.
     /// `Arc<Vec<..>>` for cheap cloning into per-frame snapshots.
     pub custom_material_specific_gravity: Arc<Vec<(String, f64)>>,
+    /// Names of the custom materials whose active color mode is Physics (a recipe renders
+    /// them), a side channel to [`Self::custom_materials`] like the specific gravity above:
+    /// `GemMaterial` carries no color-mode field (the net format is unchanged). Kept in
+    /// lock-step by `gui::optics::custom_materials`'s save/delete callbacks, the startup load and
+    /// the native-file restore. Read through [`Self::physics_color`].
+    pub custom_material_physics: Arc<Vec<String>>,
+    /// The fluorescent emitters of the custom materials whose active color mode is Physics,
+    /// resolved from their recipes (`colorMode::fluorescence`): a side channel beside
+    /// [`Self::custom_material_physics`], never inside `GemMaterial`, so every non-fluorescent
+    /// material (and every fantasy one, which has no entry) renders bit-identically to a build
+    /// without it. Only materials with at least one emitter are listed. Kept in lock-step with
+    /// the physics list by the same writers. Read through [`Self::active_fluorescence`].
+    pub custom_material_fluorescence: Arc<Vec<(String, Arc<Fluorescence>)>>,
+    /// A native file whose top-level color was edited by an older build (its physics recipe
+    /// is still stored): the material the recipe would restore, held until the user answers
+    /// "keep physics recipe / use edited color" (`PhysicscolorModel.color_conflict_*`).
+    /// The recipe's fluorescence rides along (see [`Self::custom_material_fluorescence`]).
+    pub pending_color_choice: Option<(String, GemMaterial, Fluorescence)>,
     /// Shutdown signal for the render thread. Setting this `false` ends the loop
     /// *permanently* -- never reuse this as a pause mechanism; see `paused`.
     pub running: bool,
@@ -369,6 +404,24 @@ impl RenderContext {
         design_gear: Option<(u32, f32)>,
         owner: PlanesOwner,
     ) -> bool {
+        // A writer that hands over planes alone knows of no tools, so the stone it
+        // shows is the flat one: carrying a previous design's tools over would cut a
+        // different stone's notches into it.
+        self.claim_active_geometry(planes, Arc::new(Vec::new()), Vec::new(), design_gear, owner)
+    }
+
+    /// [`Self::claim_active_planes`] for a stone that may have concave tools: the
+    /// planes and tools are replaced together under the same arbitration, so a render
+    /// never sees one design's planes with another's tools. `tools` is empty for a
+    /// planar design.
+    pub fn claim_active_geometry(
+        &mut self,
+        planes: Arc<Vec<GpuFacetPlane>>,
+        tools: Arc<Vec<ToolPrimitive>>,
+        placements: Vec<(usize, usize)>,
+        design_gear: Option<(u32, f32)>,
+        owner: PlanesOwner,
+    ) -> bool {
         if !self.may_claim_active_planes(owner) {
             return false;
         }
@@ -392,6 +445,13 @@ impl RenderContext {
         }
         self.swap_editor_material(owner);
         self.active_planes = planes;
+        // Kept as the same `Arc` when both the old and new set are empty, so a planar
+        // design re-claimed on every edit does not look like a scene change to
+        // `scene_identity` (which compares `Arc` identity).
+        if !(self.active_tools.is_empty() && tools.is_empty()) {
+            self.active_tools = tools;
+        }
+        self.active_placements = placements;
         self.design_gear = design_gear;
         self.planes_owner = owner;
         true
@@ -459,6 +519,61 @@ impl RenderContext {
             .iter()
             .find(|(n, _)| n.eq_ignore_ascii_case(name))
             .map(|(_, sg)| *sg)
+    }
+
+    /// Whether the material being traced (the editor's override when set, else the selected
+    /// name) is a custom material whose active color mode is Physics. It selects the 7 mm
+    /// default stone width (`effective_stone_width_mm`) and is derived from the explicit
+    /// [`Self::custom_material_physics`] list, never from the shape of the material's bands
+    /// (a pure-host recipe has none). The render thread, export and the remote scene all read
+    /// this one answer wherever the material is resolved.
+    #[must_use]
+    pub fn physics_color(&self) -> bool {
+        let active = self
+            .material_override
+            .as_ref()
+            .map_or(self.material_name.as_str(), |m| m.name.as_str());
+        self.custom_material_physics
+            .iter()
+            .any(|n| n.eq_ignore_ascii_case(active))
+    }
+
+    /// The fluorescence of the material being traced: the emitters of its physics recipe, or
+    /// `None` for every other material (built-in, fantasy, or a recipe without emitters). The
+    /// render thread, export, the remote scene and the tilt sweeps all read this one answer
+    /// beside `physics_color()`; `None` is `Fluorescence::none()` and changes nothing.
+    #[must_use]
+    pub fn active_fluorescence(&self) -> Option<Arc<Fluorescence>> {
+        if !self.physics_color() {
+            return None;
+        }
+        let active = self
+            .material_override
+            .as_ref()
+            .map_or(self.material_name.as_str(), |m| m.name.as_str());
+        self.custom_material_fluorescence
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(active))
+            .map(|(_, f)| Arc::clone(f))
+    }
+
+    /// Records the fluorescence of the custom material `name` (an empty one removes the
+    /// entry): the companion of [`Self::set_custom_material_physics`].
+    pub fn set_custom_material_fluorescence(&mut self, name: &str, fluorescence: Fluorescence) {
+        let list = Arc::make_mut(&mut self.custom_material_fluorescence);
+        list.retain(|(n, _)| !n.eq_ignore_ascii_case(name));
+        if !fluorescence.is_empty() {
+            list.push((name.to_string(), Arc::new(fluorescence)));
+        }
+    }
+
+    /// Records whether the custom material `name` renders from a physics recipe.
+    pub fn set_custom_material_physics(&mut self, name: &str, physics: bool) {
+        let list = Arc::make_mut(&mut self.custom_material_physics);
+        list.retain(|n| !n.eq_ignore_ascii_case(name));
+        if physics {
+            list.push(name.to_string());
+        }
     }
 
     /// Whether ANY high-resolution render job currently suspends local tracing -- the
@@ -535,12 +650,17 @@ impl Default for RenderContext {
             edge_rounding_radius: 0.0,
             stone_width_mm: 0.0,
             active_planes: Arc::new(StandardGemCuts::standard_round_brilliant()),
+            active_tools: Arc::new(Vec::new()),
+            active_placements: Vec::new(),
             design_gear: None,
             planes_owner: PlanesOwner::Builtin,
             material_unresolved: None,
             editor_material_stash: None,
             custom_materials: Arc::new(Vec::new()),
             custom_material_specific_gravity: Arc::new(Vec::new()),
+            custom_material_physics: Arc::new(Vec::new()),
+            custom_material_fluorescence: Arc::new(Vec::new()),
+            pending_color_choice: None,
             running: true,
             dirty: true,
             paused: false,

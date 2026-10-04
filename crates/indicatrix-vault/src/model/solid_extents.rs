@@ -14,7 +14,9 @@
 //!
 //! - The design file's planes are split at the preform's plane count and only the facet
 //!   planes are measured. If they close, the row is stored with
-//!   [`SolidExtentsSource::DesignFile`].
+//!   [`SolidExtentsSource::DesignFile`]. Its widths, lengths and height are the flat facet
+//!   stone's; its `volume` is that stone minus the design's concave tools (curved-tool
+//!   cuts), so it equals the flat volume for a planar design.
 //! - If they do not close, the row is stored with NULL extents and
 //!   [`SolidExtentsSource::Unbounded`] ("measured, unusable"), so the scan does not retry
 //!   it every run.
@@ -35,7 +37,11 @@
 /// `sqrt(fma(ez, ez, ex*ex))`), ties between equal widths go to the smaller edge angle, and
 /// the power-of-two scale normalisation uses exponent extraction instead of
 /// `log2`/`powi`. Extents measured under version 1 differ in the last bits.
-pub const SOLID_EXTENTS_VERSION: u32 = 2;
+///
+/// Version 3: `volume` is the concave-carved volume (the facet stone minus the design's
+/// concave tools); widths, lengths and height are still the flat facet stone's. A cached
+/// version-2 volume is the convex one, so it is re-measured.
+pub const SOLID_EXTENTS_VERSION: u32 = 3;
 
 /// One finished stone's bounding dimensions and volume, in model units.
 ///

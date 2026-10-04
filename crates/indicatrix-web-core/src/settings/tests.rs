@@ -139,7 +139,7 @@ fn linked_design() -> Design {
     design.material = MaterialSelection {
         name: Some("Sapphire".to_string()),
         refractive_index_override: Some(1.765),
-        body_colour_override: Some([0.2, 0.3, 0.9]),
+        body_color_override: Some([0.2, 0.3, 0.9]),
         ..MaterialSelection::default()
     };
     design.girdle_diameter_mm = Some(6.5);

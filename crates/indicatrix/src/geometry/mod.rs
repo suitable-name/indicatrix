@@ -15,6 +15,9 @@ pub mod plane;
 /// Solid-geometry measurements (volume, surface area, bounding depth) derived from a
 /// solved [`GemPolyhedron`].
 pub mod stone_metrics;
+/// Concave-facet tool volumes ([`ToolPrimitive`]) and the [`StoneGeometry`] that
+/// pairs them with a stone's flat planes.
+pub mod tool;
 
 pub use brep::GemPolyhedron;
 pub use cuts::{FacetSpec, StandardGemCuts};
@@ -24,3 +27,6 @@ pub use meet_solver::{
     meet_tier_inputs_from_asc, solve_meet_points, vertex_meet_groups,
 };
 pub use plane::GpuFacetPlane;
+pub use tool::{
+    MAX_TOOL_PRIMITIVES, StoneGeometry, ToolKind, ToolPrimitive, ToolPrimitiveError, ToolSweep,
+};

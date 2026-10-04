@@ -12,8 +12,20 @@
 //!   (the facet planes alone) are measured. If they close, the design is stored as
 //!   `DesignFile` along with its convex hull vertices; if not, it relies on its preform
 //!   to close and is stored as `Unbounded` with no extents or hull.
+//! - A design's concave tiers (curved-tool cuts) only ever remove material from the facet
+//!   stone, so they change the volume and nothing else. The hull vertices and the caliper
+//!   extents (width, length, height) still come from the flat facet planes -- the fit
+//!   places the OUTER hull, which a cut never enlarges -- while `volume` is the volume of
+//!   the facet stone minus the tools (`mesh_volume(build_solid_mesh_geom(..))`). The tools
+//!   are resolved against that same facet stone (`Design::facet_geometry_from_solved`),
+//!   so the preform never moves them. Tools that remove the whole stone leave nothing to
+//!   measure: the design counts as unmeasurable, like one that does not close. A design
+//!   whose concave tiers cannot be resolved is not measured at all (see
+//!   [`Loaded::ConcaveUnresolved`]): planning it as a flat stone would overstate its
+//!   yield and carat.
 //! - The angle-table fallback's planes are synthetic, so they are measured as they are
-//!   and stored as `AngleTable` with no hull; the planner excludes them.
+//!   and stored as `AngleTable` with no hull; the planner excludes them. (The angle table
+//!   has no concave rows.)
 //!
 //! A design that cannot be loaded or panics while measuring is left unsaved, so the
 //! next run tries it again.
@@ -26,9 +38,13 @@
 
 use super::{Reporter, WORKER_STACK_BYTES, group_thousands, panic_message, stages};
 use crate::gui::{batch::batch_queue::local_lane_count, editor::CataloguePlanesSource};
+use glam::DVec3;
 use indicatrix::geometry::{
     GpuFacetPlane,
-    stone_metrics::{SolidMetrics, measure_solid_with_vertices},
+    stone_metrics::{
+        SolidMetrics, SolidStatus, build_solid_mesh_geom, measure_solid_with_vertices, mesh_volume,
+    },
+    tool::ToolPrimitive,
 };
 use indicatrix_vault::{
     db::sqlite::Database,
@@ -79,23 +95,62 @@ fn extents_of(metrics: &SolidMetrics) -> Option<SolidExtents> {
     .then_some(extents)
 }
 
+/// What measuring one record came to.
+pub(super) enum Measurement {
+    /// The figures, stored or planned with as they are.
+    Done(Measured),
+    /// The design's concave tiers could not be resolved, so its stone is unknown. Not
+    /// measured and not saved (a later run tries again); carries the reason.
+    ConcaveUnresolved(String),
+}
+
 /// Measures one record under the rule in this module's doc comment.
-pub(super) fn measure_record(full: &FullDiagramRecord) -> Measured {
+pub(super) fn measure_record(full: &FullDiagramRecord) -> Measurement {
     let resolved = crate::gui::editor::resolve_catalogue_planes(full);
-    measure_planes(
+    if let Some(reason) = resolved.concave_error {
+        return Measurement::ConcaveUnresolved(reason);
+    }
+    Measurement::Done(measure_planes(
         resolved.source,
         resolved.preform_plane_count,
         &resolved.planes,
-    )
+        &resolved.tools,
+    ))
+}
+
+/// The volume of the stone bounded by `facets` after `tools` have cut it, or `None` when
+/// the carved stone is not a closed solid (the tools removed all of it). Without tools
+/// this is not consulted, so a planar design keeps the volume `measure_solid_with_vertices`
+/// gave it, bit for bit.
+fn carved_volume(facets: &[(DVec3, f64)], tools: &[ToolPrimitive]) -> Option<f64> {
+    match build_solid_mesh_geom(facets, tools) {
+        SolidStatus::Closed(mesh) => Some(mesh_volume(&mesh)),
+        _ => None,
+    }
+}
+
+/// `metrics` with its volume replaced by the carved one; `None` when the tools remove the
+/// whole stone. Unchanged without tools.
+fn carve(
+    metrics: SolidMetrics,
+    facets: &[(DVec3, f64)],
+    tools: &[ToolPrimitive],
+) -> Option<SolidMetrics> {
+    if tools.is_empty() {
+        return Some(metrics);
+    }
+    carved_volume(facets, tools).map(|volume| SolidMetrics { volume, ..metrics })
 }
 
 /// Measures `planes` (in the tracer's `n . x + d <= 0` convention) that came from `source`;
 /// the first `preform_plane_count` of a design file's planes are its preform and are left
-/// out.
+/// out. `tools` are the design's concave tools on the facet stone (empty for a planar one
+/// or the angle table); they reduce the volume only.
 fn measure_planes(
     source: CataloguePlanesSource,
     preform_plane_count: usize,
     planes: &[GpuFacetPlane],
+    tools: &[ToolPrimitive],
 ) -> Measured {
     let halfspaces: Vec<_> = planes
         .iter()
@@ -111,7 +166,10 @@ fn measure_planes(
         }
         CataloguePlanesSource::DesignFile => {
             let start = preform_plane_count.min(halfspaces.len());
-            let measured = measure_solid_with_vertices(&halfspaces[start..]);
+            let facets = &halfspaces[start..];
+            // `None` when the facets do not close or the tools remove everything.
+            let measured = measure_solid_with_vertices(facets)
+                .and_then(|(metrics, verts)| Some((carve(metrics, facets, tools)?, verts)));
             match measured {
                 Some((metrics, verts)) => {
                     let extents = extents_of(&metrics);
@@ -138,6 +196,9 @@ pub(super) enum Loaded {
         /// The invalidation epoch the record was read under.
         epoch: u64,
     },
+    /// The design's concave tiers could not be resolved (see
+    /// [`Measurement::ConcaveUnresolved`]); nothing is saved.
+    ConcaveUnresolved,
     /// The design no longer exists.
     Gone,
     /// The record could not be read.
@@ -155,9 +216,15 @@ fn measure_entry(db: &Mutex<Database>, entry_id: i64) -> Loaded {
         )
     };
     match full {
-        Ok(Some(full)) => Loaded::Ready {
-            measured: measure_record(&full),
-            epoch,
+        Ok(Some(full)) => match measure_record(&full) {
+            Measurement::Done(measured) => Loaded::Ready { measured, epoch },
+            Measurement::ConcaveUnresolved(reason) => {
+                warn!(
+                    "Rough planner: design #{entry_id} skipped, its concave tiers do not \
+                     resolve: {reason}"
+                );
+                Loaded::ConcaveUnresolved
+            }
         },
         Ok(None) => {
             debug!("Rough planner: design #{entry_id} no longer exists");
@@ -285,6 +352,8 @@ pub(super) struct ScanOutcome {
     pub load_failures: usize,
     /// How many designs panicked while being measured.
     pub panics: usize,
+    /// How many designs were skipped because their concave tiers could not be resolved.
+    pub concave_unresolved: usize,
 }
 
 /// Loads and measures one design (see [`measure_entry`]); a parameter of the scan so a
@@ -335,6 +404,9 @@ fn scan_lane(shared: &ScanShared<'_>) {
         let loaded = catch_unwind(AssertUnwindSafe(|| (shared.measure)(shared.db, entry_id)));
         match loaded {
             Ok(Loaded::Ready { measured, epoch }) => shared.store(entry_id, epoch, measured),
+            Ok(Loaded::ConcaveUnresolved) => {
+                shared.record(|outcome| outcome.concave_unresolved += 1);
+            }
             Ok(Loaded::Gone) => {}
             Ok(Loaded::Failed) => shared.record(|outcome| outcome.load_failures += 1),
             Err(payload) => {
@@ -429,13 +501,18 @@ fn scan_with(
         .into_inner()
         .unwrap_or_else(PoisonError::into_inner);
     outcome.cancelled = reporter.cancelled();
-    if outcome.load_failures > 0 || outcome.panics > 0 || outcome.save_failures > 0 {
+    if outcome.load_failures > 0
+        || outcome.panics > 0
+        || outcome.save_failures > 0
+        || outcome.concave_unresolved > 0
+    {
         warn!(
-            "Rough planner: of {} designs, {} could not be read, {} panicked while measured and \
-             {} measurements could not be saved",
+            "Rough planner: of {} designs, {} could not be read, {} panicked while measured, {} \
+             had concave tiers that could not be resolved and {} measurements could not be saved",
             missing.len(),
             outcome.load_failures,
             outcome.panics,
+            outcome.concave_unresolved,
             outcome.save_failures
         );
     }
@@ -466,6 +543,7 @@ mod tests {
         SolidHull, StoredSolidExtents, ids_needing_scan, measure_planes,
     };
     use glam::Vec3;
+    use indicatrix::geometry::tool::ToolPrimitive;
 
     /// The six planes of an axis-aligned box centred on the origin with the given half sizes.
     fn box_planes(half: [f32; 3]) -> Vec<GpuFacetPlane> {
@@ -510,6 +588,7 @@ mod tests {
             CataloguePlanesSource::DesignFile,
             preform_plane_count,
             &planes,
+            &[],
         );
         assert_eq!(source, SolidExtentsSource::DesignFile);
         let extents = extents.expect("the facet planes close");
@@ -543,7 +622,7 @@ mod tests {
     fn hull_vertices_are_the_solids_vertices_narrowed_to_f32() {
         let half = 0.1_f32;
         let planes = box_planes([half; 3]);
-        let (_, _, hull) = measure_planes(CataloguePlanesSource::DesignFile, 0, &planes);
+        let (_, _, hull) = measure_planes(CataloguePlanesSource::DesignFile, 0, &planes, &[]);
         let hull = hull.expect("a hull");
         assert_eq!(hull.vertices.len(), 8);
         for v in &hull.vertices {
@@ -568,6 +647,7 @@ mod tests {
             CataloguePlanesSource::DesignFile,
             preform_plane_count,
             &planes,
+            &[],
         );
         assert_eq!(source, SolidExtentsSource::Unbounded);
         assert!(extents.is_none() && hull.is_none());
@@ -577,7 +657,7 @@ mod tests {
     fn a_preform_count_past_the_end_measures_nothing_instead_of_panicking() {
         let planes = box_planes([0.5, 0.5, 0.5]);
         let (extents, source, hull) =
-            measure_planes(CataloguePlanesSource::DesignFile, 100, &planes);
+            measure_planes(CataloguePlanesSource::DesignFile, 100, &planes, &[]);
         assert_eq!(source, SolidExtentsSource::Unbounded);
         assert!(extents.is_none() && hull.is_none());
     }
@@ -586,11 +666,102 @@ mod tests {
     fn angle_table_planes_are_measured_whole_and_never_get_a_hull() {
         // The preform count means nothing for the angle table's synthetic planes.
         let planes = box_planes([0.5, 0.25, 1.5]);
-        let (extents, source, hull) = measure_planes(CataloguePlanesSource::AngleTable, 3, &planes);
+        let (extents, source, hull) =
+            measure_planes(CataloguePlanesSource::AngleTable, 3, &planes, &[]);
         assert_eq!(source, SolidExtentsSource::AngleTable);
         assert!(hull.is_none());
         let extents = extents.expect("the box closes");
         assert!((extents.volume - 1.5).abs() < 1e-6);
+    }
+
+    /// A ball tool of `radius` centred at `centre`.
+    fn ball(centre: [f32; 3], radius: f32) -> ToolPrimitive {
+        ToolPrimitive {
+            kind: 0,
+            sweep_kind: 0,
+            _pad: [0; 2],
+            origin: [centre[0], centre[1], centre[2], radius],
+            axis: [0.0, 1.0, 0.0, 0.0],
+            profile: [0.0; 4],
+            sweep_dir: [0.0; 4],
+        }
+    }
+
+    #[test]
+    fn a_concave_tool_lowers_the_volume_and_nothing_else() {
+        // A 1 x 0.5 x 3 box with a ball dimple (radius 0.2) centred on its top face: the
+        // lower half of the ball is carved out of the stone.
+        let planes = box_planes([0.5, 0.25, 1.5]);
+        let tool = ball([0.0, 0.25, 0.0], 0.2);
+        let (flat, _, flat_hull) =
+            measure_planes(CataloguePlanesSource::DesignFile, 0, &planes, &[]);
+        let (carved, source, carved_hull) =
+            measure_planes(CataloguePlanesSource::DesignFile, 0, &planes, &[tool]);
+        assert_eq!(source, SolidExtentsSource::DesignFile);
+        let (flat, carved) = (flat.expect("closes"), carved.expect("still closes"));
+
+        let removed = flat.volume - carved.volume;
+        let hemisphere = 2.0 / 3.0 * std::f64::consts::PI * 0.2_f64.powi(3);
+        assert!(
+            (removed - hemisphere).abs() < 0.1 * hemisphere,
+            "removed {removed} vs a hemisphere's {hemisphere}"
+        );
+        // Width, length and height stay the flat stone's, to the bit.
+        for (got, want) in [
+            (carved.width_caliper, flat.width_caliper),
+            (carved.length_caliper, flat.length_caliper),
+            (carved.width_axis, flat.width_axis),
+            (carved.length_axis, flat.length_axis),
+            (carved.height, flat.height),
+        ] {
+            assert_eq!(got.to_bits(), want.to_bits());
+        }
+        assert_eq!(carved_hull, flat_hull, "the fit outline is the outer hull");
+    }
+
+    #[test]
+    fn tools_are_measured_against_the_facets_not_the_preform() {
+        // The leading preform box is tighter than the facets; the carve must still
+        // use the facet stone (a tool in the facet stone's top face).
+        let mut planes = box_planes([0.5, 0.1, 0.5]);
+        let preform_plane_count = planes.len();
+        planes.extend(box_planes([0.5, 0.25, 1.5]));
+        let tool = ball([0.0, 0.25, 0.0], 0.2);
+        let (extents, _, _) = measure_planes(
+            CataloguePlanesSource::DesignFile,
+            preform_plane_count,
+            &planes,
+            &[tool],
+        );
+        let volume = extents.expect("closes").volume;
+        assert!(volume < 1.5 && volume > 1.45, "{volume}");
+    }
+
+    #[test]
+    fn tools_that_remove_the_whole_stone_make_it_unmeasurable() {
+        let planes = box_planes([0.5, 0.25, 1.5]);
+        let everything = ball([0.0, 0.0, 0.0], 10.0);
+        let (extents, source, hull) =
+            measure_planes(CataloguePlanesSource::DesignFile, 0, &planes, &[everything]);
+        assert_eq!(source, SolidExtentsSource::Unbounded);
+        assert!(extents.is_none() && hull.is_none());
+    }
+
+    #[test]
+    fn a_planar_design_keeps_the_volume_of_the_plain_measure_bit_for_bit() {
+        use indicatrix::geometry::stone_metrics::measure_solid_with_vertices;
+        let planes = box_planes([0.3, 0.17, 1.1]);
+        let halfspaces: Vec<_> = planes
+            .iter()
+            .copied()
+            .map(GpuFacetPlane::to_halfspace_f64)
+            .collect();
+        let (plain, _) = measure_solid_with_vertices(&halfspaces).expect("closes");
+        let (extents, _, _) = measure_planes(CataloguePlanesSource::DesignFile, 0, &planes, &[]);
+        assert_eq!(
+            extents.expect("closes").volume.to_bits(),
+            plain.volume.to_bits()
+        );
     }
 
     fn extents() -> SolidExtents {

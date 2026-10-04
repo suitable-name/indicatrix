@@ -1,9 +1,12 @@
 //! Tests for [`super::sheet`]'s `CuttingSheet`/`CutSheetRow` rendering,
 //! [`super::build`]'s `Design` methods, and [`super::diff`]'s [`diff_tiers`].
 
-use super::{diff_tiers, sheet::format_indices};
+use super::{
+    ConcaveRowInfo, CutSheetRow, CuttingSheet, diff_concave_tiers, diff_tiers,
+    sheet::format_indices,
+};
 use crate::{
-    design::{ConstraintTier, Design, ScheduleMeta},
+    design::{ConcaveTool, ConstraintTier, Design, ScheduleMeta, TierRef, ToolMotion},
     material::MaterialSelection,
     preform::PreformSpec,
 };
@@ -42,7 +45,7 @@ fn cutting_sheet_with_resolves_a_custom_materials_own_refractive_index() {
         name: Some("My Garnet".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     let custom = [custom_garnet(1.9)];
     let solved = design
@@ -176,7 +179,7 @@ fn header_carries_a_carat_weight_line_only_once_anchored() {
         name: Some("Diamond".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     let anchored = design.cutting_sheet(&solved);
     assert!(
@@ -331,4 +334,138 @@ fn cutting_sheet_still_panics_on_a_mismatch() {
     let design = round_brilliant_design();
     let bogus_solved: Vec<SolvedTier> = Vec::new();
     let _ = design.cutting_sheet(&bogus_solved);
+}
+
+/// A flat row with every optional column absent.
+fn flat_row(sequence: usize) -> CutSheetRow {
+    CutSheetRow {
+        sequence,
+        name: "Pav".to_string(),
+        angle_deg: -42.0,
+        indices: vec![0.0, 4.0],
+        mast: 0.6,
+        meet_instruction: "Meet P1".to_string(),
+        meets_tiers: Vec::new(),
+        cheater_offset_deg: None,
+        angle_of_elevation_deg: 42.0,
+        depth_mm: None,
+        concave: None,
+    }
+}
+
+fn cylinder_row(sequence: usize) -> CutSheetRow {
+    CutSheetRow {
+        mast: 0.0,
+        meet_instruction: "cut to depth".to_string(),
+        concave: Some(ConcaveRowInfo {
+            tool: ConcaveTool::Cylinder,
+            tool_azimuth_deg: 90.0,
+            displacement: [0.0, 0.12, 0.05],
+            diameter_ratio: 0.25,
+            tool_angle_deg: None,
+            motion: ToolMotion::Reciprocating,
+        }),
+        ..flat_row(sequence)
+    }
+}
+
+/// The concave line sits under the facet line's columns: the tool code in the
+/// name column, θ's last digit under φ's, the displacement under `indices`.
+#[test]
+fn cutting_sheet_text_for_concave_fixture_matches_expected_string() {
+    let sheet = CuttingSheet {
+        header: vec!["Material: Test".to_string()],
+        rows: vec![flat_row(1), cylinder_row(2)],
+    };
+    let expected = "Material: Test\n\
+\n\
+\x20 1. Pav              angle  42.00 deg  indices [0, 4]  mast   0.6000  meet: Meet P1\n\
+\x20 2. Pav              angle  42.00 deg  indices [0, 4]  mast   0.0000  meet: cut to depth\n\
+\x20    CYL                   +90.00°      X = 0.000, Y = 0.120, Z = 0.050     D/W = 0.250, reciprocating\n";
+    assert_eq!(sheet.to_text(), expected);
+}
+
+/// A planar row prints with positive angle.
+#[test]
+fn cutting_sheet_text_for_planar_fixture_is_unchanged() {
+    let sheet = CuttingSheet {
+        header: Vec::new(),
+        rows: vec![flat_row(1)],
+    };
+    assert_eq!(
+        sheet.to_text(),
+        "  1. Pav              angle  42.00 deg  indices [0, 4]  mast   0.6000  meet: Meet P1\n"
+    );
+}
+
+#[test]
+fn cutting_sheet_line_count_is_flat_rows_plus_two_per_concave_row() {
+    let design = Design::concave_fixture();
+    let solved = design.solve().expect("the fixture's flat tiers solve");
+    let sheet = design.cutting_sheet(&solved);
+    let text = sheet.to_text();
+    let flat = design.tiers.len();
+    let concave = design.concave_tiers.len();
+    assert_eq!(sheet.rows.len(), flat + concave);
+    // Header block, one blank line, then one line per tier plus one tool line
+    // per concave tier.
+    assert_eq!(
+        text.lines().count(),
+        sheet.header.len() + 1 + flat + 2 * concave
+    );
+
+    // Rows follow `cutting_order`, numbered across both kinds.
+    let order = design.cutting_order();
+    for (position, (row, tier_ref)) in sheet.rows.iter().zip(&order).enumerate() {
+        assert_eq!(row.sequence, position + 1);
+        match *tier_ref {
+            TierRef::Flat(i) => {
+                if design.tiers[i].name.is_empty() {
+                    assert!(!row.name.is_empty());
+                } else {
+                    assert_eq!(row.name, design.tiers[i].name);
+                }
+            }
+            TierRef::Concave(i) => {
+                assert_eq!(row.name, design.concave_tiers[i].name);
+                let info = row
+                    .concave
+                    .as_ref()
+                    .expect("a concave row carries its tool");
+                assert_eq!(
+                    info.second_line_fields(),
+                    design.concave_tiers[i].second_line_fields()
+                );
+                assert_eq!(row.mast, 0.0);
+            }
+        }
+    }
+    // The fixture has no table, so the crown-side tool line closes the sheet.
+    assert_eq!(order.last(), Some(&TierRef::Concave(1)));
+}
+
+#[test]
+fn diff_concave_tiers_reports_added_removed_and_changed_positions() {
+    let tiers = Design::concave_fixture().concave_tiers;
+    let (a, b) = (tiers[0].clone(), tiers[1].clone());
+    assert!(diff_concave_tiers(&tiers, &tiers).is_empty());
+
+    let mut moved = a.clone();
+    moved.tool_azimuth_deg = 15.0;
+    let deltas = diff_concave_tiers(&[a.clone(), b.clone()], &[moved.clone()]);
+    assert_eq!(deltas.len(), 2);
+    assert_eq!(deltas[0].position, 0);
+    assert!(deltas[0].changed());
+    assert_eq!(deltas[0].before.as_ref(), Some(&a));
+    assert_eq!(deltas[0].after.as_ref(), Some(&moved));
+    assert_eq!(deltas[1].position, 1);
+    assert_eq!(
+        (deltas[1].before.as_ref(), deltas[1].after.as_ref()),
+        (Some(&b), None)
+    );
+    assert!(!deltas[1].changed());
+
+    let added = diff_concave_tiers(&[], std::slice::from_ref(&a));
+    assert_eq!(added.len(), 1);
+    assert!(added[0].before.is_none() && added[0].after.as_ref() == Some(&a));
 }

@@ -40,7 +40,7 @@ fn the_live_picture_is_the_mean_through_the_srgb_transfer() {
 }
 
 /// The PNG bytes of a web export equal the desktop export's `tonemap_accumulation` +
-/// `encode_png_with_icc` for the same float sum, in both offered colour spaces.
+/// `encode_png_with_icc` for the same float sum, in both offered color spaces.
 #[test]
 fn web_export_bytes_equal_the_desktop_export_for_a_fixed_sum() {
     let (width, height, samples) = (23_u32, 11_u32, 37_u32);

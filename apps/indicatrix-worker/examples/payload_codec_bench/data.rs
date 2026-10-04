@@ -254,7 +254,7 @@ pub fn zero_fraction(raw: &[u8]) -> f64 {
 }
 
 /// Tone-maps a radiance frame to an opaque RGBA8 display frame (the XYZ triplet is used as
-/// RGB; the exact colour does not matter, only that the 8-bit image has the same spatial
+/// RGB; the exact color does not matter, only that the 8-bit image has the same spatial
 /// structure and noise as the radiance it came from).
 pub fn to_rgba8(raw: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(raw.len() / 3 * 4);

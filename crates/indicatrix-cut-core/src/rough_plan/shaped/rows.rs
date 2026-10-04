@@ -5,13 +5,21 @@
 //! same rows: the piece's six box faces plus one row per violated cut plane.
 //! [`PartialSolver`] builds them into a reusable buffer, so a solve allocates
 //! nothing after the first call.
+//!
+//! A rough with a non-convex mesh adds one more kind of row, per blocking triangle, in
+//! [`PartialSolver::solve_in_mesh`]: the cutting-plane loop described there.
 
 use glam::DVec3;
 
 use crate::rough_plan::{
+    fit::FitMesh,
     lp::{LpScratch, ScaleRow, max_scale_with_scratch},
     piece::{ASSIGNMENTS, Norm},
 };
+
+/// Most times [`PartialSolver::solve_in_mesh`] adds the planes of the triangles that block
+/// the solution so far and solves again, before it gives up.
+pub const MESH_ROUNDS: usize = 6;
 
 /// The caliper extents of a stone of `norm`, in units of its width, along the
 /// three rough axes under assignment `orient`.
@@ -93,5 +101,79 @@ impl PartialSolver {
             });
         }
         max_scale_with_scratch(&self.rows, &mut self.scratch)
+    }
+
+    /// [`solve`](Self::solve) when `mesh` is `None`, else
+    /// [`solve_in_mesh`](Self::solve_in_mesh).
+    pub fn solve_with(
+        &mut self,
+        region: &ClipRegion<'_>,
+        extents: [f64; 3],
+        mesh: Option<FitMesh<'_>>,
+    ) -> Option<(f64, [f64; 3])> {
+        match mesh {
+            Some(mesh) => self.solve_in_mesh(region, extents, mesh),
+            None => self.solve(region, extents),
+        }
+    }
+
+    /// [`solve`](Self::solve) for a stone that must also stay in the material of `mesh`,
+    /// `mesh.inset_mm` clear of its surface; `None` when no such stone is found.
+    ///
+    /// The mesh is not convex, so it is not one LP. The LP of the region is solved; if the
+    /// stone box it gives meets triangles of the mesh, the plane of the blocking triangle
+    /// the box passes least far (its outward side kept, `inset_mm` clear) is added as a
+    /// row and the LP is solved again, at most [`MESH_ROUNDS`] times. One row per round:
+    /// the walls of a notch face each other, so all of them together would leave no stone. Rows only shrink the feasible set, so
+    /// every stone returned has been checked against the mesh (no triangle meets its box
+    /// and its centre is in the material): the answer is valid, if conservative near a
+    /// notch, because a blocking triangle's plane also forbids the air side far beyond the
+    /// triangle.
+    pub fn solve_in_mesh(
+        &mut self,
+        region: &ClipRegion<'_>,
+        extents: [f64; 3],
+        mesh: FitMesh<'_>,
+    ) -> Option<(f64, [f64; 3])> {
+        let mut solution = self.solve(region, extents)?;
+        let mut blockers = Vec::new();
+        let mut known: Vec<(DVec3, f64)> = Vec::new();
+        for round in 0..=MESH_ROUNDS {
+            let (k, t) = solution;
+            if k <= 0.0 {
+                return None;
+            }
+            let half = extents.map(|e| 0.5 * k * e);
+            let min = [0, 1, 2].map(|i| t[i] - half[i]);
+            let max = [0, 1, 2].map(|i| t[i] + half[i]);
+            mesh.mesh
+                .box_blockers(min, max, mesh.inset_mm, &mut blockers);
+            if blockers.is_empty() {
+                return mesh.mesh.contains_point(DVec3::from(t)).then_some(solution);
+            }
+            if round == MESH_ROUNDS {
+                return None;
+            }
+            let (reach, centre) = (
+                |n: DVec3| n.abs().dot(DVec3::from(extents) * (0.5 * k)),
+                DVec3::from(t),
+            );
+            let added = mesh.mesh.blocker_rows(&blockers, &known, |n, d| {
+                n.dot(centre) + reach(n) - (d - mesh.inset_mm)
+            });
+            if added.is_empty() {
+                return None;
+            }
+            for (n, d) in added {
+                known.push((n, d));
+                self.rows.push(ScaleRow {
+                    normal: [n.x, n.y, n.z],
+                    support: n.abs().dot(DVec3::from(extents) * 0.5),
+                    offset: d - mesh.inset_mm,
+                });
+            }
+            solution = max_scale_with_scratch(&self.rows, &mut self.scratch)?;
+        }
+        None
     }
 }

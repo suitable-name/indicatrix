@@ -45,7 +45,7 @@ fn cutting_sheet_html_prints_a_custom_materials_own_refractive_index() {
         name: Some("My Garnet".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     let solved = design.solve().expect("every tier is pinned");
     let custom = [custom_garnet(1.9)];
@@ -87,7 +87,7 @@ fn material_header_text_prints_the_name_plainly_once_set() {
         name: Some("Sapphire".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     let n_d = design.effective_refractive_index_with(&[]);
     assert_eq!(material_header_text(&design, n_d), "Sapphire");
@@ -117,17 +117,19 @@ fn cutting_sheet_html_contains_expected_rows() {
     assert_eq!(tr_count, design.tiers.len());
 }
 
-/// Every row must print an "Elevation" figure (the unsigned magnitude of its
-/// angle) alongside the signed angle.
+/// Every row must print a positive angle (the unsigned magnitude of its angle)
+/// in accordance with international faceting standards.
 #[test]
-fn elevation_column_prints_the_unsigned_angle_magnitude() {
+fn angle_column_prints_the_positive_angle_magnitude() {
     let design = round_brilliant_design();
     let solved = design.solve().expect("every tier is pinned");
     let html = cutting_sheet_html(&design, &solved, None, &[]);
-    assert!(html.contains("<th>Elevation</th>"), "{html}");
-    // "Pavilion Main" is authored at -41.0 degrees; its elevation cell must
-    // print the unsigned magnitude, not the signed angle.
+    assert!(html.contains("<th>Angle</th>"), "{html}");
+    assert!(!html.contains("<th>Elevation</th>"), "{html}");
+    // "Pavilion Main" is authored at -41.0 degrees; its angle cell must
+    // print the positive magnitude (41.00°), not a negative angle.
     assert!(html.contains("<td>41.00&deg;</td>"), "{html}");
+    assert!(!html.contains("<td>-41.00&deg;</td>"), "{html}");
 }
 
 /// A carat-weight row must appear only once a girdle diameter anchors a real
@@ -268,4 +270,78 @@ fn html_escape_handles_unsafe_characters() {
         html_escape("A & B <tag> \"quoted\" 'apos'"),
         "A &amp; B &lt;tag&gt; &quot;quoted&quot; &#39;apos&#39;"
     );
+}
+
+/// Each concave tier's facet line and tool line sit in ONE `<tbody>` (so the zebra band
+/// and the page-break rule cover the pair), every tier gets its own `<tbody>`, and the
+/// tool line carries the very strings `second_line_fields` gives.
+#[test]
+fn html_sheet_groups_each_concave_pair_in_one_tbody() {
+    let design = Design::concave_fixture();
+    let solved = design.solve().expect("the fixture's flat tiers solve");
+    let html = cutting_sheet_html(&design, &solved, None, &[]);
+
+    let bodies: Vec<&str> = html.split("<tbody").skip(1).collect();
+    let tiers = design.tiers.len() + design.concave_tiers.len();
+    assert_eq!(bodies.len(), tiers, "one tbody per tier, flat and concave");
+    assert!(bodies[0].starts_with(" class=\"band-a\""));
+    assert!(
+        bodies[1].starts_with(" class=\"band-b\""),
+        "stripes alternate per tier"
+    );
+
+    let with_tool: Vec<&&str> = bodies
+        .iter()
+        .filter(|b| b.contains("class=\"tool\""))
+        .collect();
+    assert_eq!(with_tool.len(), design.concave_tiers.len());
+    for body in with_tool {
+        assert_eq!(body.matches("<tr").count(), 2, "facet line and tool line");
+        assert_eq!(body.matches("class=\"tool\"").count(), 1);
+    }
+    for tier in &design.concave_tiers {
+        for field in tier.second_line_fields() {
+            assert!(html.contains(&html_escape(&field)), "{field:?} missing");
+        }
+    }
+    // The fixture sets a girdle diameter, so millimetres appear beside the ratios.
+    assert!(html.contains("class=\"mm\""));
+}
+
+/// A planar sheet keeps its single `<tbody>` and gains no banding rules.
+#[test]
+fn html_sheet_for_a_planar_design_has_no_banding() {
+    let design = round_brilliant_design();
+    let solved = design.solve().expect("every tier is pinned");
+    let html = cutting_sheet_html(&design, &solved, None, &[]);
+    assert_eq!(html.matches("<tbody").count(), 1);
+    assert!(!html.contains("band-a") && !html.contains("tr.tool"));
+}
+
+/// The millimetre figures beside a concave tool line are the resolver's width-relative
+/// ratios times the stone width, which `mm_per_unit` anchors to the girdle diameter. On
+/// an elongated stone (width axis well below the length axis) they still equal
+/// `ratio * mm_per_unit * width_axis`, i.e. `ratio * girdle_diameter_mm`.
+#[test]
+fn html_tool_row_millimetres_use_the_stone_width_on_an_elongated_stone() {
+    let mut design = Design::concave_fixture();
+    design.preform = PreformSpec::block(0.7, 1.8, 2.0);
+    design.girdle_diameter_mm = Some(7.0);
+    let solved = design.solve().expect("the elongated fixture solves");
+    let metrics = design
+        .measure_from_solved_geom(&solved)
+        .expect("resolves")
+        .expect("closed stone");
+    assert!(
+        metrics.length_axis > 1.2 * metrics.width_axis,
+        "the stone must be elongated: {} x {}",
+        metrics.width_axis,
+        metrics.length_axis
+    );
+    let width_mm = design.yield_report(&solved).mm_per_unit.expect("scale") * metrics.width_axis;
+    let html = cutting_sheet_html(&design, &solved, None, &[]);
+    for tier in &design.concave_tiers {
+        let expected = format!("(D = {:.2} mm)", tier.diameter_ratio * width_mm);
+        assert!(html.contains(&expected), "{expected} missing");
+    }
 }

@@ -1,7 +1,7 @@
 //! Edge-avoiding À-Trous wavelet denoiser.
 //!
 //! Correct spectral dispersion means that once a path refracts dispersively, only the
-//! hero wavelength survives -- each sample carries one wavelength's colour rather than
+//! hero wavelength survives -- each sample carries one wavelength's color rather than
 //! an average of eight, producing both the fire and the chromatic speckle in the
 //! viewport (the same phenomenon). That noise is removed by filtering (this module) or
 //! by more samples, not by making transport less correct.
@@ -53,9 +53,9 @@
 //!   a safety net for normal discontinuities facet id alone might miss; also constant.
 //! - **Depth**: `exp(-|z_p - z_q| / sigma_depth)`. A secondary tie-breaker (facets are
 //!   planar, so depth is already near-continuous within one); also constant.
-//! - **Colour** (the only tapered term): `exp(-||c_p - c_q||^2 / (2 * sigma_color^2))`,
+//! - **color** (the only tapered term): `exp(-||c_p - c_q||^2 / (2 * sigma_color^2))`,
 //!   compared as full XYZ distance rather than luminance, since the targeted noise is
-//!   chromatic. The only guide sigma that scales with sample count, since colour is the
+//!   chromatic. The only guide sigma that scales with sample count, since color is the
 //!   only one of the four that is actually a noisy Monte-Carlo estimator here.
 //!
 //! # Background and non-finite texels
@@ -64,7 +64,7 @@
 //! unfiltered, so the backdrop is never touched and costs no tap evaluations. (No
 //! foreground pixel can draw on it either: a negative id never equals a real facet id.)
 //!
-//! A non-finite colour texel cannot contaminate its neighbours: as a neighbour it is
+//! A non-finite color texel cannot contaminate its neighbours: as a neighbour it is
 //! skipped (weight zero), and as a pixel's own value it is treated as black. Whenever
 //! the filter runs, every output value is therefore finite.
 //!
@@ -83,7 +83,7 @@
 //! smooth and never exactly zero, matching real MC noise.
 //!
 //! Below `taper < TAPER_IDENTITY_EPSILON = 0.02` (around `spp ~= 10_000`) the filter
-//! short-circuits to a plain copy: every neighbour's colour weight is by then
+//! short-circuits to a plain copy: every neighbour's color weight is by then
 //! numerically indistinguishable from the centre's own weight-of-one, and this also
 //! gives an exact bit-identical identity result.
 //!
@@ -103,7 +103,7 @@ use super::tonemap::effective_thread_count;
 use glam::Vec3;
 use pass::{SharedColors, TapConstants, run_passes, unit_normal_or_zero};
 
-/// The auxiliary ("guide") buffers the filter needs alongside the noisy colour buffer,
+/// The auxiliary ("guide") buffers the filter needs alongside the noisy color buffer,
 /// one entry per pixel, row-major (`index = y * width + x`).
 ///
 /// All buffer slices must have exactly `width * height` elements; [`AtrousDenoiser::denoise`]
@@ -146,7 +146,7 @@ pub struct AtrousParams {
     /// passes covers dilation strides 1, 2, 4, 8, 16). 4-5 is the standard range;
     /// values outside `1..=8` are clamped.
     pub num_passes: u32,
-    /// Base colour edge-stopping sigma (XYZ Euclidean distance) at `spp = 0`, before
+    /// Base color edge-stopping sigma (XYZ Euclidean distance) at `spp = 0`, before
     /// the convergence taper is applied. Smaller = stricter (less blur).
     pub sigma_color: f32,
     /// Depth edge-stopping sigma, in the same units as [`GBuffers::depth`]. Smaller =
@@ -241,7 +241,7 @@ impl AtrousDenoiser {
     /// `inputs.color.len()` if it does not already match.
     ///
     /// Robustness guarantees: never panics, regardless of image size (including 0x0 and
-    /// 1x1), `spp` (including 0), or buffer contents. A non-finite colour texel never
+    /// 1x1), `spp` (including 0), or buffer contents. A non-finite color texel never
     /// reaches another pixel (see the module docs), so whenever the filter runs every
     /// output value is finite; the two paths that copy `color` verbatim -- the
     /// converged-taper identity short-circuit and the guide-buffer fallback below -- pass
@@ -374,7 +374,7 @@ mod tests {
     }
 
     /// Irregular dimensions, several facet regions, jittered normals, varying depth, and
-    /// noisy colour -- exercises every edge-stopping term rather than a uniform image.
+    /// noisy color -- exercises every edge-stopping term rather than a uniform image.
     fn irregular_scene(width: usize, height: usize, seed: u32) -> (GBuffers<'static>, Vec<Vec3>) {
         let len = width * height;
         let mut rng = Xorshift32::new(seed);

@@ -117,6 +117,8 @@
 pub mod context;
 mod dispatch;
 mod exit_split;
+#[doc(hidden)]
+pub use exit_split::exit_split_truncated_energy_take;
 pub mod geometry;
 mod reflect_refract;
 #[cfg(test)]

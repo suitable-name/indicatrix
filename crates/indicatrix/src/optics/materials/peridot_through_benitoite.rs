@@ -49,7 +49,7 @@ impl GemMaterial {
                 absorption_path_scale: 1.0,
                 uniaxial_extraordinary_dispersion: None,
             },
-            // YAG (Yttrium Aluminium Garnet, Y3Al5O12, undoped/colourless laser host)
+            // YAG (Yttrium Aluminium Garnet, Y3Al5O12, undoped/colorless laser host)
             //
             // Source: D.E. Zelmon, D.L. Small & R. Page, "Refractive-index
             // measurements of undoped yttrium aluminum garnet from 0.4 to 5.0 um,"
@@ -70,7 +70,7 @@ impl GemMaterial {
                     c: [0.011_85, 282.734, 1.0],
                 },
                 birefringence_delta: 0.0,
-                // Colourless (undoped YAG, the laser-host reference composition):
+                // colorless (undoped YAG, the laser-host reference composition):
                 // empty band set, zero absorption at every wavelength.
                 absorption: AbsorptionTensor::isotropic(vec![]),
                 c_axis: Vec3::Y,
@@ -81,7 +81,7 @@ impl GemMaterial {
                 absorption_path_scale: 1.0,
                 uniaxial_extraordinary_dispersion: None,
             },
-            // GGG (Gadolinium Gallium Garnet, Gd3Ga5O12, colourless synthetic --
+            // GGG (Gadolinium Gallium Garnet, Gd3Ga5O12, colorless synthetic --
             // historically used as a diamond simulant before Cubic Zirconia).
             //
             // No primary Sellmeier fit for GGG is transcribed here; this is a
@@ -110,7 +110,7 @@ impl GemMaterial {
                     c: 0.0,
                 },
                 birefringence_delta: 0.0,
-                // Colourless (undoped GGG): empty band set, zero absorption at
+                // colorless (undoped GGG): empty band set, zero absorption at
                 // every wavelength.
                 absorption: AbsorptionTensor::isotropic(vec![]),
                 c_axis: Vec3::Y,
@@ -136,14 +136,14 @@ impl GemMaterial {
                 },
                 birefringence_delta: 0.047,
                 // PLEOCHROISM: benitoite is famously STRONGLY dichroic -- a deep
-                // sapphire-blue o-ray (E-perp-c) against a near-colourless e-ray
+                // sapphire-blue o-ray (E-perp-c) against a near-colorless e-ray
                 // (E-parallel-c), the standard gemological description of this
                 // species (Ti/Fe-related blue chromophore spanning roughly
                 // 380-500nm). Modelled as one broad band (width 60nm, centred 440nm
                 // to span that range) present strongly in the o-ray and only weakly
                 // in the e-ray -- peaks (2.0 vs 0.4, a 5x dichroic ratio) TUNED for a
                 // clearly, strongly dichroic stone; the qualitative "blue one
-                // direction, near-colourless the other" pattern and the 380-500nm
+                // direction, near-colorless the other" pattern and the 380-500nm
                 // span are the cited, non-tuned features.
                 absorption: AbsorptionTensor::uniaxial(
                     vec![AbsorptionBand::new(440.0, 60.0, 2.0)], // o-ray (E-perp-c)

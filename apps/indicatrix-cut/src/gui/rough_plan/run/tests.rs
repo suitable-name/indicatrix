@@ -3,7 +3,7 @@
 
 use super::{
     ALL_EXCLUDED_MESSAGE, CANCELLING_STAGE, Candidates, FilterSnapshot, IdSource, Reporter,
-    cache_note, candidates_from, excluded_note, gather, outline_note, summary_text,
+    cache_note, candidates_from, concave_note, excluded_note, gather, outline_note, summary_text,
     unmeasured_note, validate_model, without_excluded,
 };
 use indicatrix_cut_core::rough_plan::{BoxFace, CandidateDesign, RoughBase, RoughCut, RoughModel};
@@ -391,6 +391,19 @@ fn the_unmeasured_note_is_empty_for_none_and_counts_otherwise() {
     assert_eq!(
         unmeasured_note(1234),
         "; 1,234 designs could not be measured"
+    );
+}
+
+#[test]
+fn the_concave_note_names_the_designs_skipped_for_unresolvable_tiers() {
+    assert_eq!(concave_note(0), "");
+    assert_eq!(
+        concave_note(1),
+        "; 1 design skipped: its concave tiers could not be resolved"
+    );
+    assert_eq!(
+        concave_note(1200),
+        "; 1,200 designs skipped: their concave tiers could not be resolved"
     );
 }
 

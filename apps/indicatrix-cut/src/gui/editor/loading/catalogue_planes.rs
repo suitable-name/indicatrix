@@ -12,9 +12,16 @@
 //! the geometry both batches always built before -- not the zero-mast placeholder
 //! schedule `design_from_full_record` hands the editor, whose facet planes all
 //! pass through the origin.
+//!
+//! A design's concave tiers (curved-tool cuts) come with it: the design file keeps
+//! them (the native `.indicatrix` attachment stores them directly, and
+//! `load_paired` restores them from the sidecar's stash), and
+//! [`CataloguePlanes::tools`] holds them resolved. Tiers that fail to resolve set
+//! [`CataloguePlanes::concave_error`] instead of silently yielding a flat stone,
+//! and the angle table (which has no concave rows) is never used for such a design.
 
 use super::design::design_from_attachment;
-use indicatrix::geometry::{GpuFacetPlane, cuts::FacetSpec};
+use indicatrix::geometry::{GpuFacetPlane, cuts::FacetSpec, tool::ToolPrimitive};
 use indicatrix_vault::model::entry::FullDiagramRecord;
 use tracing::{debug, warn};
 
@@ -46,6 +53,16 @@ pub struct CataloguePlanes {
     /// angle-table path, which has no preform. The rough planner measures
     /// `planes[preform_plane_count..]` alone.
     pub preform_plane_count: usize,
+    /// The design's concave tiers resolved to tool primitives, placed on the FACET
+    /// stone (`planes[preform_plane_count..]`, see
+    /// `Design::facet_geometry_from_solved`). Empty for a planar design, for the
+    /// angle-table path, and when `concave_error` is set.
+    pub tools: Vec<ToolPrimitive>,
+    /// Why the design's concave tiers could not be resolved, when they could not.
+    /// `planes` are then the flat facets only, which is NOT the stone the design
+    /// describes: a consumer that measures or plans must skip the design rather
+    /// than treat it as flat. (Display-only consumers just draw the flat planes.)
+    pub concave_error: Option<String>,
 }
 
 /// Resolves `full`'s facet planes: the design file first, the angle table only as
@@ -93,26 +110,43 @@ fn design_file_planes(full: &FullDiagramRecord) -> Result<Option<CataloguePlanes
         crate::gui::library::local::catch_file_panic(std::panic::AssertUnwindSafe(|| {
             let loaded = match design_from_attachment(full)? {
                 Ok(loaded) => loaded,
-                Err(e) => return Some(Err(e)),
+                Err(e) => return Some(Err(e.message)),
             };
-            let resolved = loaded
-                .design
-                .planes()
-                .map(|halfspaces| CataloguePlanes {
-                    // Same sign flip as `state::design_to_gpu_planes`: `planes()`
-                    // is `n . x <= m`, the tracer's plane is `n . x + d <= 0`.
-                    planes: halfspaces
-                        .into_iter()
-                        .map(|(normal, offset)| {
-                            GpuFacetPlane::new(normal.as_vec3(), -offset as f32)
-                        })
-                        .collect(),
-                    gear_teeth: loaded.design.meta.gear_teeth_abs(),
-                    gear_reference_angle: loaded.design.meta.gear_reference_angle as f32,
-                    source: CataloguePlanesSource::DesignFile,
-                    // `planes_offset` (what `planes()` prepends) returns the same
-                    // count as `planes()`; only the +Y/-Y offsets differ.
-                    preform_plane_count: loaded.design.preform.planes().len(),
+            let design = &loaded.design;
+            let resolved = design
+                .solve()
+                .map(|solved| {
+                    // `Design::planes` is `solve` then `planes_from_solved`; solving
+                    // once here lets the concave tools reuse the masts.
+                    let halfspaces = design.planes_from_solved(&solved);
+                    // A planar design skips the resolver entirely, so it plans
+                    // exactly as before.
+                    let (tools, concave_error) = if design.concave_tiers.is_empty() {
+                        (Vec::new(), None)
+                    } else {
+                        match design.facet_geometry_from_solved(&solved) {
+                            Ok((_, tools)) => (tools, None),
+                            Err(e) => (Vec::new(), Some(e.to_string())),
+                        }
+                    };
+                    CataloguePlanes {
+                        // Same sign flip as `state::design_to_gpu_planes`: `planes()`
+                        // is `n . x <= m`, the tracer's plane is `n . x + d <= 0`.
+                        planes: halfspaces
+                            .into_iter()
+                            .map(|(normal, offset)| {
+                                GpuFacetPlane::new(normal.as_vec3(), -offset as f32)
+                            })
+                            .collect(),
+                        gear_teeth: loaded.design.meta.gear_teeth_abs(),
+                        gear_reference_angle: loaded.design.meta.gear_reference_angle as f32,
+                        source: CataloguePlanesSource::DesignFile,
+                        // `planes_offset` (what `planes()` prepends) returns the same
+                        // count as `planes()`; only the +Y/-Y offsets differ.
+                        preform_plane_count: loaded.design.preform.planes().len(),
+                        tools,
+                        concave_error,
+                    }
                 })
                 .map_err(|e| format!("its cutting instructions do not solve: {e}"));
             Some(resolved)
@@ -131,6 +165,8 @@ fn angle_table_planes(full: &FullDiagramRecord) -> CataloguePlanes {
     let facet_specs: Vec<FacetSpec> = full
         .angle_settings
         .iter()
+        // A concave row is a tool placement, not a flat facet plane.
+        .filter(|a| a.tool.is_none())
         .map(|a| FacetSpec {
             facet: a.facet.clone(),
             angle: a.angle.clone(),
@@ -155,5 +191,7 @@ fn angle_table_planes(full: &FullDiagramRecord) -> CataloguePlanes {
         gear_reference_angle: 0.0,
         source: CataloguePlanesSource::AngleTable,
         preform_plane_count: 0,
+        tools: Vec::new(),
+        concave_error: None,
     }
 }

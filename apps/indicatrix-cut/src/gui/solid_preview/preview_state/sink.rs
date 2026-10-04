@@ -3,7 +3,7 @@
 
 use super::types::{FrameGeometry, PickBuffer};
 use glam::Vec3;
-use indicatrix::geometry::meet_solver::SolvedTier;
+use indicatrix::geometry::{ToolPrimitive, meet_solver::SolvedTier};
 
 /// Where a finished (or status-only) solid-preview frame goes once the worker
 /// thread has it.
@@ -98,6 +98,13 @@ pub struct PreviewFrame {
     /// `active_planes` (`render::camera_lighting::resubmit_at_current_pose`),
     /// snapping the shown geometry back until the next explicit Solve.
     pub planes: Vec<(Vec3, f32)>,
+    /// The concave tools subtracted from [`Self::planes`] in this frame (empty for a
+    /// planar design), published to the path tracer beside the planes for the same
+    /// reason: a frame the editor never claimed directly (an in-budget edit's replan)
+    /// would otherwise leave `RenderContext::active_tools` describing the pre-edit stone.
+    pub tools: Vec<ToolPrimitive>,
+    /// `(concave tier, placement)` of each of [`Self::tools`].
+    pub placements: Vec<(usize, usize)>,
     /// Facet id -> full hover tooltip text (`facet_map::FacetMap::hover_text`),
     /// valid for EVERY view mode -- the Solid view's own counterpart to
     /// `diagram_hover_text`, which is only populated for Diagram-mode requests.

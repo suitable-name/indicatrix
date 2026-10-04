@@ -1,4 +1,4 @@
-//! Integration tests for `indicatrix`'s spectral raytracer, colour pipeline, and
+//! Integration tests for `indicatrix`'s spectral raytracer, color pipeline, and
 //! optical-metrics machinery. Split by topic across the sibling modules below;
 //! `fixtures` holds helpers shared across more than one topic module.
 
@@ -6,6 +6,7 @@ mod absorption_bands;
 mod colorimetry;
 mod dispersion_fire;
 mod fixtures;
+mod fluorescence;
 mod furnace_noise_floor;
 mod geometry_optics_basics;
 mod golden_regression;

@@ -36,10 +36,10 @@
 //! finishes is rendered with a plain tonemap instead; a later redraw denoises once
 //! ready.
 
-use crate::bridge::render_thread::hash_planes;
 use indicatrix::{
-    geometry::plane::GpuFacetPlane,
+    geometry::{plane::GpuFacetPlane, tool::StoneGeometry},
     optics::raytracer::{Camera, DEFAULT_FOV_DEG},
+    render_setup::hash_geometry,
 };
 use std::sync::atomic::AtomicBool;
 
@@ -47,7 +47,7 @@ use std::sync::atomic::AtomicBool;
 // compute the same guides for its denoised display frames); re-exported so every GUI
 // call site keeps its `bridge::frame_cache::guide_pass::...` path.
 pub use indicatrix::renderer::guide_pass::{
-    GuideBuffers, generate_guide_buffers_cancellable, generate_guide_buffers_into,
+    GuideBuffers, generate_guide_buffers_cancellable_geom, generate_guide_buffers_into_geom,
 };
 // Only the tests build guides synchronously into a fresh allocation.
 #[cfg(test)]
@@ -55,8 +55,9 @@ pub use indicatrix::renderer::guide_pass::generate_guide_buffers;
 
 /// Everything that determines the guide buffers: resolution, camera pose, and the
 /// active facet geometry (light/material/exposure are deliberately excluded -- see the
-/// module doc comment). `planes_hash` reuses `render_thread::hash_planes` rather than a
-/// second, parallel implementation.
+/// module doc comment). `planes_hash` is `indicatrix::render_setup::hash_geometry` of the
+/// planes and tools, which for a planar stone is exactly the `hash_planes` every other
+/// per-design cache keys on, rather than a second, parallel implementation.
 ///
 /// `pub`, not private: `gui::remote`'s background guide-generation path tags its result
 /// with this same key (via [`GuideCache::key_for`]). Fields stay private so a
@@ -131,14 +132,35 @@ impl GuideCache {
         distance: f32,
         planes: &[GpuFacetPlane],
     ) -> &GuideBuffers {
-        let key = Self::key_for(width, height, yaw, pitch, distance, planes);
+        self.ensure_geom(
+            width,
+            height,
+            yaw,
+            pitch,
+            distance,
+            StoneGeometry::planes_only(planes),
+        )
+    }
+
+    /// [`Self::ensure`] for a stone with concave tools: the primary rays hit the
+    /// notches too, so the denoiser's depth/normal/facet-id edges follow them.
+    pub fn ensure_geom(
+        &mut self,
+        width: u32,
+        height: u32,
+        yaw: f32,
+        pitch: f32,
+        distance: f32,
+        geom: StoneGeometry<'_>,
+    ) -> &GuideBuffers {
+        let key = Self::key_for_geom(width, height, yaw, pitch, distance, geom);
         if self.key.as_ref() != Some(&key) {
             let camera = Camera::new(yaw, pitch, distance, DEFAULT_FOV_DEG);
-            let completed = generate_guide_buffers_into(
+            let completed = generate_guide_buffers_into_geom(
                 width,
                 height,
                 &camera,
-                planes,
+                geom,
                 &AtomicBool::new(false),
                 &mut self.buffers,
             );
@@ -163,13 +185,34 @@ impl GuideCache {
         distance: f32,
         planes: &[GpuFacetPlane],
     ) -> GuideKey {
+        Self::key_for_geom(
+            width,
+            height,
+            yaw,
+            pitch,
+            distance,
+            StoneGeometry::planes_only(planes),
+        )
+    }
+
+    /// [`Self::key_for`] for a stone with concave tools. Equal to it when there are
+    /// none, so a planar design's keys (and every cache entry behind them) are unchanged.
+    #[must_use]
+    pub fn key_for_geom(
+        width: u32,
+        height: u32,
+        yaw: f32,
+        pitch: f32,
+        distance: f32,
+        geom: StoneGeometry<'_>,
+    ) -> GuideKey {
         GuideKey {
             width,
             height,
             yaw,
             pitch,
             distance,
-            planes_hash: hash_planes(planes),
+            planes_hash: hash_geometry(geom),
         }
     }
 

@@ -49,6 +49,7 @@ pub(super) fn populated_temp_db() -> std::path::PathBuf {
         angle: "41.0".to_string(),
         index: "96".to_string(),
         notes: String::new(),
+        ..Default::default()
     }];
     db.save_diagram_detail(&detail, entry_id).unwrap();
 

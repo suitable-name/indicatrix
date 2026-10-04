@@ -291,6 +291,17 @@ component TierGroup inherits HorizontalLayout {
         GuideLockTip { locked: !GuideModel.allows_tier_form(); }
     }
     TouchArea {
+        width: add_concave_btn.preferred-width;
+        height: add_concave_btn.preferred-height;
+        changed has-hover => { if self.has-hover { root.set_hint("Open the Tier tab in Add mode for a concave (tool-cut) tier."); } else { root.clear_hint("Open the Tier tab in Add mode for a concave (tool-cut) tier."); } }
+        add_concave_btn := Button {
+            text: "+ Concave";
+            enabled: GuideModel.allows_concave_tier();
+            clicked => { EditorModel.add_concave_tier(); }
+        }
+        GuideLockTip { locked: !GuideModel.allows_concave_tier(); }
+    }
+    TouchArea {
         width: duplicate_tier_btn.preferred-width;
         height: duplicate_tier_btn.preferred-height;
         changed has-hover => { if self.has-hover { root.set_hint("Duplicate the selected tier, inserted right after it (Ctrl+D)."); } else { root.clear_hint("Duplicate the selected tier, inserted right after it (Ctrl+D)."); } }
@@ -568,7 +579,7 @@ component FileActionsGroup inherits HorizontalLayout {
     // visible IN the save area itself, small and non-blocking, rather than only
     // as a Yes/No prompt the cutter sees for the first time at the exact moment
     // they click Save. `EditorModel.status_is_problem` is the same flag
-    // `EditorStatusStrip` colours ruby for -- this does not duplicate the
+    // `EditorStatusStrip` colors ruby for -- this does not duplicate the
     // strip's own message, only flags that clicking Save/Export will ask for
     // confirmation.
     if EditorModel.status_is_problem && EditorModel.status_text != "": Rectangle {

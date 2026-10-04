@@ -2,7 +2,7 @@
 //!
 //! Camera/ray generation, polyhedron intersection, Fresnel/TIR refraction,
 //! Henyey-Greenstein scattering, pleochroic absorption, environment sampling,
-//! low-discrepancy sampling, and spectral-to-tristimulus colour conversion.
+//! low-discrepancy sampling, and spectral-to-tristimulus color conversion.
 //!
 //! Split from a single `raytracer.rs` into this module tree by seam (see each
 //! submodule's own doc comment for what it owns). This file is a pure re-export hub:
@@ -19,6 +19,7 @@ pub mod camera;
 pub mod color;
 pub mod environment;
 pub mod intersect;
+pub mod intersect_stone;
 pub mod refraction;
 pub mod sampling;
 pub mod scattering;
@@ -58,6 +59,9 @@ pub use intersect::build_plane_soa;
               Tier 2 harness (feature = \"gpu\"), which this build may not compile"
 )]
 pub(crate) use intersect::{intersect_polyhedron_soa, shading_normal_near_edge};
+
+// intersect_stone.rs
+pub use intersect_stone::intersect_stone;
 
 // sampling.rs
 #[allow(
@@ -160,7 +164,7 @@ pub(crate) fn balance_heuristic(pdf_a: f32, pdf_b: f32) -> f32 {
 
 // transport.rs
 pub use transport::{
-    PathTermination, trace_spectral_ray, trace_spectral_ray_with_finish,
+    PathTermination, trace_spectral_ray, trace_spectral_ray_geom, trace_spectral_ray_with_finish,
     trace_spectral_ray_with_finish_instrumented, trace_spectral_ray_with_finish_soa,
-    wrapped_hero_wavelengths,
+    trace_spectral_ray_with_finish_soa_geom, wrapped_hero_wavelengths,
 };

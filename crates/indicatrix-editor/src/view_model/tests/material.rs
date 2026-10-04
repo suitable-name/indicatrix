@@ -97,7 +97,7 @@ fn parse_yield_form_preserves_the_current_material_name_and_ri_override_regardle
         name: Some("My Custom Garnet".to_string()),
         specific_gravity_override: None,
         refractive_index_override: Some(1.74),
-        body_colour_override: None,
+        body_color_override: None,
     };
     let (_, material) = parse_yield_form("", 0, "4.1", &current).unwrap();
     assert_eq!(material.name.as_deref(), Some("My Custom Garnet"));
@@ -212,10 +212,10 @@ fn parse_design_material_form_rejects_an_ri_at_or_below_one() {
     assert!(parse_design_material_form(0, "not-a-number", &options, &current).is_err());
 }
 
-/// The body colour carries through while the material stays the same species and
-/// falls back to the new material's own colour when the species changes.
+/// The body color carries through while the material stays the same species and
+/// falls back to the new material's own color when the species changes.
 #[test]
-fn parse_design_material_form_keeps_the_body_colour_only_for_the_same_material() {
+fn parse_design_material_form_keeps_the_body_color_only_for_the_same_material() {
     let options = design_material_options(&[]);
     let yellow = [0.2f32, 0.4, 2.8];
     let quartz_index = design_material_index_from_name(Some("Quartz"), &options);
@@ -224,30 +224,30 @@ fn parse_design_material_form_keeps_the_body_colour_only_for_the_same_material()
         name: Some("Quartz".to_string()),
         ..MaterialSelection::none()
     }
-    .with_body_colour(Some(yellow));
+    .with_body_color(Some(yellow));
     let same = parse_design_material_form(quartz_index, "1.55", &options, &current).unwrap();
-    assert_eq!(same.body_colour_override, Some(yellow));
+    assert_eq!(same.body_color_override, Some(yellow));
     let other = parse_design_material_form(diamond_index, "", &options, &current).unwrap();
-    assert_eq!(other.body_colour_override, None);
+    assert_eq!(other.body_color_override, None);
 }
 
-// --- body colour combo ---
+// --- body color combo ---
 
 #[test]
-fn body_colour_combo_index_round_trips_every_preset_and_the_default() {
-    let options = body_colour_options();
+fn body_color_combo_index_round_trips_every_preset_and_the_default() {
+    let options = body_color_options();
     assert_eq!(options[0], "Material default");
     assert_eq!(options.len(), 10);
-    assert_eq!(body_colour_from_index(0), None);
-    assert_eq!(body_colour_index_for(None), 0);
+    assert_eq!(body_color_from_index(0), None);
+    assert_eq!(body_color_index_for(None), 0);
     for index in 1..options.len() as i32 {
-        let rgb = body_colour_from_index(index);
+        let rgb = body_color_from_index(index);
         assert!(rgb.is_some(), "index {index} must name a preset");
-        assert_eq!(body_colour_index_for(rgb), index);
+        assert_eq!(body_color_index_for(rgb), index);
     }
-    assert_eq!(body_colour_from_index(99), None);
-    assert_eq!(body_colour_from_index(-1), None);
-    assert_eq!(body_colour_index_for(Some([0.5, 0.5, 0.5])), 0);
+    assert_eq!(body_color_from_index(99), None);
+    assert_eq!(body_color_from_index(-1), None);
+    assert_eq!(body_color_index_for(Some([0.5, 0.5, 0.5])), 0);
     assert_eq!(options[6], "Yellow");
 }
 
@@ -357,7 +357,7 @@ fn ri_source_text_reports_a_typed_override_first_regardless_of_material() {
         name: Some("Quartz".to_string()),
         specific_gravity_override: None,
         refractive_index_override: Some(1.62),
-        body_colour_override: None,
+        body_color_override: None,
     };
     let text = ri_source_text(&material, &[]);
     assert!(text.contains("override"));
@@ -375,7 +375,7 @@ fn ri_source_text_names_a_custom_catalogue_material_before_a_same_named_built_in
         name: Some("My Custom Garnet".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     let text = ri_source_text(&material, std::slice::from_ref(&custom));
     assert!(text.contains("custom catalogue material"));
@@ -388,7 +388,7 @@ fn ri_source_text_names_a_built_in_when_no_custom_entry_matches() {
         name: Some("Quartz".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     let text = ri_source_text(&material, &[]);
     assert!(text.contains("built-in material"));
@@ -401,7 +401,7 @@ fn ri_source_text_flags_an_unrecognized_name_and_no_selection_as_the_legacy_fall
         name: Some("Not A Real Material".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     assert!(ri_source_text(&unrecognized, &[]).contains("legacy imported value"));
     assert!(ri_source_text(&MaterialSelection::none(), &[]).contains("legacy imported value"));

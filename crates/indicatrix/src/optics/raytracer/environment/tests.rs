@@ -247,7 +247,10 @@ fn new_models_never_exceed_their_documented_peak() {
 /// for why this must stay tight rather than a wider, looser bound.
 const MAX_ULP_DIFF: i64 = 2;
 // One row per [`LightingPreset::ALL`] entry, in that order (Daylight, Incandescent,
-// RingLights, DarkSpotlight, IsoHemisphere, LightTent, DaylightDome) -- see
+// RingLights, DarkSpotlight, IsoHemisphere, LightTent, DaylightDome, UvLamp365,
+// UvLamp395) -- the first seven rows are unchanged since the table was first recorded;
+// the two UV-lamp rows were recorded from their implementation at the lamp's own
+// wavelengths (see `baseline_lambdas`), since a UV line is exactly zero at 450-650 nm. See
 // "Regenerating the baseline" above. IsoHemisphere's row is legitimately full of
 // exact `0` bit patterns for its lower hemisphere (see
 // `iso_hemisphere_is_one_above_and_zero_below` above), not a probe artifact.
@@ -255,7 +258,7 @@ const MAX_ULP_DIFF: i64 = 2;
     clippy::unreadable_literal,
     reason = "bit-pattern baseline table is pinned verbatim as printed"
 )]
-const BASELINE_BITS: [[u32; 192]; 7] = [
+const BASELINE_BITS: [[u32; 192]; 9] = [
     [
         1025162801, 1024039367, 1020505008, 1025092110, 1023976507, 1020408312, 1025021648,
         1023913851, 1020311927, 1024951087, 1023851107, 1020215409, 1025346055, 1024202320,
@@ -456,6 +459,57 @@ const BASELINE_BITS: [[u32; 192]; 7] = [
         1025332942, 1030097935, 1028427794, 1025332942, 1030097935, 1028427794, 1025332942,
         1030097935, 1028427794, 1025332942,
     ],
+    [
+        842500408, 864504429, 815777539, 773625002, 795269012, 747130811, 871415282, 892433807,
+        844207101, 876099405, 898091711, 849370767, 964945069, 985821751, 937796537, 972202606,
+        993188528, 944978369, 327879525, 348978479, 301078319, 999082715, 1020235997, 972366403,
+        1018019375, 1040192103, 991379587, 913622618, 934571668, 886380223, 869003611, 890656081,
+        842107620, 777937035, 799271934, 750884654, 1041529873, 1062922243, 1015104366, 1058706566,
+        1080288395, 1032229347, 945837499, 967138671, 918768509, 1024874745, 1046325017, 998433434,
+        1053628958, 1075261457, 1026723131, 1068425568, 1090578700, 1041776129, 1075296656,
+        1096789737, 1048843660, 1075774168, 1097493718, 1049259358, 1074201668, 1095175430,
+        1047204835, 1075043073, 1096415887, 1048622903, 1047882723, 1068820634, 1020634844,
+        1056111659, 1077091543, 1028884449, 1059662790, 1081698126, 1033061788, 1062488081,
+        1083996899, 1035521347, 1053318659, 1075032726, 1026453001, 1023810855, 1044756557,
+        996770175, 1026558580, 1048691721, 999899297, 1017509992, 1039445847, 990936143, 952446149,
+        974215211, 925607574, 864691696, 885762791, 837846957, 375504051, 396781067, 348423165,
+        1055654784, 1076754764, 1028486716, 1042914004, 1064962824, 1016309322, 439907007,
+        461895313, 413176399, 936347979, 957938543, 909421501, 868246003, 890097622, 841448083,
+        1003125038, 1024802822, 976241512, 936164017, 957802938, 909261353, 0, 0, 0, 1017192240,
+        1038977394, 990659523, 972068637, 993089775, 944861743, 802777183, 824197691, 775766960,
+        693609897, 715060734, 666614610, 439964019, 461937338, 413226031, 999794188, 1021284899,
+        973341838, 916776065, 938678421, 890211359, 0, 0, 0, 914036537, 934876782, 886740561,
+        776137681, 797945568, 749318225, 868545067, 890318072, 841708433, 623750956, 645924694,
+        597111665, 0, 0, 0, 924686596, 946362215, 898183777, 750877794, 772710407, 724070515, 0, 0,
+        0, 591345066, 613216892, 564557097, 0, 0, 0, 768309979, 789970423, 741417914, 185448488,
+        206630581, 158777197, 0, 0, 0, 395021668, 416136405, 368245125, 0, 0, 0,
+    ],
+    [
+        849203728, 864504429, 830949997, 780575835, 795269012, 761714580, 877593318, 892433807,
+        858879375, 882796481, 898091711, 864537279, 971166652, 985821751, 952267319, 978363264,
+        993188528, 959634096, 334438441, 348978479, 315424047, 1005724082, 1020235997, 986681565,
+        1024812619, 1040192103, 1006637671, 919763623, 934571668, 901017236, 875519550, 890656081,
+        857101649, 784283703, 799271934, 765717502, 1048534093, 1062922243, 1029367811, 1065675768,
+        1080288395, 1046733963, 952166190, 967138671, 933584239, 1031882813, 1046325017,
+        1012770585, 1060134252, 1075261457, 1041707025, 1075208367, 1090578700, 1057024268,
+        1082292076, 1096789737, 1063235305, 1082702684, 1097493718, 1063939286, 1080570585,
+        1095175430, 1061620998, 1082017613, 1096415887, 1062861455, 1054017790, 1068820634,
+        1035266202, 1062269099, 1077091543, 1043537111, 1066498014, 1081698126, 1048143694,
+        1068927451, 1083996899, 1050442467, 1059867430, 1075032726, 1041478294, 1030137187,
+        1044756557, 1011202125, 1033330723, 1048691721, 1015137289, 1024374606, 1039445847,
+        1005891415, 959024233, 974215211, 940660779, 871208331, 885762791, 852208359, 381819867,
+        396781067, 363226635, 1061876237, 1076754764, 1043200332, 1049745245, 1064962824,
+        1031408392, 446601951, 461895313, 428340881, 942830921, 957938543, 924384111, 874868091,
+        890097622, 856543190, 1009654469, 1024802822, 991248390, 942672733, 957802938, 924248506,
+        0, 0, 0, 1024101374, 1038977394, 1005422962, 978248066, 993089775, 959535343, 809169482,
+        824197691, 790643259, 700018362, 715060734, 681506302, 446650974, 461937338, 428382906,
+        1006790308, 1021284899, 987730467, 923650575, 938678421, 905123989, 0, 0, 0, 920119547,
+        934876782, 901322350, 782736459, 797945568, 764391136, 875125252, 890318072, 856763640,
+        630544738, 645924694, 612370262, 0, 0, 0, 931628090, 946362215, 912807783, 757489751,
+        772710407, 739155975, 0, 0, 0, 597977924, 613216892, 579662460, 0, 0, 0, 774830168,
+        789970423, 756415991, 192133580, 206630581, 173076149, 0, 0, 0, 401604537, 416136405,
+        382581973, 0, 0, 0,
+    ],
 ];
 
 /// Regression pin for the rig-sharing split (`sample_studio_environment_with_rig`,
@@ -522,6 +576,18 @@ const BASELINE_BITS: [[u32; 192]; 7] = [
 /// dropped term) would actually produce -- still fails loudly; a handful of the
 /// falloff-edge directions may need re-diffing the same way if a future legitimate
 /// change (not a regression) shifts them past `2` again.
+/// The three wavelengths [`studio_presets_are_unchanged_by_the_split`] samples for
+/// `preset`: 450/550/650 nm for every visible-light preset (unchanged), and for a UV lamp
+/// the lamp line itself and two points on its flanks, since a lamp at 365 or 395 nm is
+/// exactly zero (underflow) at the visible wavelengths and would pin nothing.
+fn baseline_lambdas(preset: LightingPreset) -> [f32; 3] {
+    preset
+        .uv_line()
+        .map_or([450.0, 550.0, 650.0], |(centre, _)| {
+            [centre - 8.0, centre, centre + 12.0]
+        })
+}
+
 #[test]
 fn studio_presets_are_unchanged_by_the_split() {
     for (preset_idx, &preset) in LightingPreset::ALL.iter().enumerate() {
@@ -531,7 +597,7 @@ fn studio_presets_are_unchanged_by_the_split() {
             let y = (k as f32 + 0.5).mul_add(-(2.0 / 64.0), 1.0);
             let r = y.mul_add(-y, 1.0).max(0.0).sqrt();
             let dir = Vec3::new(r * phi.cos(), y, r * phi.sin());
-            for &lambda in &[450.0f32, 550.0, 650.0] {
+            for &lambda in &baseline_lambdas(preset) {
                 // Through `black_box`, so that no build folds part of this call at
                 // compile time (a release build with LTO otherwise evaluates the
                 // wavelength terms in double precision); the table pins the run-time
@@ -557,4 +623,105 @@ fn studio_presets_are_unchanged_by_the_split() {
             }
         }
     }
+}
+
+/// The white-balance rule is explicit: only the four Planckian presets are adapted; the
+/// D65 presets and the UV lamps (no white point at all) are the identity.
+#[test]
+fn white_balance_rule_is_explicit_per_preset() {
+    use LightingPreset::*;
+    for preset in LightingPreset::ALL {
+        let expected = matches!(
+            preset,
+            Incandescent | RingLights | DarkSpotlight | LightTent
+        );
+        assert_eq!(preset.uses_white_balance(), expected, "{preset:?}");
+        if expected {
+            assert!(!preset.uses_d65() && !preset.is_uv_lamp());
+        }
+    }
+    // Existing presets keep their D65 flag; the lamps are neither D65 nor Planckian.
+    assert!(UvLamp365.is_uv_lamp() && UvLamp395.is_uv_lamp());
+    assert!(!UvLamp365.uses_d65() && !UvLamp395.uses_d65());
+    assert!(!Daylight.is_uv_lamp() && Daylight.uses_d65());
+}
+
+/// The new presets are appended, keep every earlier index, parse from their labels and
+/// fall back to Daylight for anything an older build would not know.
+#[test]
+fn uv_lamp_presets_are_appended_and_parse() {
+    assert_eq!(LightingPreset::DaylightDome.index(), 6);
+    assert_eq!(LightingPreset::UvLamp365.index(), 7);
+    assert_eq!(LightingPreset::UvLamp395.index(), 8);
+    assert_eq!(LightingPreset::UvLamp365.label(), "UV lamp 365 nm");
+    assert_eq!(LightingPreset::UvLamp395.label(), "UV lamp 395 nm");
+    assert_eq!(
+        LightingPreset::from_label("UV lamp 365 nm"),
+        LightingPreset::UvLamp365
+    );
+    assert_eq!(
+        LightingPreset::from_label("UV lamp 395 nm"),
+        LightingPreset::UvLamp395
+    );
+    assert_eq!(LightingPreset::from_index(9), LightingPreset::Daylight);
+    assert_eq!(LightingPreset::ALL.len(), 9);
+}
+
+/// The lamp spectra are unit-peak Gaussians of the specified FWHM: 365 nm / 10 nm and
+/// 395 nm / 12 nm.
+#[test]
+fn uv_lamp_spectra_are_gaussians_of_the_specified_width() {
+    for (preset, centre, fwhm) in [
+        (LightingPreset::UvLamp365, 365.0f32, 10.0f32),
+        (LightingPreset::UvLamp395, 395.0, 12.0),
+    ] {
+        assert!((preset.spectral_power(centre) - 1.0).abs() < 1e-6);
+        for side in [-0.5f32, 0.5] {
+            let half = preset.spectral_power(side.mul_add(fwhm, centre));
+            assert!((half - 0.5).abs() < 2e-3, "{preset:?}: {half}");
+        }
+        // Effectively dark across the visible range, except the 395 nm LED's violet tail.
+        assert_eq!(preset.spectral_power(550.0), 0.0);
+    }
+    let tail_365 = LightingPreset::UvLamp365.spectral_power(380.0);
+    let tail_395 = LightingPreset::UvLamp395.spectral_power(410.0);
+    assert!(tail_365 < 5e-3, "{tail_365}");
+    assert!(tail_395 > 1e-3 && tail_395 < 0.1, "{tail_395}");
+}
+
+/// No ambient fill: a direction away from every light is exactly dark under a UV lamp
+/// (and not under Daylight), and the lamp lights the key direction.
+#[test]
+fn uv_lamps_have_no_ambient_backdrop() {
+    let rig = crate::optics::studio_rig::StudioRig::new(0.4, 0.35);
+    let key = rig.key_dir;
+    // Straight away from the key, fill and every ring light.
+    let away = Vec3::new(0.0, -1.0, 0.0);
+    let dark = sample_studio_environment_with_rig(
+        away,
+        365.0,
+        LightingPreset::UvLamp365,
+        1.0,
+        &rig,
+        Vec3::ZERO,
+    );
+    assert_eq!(dark, 0.0);
+    let ambient = sample_studio_environment_with_rig(
+        away,
+        550.0,
+        LightingPreset::Daylight,
+        1.0,
+        &rig,
+        Vec3::ZERO,
+    );
+    assert!(ambient > 0.0);
+    let lit = sample_studio_environment_with_rig(
+        key,
+        365.0,
+        LightingPreset::UvLamp365,
+        1.0,
+        &rig,
+        Vec3::ZERO,
+    );
+    assert!(lit > 1.0, "the key softbox must light the lamp line: {lit}");
 }

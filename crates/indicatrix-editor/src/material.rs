@@ -5,7 +5,7 @@
 
 use indicatrix::optics::materials::{
     GemMaterial,
-    body_colour::{BODY_COLOUR_PRESETS, preset_index_for_rgb},
+    body_color::{BODY_color_PRESETS, preset_index_for_rgb},
 };
 use indicatrix_cut_core::{Design, Edit, MaterialSelection, RemapRounding};
 
@@ -325,13 +325,13 @@ pub fn design_material_name_from_index(index: i32, options: &[String]) -> Option
 /// (that stays the Yield panel's own field), matching [`Edit::SetMaterial`]'s "wholesale,
 /// not per-field" contract.
 ///
-/// `current`'s `body_colour_override` carries through only while the parsed name
+/// `current`'s `body_color_override` carries through only while the parsed name
 /// stays the same material (case-insensitively; two nameless selections count as
-/// the same): a colour picked for one species is a what-if about THAT stone, so
-/// switching species (e.g. the Retarget dialog, which has no colour control of its
-/// own) falls back to the new material's own colour. The design settings panel sets
-/// the colour explicitly afterwards from its own Colour combo, via
-/// [`MaterialSelection::with_body_colour`].
+/// the same): a color picked for one species is a what-if about THAT stone, so
+/// switching species (e.g. the Retarget dialog, which has no color control of its
+/// own) falls back to the new material's own color. The design settings panel sets
+/// the color explicitly afterwards from its own color combo, via
+/// [`MaterialSelection::with_body_color`].
 ///
 /// An
 /// empty override field means `None` (use the resolved material's own `n_D`); a
@@ -373,44 +373,44 @@ pub fn parse_design_material_form(
         name,
         specific_gravity_override: current.specific_gravity_override,
         refractive_index_override,
-        body_colour_override: current.body_colour_override.filter(|_| same_material),
+        body_color_override: current.body_color_override.filter(|_| same_material),
     })
 }
 
-/// The design settings panel's Colour combo options.
+/// The design settings panel's color combo options.
 ///
 /// `"Material default"` (index 0, no override) followed by every
-/// [`indicatrix::optics::materials::body_colour::BODY_COLOUR_PRESETS`] label, in
+/// [`indicatrix::optics::materials::body_color::BODY_color_PRESETS`] label, in
 /// that table's own order -- so combo index `i >= 1` is preset `i - 1`.
 #[must_use]
-pub fn body_colour_options() -> Vec<String> {
+pub fn body_color_options() -> Vec<String> {
     std::iter::once("Material default".to_string())
-        .chain(BODY_COLOUR_PRESETS.iter().map(|p| p.label.to_string()))
+        .chain(BODY_color_PRESETS.iter().map(|p| p.label.to_string()))
         .collect()
 }
 
-/// [`body_colour_options`]' index for `rgb`.
+/// [`body_color_options`]' index for `rgb`.
 ///
 /// `0` for no override, `preset + 1` for a
 /// triple that matches a preset exactly, and `0` too for a triple that matches none
-/// (the combo cannot show an unlisted colour, e.g. one typed into a design file by
+/// (the combo cannot show an unlisted color, e.g. one typed into a design file by
 /// hand; the combo is authoritative on Apply, so applying the panel with it left at
-/// `0` returns such a design to its material's own colour -- see
-/// [`body_colour_from_index`]).
+/// `0` returns such a design to its material's own color -- see
+/// [`body_color_from_index`]).
 #[must_use]
-pub fn body_colour_index_for(rgb: Option<[f32; 3]>) -> i32 {
+pub fn body_color_index_for(rgb: Option<[f32; 3]>) -> i32 {
     rgb.and_then(preset_index_for_rgb)
         .map_or(0, |index| index as i32 + 1)
 }
 
-/// The inverse of [`body_colour_index_for`]: `None` ("Material default") for index
+/// The inverse of [`body_color_index_for`]: `None` ("Material default") for index
 /// `0` or an out-of-range index, else preset `index - 1`'s absorption triple.
 #[must_use]
-pub fn body_colour_from_index(index: i32) -> Option<[f32; 3]> {
+pub fn body_color_from_index(index: i32) -> Option<[f32; 3]> {
     usize::try_from(index)
         .ok()
         .and_then(|i| i.checked_sub(1))
-        .and_then(|i| BODY_COLOUR_PRESETS.get(i))
+        .and_then(|i| BODY_color_PRESETS.get(i))
         .map(|preset| preset.absorption_rgb)
 }
 

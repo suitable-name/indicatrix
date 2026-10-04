@@ -84,6 +84,7 @@ use gpu_backend::{
     BackendFrame, FrameOutputs, HybridPacing, ViewportGpu, accumulate_frame_samples,
 };
 use indicatrix::optics::{
+    fluorescence::Fluorescence,
     materials::GemMaterial,
     raytracer::{Camera, DEFAULT_FOV_DEG, EnvironmentSource, FacetFinish},
 };
@@ -245,8 +246,11 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                 girdle_frosted,
                 edge_rounding_radius,
                 stone_width_mm,
+                physics_color,
                 active_planes,
+                active_tools,
                 custom_materials,
+                fluorescence,
                 running,
                 dirty,
                 paused,
@@ -429,6 +433,7 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                             custom_materials: &custom_materials,
                             material_override: material_override.as_ref(),
                             material_name: &material_name,
+                            physics_color,
                         },
                         target_samples,
                         &MaterialOverrides {
@@ -442,6 +447,7 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                     );
                     metrics_worker.request(
                         &active_planes,
+                        &active_tools,
                         &current_mat,
                         [yaw, pitch, light_yaw, light_pitch],
                         lighting_preset,
@@ -465,6 +471,7 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                     custom_materials: &custom_materials,
                     material_override: material_override.as_ref(),
                     material_name: &material_name,
+                    physics_color,
                 },
                 target_samples,
                 &MaterialOverrides {
@@ -486,6 +493,7 @@ pub fn spawn_render_thread<T, F, M, S, R>(
             // debounced evaluation lands.
             metrics_worker.request(
                 &active_planes,
+                &active_tools,
                 &current_mat,
                 [yaw, pitch, light_yaw, light_pitch],
                 lighting_preset,
@@ -603,6 +611,8 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                         distance,
                         camera: &camera,
                         planes: &active_planes,
+                        tools: &active_tools,
+                        fluorescence: fluorescence.as_deref().unwrap_or(Fluorescence::none()),
                         facet_finishes,
                         material: &current_mat,
                         max_bounces,

@@ -3,7 +3,7 @@
 //! together against a design's current, already-solved state.
 
 use super::{
-    fit::{PreformFit, exceeds_preform},
+    fit::{PreformFit, exceeds_preform, finished_metrics},
     scale::{carat_weight, mm_per_unit, volume_mm3, volumetric_yield},
 };
 use crate::{design::Design, material::MaterialLookup};
@@ -78,7 +78,7 @@ impl Design {
     /// one entry per tier `self` currently has, in the same order.
     #[must_use]
     pub fn yield_report(&self, solved: &[SolvedTier]) -> YieldReport {
-        let finished = measure_solid(&self.planes_from_solved(solved));
+        let finished = finished_metrics(self, solved);
         let preform = measure_solid(&self.preform.planes());
 
         let vol_yield = match (&finished, &preform) {
@@ -131,7 +131,7 @@ impl Design {
         solved: &[SolvedTier],
         catalogue: &dyn MaterialLookup,
     ) -> YieldReport {
-        let finished = measure_solid(&self.planes_from_solved(solved));
+        let finished = finished_metrics(self, solved);
         let preform = measure_solid(&self.preform.planes());
 
         let vol_yield = match (&finished, &preform) {
@@ -221,7 +221,7 @@ mod yield_report_with_tests {
             name: Some("Diamond".to_string()),
             specific_gravity_override: None,
             refractive_index_override: None,
-            body_colour_override: None,
+            body_color_override: None,
         });
         let solved = design.solve().expect("single anchored tier must solve");
         let plain = design.yield_report(&solved);
@@ -243,7 +243,7 @@ mod yield_report_with_tests {
             name: Some("My Garnet".to_string()),
             specific_gravity_override: None,
             refractive_index_override: None,
-            body_colour_override: None,
+            body_color_override: None,
         });
         let solved = design.solve().expect("single anchored tier must solve");
 
@@ -275,7 +275,7 @@ mod yield_report_with_tests {
             name: Some("My Garnet".to_string()),
             specific_gravity_override: Some(4.10),
             refractive_index_override: None,
-            body_colour_override: None,
+            body_color_override: None,
         });
         let solved = design.solve().expect("single anchored tier must solve");
         let report = design.yield_report_with(&solved, &CustomOnlyLookup);

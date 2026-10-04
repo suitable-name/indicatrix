@@ -29,7 +29,7 @@ pub(super) type Pixels = SharedPixelBuffer<Rgba8Pixel>;
 /// The vertical field of view every viewport of the app uses.
 pub(super) const FIELD_OF_VIEW: f32 = 42.0;
 
-/// The frame background, the theme's input colour (`#12141c`).
+/// The frame background, the theme's input color (`#12141c`).
 const BACKGROUND: [u8; 4] = [0x12, 0x14, 0x1c, 0xff];
 
 /// The yaw of the reset view.

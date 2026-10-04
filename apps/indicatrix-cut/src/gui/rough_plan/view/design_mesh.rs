@@ -9,7 +9,8 @@ use super::super::run::{rotate_into_caliper_frame, to_caliper_frame};
 use glam::DVec3;
 use indicatrix::geometry::{
     GpuFacetPlane,
-    stone_metrics::{SolidStatus, build_solid_mesh},
+    stone_metrics::{SolidStatus, build_solid_mesh, build_solid_mesh_geom},
+    tool::ToolPrimitive,
 };
 use indicatrix_vault::db::sqlite::Database;
 use std::{
@@ -24,13 +25,31 @@ const MERGE_FRACTION: f64 = 1e-7;
 /// Sine tolerance under which three consecutive ring points count as collinear.
 const COLLINEAR_SIN: f64 = 1e-6;
 
-/// One flat face of a design.
+/// One face of a design: a flat facet, or on a concave design one piece of a facet or of
+/// a tool's curved surface (a polygon with its own normal).
 #[derive(Debug, Clone)]
 pub(super) struct DesignFacet {
     /// The outward unit normal.
     pub(super) normal: DVec3,
     /// The face polygon's corners, in order.
     pub(super) ring: Vec<DVec3>,
+    /// Whether the edge from `ring[i]` to `ring[i + 1]` (cyclic) is drawn. `None` draws
+    /// every edge, as a flat design does; a concave design hides the seams where one
+    /// facet or tool surface is cut into several pieces.
+    pub(super) edge_drawn: Option<Vec<bool>>,
+}
+
+impl DesignFacet {
+    /// A facet whose every edge is drawn.
+    #[cfg(test)]
+    #[must_use]
+    pub(super) const fn new(normal: DVec3, ring: Vec<DVec3>) -> Self {
+        Self {
+            normal,
+            ring,
+            edge_drawn: None,
+        }
+    }
 }
 
 /// A design's faces in the caliper frame (x = caliper width, y = up, z = caliper
@@ -121,6 +140,44 @@ pub(super) fn simplify_ring(ring: &[DVec3]) -> Vec<DVec3> {
     corners
 }
 
+/// The drawn flags of the corners `simplified` kept of `ring`, given the flag of each
+/// original segment `s -> s + 1` (cyclic; a missing flag counts as drawn). A kept edge is
+/// drawn when any original segment it spans is, so a facet boundary stays drawn when
+/// collinear seam points were removed from its middle. [`simplify_ring`] only drops
+/// points, so each kept corner is found again by exact equality; if one is not, every
+/// edge is drawn rather than losing a boundary.
+pub(super) fn simplified_flags(
+    ring: &[DVec3],
+    simplified: &[DVec3],
+    visible: &[bool],
+) -> Vec<bool> {
+    let mut source = Vec::with_capacity(simplified.len());
+    let mut cursor = 0;
+    for corner in simplified {
+        let Some(offset) = ring[cursor..].iter().position(|p| p == corner) else {
+            return vec![true; simplified.len()];
+        };
+        source.push(cursor + offset);
+        cursor += offset + 1;
+    }
+    let count = ring.len();
+    (0..source.len())
+        .map(|i| {
+            let (from, to) = (source[i], source[(i + 1) % source.len()]);
+            let mut segment = from;
+            loop {
+                if visible.get(segment).copied().unwrap_or(true) {
+                    return true;
+                }
+                segment = (segment + 1) % count;
+                if segment == to {
+                    return false;
+                }
+            }
+        })
+        .collect()
+}
+
 /// The centre of the bounding box of `corners` turned into the caliper frame of
 /// `width_dir`.
 fn caliper_centre(corners: &[[f64; 3]], width_dir: [f64; 2]) -> DVec3 {
@@ -134,23 +191,41 @@ fn caliper_centre(corners: &[[f64; 3]], width_dir: [f64; 2]) -> DVec3 {
     (low + high) * 0.5
 }
 
-/// Builds the mesh of the solid `planes` (`n . p <= m`) bound, in the caliper frame.
-/// `None` when the planes do not close into a solid or the outline has no width.
+/// Builds the mesh of the stone `planes` (`n . p <= m`) bound, minus the concave `tools`,
+/// in the caliper frame. `None` when the planes do not close into a solid or the outline
+/// has no width.
 ///
-/// The frame comes from the planner's own hull preparation, applied to the solid's corners
-/// rounded to `f32` like the cached hull the planner works on: an outline with tied
-/// caliper widths then picks the same direction as the plan did, and a stone is drawn
-/// turned the way it was planned. The centre is that of the exact corners in that frame.
+/// The frame comes from the planner's own hull preparation, applied to the FLAT stone's
+/// corners rounded to `f32` like the cached hull the planner works on: an outline with
+/// tied caliper widths then picks the same direction as the plan did, and a stone is drawn
+/// turned the way it was planned (tools only remove material, so the hull the plan fitted
+/// is the flat one). The centre is that of the exact flat corners in that frame.
+///
+/// A concave mesh has several polygons per facet and rings that belong to a tool, so each
+/// ring takes its own normal from `piece_normals`, and the seam edges `edge_visible`
+/// hides are not drawn. Without tools this is the planar mesh exactly.
 #[must_use]
-pub(super) fn design_mesh_from_planes(planes: &[(DVec3, f64)]) -> Option<DesignMesh> {
-    let SolidStatus::Closed(mesh) = build_solid_mesh(planes) else {
+pub(super) fn design_mesh_from_planes(
+    planes: &[(DVec3, f64)],
+    tools: &[ToolPrimitive],
+) -> Option<DesignMesh> {
+    let SolidStatus::Closed(mesh) = build_solid_mesh_geom(planes, tools) else {
         return None;
     };
-    let corners: Vec<[f64; 3]> = mesh
-        .rings
-        .iter()
-        .flat_map(|(_, ring)| ring.iter().map(DVec3::to_array))
-        .collect();
+    let corners_of = |mesh: &indicatrix::geometry::stone_metrics::SolidMesh| -> Vec<[f64; 3]> {
+        mesh.rings
+            .iter()
+            .flat_map(|(_, ring)| ring.iter().map(DVec3::to_array))
+            .collect()
+    };
+    let corners = if tools.is_empty() {
+        corners_of(&mesh)
+    } else {
+        let SolidStatus::Closed(flat) = build_solid_mesh(planes) else {
+            return None;
+        };
+        corners_of(&flat)
+    };
     let stored: Vec<[f64; 3]> = corners
         .iter()
         .map(|corner| corner.map(|c| f64::from(c as f32)))
@@ -162,11 +237,32 @@ pub(super) fn design_mesh_from_planes(planes: &[(DVec3, f64)]) -> Option<DesignM
     let facets: Vec<DesignFacet> = mesh
         .rings
         .iter()
-        .filter_map(|(id, ring)| {
-            let normal = to_caliper(planes.get(*id)?.0);
+        .enumerate()
+        .filter_map(|(index, (id, ring))| {
+            let normal = match &mesh.piece_normals {
+                // Tool-piece normals come from the kernel's f32 `outward_normal`, so
+                // they are unit only to ~1e-7; renormalise in f64. Flat designs
+                // (`None`) keep their plane normals bit for bit.
+                Some(normals) => normals.get(index)?.normalize(),
+                None => planes.get(*id)?.0,
+            };
             let ring: Vec<DVec3> = ring.iter().map(|&p| to_caliper(p) - centre).collect();
-            let ring = simplify_ring(&ring);
-            (ring.len() >= 3).then_some(DesignFacet { normal, ring })
+            let corners = simplify_ring(&ring);
+            if corners.len() < 3 {
+                return None;
+            }
+            let edge_drawn = mesh.edge_visible.as_ref().map(|visible| {
+                simplified_flags(
+                    &ring,
+                    &corners,
+                    visible.get(index).map_or(&[], Vec::as_slice),
+                )
+            });
+            Some(DesignFacet {
+                normal: to_caliper(normal),
+                ring: corners,
+                edge_drawn,
+            })
         })
         .collect();
     (!facets.is_empty()).then_some(DesignMesh { facets })
@@ -293,7 +389,8 @@ impl MeshLibrary {
     }
 
     /// Reads design `entry_id` and builds its mesh from the facet planes alone (the
-    /// preform's planes come first in a design file's list and are skipped).
+    /// preform's planes come first in a design file's list and are skipped), minus the
+    /// design's concave tools.
     /// `Ok(None)` means the library has no such design. `Err` means the read failed or the
     /// planes do not close, so the answer must not be remembered.
     fn load(&self, entry_id: i64) -> Result<Option<DesignMesh>, ()> {
@@ -314,6 +411,13 @@ impl MeshLibrary {
             }
         };
         let resolved = crate::gui::editor::resolve_catalogue_planes(&full);
+        if let Some(reason) = &resolved.concave_error {
+            // Drawing it flat would show a stone the plan did not measure.
+            warn!(
+                "Rough planner: design #{entry_id} has concave tiers that do not resolve: {reason}"
+            );
+            return Err(());
+        }
         let halfspaces: Vec<(DVec3, f64)> = resolved
             .planes
             .iter()
@@ -321,7 +425,7 @@ impl MeshLibrary {
             .map(GpuFacetPlane::to_halfspace_f64)
             .collect();
         let start = resolved.preform_plane_count.min(halfspaces.len());
-        let Some(mesh) = design_mesh_from_planes(&halfspaces[start..]) else {
+        let Some(mesh) = design_mesh_from_planes(&halfspaces[start..], &resolved.tools) else {
             warn!("Rough planner: design #{entry_id} has no closed solid to draw");
             return Err(());
         };
@@ -389,7 +493,7 @@ mod tests {
     fn a_turned_box_gets_its_width_on_x_and_its_length_on_z_and_is_centred() {
         // 2 wide, 3 tall, 6 long, turned 30 degrees and moved off the origin.
         let planes = turned_box(DVec3::new(1.0, 1.5, 3.0), 30.0, DVec3::new(0.7, 0.2, -0.4));
-        let mesh = design_mesh_from_planes(&planes).expect("a box closes");
+        let mesh = design_mesh_from_planes(&planes, &[]).expect("a box closes");
         let (low, high) = bounds(&mesh);
         assert!((low + high).length() < 1e-9, "bounding box is centred");
         // The frame comes from f32-rounded corners (like the planner's cached hull), so the
@@ -402,7 +506,7 @@ mod tests {
     fn the_caliper_width_is_the_extent_along_x() {
         // The box is 2 wide (x), 3 tall, 6 long, so the width is its 2 units.
         let planes = turned_box(DVec3::new(1.0, 1.5, 3.0), 30.0, DVec3::ZERO);
-        let mesh = design_mesh_from_planes(&planes).expect("a box closes");
+        let mesh = design_mesh_from_planes(&planes, &[]).expect("a box closes");
         assert!((mesh.caliper_width() - 2.0).abs() < 1e-5);
         assert!(DesignMesh { facets: Vec::new() }.caliper_width().abs() < f64::EPSILON);
     }
@@ -410,7 +514,7 @@ mod tests {
     #[test]
     fn facet_normals_stay_unit_and_point_away_from_the_centre() {
         let planes = turned_box(DVec3::new(1.0, 1.5, 3.0), 30.0, DVec3::ZERO);
-        let mesh = design_mesh_from_planes(&planes).expect("a box closes");
+        let mesh = design_mesh_from_planes(&planes, &[]).expect("a box closes");
         for facet in &mesh.facets {
             assert!((facet.normal.length() - 1.0).abs() < 1e-9);
             let mid = facet.ring.iter().copied().sum::<DVec3>() / facet.ring.len() as f64;
@@ -424,7 +528,7 @@ mod tests {
         // the box's vertices as the vault stores them (f32) must give the same bounding
         // box, and the same centre to subtract, as this mesh (to the f32 rounding).
         let planes = turned_box(DVec3::new(1.0, 1.5, 3.0), 30.0, DVec3::new(0.7, 0.2, -0.4));
-        let mesh = design_mesh_from_planes(&planes).expect("a box closes");
+        let mesh = design_mesh_from_planes(&planes, &[]).expect("a box closes");
         let SolidStatus::Closed(raw) = build_solid_mesh(&planes) else {
             panic!("a box closes");
         };
@@ -470,7 +574,7 @@ mod tests {
         // A square outline has four equal caliper widths, so which edge the frame follows
         // is decided by rounding noise. The mesh must follow the edge the f32 hull picks.
         let planes = turned_box(DVec3::new(1.5, 1.0, 1.5), 17.0, DVec3::new(9.3, 0.1, -4.7));
-        let mesh = design_mesh_from_planes(&planes).expect("a box closes");
+        let mesh = design_mesh_from_planes(&planes, &[]).expect("a box closes");
         let SolidStatus::Closed(raw) = build_solid_mesh(&planes) else {
             panic!("a box closes");
         };
@@ -505,6 +609,67 @@ mod tests {
             (back - DVec3::new(wx, 0.0, wz)).length() < 1e-5,
             "the mesh's width axis {back:?} is the hull's {wx}, {wz}"
         );
+    }
+
+    #[test]
+    fn a_concave_design_is_drawn_with_its_tool_cuts_in_the_flat_stones_frame() {
+        // A ball dimple (radius 0.5) in the top face of a box turned 30 degrees. The tool
+        // only removes material, so the frame and the centre are the flat box's.
+        let planes = turned_box(DVec3::new(1.0, 1.5, 3.0), 30.0, DVec3::new(0.7, 0.2, -0.4));
+        let top = planes[2];
+        let on_top = top.0 * top.1;
+        let tool = ToolPrimitive {
+            kind: 0,
+            sweep_kind: 0,
+            _pad: [0; 2],
+            origin: [on_top.x as f32, on_top.y as f32, on_top.z as f32, 0.5],
+            axis: [0.0, 1.0, 0.0, 0.0],
+            profile: [0.0; 4],
+            sweep_dir: [0.0; 4],
+        };
+        let flat = design_mesh_from_planes(&planes, &[]).expect("a box closes");
+        let carved = design_mesh_from_planes(&planes, &[tool]).expect("a carved box closes");
+        assert!(
+            carved.facets.len() > flat.facets.len(),
+            "the dimple adds pieces: {} vs {}",
+            carved.facets.len(),
+            flat.facets.len()
+        );
+        let ((flat_low, flat_high), (low, high)) = (bounds(&flat), bounds(&carved));
+        // The carved mesh snaps clipped pieces to a 1e-9·W grid and the tool is stored
+        // in f32, so the boxes agree to rounding, not bit for bit.
+        assert!(
+            (flat_low - low).length() < 1e-6 && (flat_high - high).length() < 1e-6,
+            "carved bounds {low:?}..{high:?} differ from flat {flat_low:?}..{flat_high:?}"
+        );
+        for facet in &carved.facets {
+            assert!((facet.normal.length() - 1.0).abs() < 1e-9);
+            let drawn = facet
+                .edge_drawn
+                .as_ref()
+                .expect("a concave mesh has edge flags");
+            assert_eq!(drawn.len(), facet.ring.len());
+        }
+        assert!(
+            flat.facets.iter().all(|f| f.edge_drawn.is_none()),
+            "a flat design draws every edge"
+        );
+    }
+
+    #[test]
+    fn a_ring_keeps_a_boundary_edge_when_its_collinear_seam_points_are_dropped() {
+        let ring = [
+            DVec3::new(0.0, 0.0, 0.0),
+            DVec3::new(0.5, 0.0, 0.0),
+            DVec3::new(1.0, 0.0, 0.0),
+            DVec3::new(1.0, 0.0, 1.0),
+            DVec3::new(0.0, 0.0, 1.0),
+        ];
+        let corners = simplify_ring(&ring);
+        assert_eq!(corners.len(), 4);
+        // Segment 0 -> 1 is a seam, 1 -> 2 a boundary; the merged edge is drawn.
+        let flags = simplified_flags(&ring, &corners, &[false, true, false, false, false]);
+        assert_eq!(flags, vec![true, false, false, false]);
     }
 
     #[test]
@@ -617,8 +782,8 @@ mod tests {
 
     #[test]
     fn open_planes_give_no_mesh() {
-        assert!(design_mesh_from_planes(&[(DVec3::X, 1.0), (DVec3::NEG_X, 1.0)]).is_none());
-        assert!(design_mesh_from_planes(&[]).is_none());
+        assert!(design_mesh_from_planes(&[(DVec3::X, 1.0), (DVec3::NEG_X, 1.0)], &[]).is_none());
+        assert!(design_mesh_from_planes(&[], &[]).is_none());
     }
 
     #[test]

@@ -3,10 +3,10 @@
 //! otherwise, or -- if even that fails -- leaving the frame sequence in place with a
 //! `README.txt` explaining how to mux it by hand.
 //!
-//! No ICC colour profile is embedded in either output: unlike the still-image export's
+//! No ICC color profile is embedded in either output: unlike the still-image export's
 //! single PNG (`bridge::export_thread::tonemap_png::save_png`), these frames feed
 //! either `ffmpeg` (which re-encodes to `yuv420p` and carries no per-frame ICC concept)
-//! or a GIF (an 8-bit palette format with no colour-management story of its own), so an
+//! or a GIF (an 8-bit palette format with no color-management story of its own), so an
 //! embedded profile on the intermediate PNGs would be silently dropped either way.
 
 use std::{

@@ -48,6 +48,11 @@ pub struct DesignSummary {
     /// every other field of this summary stays the same, and is all zero bytes when the
     /// server could not read the design's revision (a client must then re-fetch).
     pub design_version: [u8; 32],
+    /// How many of the design's tiers are concave (tool-cut); `0` for a planar design
+    /// (v19). What a library row needs to flag a design that a plane-only reader would
+    /// render without its concave cuts. Covered by [`Self::version`], so a design that
+    /// gains or loses a concave tier re-syncs even if every text field is unchanged.
+    pub concave_tiers: u32,
 }
 
 /// One angle-schedule row -- wire counterpart of `indicatrix_vault::model::angle::AngleSetting`.
@@ -63,6 +68,10 @@ pub struct AngleSettingWire {
     pub index: String,
     /// Free-form cutting notes.
     pub notes: String,
+    /// The formatted second line of a concave tier's cutting-sheet row (v19: the tool's
+    /// shape, size and stroke), `None` for a flat tier. Wire counterpart of
+    /// `indicatrix_vault::model::angle::AngleSetting::tool_line`.
+    pub tool_line: Option<String>,
 }
 
 /// One attachment's METADATA -- never its content; see the module docs' "Attachments"

@@ -43,12 +43,12 @@
 
 use glam::Vec3;
 use indicatrix::{
-    geometry::plane::GpuFacetPlane,
+    geometry::{StoneGeometry, ToolPrimitive, plane::GpuFacetPlane},
     optics::raytracer::{Camera, DEFAULT_FOV_DEG},
     renderer::{
         denoise::AtrousDenoiser,
         frame_denoise::{DenoiseScratch, FirstHitSnapshot, denoise_and_tonemap_frame},
-        guide_pass::generate_guide_buffers_cancellable,
+        guide_pass::generate_guide_buffers_cancellable_geom,
     },
 };
 use indicatrix_net::SceneState;
@@ -96,6 +96,9 @@ struct GuideInputs {
     pitch: f32,
     distance: f32,
     planes: Vec<GpuFacetPlane>,
+    /// Concave tools: a tool hit carries facet id `planes.len() + k`, so the denoiser's
+    /// edge guides see a tool's walls as distinct facets rather than seeing through them.
+    tools: Vec<ToolPrimitive>,
 }
 
 /// One `DisplayOnly` request's denoise thread and its hand-over state (see the module
@@ -125,6 +128,7 @@ impl DisplayDenoiser {
             pitch: scene.pitch,
             distance: scene.distance,
             planes: scene.planes.clone(),
+            tools: scene.tools.clone(),
         };
         let flag = Arc::clone(&cancel);
         let spawned = thread::Builder::new()
@@ -274,11 +278,14 @@ fn run(
     pictures: &mpsc::Sender<DisplayPicture>,
 ) {
     let camera = Camera::new(inputs.yaw, inputs.pitch, inputs.distance, DEFAULT_FOV_DEG);
-    let Some(guides) = generate_guide_buffers_cancellable(
+    let Some(guides) = generate_guide_buffers_cancellable_geom(
         inputs.width,
         inputs.height,
         &camera,
-        &inputs.planes,
+        StoneGeometry {
+            planes: &inputs.planes,
+            tools: &inputs.tools,
+        },
         cancel,
     ) else {
         return;
@@ -343,6 +350,8 @@ mod tests {
             backdrop: 0.0,
             environment: indicatrix_net::scene::SceneEnvironment::Studio,
             surface_glare: 1.0,
+            tools: Vec::new(),
+            fluorescence: Default::default(),
         }
     }
 

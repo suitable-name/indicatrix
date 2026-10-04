@@ -211,6 +211,7 @@ fn delete_diagram_entry_cascades_to_detail_angles_and_files() {
                 angle: "0\u{b0}".to_string(),
                 index: "0".to_string(),
                 notes: String::new(),
+                ..Default::default()
             }],
             attached_files: vec![crate::model::file::AttachedFile {
                 name: "doomed.asc".to_string(),

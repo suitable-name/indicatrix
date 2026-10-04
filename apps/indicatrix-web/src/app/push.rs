@@ -17,7 +17,7 @@ use std::{rc::Rc, time::Duration};
 /// dismissed (the desktop's toast rule: they report something to act on).
 const TOAST_AUTO_DISMISS: Duration = Duration::from_secs(5);
 
-/// The kind of a [`show_message`] message, which colours it and decides whether
+/// The kind of a [`show_message`] message, which colors it and decides whether
 /// it auto-dismisses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {

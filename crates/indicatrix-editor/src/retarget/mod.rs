@@ -212,6 +212,11 @@ fn shifted_angle(
 ///
 /// Shared with `callbacks::retarget_actions`'s off-thread `RetargetMode::Optimize` wiring
 /// so that module never reimplements `Block` classification itself.
+///
+/// The scope only ever holds positions in `design.tiers`: concave tiers (their own list,
+/// `design.concave_tiers`) have no angle the material retarget could shift (a concave
+/// tier's angle is authored against the tool, not a critical-angle margin), so they are
+/// never part of it and the returned `Block` list has one entry per FLAT tier.
 #[must_use]
 pub fn retarget_scope(design: &Design) -> (Vec<usize>, Vec<Block>) {
     let blocks = classify_blocks(&design.meet_tier_inputs());

@@ -3,7 +3,10 @@
 
 use super::*;
 use indicatrix::geometry::meet_solver::{MeetConstraint, SolvedTier};
-use indicatrix_cut_core::{ConstraintTier, Design, PreformSpec, ScheduleMeta};
+use indicatrix_cut_core::{
+    ConstraintTier, Design, PreformSpec, ScheduleMeta,
+    design::{ConcaveTier, ConcaveTool, ToolMotion},
+};
 use std::collections::BTreeSet;
 
 /// A synthetic "RBC-445"-style design: the tier table
@@ -506,4 +509,85 @@ fn an_index_listed_twice_in_a_tier_yields_one_entry() {
     let map = FacetMap::from_design(&design, &solved);
 
     assert_eq!(map.facets_of_tier(0).len(), 1);
+}
+
+/// One pavilion-side cylinder tier with three placements, for the concave tests.
+fn dimple_tier() -> ConcaveTier {
+    ConcaveTier {
+        name: "Dimple".to_string(),
+        angle_deg: -35.0,
+        indices: vec![0.0, 32.0, 64.0],
+        instructions: String::new(),
+        tool: ConcaveTool::Cylinder,
+        tool_azimuth_deg: 30.0,
+        displacement: [0.0, 0.0, 0.0],
+        diameter_ratio: 0.25,
+        tool_angle_deg: None,
+        motion: ToolMotion::Reciprocating,
+    }
+}
+
+#[test]
+fn concave_facets_get_ids_above_the_flat_ones_with_kind_hover_label_and_block() {
+    let mut design = standard_round_brilliant_design();
+    design.concave_tiers.push(dimple_tier());
+    let solved = design.solve().expect("every tier is pinned");
+    let flat = FacetMap::from_design(&design, &solved);
+    let map = FacetMap::from_design_with_tools(&design, &solved, &[(0, 0), (0, 2)]);
+    let first = flat.facet_count();
+
+    assert_eq!(map.facet_count(), first + 2);
+    assert_eq!(map.kind_of(0), FacetKind::Flat);
+    assert_eq!(
+        map.kind_of(first),
+        FacetKind::Concave {
+            tier: 0,
+            placement: 0
+        }
+    );
+    assert_eq!(
+        map.kind_of(first + 1),
+        FacetKind::Concave {
+            tier: 0,
+            placement: 2
+        }
+    );
+    assert_eq!(
+        map.kind_of(first + 2),
+        FacetKind::Flat,
+        "out of range is Flat"
+    );
+    assert_eq!(
+        map.tier_of(first),
+        None,
+        "a concave facet belongs to no flat tier"
+    );
+    assert_eq!(map.hover_text(first, 1.54), "Dimple CYL θ 30.0° D 0.250");
+    assert_eq!(map.facet_label(first + 1), "Dimple 64");
+    let blocks = map.tool_facet_blocks();
+    assert_eq!(blocks.len(), map.facet_count());
+    assert_eq!(blocks[0], None);
+    assert_eq!(blocks[first], Some(Block::Pavilion));
+    assert_eq!(
+        map.overlay_flags(&design, 1.54, None, &BTreeSet::new())
+            .flagged
+            .len(),
+        map.facet_count(),
+        "the overlay flags cover the concave ids"
+    );
+}
+
+#[test]
+fn from_design_with_no_placements_is_exactly_from_design() {
+    let mut design = standard_round_brilliant_design();
+    design.concave_tiers.push(dimple_tier());
+    let solved = design.solve().expect("every tier is pinned");
+    let plain = FacetMap::from_design(&design, &solved);
+    let with_none = FacetMap::from_design_with_tools(&design, &solved, &[]);
+    assert_eq!(with_none.facet_count(), plain.facet_count());
+    for id in 0..plain.facet_count() {
+        assert_eq!(with_none.kind_of(id), FacetKind::Flat);
+        assert_eq!(with_none.hover_text(id, 1.54), plain.hover_text(id, 1.54));
+        assert_eq!(with_none.facet_label(id), plain.facet_label(id));
+    }
 }

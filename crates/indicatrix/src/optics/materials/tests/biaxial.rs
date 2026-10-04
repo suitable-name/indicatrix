@@ -138,12 +138,12 @@ fn biaxial_sign_matches_optical_character() {
 /// discipline `birefringence::biaxial_reduction_tests` applies with synthetic
 /// coefficients, applied here to the real Farrell & Newnham-derived entry):
 /// each principal direction's band set must carry the qualitative amplitude
-/// pattern the cited pleochroic colours dictate, and feeding the shipped band
+/// pattern the cited pleochroic colors dictate, and feeding the shipped band
 /// sums through the REAL `AbsorptionTensor3::biaxial` constructor must land each
 /// one on its own world axis (alpha -> +X, beta -> Z, gamma -> +Y for
 /// `c_axis = Vec3::Y`, per `stable_orthonormal_basis`'s pinned construction) --
 /// so a future swap of the alpha/beta/gamma argument order, or of the axis
-/// convention underneath, fails loudly instead of silently recolouring the stone.
+/// convention underneath, fails loudly instead of silently recoloring the stone.
 #[test]
 fn alexandrite_trichroic_band_sets_follow_the_cited_pleochroic_pattern() {
     let alex =

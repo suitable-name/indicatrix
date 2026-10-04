@@ -110,6 +110,7 @@ fn material_dump_hashes() -> Vec<u64> {
                             overrides,
                             &planes,
                             &mut StoneWidthCache::new(),
+                            false,
                         );
                         let _ = writeln!(dump, "{applied:?}");
                     }
@@ -119,8 +120,13 @@ fn material_dump_hashes() -> Vec<u64> {
             let base =
                 resolve_material_with_override(&materials, &customs, Some(&forced), "Diamond")
                     .expect("an explicit forced override always resolves");
-            let applied =
-                apply_material_overrides(base, overrides, &planes, &mut StoneWidthCache::new());
+            let applied = apply_material_overrides(
+                base,
+                overrides,
+                &planes,
+                &mut StoneWidthCache::new(),
+                false,
+            );
             let _ = writeln!(dump, "{applied:?}");
             fnv1a(dump.as_bytes())
         })

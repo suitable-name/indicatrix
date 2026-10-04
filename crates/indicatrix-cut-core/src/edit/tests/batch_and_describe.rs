@@ -30,7 +30,7 @@ fn batch_applies_every_sub_edit_and_undoes_them_all_in_one_step() {
                         name: Some("Quartz".to_string()),
                         specific_gravity_override: None,
                         refractive_index_override: None,
-                        body_colour_override: None,
+                        body_color_override: None,
                     },
                 },
             ]),
@@ -130,7 +130,7 @@ fn describe_reads_as_a_cutters_sentence_for_representative_variants() {
                     name: Some("Quartz".to_string()),
                     specific_gravity_override: None,
                     refractive_index_override: None,
-                    body_colour_override: None,
+                    body_color_override: None,
                 },
             },
         ])
@@ -139,12 +139,12 @@ fn describe_reads_as_a_cutters_sentence_for_representative_variants() {
     );
 }
 
-/// A body-colour override is named in the undo label: the preset's own label when
-/// the triple matches one, "custom colour" otherwise, and nothing extra when unset.
+/// A body-color override is named in the undo label: the preset's own label when
+/// the triple matches one, "custom color" otherwise, and nothing extra when unset.
 #[test]
-fn describe_names_a_body_colour_override() {
+fn describe_names_a_body_color_override() {
     let design = fresh_design();
-    let yellow = indicatrix::optics::materials::body_colour::BODY_COLOUR_PRESETS[5];
+    let yellow = indicatrix::optics::materials::body_color::BODY_color_PRESETS[5];
     let sapphire = MaterialSelection {
         name: Some("Sapphire".to_string()),
         ..MaterialSelection::none()
@@ -155,12 +155,12 @@ fn describe_names_a_body_colour_override() {
         describe(
             sapphire
                 .clone()
-                .with_body_colour(Some(yellow.absorption_rgb))
+                .with_body_color(Some(yellow.absorption_rgb))
         ),
         "Set material to Sapphire (Yellow)"
     );
     assert_eq!(
-        describe(sapphire.with_body_colour(Some([0.5, 0.5, 0.5]))),
-        "Set material to Sapphire (custom colour)"
+        describe(sapphire.with_body_color(Some([0.5, 0.5, 0.5]))),
+        "Set material to Sapphire (custom color)"
     );
 }

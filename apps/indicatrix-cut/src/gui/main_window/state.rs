@@ -236,6 +236,16 @@ pub(super) fn apply_custom_materials(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         ctx.custom_materials = Arc::new(initial_custom_mats.clone());
         ctx.custom_material_specific_gravity = Arc::new(initial_custom_sg);
+        ctx.custom_material_physics = Arc::new(
+            crate::gui::optics::crystal_optics::custom_material_physics_from_rows(
+                &custom_material_rows,
+            ),
+        );
+        ctx.custom_material_fluorescence = Arc::new(
+            crate::gui::optics::crystal_optics::custom_material_fluorescence_from_rows(
+                &custom_material_rows,
+            ),
+        );
     }
     refresh_material_options(ui, &initial_custom_mats);
 }

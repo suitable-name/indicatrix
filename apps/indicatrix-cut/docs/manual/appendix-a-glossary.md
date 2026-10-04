@@ -46,7 +46,7 @@ correctly on the real stone. Shown in the cutting sheet (Chapter 11)
 alongside the tier's ordinary index.
 
 **Chromophore** — The trace element or defect in a gem material responsible
-for its colour (for example, Cr3+ in ruby, Fe2+ in aquamarine).
+for its color (for example, Cr3+ in ruby, Fe2+ in aquamarine).
 
 **Compare (to Snapshot)** — The dialog that diffs the current design's
 tiers and masts against the last Snapshot taken in this session (Chapter
@@ -83,7 +83,7 @@ shadow rather than bright; one of the app's optical performance readouts.
 **Facet** — One flat cut face of a stone. A single tier normally describes
 a whole symmetric family of identical facets (an orbit), not just one.
 
-**Fire** — A unitless index of spectral flare (the rainbow-coloured flashes
+**Fire** — A unitless index of spectral flare (the rainbow-colored flashes
 caused by dispersion); one of the app's optical performance readouts.
 
 **Free tier** — A tier whose Meets constraint is **Unspecified vertex** or
@@ -129,7 +129,7 @@ one — the reverse of Adopt (Chapter 3, Chapter 8).
 its size is a stated number, not derived. Every tier loaded from a real
 `.asc` file starts pinned.
 
-**Pleochroism** — A material showing different colours (dichroism for two,
+**Pleochroism** — A material showing different colors (dichroism for two,
 trichroism for three) depending on the direction light travels through it,
 relative to its crystal axes.
 

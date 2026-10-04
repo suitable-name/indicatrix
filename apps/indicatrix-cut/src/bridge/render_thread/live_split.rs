@@ -96,6 +96,8 @@ mod tests {
             distance: DEFAULT_POSE.distance,
             camera: &camera,
             planes: &planes,
+            tools: &[],
+            fluorescence: indicatrix::optics::fluorescence::Fluorescence::none(),
             facet_finishes: &[],
             material: &material,
             max_bounces: 6,

@@ -14,6 +14,8 @@ import { Theme } from "../../theme.slint";
 export component MaterialCrystalClassification inherits VerticalLayout {
     spacing: 14px;
 
+    // Physics color mode: the host fixes crystal system and optical character (greyed out).
+    in property <bool> locked_by_host: false;
     in-out property <int> selected_crystal_system_idx: 0;
     in-out property <int> selected_optical_character_idx: 0;
     in-out property <float> biaxial_delta_beta_alpha_val: 0.0;
@@ -63,6 +65,7 @@ export component MaterialCrystalClassification inherits VerticalLayout {
                 ComboBox {
                     width: 100%;
                     height: 100%;
+                    enabled: !root.locked_by_host;
                     model: root.crystal_system_options;
                     current-index <=> root.selected_crystal_system_idx;
                 }
@@ -82,6 +85,7 @@ export component MaterialCrystalClassification inherits VerticalLayout {
                 ComboBox {
                     width: 100%;
                     height: 100%;
+                    enabled: !root.locked_by_host;
                     model: root.optical_character_options;
                     current-index <=> root.selected_optical_character_idx;
                 }

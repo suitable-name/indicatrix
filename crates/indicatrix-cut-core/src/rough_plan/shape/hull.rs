@@ -5,6 +5,10 @@
 //! (one entry per distinct hull imported or loaded in the session), and an id is a hash
 //! of the hull's own planes, so importing the same mesh twice gives the same base.
 //!
+//! A non-convex mesh (see [`import_mesh`]) is registered under the same id scheme, with the
+//! mesh stored beside the hull: the hull still bounds the planner's grid and region, so
+//! `RoughBase` stays `Copy` and a convex input registers exactly as [`import_hull`] does.
+//!
 //! [`RoughBase::Hull`]: super::RoughBase::Hull
 
 use std::{
@@ -16,7 +20,10 @@ use std::{
 use glam::DVec3;
 use indicatrix::geometry::stone_metrics::measure_solid_with_vertices;
 
-use super::RoughBase;
+use super::{
+    RoughBase,
+    mesh::{MeshError, RoughMesh},
+};
 
 /// The most distinct planes a hull may have.
 ///
@@ -33,6 +40,9 @@ pub enum HullError {
     NotFinite,
     /// The hull has this many planes, more than [`MAX_HULL_PLANES`].
     TooComplex(usize),
+    /// The mesh kept beside the hull could not be moved or scaled with it (it would
+    /// enclose no volume).
+    Mesh,
 }
 
 impl fmt::Display for HullError {
@@ -45,6 +55,7 @@ impl fmt::Display for HullError {
                 "the mesh's convex outline has {n} faces; at most {MAX_HULL_PLANES} are \
                  supported, so simplify the mesh first"
             ),
+            Self::Mesh => write!(f, "the mesh could not be moved with its outline"),
         }
     }
 }
@@ -52,13 +63,15 @@ impl fmt::Display for HullError {
 impl std::error::Error for HullError {}
 
 /// The planes and corners of a registered hull, in the rough frame (bounding box at the
-/// origin).
+/// origin), and the mesh inside it when the rough is not convex.
 #[derive(Debug)]
 struct HullShape {
     /// Outward halfspaces `n . p <= m`.
     planes: Vec<(DVec3, f64)>,
     /// The corners of the polytope.
     vertices: Vec<DVec3>,
+    /// The non-convex solid, in the same frame; `None` for a convex rough.
+    mesh: Option<Arc<RoughMesh>>,
 }
 
 /// Every hull registered so far, by id.
@@ -196,8 +209,13 @@ fn content_id(values: impl IntoIterator<Item = f64>) -> u64 {
 }
 
 /// Registers the polytope `planes` (any frame) and returns its base, translated so the
-/// bounding box starts at the origin.
-fn register_planes(planes: &[(DVec3, f64)]) -> Result<RoughBase, HullError> {
+/// bounding box starts at the origin. `mesh`, in the same frame as `planes`, is translated
+/// with it and joins the id, so two meshes with one hull are two roughs; without a mesh the
+/// id is the hull's alone.
+fn register_planes(
+    planes: &[(DVec3, f64)],
+    mesh: Option<&RoughMesh>,
+) -> Result<RoughBase, HullError> {
     let (_, corners) = measure_solid_with_vertices(planes).ok_or(HullError::Flat)?;
     let lo = corners
         .iter()
@@ -208,17 +226,33 @@ fn register_planes(planes: &[(DVec3, f64)]) -> Result<RoughBase, HullError> {
     let extents = hi - lo;
     let planes: Vec<(DVec3, f64)> = planes.iter().map(|&(n, d)| (n, d - n.dot(lo))).collect();
     let vertices: Vec<DVec3> = corners.iter().map(|&v| v - lo).collect();
+    let mesh = match mesh {
+        Some(m) => Some(Arc::new(m.translated(-lo).ok_or(HullError::Mesh)?)),
+        None => None,
+    };
+    let mesh_values: Vec<f64> = mesh.as_deref().map_or_else(Vec::new, |m| {
+        let verts = m.vertices().iter().flat_map(DVec3::to_array);
+        let tris = m.triangles().iter().flatten().map(|&i| f64::from(i));
+        verts.chain(tris).collect()
+    });
     let id = content_id(
         planes
             .iter()
             .flat_map(|&(n, d)| [n.x, n.y, n.z, d])
-            .chain(extents.to_array()),
+            .chain(extents.to_array())
+            .chain(mesh_values),
     );
     REGISTRY
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .entry(id)
-        .or_insert_with(|| Arc::new(HullShape { planes, vertices }));
+        .or_insert_with(|| {
+            Arc::new(HullShape {
+                planes,
+                vertices,
+                mesh,
+            })
+        });
     Ok(RoughBase::Hull {
         id,
         x_mm: extents.x,
@@ -234,6 +268,11 @@ fn register_planes(planes: &[(DVec3, f64)]) -> Result<RoughBase, HullError> {
 /// Returns [`HullError`] when a coordinate is not finite, the points have no volume, or
 /// the hull has more than [`MAX_HULL_PLANES`] planes.
 pub fn import_hull(points: &[DVec3]) -> Result<RoughBase, HullError> {
+    register_planes(&hull_planes(points)?, None)
+}
+
+/// The distinct planes of the convex hull of `points`.
+fn hull_planes(points: &[DVec3]) -> Result<Vec<(DVec3, f64)>, HullError> {
     if points.iter().any(|p| !p.is_finite()) {
         return Err(HullError::NotFinite);
     }
@@ -249,7 +288,68 @@ pub fn import_hull(points: &[DVec3]) -> Result<RoughBase, HullError> {
     if planes.len() > MAX_HULL_PLANES {
         return Err(HullError::TooComplex(planes.len()));
     }
-    register_planes(&planes)
+    Ok(planes)
+}
+
+/// The distinct outward planes `n . p <= d` of the convex hull of `points`; `None` when
+/// they are empty, not finite or flat. For a stone's outline, whose planes a mesh check
+/// needs (see the fit's `StoneGuard`).
+pub(in crate::rough_plan) fn convex_planes(points: &[DVec3]) -> Option<Vec<(DVec3, f64)>> {
+    if points.is_empty() || points.iter().any(|p| !p.is_finite()) {
+        return None;
+    }
+    let lo = points
+        .iter()
+        .fold(DVec3::splat(f64::INFINITY), |m, &p| m.min(p));
+    let hi = points
+        .iter()
+        .fold(DVec3::splat(f64::NEG_INFINITY), |m, &p| m.max(p));
+    let eps = 1e-9 * (hi - lo).max_element().max(1e-12);
+    let faces = hull_faces(points, eps)?;
+    Some(distinct_planes(&faces, eps))
+}
+
+/// The rough of a triangle mesh: `points` and triangles `tris` indexing them (mm).
+///
+/// A closed mesh that is genuinely smaller than its own convex hull (volume under
+/// `1 - 1e-6` of it) is KEPT beside that hull, so a notch or hollow is respected by the
+/// planner. The hull and the frame (bounding box, origin) are then those of the mesh's own
+/// welded, referenced vertices, which is all a saved plan stores: a stray or unreferenced
+/// `v` line does not change the rough, before or after a save. A convex mesh is not kept
+/// and returns the very base [`import_hull`] returns for ALL of `points` (same id), so
+/// convex roughs plan as they always did.
+///
+/// A mesh that cannot be used (open, inconsistently wound, too many triangles, ...) is not
+/// an error: the rough falls back to the hull and the second value is a note saying why,
+/// for the app to show. No faces at all is a plain point cloud and gives no note.
+///
+/// # Errors
+///
+/// Returns [`HullError`] exactly when [`import_hull`] does for `points`.
+pub fn import_mesh(
+    points: &[DVec3],
+    tris: &[[u32; 3]],
+) -> Result<(RoughBase, Option<String>), HullError> {
+    // Validates every point, so the errors are `import_hull`'s.
+    let planes = hull_planes(points)?;
+    match RoughMesh::new(points, tris) {
+        Ok(mesh) => {
+            if let Ok(own) = hull_planes(mesh.vertices())
+                && let Some((metrics, _)) = measure_solid_with_vertices(&own)
+                && mesh.volume() < metrics.volume * (1.0 - 1e-6)
+            {
+                return Ok((register_planes(&own, Some(&mesh))?, None));
+            }
+            Ok((register_planes(&planes, None)?, None))
+        }
+        Err(MeshError::NoFaces) => Ok((register_planes(&planes, None)?, None)),
+        Err(err) => {
+            let note = format!(
+                "The mesh could not be used as it is ({err}); its convex outline is used instead."
+            );
+            Ok((register_planes(&planes, None)?, Some(note)))
+        }
+    }
 }
 
 /// The registered shape of hull `id`.
@@ -259,6 +359,13 @@ fn lookup(id: u64) -> Option<Arc<HullShape>> {
         .unwrap_or_else(PoisonError::into_inner)
         .get(&id)
         .cloned()
+}
+
+/// The non-convex mesh of hull `id`: `None` for a convex rough or an id that is not
+/// registered.
+#[must_use]
+pub fn mesh(id: u64) -> Option<Arc<RoughMesh>> {
+    lookup(id).and_then(|shape| shape.mesh.clone())
 }
 
 /// The halfspaces of hull `id`, `None` when it is not registered.
@@ -281,5 +388,12 @@ pub(super) fn scaled(base: RoughBase, id: u64, factor: f64) -> RoughBase {
         return base;
     }
     let planes: Vec<(DVec3, f64)> = shape.planes.iter().map(|&(n, d)| (n, d * factor)).collect();
-    register_planes(&planes).unwrap_or(base)
+    let mesh = match shape.mesh.as_deref() {
+        Some(m) => match m.scaled(factor) {
+            Some(scaled) => Some(scaled),
+            None => return base,
+        },
+        None => None,
+    };
+    register_planes(&planes, mesh.as_ref()).unwrap_or(base)
 }

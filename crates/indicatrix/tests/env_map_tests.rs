@@ -358,8 +358,8 @@ fn radiance_at_matches_rgb_to_spectral_radiance_of_the_bilinear_lookup() {
 }
 
 // ---------------------------------------------------------------------------------
-// Absolute colour anchors: the reconstructed spectrum, integrated against the CIE 1931
-// observer, must land on the colour of the RGB triple it came from.
+// Absolute color anchors: the reconstructed spectrum, integrated against the CIE 1931
+// observer, must land on the color of the RGB triple it came from.
 // ---------------------------------------------------------------------------------
 
 /// CIE XYZ of `rgb_to_spectral_radiance(rgb, ..)`, integrated at 1 nm over 380-780 nm
@@ -395,10 +395,10 @@ fn upsampled_white_is_d65_white_at_unit_luminance() {
 }
 
 /// The uplift puts white exactly on D65 at unit luminance (the test above). The three
-/// secondaries are chroma-only colours, lifted on the narrow bump basis whose coefficients
+/// secondaries are chroma-only colors, lifted on the narrow bump basis whose coefficients
 /// are never negative, so each comes back within `2e-3` per linear-sRGB channel.
 #[test]
-fn upsampled_secondaries_match_their_srgb_colour() {
+fn upsampled_secondaries_match_their_srgb_color() {
     for rgb in [[0.0, 1.0, 1.0], [1.0, 1.0, 0.0], [1.0, 0.0, 1.0]] {
         let got = upsampled_linear_srgb(rgb);
         for (channel, (g, want)) in got.to_array().into_iter().zip(rgb).enumerate() {
@@ -411,7 +411,7 @@ fn upsampled_secondaries_match_their_srgb_colour() {
 }
 
 #[test]
-fn upsampled_primaries_match_their_srgb_colour() {
+fn upsampled_primaries_match_their_srgb_color() {
     for rgb in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
         let got = upsampled_linear_srgb(rgb);
         for (channel, (g, want)) in got.to_array().into_iter().zip(rgb).enumerate() {
@@ -423,10 +423,10 @@ fn upsampled_primaries_match_their_srgb_colour() {
     }
 }
 
-/// Colours that mix a neutral part and a chroma part, including one above 1.0, must also
+/// colors that mix a neutral part and a chroma part, including one above 1.0, must also
 /// come back on their input: each channel within `2e-3` of the largest input channel.
 #[test]
-fn upsampled_mixed_colours_match_their_srgb_colour() {
+fn upsampled_mixed_colors_match_their_srgb_color() {
     for rgb in [
         [0.8f32, 0.2, 0.05],
         [0.1, 0.6, 0.9],

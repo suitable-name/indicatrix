@@ -63,6 +63,7 @@ mod shading;
 mod tests;
 
 pub use render::project_point;
+pub(crate) use render::{largest_piece_label_spots, screen_centroid};
 
 /// A world point projects to no pixel when its view-space depth (`a`) is at
 /// or below this: at exactly zero the inverse projection divides by zero,
@@ -276,6 +277,10 @@ pub struct SolidRasterizer {
     edge_points: Vec<(f32, f32, f32)>,
     /// `(facet_id, first index into edge_points, point count)` per visible facet.
     edge_ranges: Vec<(usize, usize, usize)>,
+    /// Parallel to `edge_points` on the concave path: `true` where the segment
+    /// leaving that point is a seam inside one facet and is not drawn. Empty on
+    /// the planar path, where every ring edge is a facet boundary.
+    edge_hidden: Vec<bool>,
 }
 
 impl SolidRasterizer {
@@ -294,6 +299,7 @@ impl SolidRasterizer {
             dedup_scratch: Vec::new(),
             edge_points: Vec::new(),
             edge_ranges: Vec::new(),
+            edge_hidden: Vec::new(),
         }
     }
 
@@ -378,4 +384,48 @@ pub(super) fn simplify_ring(ring: &[DVec3], dedup: &mut Vec<DVec3>, out: &mut Ve
             prev = cur;
         }
     }
+}
+
+/// Maps [`SolidMesh::edge_visible`] flags of an unsimplified `ring` onto the corners
+/// [`simplify_ring`] kept: simplified edge `i -> i + 1` is drawn when *any* original
+/// segment it spans is.
+///
+/// `simplify_ring` only ever drops points (it copies the survivors), so each kept
+/// corner is found again by exact equality scanning forward through `ring`; a facet
+/// boundary therefore stays drawn even when collinear seam points were removed from
+/// its middle. If a corner cannot be found (not reachable with `simplify_ring`'s own
+/// output) every edge is reported visible rather than dropping a boundary.
+/// `visible[s]` is the flag of original segment `s -> s + 1` (cyclic); a missing
+/// flag counts as visible.
+pub(crate) fn simplified_edge_flags(
+    ring: &[DVec3],
+    simplified: &[DVec3],
+    visible: &[bool],
+) -> Vec<bool> {
+    let all_visible = || vec![true; simplified.len()];
+    let mut source = Vec::with_capacity(simplified.len());
+    let mut cursor = 0;
+    for corner in simplified {
+        let Some(offset) = ring[cursor..].iter().position(|p| p == corner) else {
+            return all_visible();
+        };
+        source.push(cursor + offset);
+        cursor += offset + 1;
+    }
+    let n = ring.len();
+    (0..source.len())
+        .map(|i| {
+            let (from, to) = (source[i], source[(i + 1) % source.len()]);
+            let mut segment = from;
+            loop {
+                if visible.get(segment).copied().unwrap_or(true) {
+                    return true;
+                }
+                segment = (segment + 1) % n;
+                if segment == to {
+                    return false;
+                }
+            }
+        })
+        .collect()
 }

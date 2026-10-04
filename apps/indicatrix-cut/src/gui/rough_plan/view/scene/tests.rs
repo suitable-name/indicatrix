@@ -12,10 +12,7 @@ fn cube(side: f64) -> Arc<DesignMesh> {
     Arc::new(DesignMesh {
         facets: faces
             .iter()
-            .map(|(normal, ring)| DesignFacet {
-                normal: *normal,
-                ring: ring.to_vec(),
-            })
+            .map(|(normal, ring)| DesignFacet::new(*normal, ring.to_vec()))
             .collect(),
     })
 }
@@ -245,7 +242,7 @@ fn a_layout_without_a_matching_cut_plan_gets_no_invented_position() {
 }
 
 #[test]
-fn a_fit_scene_merges_the_stones_with_offset_facet_ids_and_group_colours() {
+fn a_fit_scene_merges_the_stones_with_offset_facet_ids_and_group_colors() {
     let stones = vec![
         stone(1, [1.5, 1.5, 1.5]),
         stone(1, [4.5, 1.5, 1.5]),
@@ -413,6 +410,43 @@ fn a_design_that_cannot_be_loaded_is_told_apart_from_a_deleted_one() {
 }
 
 #[test]
+fn a_mesh_rough_scene_keeps_its_cut_faces_pickable_and_its_edge_flags() {
+    use crate::gui::rough_plan::obj_import::{C_SHAPE_OBJ, mesh_base_of};
+    let model = RoughModel::new(
+        mesh_base_of(C_SHAPE_OBJ),
+        vec![RoughCut::Face {
+            normal: [0.0, 1.0, 0.0],
+            depth_mm: 2.0,
+        }],
+    );
+    let centred = centred_mesh(&model).expect("valid model");
+    let scene = ModelScene::new(&centred, &model);
+    // The hull is the cube's six planes: the surface is facet 0 and the cut face 6.
+    assert_eq!(scene.base_facets, 6);
+    assert_eq!(scene.cut_of_facet(6), Some(0));
+    assert_eq!(scene.cut_of_facet(0), None);
+    let normal = scene.facet_normal(6).expect("the cut face is in the mesh");
+    assert!((normal - DVec3::Y).length() < 1e-9, "{normal:?}");
+    assert!(scene.facet_normal(0).is_some());
+    // Every ring keeps its own normal and its flags through the scaling to world units.
+    let rings = scene.mesh.rings.len();
+    assert!(rings > 6, "a notched cube has many triangles, got {rings}");
+    assert_eq!(scene.mesh.piece_normals.as_ref().map(Vec::len), Some(rings));
+    let flags = scene.mesh.edge_visible.as_ref().expect("edge flags");
+    assert_eq!(flags.len(), rings);
+    for ((_, ring), drawn) in scene.mesh.rings.iter().zip(flags) {
+        assert_eq!(ring.len(), drawn.len());
+    }
+    assert!(radius_of(&scene.mesh) <= 1.0 + 1e-9);
+    // A rough without a mesh keeps the planar path: no per-ring normals or flags.
+    let plain = block(10.0, 8.0, 6.0);
+    let centred = centred_mesh(&plain).expect("valid model");
+    let scene = ModelScene::new(&centred, &plain);
+    assert!(scene.mesh.piece_normals.is_none());
+    assert!(scene.mesh.edge_visible.is_none());
+}
+
+#[test]
 fn a_model_scene_knows_its_cut_faces_and_stays_inside_the_unit_sphere() {
     let mut model = block(10.0, 8.0, 6.0);
     model.cuts.push(RoughCut::Corner {
@@ -442,9 +476,9 @@ fn a_model_scene_knows_its_cut_faces_and_stays_inside_the_unit_sphere() {
     // The base box is 10 x 8 x 6 mm: its half diagonal is sqrt(200) / 2.
     let half_diagonal = 200.0_f64.sqrt() / 2.0;
     assert!((f64::from(scene.half_extents[0]) - 5.0 / half_diagonal).abs() < 1e-6);
-    let colours = scene.facet_colors(true);
-    assert_eq!(colours.len(), 7);
-    assert_eq!(colours[0], BASE_GREY);
-    assert_eq!(colours[6], CUT_TINT);
+    let colors = scene.facet_colors(true);
+    assert_eq!(colors.len(), 7);
+    assert_eq!(colors[0], BASE_GREY);
+    assert_eq!(colors[6], CUT_TINT);
     assert_eq!(scene.facet_colors(false)[6], BASE_GREY);
 }

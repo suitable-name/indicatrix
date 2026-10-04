@@ -64,7 +64,7 @@ export component ExportDialog inherits Rectangle {
     // duplicate the assignment already right here.
     callback close();
     close => { ExportModel.is_open = false; }
-    // width, height, samples-per-pixel, colour-space index (see
+    // width, height, samples-per-pixel, color-space index (see
     // `selected_color_space_index`'s own doc comment), compute-target index (see
     // `compute_target`'s own doc comment), max-bounce count (see
     // `effective_max_bounces`'s own doc comment -- the resolved rung VALUE, not the
@@ -282,7 +282,7 @@ export component ExportDialog inherits Rectangle {
                 Text { text: root.effective_width + " x " + root.effective_height + " px"; font-size: 10px; color: Theme.text-muted; }
             }
 
-            // 2b. Colour Space: sRGB stays the default -- untagged, and the
+            // 2b. color Space: sRGB stays the default -- untagged, and the
             // only choice byte-identical to an export made before this control
             // existed. Display P3 / Rec.2020 are wider gamuts (particularly red/green,
             // exactly where gemstone dispersion "fire" lands) tagged with an embedded
@@ -296,7 +296,7 @@ export component ExportDialog inherits Rectangle {
             // Rec.2020's exists specifically to avoid.
             VerticalLayout {
                 spacing: 6px;
-                Text { text: "Colour Space"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                Text { text: "color Space"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
 
                 HorizontalLayout {
                     spacing: 4px;
@@ -351,7 +351,7 @@ export component ExportDialog inherits Rectangle {
                 }
 
                 if ExportModel.selected_color_space_index != 0: Text {
-                    text: "Wider gamut, tagged with an embedded colour profile so viewers display it correctly.";
+                    text: "Wider gamut, tagged with an embedded color profile so viewers display it correctly.";
                     font-size: 11px;
                     color: Theme.text-muted;
                     wrap: word-wrap;

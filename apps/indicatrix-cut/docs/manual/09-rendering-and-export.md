@@ -38,12 +38,12 @@ than overwriting anything.
 Choose **1080p**, **4K**, or **Custom** (16–8192 pixels per side, entered
 directly).
 
-### Colour Space
+### color Space
 
 Choose **sRGB** (the default, and what almost every viewer expects),
 **Display P3**, or **Rec.2020**. The latter two are wider-gamut options and
-carry an embedded colour profile, so a viewer that understands it displays
-the extra colour range correctly rather than looking washed out or overly
+carry an embedded color profile, so a viewer that understands it displays
+the extra color range correctly rather than looking washed out or overly
 saturated.
 
 ### Compute
@@ -106,8 +106,8 @@ you select. A preset that uses an HDR environment map is marked "HDR".
 
 A live thumbnail updates roughly twice a second so you can judge
 composition and how far along the image is — this preview is always shown
-in ordinary sRGB regardless of which colour space you chose for the final
-file, so do not judge final colour from it. A progress bar and percentage
+in ordinary sRGB regardless of which color space you chose for the final
+file, so do not judge final color from it. A progress bar and percentage
 track completion; **Cancel Export** stops the job early.
 
 ## What "preview then handoff" means while you work

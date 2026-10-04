@@ -18,9 +18,13 @@
 use glam::Vec3;
 
 use crate::{
-    optics::raytracer::{
-        PixelRotations, add_finite_sample, pixel_rotations, sample_draws,
-        trace_spectral_ray_with_finish_soa,
+    geometry::tool::{StoneGeometry, ToolPrimitive},
+    optics::{
+        fluorescence::Fluorescence,
+        raytracer::{
+            PixelRotations, add_finite_sample, pixel_rotations, sample_draws,
+            trace_spectral_ray_with_finish_soa_geom,
+        },
     },
     simd::PlanesSoA32,
 };
@@ -39,6 +43,8 @@ use super::frame_scene::FrameScene;
 /// [`sample_draws`] yields the same draws as recomputing it for every sample.
 fn cpu_sample_xyz(
     scene: &FrameScene<'_>,
+    tools: &[ToolPrimitive],
+    fluorescence: &Fluorescence,
     plane_soa: &PlanesSoA32,
     pixel: u32,
     rot: &PixelRotations,
@@ -58,12 +64,16 @@ fn cpu_sample_xyz(
         draws.jitter_x,
         draws.jitter_y,
     );
-    trace_spectral_ray_with_finish_soa(
+    trace_spectral_ray_with_finish_soa_geom(
         ray,
-        scene.planes,
+        StoneGeometry {
+            planes: scene.planes,
+            tools,
+        },
         plane_soa,
         scene.facet_finishes,
         scene.material,
+        fluorescence,
         scene.max_bounces,
         scene.environment,
         draws.seed,
@@ -98,6 +108,44 @@ pub fn trace_pixels_interleaved(
     sample_offset: u32,
     spp: u32,
 ) -> Vec<Vec3> {
+    trace_pixels_interleaved_geom(
+        scene,
+        &[],
+        Fluorescence::none(),
+        plane_soa,
+        first_pixel,
+        stride,
+        sample_offset,
+        spp,
+    )
+}
+
+/// [`trace_pixels_interleaved`] for a stone with tools.
+///
+/// `scene.planes` stay the polyhedron and `tools` are subtracted from it; `plane_soa` is
+/// the arena built from `scene.planes` alone. `FrameScene` carries no tools field of its
+/// own because it is constructed by struct literal in the desktop, worker and web
+/// crates, so the tools ride beside it here instead; the `fluorescence` of the material
+/// rides beside the tools the same way. With empty `tools` and an empty `fluorescence`
+/// the sums are [`trace_pixels_interleaved`]'s, bit for bit. A tool-bearing or
+/// fluorescent frame never reaches the GPU (see `gpu_backend::scene_routes_to_gpu`), so
+/// this CPU path is the one that traces it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the tools and the fluorescence ride beside the scene, as separate inputs, so \
+              no caller has to build a bundle struct"
+)]
+#[must_use]
+pub fn trace_pixels_interleaved_geom(
+    scene: &FrameScene<'_>,
+    tools: &[ToolPrimitive],
+    fluorescence: &Fluorescence,
+    plane_soa: &PlanesSoA32,
+    first_pixel: u32,
+    stride: u32,
+    sample_offset: u32,
+    spp: u32,
+) -> Vec<Vec3> {
     let num_pixels = scene.width as usize * scene.height as usize;
     if stride == 0 || num_pixels == 0 {
         return Vec::new();
@@ -114,7 +162,15 @@ pub fn trace_pixels_interleaved(
             let sample_num = sample_offset + local_sample;
             add_finite_sample(
                 &mut sum,
-                cpu_sample_xyz(scene, plane_soa, pixel, &rot, sample_num),
+                cpu_sample_xyz(
+                    scene,
+                    tools,
+                    fluorescence,
+                    plane_soa,
+                    pixel,
+                    &rot,
+                    sample_num,
+                ),
             );
         }
         out.push(sum);

@@ -23,7 +23,7 @@
 //! light and material callbacks, `gui::editor::view::inspector::
 //! sync_viewport_material_link`): light yaw in radians, light pitch in radians clamped to
 //! `0.15..=1.55`, the c-axis from tilt/azimuth, and -- while linked -- the design's
-//! traced material, its RI/body-colour overrides and its girdle diameter as the stone
+//! traced material, its RI/body-color overrides and its girdle diameter as the stone
 //! width.
 
 use glam::Vec3;
@@ -121,7 +121,7 @@ pub struct RenderSettings {
     /// The view tab: 0 Render, 1 Solid, 2 Diagram.
     pub view_tab: i32,
     /// The desktop's "Linked to design": the render uses the design's own material
-    /// (with its RI and body-colour overrides) and its girdle diameter as stone width.
+    /// (with its RI and body-color overrides) and its girdle diameter as stone width.
     pub link_material: bool,
     /// Denoise the settled live image (the desktop's `denoise_enabled`).
     pub denoise: bool,
@@ -311,7 +311,7 @@ pub struct RenderMaterial {
 /// The render material for `settings` and the loaded `design`.
 ///
 /// While linked, the desktop's `sync_viewport_material_link` (the design's traced name from
-/// `traced_material_for`, its RI/body-colour overrides and its girdle diameter);
+/// `traced_material_for`, its RI/body-color overrides and its girdle diameter);
 /// otherwise the header's material and the stone-width control.
 ///
 /// # Errors

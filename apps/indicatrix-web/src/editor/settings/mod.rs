@@ -1,6 +1,6 @@
 //! Design settings (the desktop's `editor_design_settings.slint` and
 //! `tier_actions::{materials_symmetry,gear_remap,design_forms,viewport_material}`): the
-//! schedule-wide material, RI override and colour, index gear, symmetry and mirror, the
+//! schedule-wide material, RI override and color, index gear, symmetry and mirror, the
 //! title / header / footnote lines, and the printed proportions -- a modal dialog opened
 //! by Design > Design settings...
 //!
@@ -31,13 +31,13 @@ use crate::{
 use indicatrix_cut_core::Edit;
 use indicatrix_editor::{
     loading::ri_override_for_material_pick,
-    material::{body_colour_from_index, design_material_options, parse_design_material_form},
+    material::{body_color_from_index, design_material_options, parse_design_material_form},
     printed_proportions::parse_printed_proportions_form,
     view_model::row_format::tiers_incomplete_under_proposed_symmetry,
 };
 use slint::ComponentHandle;
 
-/// Apply Material: the combo, the typed RI and the colour, as one `SetMaterial`. A plain
+/// Apply Material: the combo, the typed RI and the color, as one `SetMaterial`. A plain
 /// pick with no typed RI must not silently change what the exported `I` line reads, nor
 /// pin the OUTGOING material's RI onto the incoming one
 /// (`ri_override_for_material_pick`).
@@ -48,7 +48,7 @@ fn apply_material(ctx: &Ctx) {
     let model = ui.global::<DesignSettingsModel>();
     let combo_index = model.get_material_index();
     let ri_text = model.get_ri_override_text();
-    let colour_index = model.get_colour_index();
+    let color_index = model.get_color_index();
     let result = {
         let mut app = ctx.state.borrow_mut();
         let options = design_material_options(&app.custom_materials);
@@ -58,7 +58,7 @@ fn apply_material(ctx: &Ctx) {
         let current = design_state.session.design.material.clone();
         let legacy_ri = design_state.session.design.meta.refractive_index;
         parse_design_material_form(combo_index, &ri_text, &options, &current).and_then(|material| {
-            let mut material = material.with_body_colour(body_colour_from_index(colour_index));
+            let mut material = material.with_body_color(body_color_from_index(color_index));
             if material.refractive_index_override.is_none() {
                 material.refractive_index_override = ri_override_for_material_pick(
                     material.name.as_deref(),

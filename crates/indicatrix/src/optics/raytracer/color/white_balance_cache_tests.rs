@@ -4,16 +4,16 @@ use super::*;
 
 /// The `OnceLock`-per-preset cache must not change the visible value: asserts the
 /// cached value for every preset matches the expectation derived from the preset's
-/// illuminant: the identity wherever the tabulated D65 curve is sampled
-/// (`uses_d65`), otherwise a fresh, uncached Bradford adaptation of the blackbody.
+/// illuminant: the identity wherever the preset has no white balance
+/// (`!uses_white_balance`: D65 presets and UV lamps), otherwise a fresh, uncached Bradford adaptation of the blackbody.
 #[test]
 fn illuminant_white_balance_matches_direct_computation_for_all_presets() {
     for preset in LightingPreset::ALL {
         let cached = illuminant_white_balance(preset);
-        let direct = if preset.uses_d65() {
-            Vec3::ONE
-        } else {
+        let direct = if preset.uses_white_balance() {
             compute_illuminant_white_balance(illuminant_temperature_k(preset))
+        } else {
+            Vec3::ONE
         };
         assert!(
             (cached - direct).length() < 1e-5,

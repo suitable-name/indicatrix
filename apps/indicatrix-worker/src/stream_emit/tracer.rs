@@ -162,8 +162,11 @@ pub(super) fn run_tracer(
 
         // Only `Hybrid` ever attempts a split -- `OnlyGpu`/`OnlyCpu` leave `gpu_frac`
         // `None` for the whole job.
+        // A scene with concave tools is CPU-only (`render_core::scene_uses_gpu`), so it
+        // never calibrates a split either.
         let mut gpu_frac: Option<f64> = if matches!(job.compute_mode, ComputeMode::Hybrid)
             && job.samples >= render_core::hybrid::HYBRID_MIN_SPP
+            && render_core::scene_uses_gpu(&job.scene)
         {
             calibrate_hybrid_split(key, gpu, job, &reporter, cancel, &mut produced)
         } else {

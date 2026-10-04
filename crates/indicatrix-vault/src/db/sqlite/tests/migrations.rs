@@ -295,9 +295,10 @@ fn migration_is_idempotent_across_two_opens() {
         .unwrap()
         .flatten()
         .count();
-    // 13 original + 2 (numeric split) + 7 (proportions) + 5 (designer/attachment) =
-    // 27; no duplicated `__migrated` staging columns left behind by a re-run.
-    assert_eq!(column_count, 27);
+    // 13 original + 2 (numeric split) + 7 (proportions) + 5 (designer/attachment) +
+    // 2 (concave counts) = 29; no duplicated `__migrated` staging columns left behind
+    // by a re-run.
+    assert_eq!(column_count, 29);
 
     let _ = std::fs::remove_file(&path);
 }

@@ -6,7 +6,7 @@ export component Toast inherits Rectangle {
     // "warning" sits between info and error: like an error it never auto-dismisses
     // (see `gui::mod::show_toast`), because it reports something the cutter has to
     // act on -- a schedule saved with fabricated masts, say -- but it is not a
-    // failure, and colouring it as one would cry wolf.
+    // failure, and coloring it as one would cry wolf.
     in property <string> toast_type: "info"; // info, success, warning, error
 
     callback dismiss();

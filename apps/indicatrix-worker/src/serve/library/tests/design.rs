@@ -339,3 +339,79 @@ fn fetch_design_source_for_an_unknown_entry_is_not_found() {
     drop(db);
     std::fs::remove_file(&path).ok();
 }
+
+/// `FetchDesignNative` returns the `.indicatrix` attachment's bytes untouched (a binary
+/// payload with a NUL and a non-UTF-8 byte, so any text round trip would corrupt it),
+/// and a design without one is `DesignNativeNotAvailable`, an unknown id `NotFound`.
+#[test]
+fn fetch_design_native_returns_the_attachment_bytes_verbatim() {
+    let path = std::env::temp_dir().join(format!(
+        "indicatrix-worker-library-native-test-{}-{}.sqlite",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let path_str = path.to_str().unwrap();
+    let db = Database::new(Some(path_str)).unwrap();
+
+    let mut ids = Vec::new();
+    for (n, files) in [
+        (
+            1,
+            vec![
+                ("schedule.pdf", b"%PDF".to_vec()),
+                ("scooped.indicatrix", vec![b'v', 0, 0xFF, b'\n']),
+            ],
+        ),
+        (2, vec![("schedule.pdf", b"%PDF".to_vec())]),
+    ] {
+        let entry_id = db
+            .save_diagram_entry(
+                &FacetingDiagramEntry {
+                    title: format!("Design {n}"),
+                    url: format!("https://example.test/diagram/{n}"),
+                    design_id: format!("D-{n}"),
+                },
+                "facetdiagrams.org",
+            )
+            .unwrap();
+        let detail = FacetingDiagramDetail {
+            page_url: format!("https://example.test/diagram/{n}"),
+            attached_files: files
+                .into_iter()
+                .map(|(name, content)| AttachedFile {
+                    name: name.to_string(),
+                    url: format!("https://example.test/{name}"),
+                    content,
+                })
+                .collect(),
+            ..Default::default()
+        };
+        db.save_diagram_detail(&detail, entry_id).unwrap();
+        ids.push(entry_id);
+    }
+    drop(db);
+
+    let ro = Database::open_read_only(path_str).unwrap();
+    assert_eq!(
+        handle_request(&LibraryRequest::FetchDesignNative { entry_id: ids[0] }, &ro),
+        LibraryResponse::DesignNative {
+            entry_id: ids[0],
+            file_name: "scooped.indicatrix".to_string(),
+            content: vec![b'v', 0, 0xFF, b'\n'],
+        }
+    );
+    assert_eq!(
+        handle_request(&LibraryRequest::FetchDesignNative { entry_id: ids[1] }, &ro),
+        LibraryResponse::DesignNativeNotAvailable
+    );
+    assert_eq!(
+        handle_request(&LibraryRequest::FetchDesignNative { entry_id: 9999 }, &ro),
+        LibraryResponse::NotFound
+    );
+
+    drop(ro);
+    std::fs::remove_file(&path).ok();
+}

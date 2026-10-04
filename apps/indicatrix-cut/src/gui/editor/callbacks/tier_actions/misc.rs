@@ -155,7 +155,7 @@ pub(super) fn adjust_selection_after_remove(ui: &MainWindow, removed_index: i32)
 }
 
 /// Clamps `EditorModel.selected_tier_index` after an undo/redo to `tier_count`
-/// (`design.tiers.len()` post-replay). Unlike [`adjust_selection_after_remove`],
+/// (the number of table rows post-replay: flat plus concave tiers). Unlike [`adjust_selection_after_remove`],
 /// undo/redo can change the tier count by any amount in either direction (an
 /// `AddTier`/`RemoveTier` reversed, or several tiers' worth of a coalesced
 /// `RetargetAngles`), so there is no single shifted-by-one relationship to

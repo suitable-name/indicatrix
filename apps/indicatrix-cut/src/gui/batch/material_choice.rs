@@ -2,7 +2,7 @@
 //! tilt curves are rendered in.
 //!
 //! Refractive index only narrows the field: several presets usually sit within the match
-//! tolerance of a design's index and differ in body colour, absorption and dispersion.
+//! tolerance of a design's index and differ in body color, absorption and dispersion.
 //! The one that is kept for the design's lifetime is the one that serves the stone best
 //! across a balanced set of measures, not the one that minimises any single figure.
 //! A stone that windows 0% while most of its light is extinguished is not a good match,

@@ -70,6 +70,9 @@ pub(in crate::optics::raytracer) struct ExitSplitCtx<'a> {
     /// built once per trace -- reused here for [`super::exit_split::try_split_exit_channel`]'s
     /// bounded "does channel k's own exit ray re-enter the gem" probe, never rebuilt.
     pub(in crate::optics::raytracer) plane_soa: &'a crate::simd::PlanesSoA32,
+    /// Tools subtracted from the polyhedron `plane_soa` holds (empty when planar), so the
+    /// re-entry probe sees the same stone the bounce loop traces.
+    pub(in crate::optics::raytracer) tools: &'a [crate::geometry::tool::ToolPrimitive],
     pub(in crate::optics::raytracer) environment: EnvironmentSource<'a>,
     /// Built once per trace by `trace_spectral_ray_inner` and shared: the exit-split
     /// probes here and `accumulate_miss_radiance`'s escape lookup both borrow this one

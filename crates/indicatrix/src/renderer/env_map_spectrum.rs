@@ -32,7 +32,7 @@
 //! XYZ is linear in the spectrum. The neutral part reproduces the XYZ of `(w, w, w)`
 //! exactly, the chroma part reproduces the XYZ of the chroma exactly because no
 //! coefficient is negative (so the final `max(0, ..)` never removes anything), and the
-//! sum is the XYZ of the input. Every in-gamut linear-sRGB colour, including the primaries
+//! sum is the XYZ of the input. Every in-gamut linear-sRGB color, including the primaries
 //! and secondaries, and every HDR value, therefore round-trips through the CIE 1931
 //! observer to within single-precision rounding.
 //!
@@ -43,7 +43,7 @@
 //! # Limitations
 //!
 //! Deliberately the simplest defensible option, not the most physical one: unlike a real
-//! spectral upsampler (e.g. Jakob & Hanika 2019) it has no metamerism -- each colour gets
+//! spectral upsampler (e.g. Jakob & Hanika 2019) it has no metamerism -- each color gets
 //! one fixed smooth spectrum -- so HDR-sourced dispersion "fire" is smoother than for a
 //! narrow-band real source. Values above 1.0 only scale the bump heights rather than
 //! acting narrow-band. A real upsampler would slot in here since every call funnels

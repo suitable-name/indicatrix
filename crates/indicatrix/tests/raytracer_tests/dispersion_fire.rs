@@ -65,7 +65,7 @@ fn variance(values: &[f32]) -> f32 {
 
 /// Dispersion "fire" must be demonstrable at IMAGE level, not on a single ray -- a lone
 /// ray only traces ONE geometric path, so any single-ray "chromatic spread" measurement
-/// is dominated by illuminant colour temperature and CMF lobe shape rather than by
+/// is dominated by illuminant color temperature and CMF lobe shape rather than by
 /// dispersion. Instead: render a small grid of pixels, average many samples per pixel
 /// down to a low-noise chromaticity, and compare the VARIANCE of that chromaticity
 /// ACROSS PIXELS between a high-dispersion material (Cubic Zirconia) and an
@@ -75,7 +75,7 @@ fn variance(values: &[f32]) -> f32 {
 /// differences between the two materials are controlled for.
 ///
 /// A physically flat (non-dispersive) gem should render with essentially UNIFORM hue
-/// across the image (facet-to-facet brightness varies, but not colour): with an
+/// across the image (facet-to-facet brightness varies, but not color): with an
 /// identical index at every wavelength, every channel's Fresnel reflect/transmit
 /// probabilities and refracted directions agree at every bounce
 /// (`spectral_mis_weight` collapsing to exactly 1.0, pinned down separately by

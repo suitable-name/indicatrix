@@ -82,6 +82,9 @@ fn add_tier_to(
         ));
     }
     let warning = non_integral_index_warning(&tier.indices);
+    if indicatrix_cut_core::design::labelling::name_indicates_pavilion(&tier.name) {
+        tier.angle_deg = -tier.angle_deg.abs();
+    }
     let (index, edit) = tier_save_edit(&session.design, -1, tier, selected);
     session.apply(edit).map_err(|e| e.to_string())?;
     let label = session

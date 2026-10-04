@@ -516,3 +516,165 @@ fn undersized_facet_display_reports_a_percentage_of_stone_width() {
     assert!(text.contains("0.50%"), "got {text}");
     assert!(text.contains("1.00% minimum"), "got {text}");
 }
+
+/// `|x|, |y|, |z| <= 1`, in the order x, -x, y, -y, z, -z.
+fn unit_cube_planes() -> Vec<(glam::DVec3, f64)> {
+    use glam::DVec3;
+    vec![
+        (DVec3::X, 1.0),
+        (DVec3::NEG_X, 1.0),
+        (DVec3::Y, 1.0),
+        (DVec3::NEG_Y, 1.0),
+        (DVec3::Z, 1.0),
+        (DVec3::NEG_Z, 1.0),
+    ]
+}
+
+#[test]
+fn a_tool_entirely_outside_the_stone_warns_tool_misses_stone() {
+    use indicatrix::geometry::tool::ToolPrimitive;
+    let tools = [ToolPrimitive::ball(glam::Vec3::new(5.0, 0.0, 0.0), 0.5)];
+    let warnings = mesh_checks::concave_tool_warnings(
+        &unit_cube_planes(),
+        0,
+        &tools,
+        &[(0, 0)],
+        DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2,
+    );
+    assert_eq!(
+        warnings,
+        vec![ManufacturabilityWarning::ToolMissesStone {
+            tier: 0,
+            placement: 0
+        }]
+    );
+    assert!(warnings[0].to_string().contains("outside the stone"));
+    assert_eq!(warnings[0].concave_tier(), Some(0));
+}
+
+#[test]
+fn a_through_cylinder_on_the_girdle_warns_breaks_through() {
+    use indicatrix::geometry::tool::ToolPrimitive;
+    // A cylinder along z, well past both z walls, with no stroke: a plain hole.
+    let hole = ToolPrimitive::cylinder(glam::Vec3::ZERO, glam::Vec3::Z, 0.3, 2.0);
+    let warnings = mesh_checks::concave_tool_warnings(
+        &unit_cube_planes(),
+        0,
+        &[hole],
+        &[(2, 3)],
+        DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2,
+    );
+    // Facet 4 is the +z wall, the lowest-numbered of the opposite pair.
+    assert_eq!(
+        warnings,
+        vec![ManufacturabilityWarning::ToolBreaksThrough {
+            tier: 2,
+            placement: 3,
+            facet: 4
+        }]
+    );
+    assert_eq!(warnings[0].facet_plane_index(), Some(4));
+
+    // The same cylinder reciprocating along its own axis leaves through those
+    // walls by design, so it is not a break-through.
+    let groove = hole.with_sweep(
+        indicatrix::geometry::tool::ToolSweep::AlongAxis,
+        1.0,
+        glam::Vec3::ZERO,
+    );
+    assert!(
+        mesh_checks::concave_tool_warnings(
+            &unit_cube_planes(),
+            0,
+            &[groove],
+            &[(0, 0)],
+            DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2,
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_ball_on_a_corner_removes_the_meet_and_the_hull_vertex() {
+    use indicatrix::geometry::tool::ToolPrimitive;
+    let ball = ToolPrimitive::ball(glam::Vec3::new(1.0, 1.0, 1.0), 0.5);
+    let warnings = mesh_checks::concave_tool_warnings(
+        &unit_cube_planes(),
+        0,
+        &[ball],
+        &[(0, 0)],
+        DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2,
+    );
+    let meets = warnings
+        .iter()
+        .filter(|w| matches!(w, ManufacturabilityWarning::ToolRemovesMeet { .. }))
+        .count();
+    assert_eq!(meets, 1, "{warnings:?}");
+    assert!(
+        warnings.contains(&ManufacturabilityWarning::ToolRemovesHullVertex {
+            tier: 0,
+            placement: 0
+        })
+    );
+}
+
+#[test]
+fn two_balls_at_the_same_spot_overlap_and_a_planar_design_stays_silent() {
+    use indicatrix::geometry::tool::ToolPrimitive;
+    let ball = ToolPrimitive::ball(glam::Vec3::ZERO, 0.3);
+    let warnings = mesh_checks::concave_tool_warnings(
+        &unit_cube_planes(),
+        0,
+        &[ball, ball],
+        &[(0, 0), (0, 1)],
+        DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2,
+    );
+    assert_eq!(
+        warnings,
+        vec![ManufacturabilityWarning::ToolsOverlap { a: 0, b: 1 }]
+    );
+
+    let mut design = Design::fresh(PreformSpec::block(1.0, 1.0, 2.0), 96, 4, 1.62);
+    design
+        .tiers
+        .push(tier("T", 0.0, MeetConstraint::ScaleReference(0.3), &[]));
+    let solved = solved(&design);
+    assert!(
+        check_concave_tools(&design, &solved, DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2).is_empty()
+    );
+}
+
+/// The cached concave warnings equal a fresh computation, on a repeat call and after the
+/// geometry changed (a stale hit would return the old stone's answer).
+#[test]
+fn concave_tool_warnings_cache_never_changes_the_result() {
+    let uncached = |design: &Design| {
+        let solved = solved(design);
+        let (planes, tools, placements) = design
+            .geometry_from_solved(&solved)
+            .expect("the fixture resolves");
+        concave_tool_warnings(
+            &planes,
+            design.preform.planes().len(),
+            &tools,
+            &placements,
+            DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2,
+        )
+    };
+    let cached = |design: &Design| {
+        check_concave_tools(
+            design,
+            &solved(design),
+            DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2,
+        )
+    };
+    let design = Design::concave_fixture();
+    let fresh = uncached(&design);
+    assert_eq!(cached(&design), fresh, "first call fills the cache");
+    assert_eq!(cached(&design), fresh, "second call reads it");
+
+    let mut wider = design.clone();
+    wider.concave_tiers[0].diameter_ratio = 0.9;
+    assert_eq!(cached(&wider), uncached(&wider), "a changed tool is a miss");
+    assert_eq!(cached(&design), fresh, "and the first stone still answers");
+}

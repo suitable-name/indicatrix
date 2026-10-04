@@ -22,14 +22,14 @@ use std::ops::Range;
 use glam::DVec3;
 
 use super::{
-    clip::{CLASS_EXTERIOR, CLASS_INTERIOR, classify_box_into},
+    clip::{CLASS_EXTERIOR, CLASS_INTERIOR, classify_box_in},
     ctx::ShapedCtx,
     parallel::{Report, even_chunks, run_lanes},
     rows::{ClipRegion, PartialSolver, caliper_extents},
     tree::layout_from_tree_shaped,
 };
 use crate::rough_plan::{
-    CandidateDesign, CutOrder, PlanProgress, PlanSettings, RoughBlock, RoughLayout,
+    CandidateDesign, CutOrder, FitMesh, PlanProgress, PlanSettings, RoughBlock, RoughLayout,
     SHAPED_UNIFORM_DESIGNS,
     piece::{ASSIGNMENTS, Norm, stone_value, usable_rough},
     tree::{Bar, Leaf, Slab, Tree},
@@ -80,6 +80,7 @@ fn grid_geometry(
         return None;
     }
 
+    let mesh = ctx.fit_mesh();
     let mut violated = Vec::new();
     let mut cells = Vec::with_capacity(counts[0] * counts[1] * counts[2]);
     let mut open_cells = 0;
@@ -91,7 +92,7 @@ fn grid_geometry(
                     [0, 1, 2].map(|i| (index[i] as f64).mul_add(size[i] + kerf, ctx.origin_mm[i]));
                 let b_min = origin.map(|o| o + allowance);
                 let b_max = [0, 1, 2].map(|i| origin[i] + size[i] - allowance);
-                let class = classify_box_into(b_min, b_max, &ctx.non_box, &mut violated);
+                let class = classify_box_in(b_min, b_max, &ctx.non_box, mesh, &mut violated);
                 open_cells += usize::from(class != CLASS_EXTERIOR);
                 cells.push(Cell {
                     b_min,
@@ -116,6 +117,8 @@ struct DesignEval<'a> {
     norm: Norm,
     min_width: f64,
     non_box: &'a [(DVec3, f64)],
+    /// The rough's mesh, which a clipped cell's stone must also stay inside.
+    mesh: Option<FitMesh<'a>>,
     solver: PartialSolver,
 }
 
@@ -155,9 +158,9 @@ impl DesignEval<'_> {
                 planes: self.non_box,
                 violated: &cell.violated,
             };
-            let Some((k, _)) = self
-                .solver
-                .solve(&region, caliper_extents(&self.norm, orient))
+            let Some((k, _)) =
+                self.solver
+                    .solve_with(&region, caliper_extents(&self.norm, orient), self.mesh)
             else {
                 continue;
             };
@@ -318,6 +321,7 @@ impl UniformPass<'_> {
                 norm: Norm::of(&self.pool[d_idx]),
                 min_width: self.settings.min_width_mm,
                 non_box: &self.ctx.non_box,
+                mesh: self.ctx.fit_mesh(),
                 solver: PartialSolver::new(),
             };
             let mut poll = || report(PlanProgress::Uniform { done: d_idx, total });

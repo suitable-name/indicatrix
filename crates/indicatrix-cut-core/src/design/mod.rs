@@ -36,8 +36,10 @@
 //! [`MissingAnchor`], and the editor must ask the user for a real
 //! `MeetConstraint::ScaleReference` tier rather than silently picking a number.
 
+pub mod concave;
 mod construct;
 mod export;
+pub mod labelling;
 mod missing_anchor;
 mod solve;
 mod solve_error;
@@ -47,8 +49,16 @@ mod tests;
 mod tier;
 mod tier_id;
 
+pub use concave::{
+    ConcaveTier, ConcaveTierError, ConcaveTool, TierRef, ToolMotion, UnknownToolCode,
+};
 pub use construct::FreshDesignSpec;
-pub(crate) use export::meet_name_is_asc_safe;
+pub use export::{ConcaveResolveError, FlatAndTools, ToolPlacements, concave_frame};
+pub(crate) use export::{meet_name_is_asc_safe, strip_generated_concave_footnotes};
+pub use labelling::{
+    TierLabelInfo, compute_tier_labels, convert_legacy_facet_name, is_legacy_123_abc,
+    name_indicates_pavilion,
+};
 pub use missing_anchor::MissingAnchor;
 pub use solve_error::{DesignSolveError, SolveMismatch};
 pub use targets::{TargetResolveError, TierTarget};
@@ -240,6 +250,17 @@ pub struct Design {
     /// than on [`ConstraintTier`], and [`Self::resolved_meet_tier_inputs`] for
     /// where a target actually becomes a mast.
     pub tier_targets: TierTargetMap,
+    /// Concave (fantasy-cut) tiers, kept apart from [`Self::tiers`] because they
+    /// have no mast, meet constraint or target -- see [`concave`]. Empty for
+    /// every design that has none, which keeps such a design's behavior (and
+    /// output bytes) unchanged. Real authored content, so it participates in
+    /// `PartialEq`.
+    pub concave_tiers: Vec<ConcaveTier>,
+    /// A stable [`TierId`] per concave tier, parallel to [`Self::concave_tiers`]
+    /// and drawn from the same [`Self::next_tier_id`] counter as [`Self::tier_ids`]
+    /// so notes, selection and diffs can address either kind. Bookkeeping, so
+    /// excluded from `PartialEq` like `tier_ids`.
+    pub concave_tier_ids: Vec<TierId>,
 }
 
 impl Design {
@@ -332,6 +353,7 @@ impl PartialEq for Design {
         self.preform == other.preform
             && self.meta == other.meta
             && self.tiers == other.tiers
+            && self.concave_tiers == other.concave_tiers
             && self.girdle_diameter_mm == other.girdle_diameter_mm
             && self.preform_y_offset == other.preform_y_offset
             && self.cheater_offsets_deg == other.cheater_offsets_deg

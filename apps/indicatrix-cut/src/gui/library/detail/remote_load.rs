@@ -192,9 +192,10 @@ fn apply_design_record_to_ui(
             order_idx: a.order_index as i32,
             side,
             facet: a.facet.clone().into(),
-            angle: a.angle.clone().into(),
+            angle: a.angle.trim_start_matches('-').to_string().into(),
             index_val: a.index.clone().into(),
             notes: a.notes.clone().into(),
+            second_line: a.tool_line.clone().unwrap_or_default().into(),
         })
         .collect();
     ui.global::<LibraryModel>()

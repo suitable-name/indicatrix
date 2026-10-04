@@ -37,20 +37,33 @@ pub struct CustomMaterialSnapshot {
     pub crystal_system: String,
     /// Optical character of the material.
     pub optical_character: String,
-    /// The material's body colour, `absorption_rgb = [r, g, b]`: the isotropic
-    /// absorption triple `GemMaterial::new_custom` takes (`None` = colourless).
+    /// The material's body color, `absorption_rgb = [r, g, b]`: the isotropic
+    /// absorption triple `GemMaterial::new_custom` takes (`None` = colorless).
     ///
     /// Added after this table first shipped: `#[serde(default)]` loads a file written
-    /// before it existed with `None` -- exactly the colourless material such a file
+    /// before it existed with `None` -- exactly the colorless material such a file
     /// always described -- so the schema version ([`FORMAT_VERSION`]) does not move.
     /// An older build reading a newer file keeps the key in [`Self::unknown`] and
     /// writes it back unchanged. Stored as `f64` (TOML's only float) through each
-    /// `f32` component's shortest round-trip decimal -- see [`Self::with_body_colour`].
+    /// `f32` component's shortest round-trip decimal -- see [`Self::with_body_color`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub absorption_rgb: Option<[f64; 3]>,
+    /// Optional physically based color recipe and fallback tracking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_recipe: Option<colorRecipeDto>,
     /// See [`PreformTable::unknown`]'s doc comment.
     #[serde(flatten, default)]
     pub unknown: toml::Table,
+}
+
+/// Serialized DTO for a physically based color recipe in the native format.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct colorRecipeDto {
+    /// Raw recipe JSON string containing recipe data, `resolved_bands`, and `data_version`.
+    pub recipe_json: String,
+    /// The fallback absorption RGB triple written alongside the recipe.
+    #[serde(default)]
+    pub fallback_rgb: [f64; 3],
 }
 
 impl CustomMaterialSnapshot {
@@ -74,8 +87,16 @@ impl CustomMaterialSnapshot {
             crystal_system: crystal_system.into(),
             optical_character: optical_character.into(),
             absorption_rgb: None,
+            color_recipe: None,
             unknown: toml::Table::new(),
         }
+    }
+
+    /// Attaches [`Self::color_recipe`].
+    #[must_use]
+    pub fn with_color_recipe(mut self, recipe: Option<colorRecipeDto>) -> Self {
+        self.color_recipe = recipe;
+        self
     }
 
     /// Attaches [`Self::absorption_rgb`] as the `f64` triple stored on disk.
@@ -85,15 +106,15 @@ impl CustomMaterialSnapshot {
         self
     }
 
-    /// Attaches the body colour from an editor's `f32` absorption triple.
+    /// Attaches the body color from an editor's `f32` absorption triple.
     ///
     /// Each component is stored as its shortest round-trip decimal rather than a plain
     /// widening cast: `f64::from(0.2_f32)` would be written as `0.20000000298023224`,
-    /// which is what a cutter reading the raw file would then see for a colour picked
+    /// which is what a cutter reading the raw file would then see for a color picked
     /// as "0.2". The decimal text identifies the `f32` uniquely, so
-    /// [`Self::body_colour`] returns the identical bits.
+    /// [`Self::body_color`] returns the identical bits.
     #[must_use]
-    pub fn with_body_colour(self, rgb: Option<[f32; 3]>) -> Self {
+    pub fn with_body_color(self, rgb: Option<[f32; 3]>) -> Self {
         let stored = rgb.map(|rgb| {
             rgb.map(|v| {
                 v.to_string()
@@ -104,9 +125,9 @@ impl CustomMaterialSnapshot {
         self.with_absorption_rgb(stored)
     }
 
-    /// The body colour as the editor's `f32` absorption triple (`None` = colourless).
+    /// The body color as the editor's `f32` absorption triple (`None` = colorless).
     #[must_use]
-    pub fn body_colour(&self) -> Option<[f32; 3]> {
+    pub fn body_color(&self) -> Option<[f32; 3]> {
         self.absorption_rgb.map(|rgb| rgb.map(|v| v as f32))
     }
 }

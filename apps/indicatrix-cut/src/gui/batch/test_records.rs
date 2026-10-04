@@ -33,6 +33,7 @@ pub fn angle_table_record() -> FullDiagramRecord {
                     .collect::<Vec<_>>()
                     .join("-"),
                 notes: String::new(),
+                ..Default::default()
             },
         )
         .collect();

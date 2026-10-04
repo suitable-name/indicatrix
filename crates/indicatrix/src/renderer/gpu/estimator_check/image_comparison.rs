@@ -251,12 +251,12 @@ pub fn run_image_comparison_edge_rounding(
 }
 
 /// Tier 3 statistical image comparison on a
-/// coloured (chromatically absorbing) stone at a non-1.0 `absorption_path_scale`.
+/// colored (chromatically absorbing) stone at a non-1.0 `absorption_path_scale`.
 ///
 /// Ruby (built-in chromatic Beer-Lambert absorption, exactly what
 /// `absorption_path_scale` multiplies the path length before) at `scale = 3.0` --
 /// large enough that a scale/no-scale mismatch between the CPU and WGSL mirrors would
-/// show up as a strong, whole-image colour/brightness bias, not just isolated pixels.
+/// show up as a strong, whole-image color/brightness bias, not just isolated pixels.
 ///
 /// # Panics
 ///

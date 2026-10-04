@@ -6,12 +6,16 @@ use super::scanline::render_frame_scanlines;
 use crate::settings::model::LocalComputeTarget;
 use glam::Vec3;
 use indicatrix::{
-    geometry::plane::GpuFacetPlane,
+    geometry::{
+        plane::GpuFacetPlane,
+        tool::{StoneGeometry, ToolPrimitive},
+    },
     optics::{
+        fluorescence::Fluorescence,
         materials::GemMaterial,
         raytracer::{Camera, EnvironmentSource, FacetFinish},
     },
-    renderer::gpu_backend::{GpuBackend, GpuSceneRef},
+    renderer::gpu_backend::{GpuBackend, GpuSceneRef, scene_routes_to_gpu},
 };
 
 /// One frame's scene, as both backends need it. Bundled so [`ViewportGpu::try_accumulate`]
@@ -28,6 +32,12 @@ pub(super) struct BackendFrame<'a> {
     pub(super) distance: f32,
     pub(super) camera: &'a Camera,
     pub(super) planes: &'a [GpuFacetPlane],
+    /// The concave tools cut out of `planes`; empty for a planar stone. A frame with
+    /// tools never reaches the GPU (see [`BackendFrame::stone`]).
+    pub(super) tools: &'a [ToolPrimitive],
+    /// The material's fluorescent emitters (`RenderContext::active_fluorescence`), empty for
+    /// every non-fluorescent material. A frame with emitters never reaches the GPU either.
+    pub(super) fluorescence: &'a Fluorescence,
     /// Frosted girdle: `&[]` when `RenderContext::girdle_frosted` is off, which both
     /// backends treat as all-polished.
     pub(super) facet_finishes: &'a [FacetFinish],
@@ -38,6 +48,20 @@ pub(super) struct BackendFrame<'a> {
     /// Samples already in the accumulation buffer. Seeds each sample's jitter/RNG on
     /// both backends, so this must keep advancing across frames or samples repeat.
     pub(super) sample_offset: u32,
+}
+
+impl BackendFrame<'_> {
+    /// The frame's stone: the polyhedron with its tools.
+    ///
+    /// The WGSL kernels know nothing of tools, so [`scene_routes_to_gpu`] sends a frame
+    /// whose stone has any to the CPU tracer; every GPU entry point below asks it first
+    /// rather than each remembering to test `tools.is_empty()`.
+    pub(super) const fn stone(&self) -> StoneGeometry<'_> {
+        StoneGeometry {
+            planes: self.planes,
+            tools: self.tools,
+        }
+    }
 }
 
 /// The four per-pixel buffers a frame writes: the radiance running sum, plus the three
@@ -145,7 +169,16 @@ impl ViewportGpu {
     /// for the viewport's status pill; the message clears the moment a GPU frame
     /// succeeds again.
     fn try_accumulate(&mut self, frame: &BackendFrame<'_>, out: &mut FrameOutputs<'_>) -> bool {
-        if self.gpu_retired {
+        // A concave stone is the CPU tracer's alone, and that is no fault of the device:
+        // decline without touching `status_message` so the pill stays quiet.
+        if self.gpu_retired
+            || !scene_routes_to_gpu(
+                frame.material,
+                frame.stone(),
+                frame.fluorescence,
+                frame.environment.lighting_preset().unwrap_or_default(),
+            )
+        {
             return false;
         }
         let scene = GpuSceneRef {
@@ -245,8 +278,10 @@ pub(super) fn accumulate_frame_samples(
     hybrid: &mut HybridPacing,
     local_compute_target: LocalComputeTarget,
 ) {
-    // `Cpu`: never dispatch to the GPU backend -- straight to the CPU tracer.
-    if local_compute_target == LocalComputeTarget::Cpu {
+    // `Cpu`: never dispatch to the GPU backend -- straight to the CPU tracer. A concave
+    // stone takes the same road whatever the target (`scene_routes_to_gpu`): offering
+    // it to the hybrid split would only trace its GPU share without the tools.
+    if local_compute_target == LocalComputeTarget::Cpu || !frame.stone().is_convex() {
         let start = std::time::Instant::now();
         render_frame_scanlines(frame, frame.spp, frame.sample_offset + frame.spp, outputs);
         // This CPU frame just wrote `outputs`' guide buffers directly --
@@ -489,6 +524,123 @@ impl HybridPacing {
     }
 }
 
+/// The CPU-routing of a concave stone: no adapter is needed, because the point is that the
+/// frame never reaches one.
+#[cfg(test)]
+mod concave_routing_tests {
+    use super::*;
+    use indicatrix::{
+        geometry::cuts::StandardGemCuts,
+        optics::raytracer::{DEFAULT_FOV_DEG, DEFAULT_POSE, LightingPreset},
+    };
+
+    const W: u32 = 24;
+    const H: u32 = 24;
+
+    /// Accumulates two samples of the round brilliant, with or without a ball cut out of the
+    /// table, through `accumulate_frame_samples` and returns the radiance buffer.
+    fn accumulate(tools: &[ToolPrimitive], target: LocalComputeTarget) -> Vec<Vec3> {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let material = GemMaterial::diamond();
+        let camera = Camera::new(
+            DEFAULT_POSE.yaw,
+            DEFAULT_POSE.pitch,
+            DEFAULT_POSE.distance,
+            DEFAULT_FOV_DEG,
+        );
+        let frame = BackendFrame {
+            width: W,
+            height: H,
+            yaw: DEFAULT_POSE.yaw,
+            pitch: DEFAULT_POSE.pitch,
+            distance: DEFAULT_POSE.distance,
+            camera: &camera,
+            planes: &planes,
+            tools,
+            fluorescence: Fluorescence::none(),
+            facet_finishes: &[],
+            material: &material,
+            max_bounces: 4,
+            environment: LightingPreset::RingLights.studio(1.0, 0.85, 0.95),
+            spp: 2,
+            sample_offset: 0,
+        };
+        let pixels = (W * H) as usize;
+        let mut accum = vec![Vec3::ZERO; pixels];
+        let mut depth = vec![0.0; pixels];
+        let mut normal = vec![Vec3::ZERO; pixels];
+        let mut facet_id = vec![0; pixels];
+        accumulate_frame_samples(
+            &mut ViewportGpu::acquire(),
+            &frame,
+            &mut FrameOutputs {
+                accum: &mut accum,
+                depth: &mut depth,
+                normal: &mut normal,
+                facet_id: &mut facet_id,
+            },
+            &mut HybridPacing::new(),
+            target,
+        );
+        accum
+    }
+
+    #[test]
+    fn a_frame_with_tools_is_not_convex_and_routes_off_the_gpu() {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let material = GemMaterial::diamond();
+        let tools = [ToolPrimitive::ball(Vec3::new(0.0, 0.3, 0.0), 0.2)];
+        let camera = Camera::new(0.0, 0.0, 5.0, DEFAULT_FOV_DEG);
+        let frame = |tools: &'static [ToolPrimitive]| BackendFrame {
+            width: 1,
+            height: 1,
+            yaw: 0.0,
+            pitch: 0.0,
+            distance: 5.0,
+            camera: &camera,
+            planes: &planes,
+            tools,
+            fluorescence: Fluorescence::none(),
+            facet_finishes: &[],
+            material: &material,
+            max_bounces: 1,
+            environment: LightingPreset::RingLights.studio(1.0, 0.85, 0.95),
+            spp: 1,
+            sample_offset: 0,
+        };
+        let daylight = LightingPreset::Daylight;
+        assert!(scene_routes_to_gpu(
+            &material,
+            frame(&[]).stone(),
+            Fluorescence::none(),
+            daylight
+        ));
+        let concave = BackendFrame {
+            tools: &tools,
+            ..frame(&[])
+        };
+        assert!(!scene_routes_to_gpu(
+            &material,
+            concave.stone(),
+            Fluorescence::none(),
+            daylight
+        ));
+    }
+
+    #[test]
+    fn a_concave_frame_is_traced_with_its_tools_on_every_compute_target() {
+        let tools = [ToolPrimitive::ball(Vec3::new(0.0, 0.35, 0.0), 0.3)];
+        let flat = accumulate(&[], LocalComputeTarget::Cpu);
+        let cut = accumulate(&tools, LocalComputeTarget::Cpu);
+        assert_ne!(flat, cut, "the ball must change the picture");
+        // The hybrid and GPU-first targets would hand a convex stone to the adapter; a
+        // concave one must come out of the CPU tracer bit for bit, whatever is asked.
+        for target in [LocalComputeTarget::CpuGpu, LocalComputeTarget::Gpu] {
+            assert_eq!(accumulate(&tools, target), cut, "{target:?}");
+        }
+    }
+}
+
 /// Hardware tests driving the app's OWN [`ViewportGpu::
 /// try_accumulate`] directly -- `indicatrix`'s own
 /// `renderer::gpu_backend::tests::viewport_frames_with_camera_changes_never_poison_the_backend`
@@ -547,6 +699,8 @@ mod gpu_hardware_tests {
                 distance: 5.0,
                 camera: &camera,
                 planes: &planes,
+                tools: &[],
+                fluorescence: Fluorescence::none(),
                 facet_finishes: &[],
                 material: &material,
                 max_bounces: 4,

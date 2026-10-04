@@ -1,7 +1,7 @@
 use super::*;
 use crate::native::{
-    MaterialTable, NativeMeetConstraint, NativePreformShape, PreformTable, TierTable,
-    to_toml_string,
+    ConcaveTierTable, MaterialTable, NativeMeetConstraint, NativePreformShape, PreformTable,
+    TierTable, to_toml_string,
 };
 use std::path::Path;
 
@@ -62,13 +62,13 @@ fn reserializing_a_parsed_file_is_byte_identical() {
 #[test]
 fn a_too_new_version_is_refused_before_the_body_is_read() {
     // The body is garbage a v1 reader could not parse; the version error wins.
-    let text = "format = \"indicatrix-design\"\nversion = 2\n[preform]\nshape = 7\n";
+    let text = "format = \"indicatrix-design\"\nversion = 3\n[preform]\nshape = 7\n";
     match parse(text) {
         Err(DesignFileError::UnsupportedVersion {
-            found: 2,
+            found: 3,
             supported,
         }) => {
-            assert_eq!(supported, DESIGN_VERSION);
+            assert_eq!(supported, DESIGN_VERSION_CONCAVE);
         }
         other => panic!("expected UnsupportedVersion, got {other:?}"),
     }
@@ -206,4 +206,71 @@ fn path_helpers_tell_the_formats_apart() {
         FileKind::Design
     );
     assert_eq!(detect_kind_of_path(Path::new("x.asc")), FileKind::Unknown);
+}
+
+fn concave_tier(name: &str) -> ConcaveTierTable {
+    ConcaveTierTable {
+        name: name.to_string(),
+        angle_deg: -62.0,
+        indices: vec![3.0, 11.5, 19.0],
+        instructions: "cut to depth".to_string(),
+        tool: "CON".to_string(),
+        tool_azimuth_deg: -15.0,
+        displacement: [0.0, 0.12, 0.05],
+        diameter_ratio: 0.25,
+        tool_angle_deg: Some(60.0),
+        motion: "plunge".to_string(),
+        unknown: toml::Table::new(),
+    }
+}
+
+#[test]
+fn design_file_without_concave_tiers_serialises_as_version_1_byte_identical() {
+    let text = to_string(&sample()).expect("serializes");
+    assert!(text.starts_with("format = \"indicatrix-design\"\nversion = 1\n"));
+    assert!(!text.contains("concave"));
+    // An explicitly empty list is the planar file, not a version-2 one.
+    let emptied = sample().with_concave_tiers(Vec::new());
+    assert_eq!(to_string(&emptied).expect("serializes"), text);
+}
+
+#[test]
+fn design_file_with_concave_tiers_serialises_as_version_2_and_round_trips() {
+    let file = sample().with_concave_tiers(vec![concave_tier("P8"), concave_tier("C9")]);
+    let text = to_string(&file).expect("serializes");
+    assert!(text.starts_with("format = \"indicatrix-design\"\nversion = 2\n"));
+    assert!(text.contains("concave_frame = \"v0\""));
+    let parsed = parse(&text).expect("parses own output");
+    assert_eq!(parsed, file);
+    assert_eq!(parsed.version, DESIGN_VERSION_CONCAVE);
+    assert_eq!(parsed.concave_frame, CONCAVE_FRAME_V0);
+    assert_eq!(to_string(&parsed).expect("serializes"), text);
+}
+
+#[test]
+fn design_file_with_unknown_concave_frame_is_refused() {
+    let file = sample().with_concave_tiers(vec![concave_tier("P8")]);
+    let text = to_string(&file).expect("serializes");
+    let other = text.replacen("concave_frame = \"v0\"", "concave_frame = \"v9\"", 1);
+    assert!(matches!(
+        parse(&other),
+        Err(DesignFileError::UnsupportedConcaveFrame { frame }) if frame == "v9"
+    ));
+    let missing = text.replacen("concave_frame = \"v0\"\n", "", 1);
+    assert!(matches!(
+        parse(&missing),
+        Err(DesignFileError::UnsupportedConcaveFrame { frame }) if frame.is_empty()
+    ));
+}
+
+#[test]
+fn concave_tier_without_a_tool_code_is_refused_not_defaulted() {
+    let mut tier = concave_tier("P8");
+    tier.tool = String::new();
+    let file = sample().with_concave_tiers(vec![tier]);
+    let text = to_string(&file).expect("serializes");
+    assert!(matches!(
+        parse(&text),
+        Err(DesignFileError::ConcaveTierMissingGeometry { index: 0 })
+    ));
 }

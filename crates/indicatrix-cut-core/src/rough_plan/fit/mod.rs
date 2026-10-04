@@ -51,6 +51,8 @@ mod tests;
 #[cfg(test)]
 mod tests_edge;
 #[cfg(test)]
+mod tests_mesh;
+#[cfg(test)]
 mod tests_search;
 
 use glam::DVec3;
@@ -58,10 +60,13 @@ use glam::DVec3;
 use orient::{
     Quat, diagonal_perturbation, generate_orientations, perturbation, screening_orientations,
 };
-use support::{SupportWorkspace, compute_proxy_vertices, opposite_pairs};
+use support::{StoneGuard, SupportWorkspace, compute_proxy_vertices, opposite_pairs};
 
 use crate::{
-    rough_plan::types::{PlanProgress, PlanSettings},
+    rough_plan::{
+        shape::RoughMesh,
+        types::{PlanProgress, PlanSettings},
+    },
     yield_metrics::carat_weight,
 };
 
@@ -97,6 +102,51 @@ const PRUNE_SLACK: f64 = 1e-6;
 
 type OrientCandidate = (f64, Quat, [f64; 3]);
 type ExactCandidate = (usize, Vec<OrientCandidate>);
+
+/// A non-convex rough solid and the clearance a stone keeps from its surface.
+///
+/// The fit works inside the convex region (the rough's hull and cut planes); with a mesh
+/// it also verifies every stone it would accept against the mesh and shrinks or drops
+/// the ones that reach into air (a cutting-plane loop over the triangles that block it).
+#[derive(Debug, Clone, Copy)]
+pub struct FitMesh<'a> {
+    /// The rough's mesh, in the frame of the region.
+    pub mesh: &'a RoughMesh,
+    /// Skin plus allowance in mm: the clearance between a stone and the surface.
+    pub inset_mm: f64,
+}
+
+/// How one design's poses are checked against the rough's mesh.
+enum Check<'a> {
+    /// There is no mesh: the convex region is all there is.
+    Off,
+    /// Every pose that would be accepted is verified.
+    On(StoneGuard<'a>),
+    /// There is a mesh but the design's outline spans no volume, so a pose cannot be
+    /// verified: the design gets no fit.
+    Unfit,
+}
+
+impl<'a> Check<'a> {
+    /// The check of `hull` against `mesh`.
+    fn of(mesh: Option<FitMesh<'a>>, hull: &DesignHull) -> Self {
+        mesh.map_or(Self::Off, |mesh| {
+            StoneGuard::new(mesh, &hull.vertices).map_or(Self::Unfit, Self::On)
+        })
+    }
+
+    /// The guard, `None` when there is no mesh (or the design is unfit).
+    const fn guard(&self) -> Option<&StoneGuard<'a>> {
+        match self {
+            Self::On(guard) => Some(guard),
+            Self::Off | Self::Unfit => None,
+        }
+    }
+
+    const fn is_unfit(&self) -> bool {
+        matches!(self, Self::Unfit)
+    }
+}
 
 /// A design's convex outline for exact single-stone fitting.
 ///
@@ -182,11 +232,35 @@ pub fn fit_single_stones(
     keep: usize,
     on_progress: &mut dyn FnMut(PlanProgress) -> bool,
 ) -> Option<Vec<SingleFit>> {
+    fit_single_stones_with(
+        region,
+        coarse_region,
+        hulls,
+        settings,
+        keep,
+        None,
+        on_progress,
+    )
+}
+
+/// [`fit_single_stones`] for a rough that may have a non-convex `mesh`.
+///
+/// Every stone it returns lies in the mesh's material, `mesh.inset_mm` clear of its surface (see
+/// [`fit_shortlisted_with`]). With `None` it is [`fit_single_stones`], bit for bit.
+pub fn fit_single_stones_with(
+    region: &[(DVec3, f64)],
+    coarse_region: &[(DVec3, f64)],
+    hulls: &[DesignHull],
+    settings: &PlanSettings,
+    keep: usize,
+    mesh: Option<FitMesh<'_>>,
+    on_progress: &mut dyn FnMut(PlanProgress) -> bool,
+) -> Option<Vec<SingleFit>> {
     if hulls.is_empty() || keep == 0 {
         return Some(Vec::new());
     }
 
-    let scores = screen_designs(coarse_region, hulls, settings, on_progress)?;
+    let scores = screen_designs_with(coarse_region, hulls, settings, mesh, on_progress)?;
     let mut chosen = shortlist(&scores, keep);
     chosen.sort_unstable();
     let subset: Vec<DesignHull> = hulls
@@ -195,7 +269,7 @@ pub fn fit_single_stones(
         .cloned()
         .collect();
 
-    let fits = fit_shortlisted(region, &subset, settings, on_progress)?;
+    let fits = fit_shortlisted_with(region, &subset, settings, mesh, on_progress)?;
     Some(merge_fits(fits, keep))
 }
 
@@ -219,7 +293,23 @@ pub fn fit_single_stones(
 pub fn screen_designs(
     coarse_region: &[(DVec3, f64)],
     hulls: &[DesignHull],
+    settings: &PlanSettings,
+    on_progress: &mut dyn FnMut(PlanProgress) -> bool,
+) -> Option<Vec<(i64, f64)>> {
+    screen_designs_with(coarse_region, hulls, settings, None, on_progress)
+}
+
+/// [`screen_designs`] for a rough that may have a non-convex `mesh`.
+///
+/// The proxy search that finds the basins is unchanged (it only ranks orientations); the
+/// full-outline evaluation that decides the score is checked against the mesh, so the
+/// score is the volume of a stone that lies in the material. With `None` it is
+/// [`screen_designs`], bit for bit.
+pub fn screen_designs_with(
+    coarse_region: &[(DVec3, f64)],
+    hulls: &[DesignHull],
     _settings: &PlanSettings,
+    mesh: Option<FitMesh<'_>>,
     on_progress: &mut dyn FnMut(PlanProgress) -> bool,
 ) -> Option<Vec<(i64, f64)>> {
     let total_hulls = hulls.len();
@@ -235,7 +325,7 @@ pub fn screen_designs(
     let mut workspace = SupportWorkspace::new(coarse_region.len());
     let mut scores = Vec::with_capacity(total_hulls);
     for (hull_idx, hull) in hulls.iter().enumerate() {
-        let score = screening_score(hull, &screen_orients, coarse_region, &mut workspace);
+        let score = screening_score(hull, &screen_orients, coarse_region, &mut workspace, mesh);
         scores.push((hull.entry_id, score));
 
         if !on_progress(PlanProgress::Fit {
@@ -255,8 +345,13 @@ fn screening_score(
     orients: &[orient::Orientation],
     coarse_region: &[(DVec3, f64)],
     workspace: &mut SupportWorkspace,
+    mesh: Option<FitMesh<'_>>,
 ) -> f64 {
     if !usable_hull(hull) {
+        return 0.0;
+    }
+    let check = Check::of(mesh, hull);
+    if check.is_unfit() {
         return 0.0;
     }
     let proxy_verts = compute_proxy_vertices(&hull.vertices);
@@ -272,7 +367,12 @@ fn screening_score(
 
     let mut best_k = 0.0_f64;
     for (_, quat, _) in &basins {
-        if let Some((k, _)) = workspace.evaluate(&quat.columns(), coarse_region, &hull.vertices)
+        let axes = quat.columns();
+        let fit = match check.guard() {
+            Some(guard) => workspace.evaluate_in_mesh(&axes, coarse_region, &hull.vertices, guard),
+            None => workspace.evaluate(&axes, coarse_region, &hull.vertices),
+        };
+        if let Some((k, _)) = fit
             && k > best_k
         {
             best_k = k;
@@ -317,6 +417,25 @@ pub fn fit_shortlisted(
     settings: &PlanSettings,
     on_progress: &mut dyn FnMut(PlanProgress) -> bool,
 ) -> Option<Vec<SingleFit>> {
+    fit_shortlisted_with(region, hulls, settings, None, on_progress)
+}
+
+/// [`fit_shortlisted`] for a rough that may have a non-convex `mesh`.
+///
+/// The LP of an orientation is solved against the convex region as before. A result that
+/// would enter the held basins (exact stage) or improve the polish is then verified
+/// against the mesh by a cutting-plane loop (a row from the triangle that blocks it least
+/// per round, at most six rounds) and replaced by the verified, smaller pose, or dropped. Every fit
+/// returned therefore lies in the material, `mesh.inset_mm` clear of the surface; near a
+/// notch it may be smaller than the best possible. With `None` it is
+/// [`fit_shortlisted`], bit for bit.
+pub fn fit_shortlisted_with(
+    region: &[(DVec3, f64)],
+    hulls: &[DesignHull],
+    settings: &PlanSettings,
+    mesh: Option<FitMesh<'_>>,
+    on_progress: &mut dyn FnMut(PlanProgress) -> bool,
+) -> Option<Vec<SingleFit>> {
     let exact_orients = generate_orientations(EXACT_LEVEL, EXACT_SPINS);
     let pairs = opposite_pairs(region);
     let mut workspace = SupportWorkspace::new(region.len());
@@ -327,6 +446,7 @@ pub fn fit_shortlisted(
         region,
         &pairs,
         &mut workspace,
+        mesh,
         on_progress,
     )?;
     polish_exact_candidates(
@@ -335,6 +455,7 @@ pub fn fit_shortlisted(
         region,
         settings,
         &mut workspace,
+        mesh,
         on_progress,
     )
 }
@@ -359,6 +480,7 @@ fn exact_search(
     region: &[(DVec3, f64)],
     pairs: &[(usize, usize)],
     workspace: &mut SupportWorkspace,
+    mesh: Option<FitMesh<'_>>,
     on_progress: &mut dyn FnMut(PlanProgress) -> bool,
 ) -> Option<Vec<ExactCandidate>> {
     let exact_total = hulls.len();
@@ -372,7 +494,8 @@ fn exact_search(
 
     let mut exact_candidates = Vec::with_capacity(exact_total);
     for (hull_idx, hull) in hulls.iter().enumerate() {
-        let basins = if usable_hull(hull) {
+        let check = Check::of(mesh, hull);
+        let basins = if usable_hull(hull) && !check.is_unfit() {
             let mut poll = || {
                 on_progress(PlanProgress::Fit {
                     stage: FitStage::Exact,
@@ -380,8 +503,15 @@ fn exact_search(
                     total: exact_total,
                 })
             };
-            let (basins, _solves) =
-                search_orientations(hull, exact_orients, region, pairs, workspace, &mut poll)?;
+            let (basins, _solves) = search_orientations(
+                hull,
+                exact_orients,
+                region,
+                pairs,
+                workspace,
+                check.guard(),
+                &mut poll,
+            )?;
             basins
         } else {
             Vec::new()
@@ -410,12 +540,17 @@ fn exact_search(
 /// solving every LP: such an orientation's scale is at most its bound, and
 /// [`insert_candidate`] ignores a candidate that does not beat the worst held basin, whether
 /// or not it lies in a held basin. Passing no `pairs` turns the pruning off.
+///
+/// With a `guard` (a rough with a mesh) the pruning stays valid: a verified scale is at most
+/// the LP's. The mesh check is spent only on a result that would enter the held basins
+/// (see [`would_enter`]); it is replaced by the verified pose, or skipped when none exists.
 fn search_orientations(
     hull: &DesignHull,
     orients: &[orient::Orientation],
     region: &[(DVec3, f64)],
     pairs: &[(usize, usize)],
     workspace: &mut SupportWorkspace,
+    guard: Option<&StoneGuard<'_>>,
     poll: &mut dyn FnMut() -> bool,
 ) -> Option<(Vec<OrientCandidate>, usize)> {
     let mut basins: Vec<OrientCandidate> = Vec::with_capacity(TOP_KEEP + 1);
@@ -436,9 +571,20 @@ fn search_orientations(
             }
         }
         solves += 1;
-        if let Some((k, center)) = workspace.solve()
+        if let Some((mut k, mut center)) = workspace.solve()
             && k > 0.0
         {
+            if let Some(guard) = guard {
+                if !would_enter(&basins, (k, orient.quat, center), TOP_KEEP) {
+                    continue;
+                }
+                let Some(verified) =
+                    workspace.verify_in_mesh(&orient.axes, &hull.vertices, guard, (k, center))
+                else {
+                    continue;
+                };
+                (k, center) = verified;
+            }
             insert_candidate(&mut basins, (k, orient.quat, center), TOP_KEEP);
         }
     }
@@ -451,6 +597,7 @@ fn polish_exact_candidates(
     region: &[(DVec3, f64)],
     settings: &PlanSettings,
     workspace: &mut SupportWorkspace,
+    mesh: Option<FitMesh<'_>>,
     on_progress: &mut dyn FnMut(PlanProgress) -> bool,
 ) -> Option<Vec<SingleFit>> {
     let polish_total = exact_candidates.len();
@@ -465,11 +612,19 @@ fn polish_exact_candidates(
     let mut fits = Vec::new();
     for (p_idx, (hull_idx, basins)) in exact_candidates.into_iter().enumerate() {
         let hull = &hulls[hull_idx];
+        let check = Check::of(mesh, hull);
         let mut best_fit: Option<(f64, [f64; 3], Quat)> = None;
 
         for (k_init, q_init, t_init) in basins {
-            let (k_pol, t_pol, q_pol) =
-                polish_orientation(q_init, k_init, t_init, &hull.vertices, region, workspace);
+            let (k_pol, t_pol, q_pol) = polish_orientation(
+                q_init,
+                k_init,
+                t_init,
+                &hull.vertices,
+                region,
+                workspace,
+                check.guard(),
+            );
             if best_fit.as_ref().is_none_or(|(bk, _, _)| k_pol > *bk) {
                 best_fit = Some((k_pol, t_pol, q_pol));
             }
@@ -508,6 +663,18 @@ fn polish_exact_candidates(
 /// Whether two orientations lie in one basin (closer than about 15 degrees).
 fn same_basin(first: Quat, second: Quat) -> bool {
     first.alignment(second) >= BASIN_ALIGNMENT
+}
+
+/// Whether [`insert_candidate`] would change `kept` for `candidate`: the tests it applies
+/// before it modifies anything. A candidate with a smaller scale never enters when this
+/// one does not, so the mesh check is only worth running for a candidate that passes.
+fn would_enter(kept: &[OrientCandidate], candidate: OrientCandidate, cap: usize) -> bool {
+    if kept.len() >= cap && kept.last().is_some_and(|worst| candidate.0 <= worst.0) {
+        return false;
+    }
+    !kept
+        .iter()
+        .any(|held| held.0 >= candidate.0 && same_basin(held.1, candidate.1))
 }
 
 /// Adds `candidate` to `kept`, the best orientation of each basin sorted by scale
@@ -573,6 +740,10 @@ fn polish_moves(step: f64, diagonal: bool) -> Vec<Quat> {
 
 /// Applies the best strictly improving move of `moves` again and again until none improves
 /// or `cap` evaluations are spent.
+///
+/// With a `guard` a move that improves on the best so far is verified against the mesh
+/// (and replaced by the verified pose) before it counts; one that does not improve is
+/// never verified.
 fn polish_step(
     pose: &mut PolishPose,
     moves: &[Quat],
@@ -580,6 +751,7 @@ fn polish_step(
     vertices: &[[f64; 3]],
     region: &[(DVec3, f64)],
     workspace: &mut SupportWorkspace,
+    guard: Option<&StoneGuard<'_>>,
 ) {
     let mut evals = 0;
     while evals < cap {
@@ -593,7 +765,13 @@ fn polish_step(
 
             let cand_q = pose.quat.mul(*delta).normalize();
             let cand_axes = cand_q.columns();
-            if let Some((cand_k, cand_t)) = workspace.evaluate(&cand_axes, region, vertices)
+            let mut found = workspace.evaluate(&cand_axes, region, vertices);
+            if let (Some(guard), Some(first)) = (guard, found)
+                && first.0 > best_k
+            {
+                found = workspace.verify_in_mesh(&cand_axes, vertices, guard, first);
+            }
+            if let Some((cand_k, cand_t)) = found
                 && cand_k > best_k
             {
                 best_k = cand_k;
@@ -613,7 +791,8 @@ fn polish_step(
 /// The step starts at [`POLISH_START_STEP`] and is halved while it is at least
 /// [`POLISH_MIN_STEP`]; the last two step sizes also try moves about two axes at once.
 /// A move is only accepted when it strictly increases the scale, so the returned scale is
-/// never below `init_k`.
+/// never below `init_k`. With a `guard` (see [`polish_step`]) `init_k` must already be a
+/// verified scale, and every pose reached is.
 fn polish_orientation(
     init_quat: Quat,
     init_k: f64,
@@ -621,6 +800,7 @@ fn polish_orientation(
     vertices: &[[f64; 3]],
     region: &[(DVec3, f64)],
     workspace: &mut SupportWorkspace,
+    guard: Option<&StoneGuard<'_>>,
 ) -> (f64, [f64; 3], Quat) {
     let mut pose = PolishPose {
         k: init_k,
@@ -640,7 +820,7 @@ fn polish_orientation(
             POLISH_MAX_EVALS_PER_STEP
         };
         let moves = polish_moves(step, diagonal);
-        polish_step(&mut pose, &moves, cap, vertices, region, workspace);
+        polish_step(&mut pose, &moves, cap, vertices, region, workspace, guard);
         step *= 0.5;
     }
 

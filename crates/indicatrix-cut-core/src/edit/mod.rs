@@ -21,6 +21,7 @@
 //! [`history`] is [`History`], the undo/redo stack built on top of it.
 
 mod apply;
+mod apply_concave;
 mod edit_type;
 mod history;
 #[cfg(test)]

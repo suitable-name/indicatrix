@@ -89,13 +89,14 @@ mod schema;
 #[cfg(test)]
 mod tests;
 
+pub use custom_material::{CustomMaterialSnapshot, colorRecipeDto};
 pub use fingerprint::{FingerprintCheck, check_fingerprint, sha256_hex};
 pub use path::{
     LEGACY_NATIVE_EXTENSION_SUFFIX, NATIVE_EXTENSION_SUFFIX, asc_path_for_native,
     native_path_for_asc,
 };
 pub use schema::{
-    CustomMaterialSnapshot, FORMAT_VERSION, HistoryTable, MaterialTable, NativeDesignFile,
+    ConcaveTierTable, FORMAT_VERSION, HistoryTable, MaterialTable, NativeDesignFile,
     NativeFormatError, NativeMeetConstraint, NativePreformShape, NativeTierTarget, PreformTable,
     SourceTable, TierTable, from_toml_str, to_toml_string,
 };

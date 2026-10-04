@@ -7,7 +7,7 @@ use glam::DVec3;
 use indicatrix::geometry::{GpuFacetPlane, cuts::FacetSpec, girdle, stone_metrics};
 use indicatrix_vault::{
     db::sqlite::DEFAULT_SHAPES,
-    model::{detail::FacetingDiagramDetail, entry::FullDiagramRecord},
+    model::{angle::AngleSetting, detail::FacetingDiagramDetail, entry::FullDiagramRecord},
 };
 
 /// Fills in the proportion fields `indicatrix_vault::local::import_asc` always leaves
@@ -24,6 +24,60 @@ use indicatrix_vault::{
 /// are all REAL-affinity, so SQLite normalises whatever numeric text is written here
 /// regardless of decimal-place convention -- it only has to parse as a plain number.
 pub fn apply_measured_metadata(detail: &mut FacetingDiagramDetail) {
+    measure_flat_planes(detail);
+    apply_concave_rows(detail);
+}
+
+/// Records a design file's concave tiers on `detail`: one tool-carrying row per tier
+/// appended to the angle table (facet line in the flat rows' own format, plus the
+/// formatted tool line), and the `concave_tiers` / `concave_facets` counts the
+/// library's `has_concave` filter and the sync stamp read. Read from the `.indicatrix`
+/// attachment, the design of record, so every writer that attaches one (import, save
+/// write-back) records the same thing. A design without concave tiers is left exactly
+/// as it was (no rows, both counts `0`). Runs after the measurement, which must see
+/// the flat rows only.
+pub fn apply_concave_rows(detail: &mut FacetingDiagramDetail) {
+    detail.angle_settings_table.retain(|row| row.tool.is_none());
+    detail.concave_tiers = 0;
+    detail.concave_facets = 0;
+    let Some(position) = indicatrix_vault::local::native_design_attachment_position(
+        detail.attached_files.iter().map(|f| f.name.as_str()),
+    ) else {
+        return;
+    };
+    let Ok(text) = std::str::from_utf8(&detail.attached_files[position].content) else {
+        return;
+    };
+    // A planar file (the usual case) skips the full load.
+    if !text.contains("[[concave_tiers]]") {
+        return;
+    }
+    let Ok(loaded) = indicatrix_cut_core::native::design_from_str(text) else {
+        return;
+    };
+    let first = detail.angle_settings_table.len();
+    for (i, tier) in loaded.design.concave_tiers.iter().enumerate() {
+        detail.angle_settings_table.push(AngleSetting {
+            order_index: (first + i) as u32,
+            facet: tier.name.clone(),
+            angle: format!("{}\u{b0}", tier.angle_deg),
+            index: tier
+                .indices
+                .iter()
+                .map(f64::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+            notes: tier.instructions.clone(),
+            tool: Some(tier.tool.code().to_owned()),
+            tool_line: Some(indicatrix_editor::view_model::rows::concave_tool_line(tier)),
+        });
+        detail.concave_facets += tier.indices.len() as u32;
+    }
+    detail.concave_tiers = loaded.design.concave_tiers.len() as u32;
+}
+
+/// The measurement half of [`apply_measured_metadata`], over the flat rows.
+fn measure_flat_planes(detail: &mut FacetingDiagramDetail) {
     // `reconstruct_planes` falls back to `standard_round_brilliant()` for no facet
     // specs -- right for the viewport, but measuring that fallback here would
     // attribute a fabricated design's proportions to this one.
@@ -34,6 +88,7 @@ pub fn apply_measured_metadata(detail: &mut FacetingDiagramDetail) {
     let facet_specs: Vec<FacetSpec> = detail
         .angle_settings_table
         .iter()
+        .filter(|a| a.tool.is_none())
         .map(|a| FacetSpec {
             facet: a.facet.clone(),
             angle: a.angle.clone(),

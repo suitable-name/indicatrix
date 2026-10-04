@@ -431,4 +431,26 @@ mod tests {
         assert_eq!(prepared.duplicates, 1);
         assert_eq!(prepared.stale, 0);
     }
+
+    #[test]
+    fn the_hull_volume_follows_the_carved_volume_while_the_outline_stays_the_outer_hull() {
+        // A concave design's cached volume is below its hull's box volume: the
+        // dimples never enlarge the outline, so the fit still places the outer hull.
+        let size = [1.0, 0.5, 3.0];
+        let carved = extents_of_box(size).volume - 0.0168;
+        let mut extents = extents_of_box(size);
+        extents.volume = carved;
+        let (extents, hulls) = one(extents, box_hull(size, 30.0, [0.0; 3]));
+        let prepared = prepare_design_hulls(&extents, &hulls);
+        assert_eq!(
+            prepared.stale, 0,
+            "a carved volume is not a stale extents row"
+        );
+        let [hull] = &prepared.hulls[..] else {
+            panic!("expected one hull, got {}", prepared.hulls.len());
+        };
+        assert_eq!(hull.volume.to_bits(), carved.to_bits());
+        assert!(hull.volume < size[0] * size[1] * size[2]);
+        assert_eq!(hull.vertices.len(), 8, "the outline is still the flat box");
+    }
 }

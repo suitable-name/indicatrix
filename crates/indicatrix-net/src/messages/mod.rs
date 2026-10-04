@@ -170,15 +170,28 @@ pub use tilt::{
 ///     content hash.
 /// 18: `SceneState::surface_glare` appended (the cross-polarised scale of the first
 ///     surface reflection of the analytic lighting presets).
-pub const PROTOCOL_VERSION: u16 = 18;
+/// 19: concave facets. `SceneState::tools` appended (`Vec<ToolPrimitive>`, the convex
+///     tool volumes subtracted from the plane polyhedron; always present on the wire,
+///     empty for a convex stone); `library::DesignSummary::concave_tiers` and
+///     `library::AngleSettingWire::tool_line` appended;
+///     `LibraryRequest::FetchDesignNative` and `LibraryResponse::{DesignNative,
+///     DesignNativeNotAvailable}` appended. `DesignSummary::version` now also hashes
+///     `concave_tiers`, so every design's stamp changes once and each mirror re-syncs.
+/// 20: fluorescence and UV lamps. `LightingPreset::{UvLamp365, UvLamp395}` appended (enum
+///     indices 7 and 8) and `SceneState::fluorescence` appended
+///     (`indicatrix::optics::fluorescence::Fluorescence`, the material's emitters; always
+///     present on the wire, an empty `Vec` of emitters for a non-fluorescent material).
+///     A scene with fluorescence or a UV lamp is traced on the CPU only.
+pub const PROTOCOL_VERSION: u16 = 20;
 
 #[cfg(test)]
 mod tests {
     #[test]
     /// Pins the constant so a bump is always a deliberate, reviewed edit.
     ///
-    /// 18: `SceneState::surface_glare` (see the constant's history).
+    /// 20: fluorescence and UV lamps -- `SceneState::fluorescence` and the two appended
+    /// `LightingPreset` variants (see the constant's history).
     fn protocol_version_matches_constant() {
-        assert_eq!(super::PROTOCOL_VERSION, 18);
+        assert_eq!(super::PROTOCOL_VERSION, 20);
     }
 }

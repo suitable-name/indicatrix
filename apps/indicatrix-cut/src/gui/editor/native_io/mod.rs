@@ -37,6 +37,8 @@ mod export;
 mod open_commit;
 mod open_native;
 mod open_picker;
+#[cfg(test)]
+mod physics_color_tests;
 mod picker;
 mod save;
 mod save_finish;

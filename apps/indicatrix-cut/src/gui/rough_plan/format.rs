@@ -32,7 +32,7 @@ pub struct GroupRow {
     pub count: i32,
     /// The size line ("5.10 x 5.10 x 3.40 mm, 1.20 ct each").
     pub detail: String,
-    /// The design's position in the layout's group order; it picks the palette colour.
+    /// The design's position in the layout's group order; it picks the palette color.
     pub swatch_index: usize,
     /// Label and value pairs.
     pub metrics: Vec<(String, String)>,
@@ -185,7 +185,7 @@ pub fn group_detail(stones: &[&PlacedStone]) -> String {
 
 /// The designs of a layout as `(entry_id, stone count)`, most stones first, then by id.
 /// This is the group order of a result card, so a group's index picks the same palette
-/// colour in the card and in the 3D view.
+/// color in the card and in the 3D view.
 #[must_use]
 pub fn group_order(layout: &RoughLayout) -> Vec<(i64, usize)> {
     let mut composition = layout.composition();

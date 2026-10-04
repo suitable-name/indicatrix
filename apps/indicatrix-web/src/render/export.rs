@@ -10,7 +10,7 @@
 //!    live chunks are dropped) and traces it to the chosen samples; the dialog shows
 //!    the progress and offers Cancel.
 //! 3. The finished sum goes to the pool's picture Worker (`request_picture(Png)`), which runs
-//!    the desktop's still export -- `tonemap_accumulation` for the colour space, then
+//!    the desktop's still export -- `tonemap_accumulation` for the color space, then
 //!    `encode_png_with_icc` (`display::export_png`), after the live view's denoise
 //!    when chosen -- off the page's thread. `indicatrix-web-core`'s
 //!    `display::tests::web_export_bytes_equal_the_desktop_export_for_a_fixed_sum`

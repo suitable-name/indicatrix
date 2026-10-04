@@ -96,8 +96,8 @@ pub use plan::*;
 pub use rank::{best_layout, flatten_groups, merge_and_rank, rank_indices};
 pub use refine::{final_ranking, finish_plan, own_pool, refine};
 pub use shape::{
-    BoxFace, HullError, MAX_HULL_PLANES, RoughBase, RoughCut, RoughMeasure, RoughModel, ShapeError,
-    import_hull,
+    BoxFace, HullError, MAX_HULL_PLANES, MAX_MESH_TRIANGLES, MeshError, RoughBase, RoughCut,
+    RoughMeasure, RoughMesh, RoughModel, ShapeError, import_hull, import_mesh,
 };
 pub use types::{
     Axis, BarCut, CandidateDesign, CutOrder, CutPlan, LayoutGroup, PlacedStone, PlanInputError,

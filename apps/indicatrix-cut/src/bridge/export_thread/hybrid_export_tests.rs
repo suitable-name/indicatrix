@@ -38,6 +38,8 @@ fn export_completes_via_hybrid_or_cpu_path() {
         exposure: 1.0,
         backdrop: 0.0,
         active_planes: StandardGemCuts::standard_round_brilliant(),
+        tools: Vec::new(),
+        fluorescence: Default::default(),
         facet_finishes: Vec::new(),
         env_map: None,
         surface_glare: 1.0,

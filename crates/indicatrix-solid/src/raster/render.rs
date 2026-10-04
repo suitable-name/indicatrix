@@ -5,10 +5,11 @@
 use super::{
     CachedMesh, EDGE_DEPTH_BIAS, FillMode, HATCH_PERIOD, NEAR_EPS, SolidRasterizer, SolidStyle,
     shading::{blend_toward, shade},
-    simplify_ring,
+    simplified_edge_flags, simplify_ring,
 };
 use glam::{DVec3, Vec3};
 use indicatrix::{geometry::stone_metrics::SolidMesh, optics::raytracer::Camera};
+use std::collections::BTreeMap;
 
 impl SolidRasterizer {
     /// Renders `mesh` as seen by `camera`, styled by `style`, clearing every
@@ -32,22 +33,16 @@ impl SolidRasterizer {
         let (w, h) = (self.width as f32, self.height as f32);
 
         // One flat normal per facet (`normals[i]` belongs to facet `facet_id[i]`).
-        let facet_count = mesh.rings.iter().map(|(id, _)| id + 1).max().unwrap_or(0);
-        let mut facet_normal: Vec<Option<DVec3>> = vec![None; facet_count];
-        for (&id, &normal) in mesh.facet_id.iter().zip(&mesh.normals) {
-            if let Some(slot) = facet_normal.get_mut(id)
-                && slot.is_none()
-            {
-                *slot = Some(normal);
-            }
-        }
+        let facet_normal = facet_normal_table(mesh);
 
         let mut ring_scratch = std::mem::take(&mut self.ring_scratch);
         let mut dedup_scratch = std::mem::take(&mut self.dedup_scratch);
         let mut screen: Vec<(f32, f32, f32)> = Vec::new();
         let mut label_spots: Vec<(usize, f32, f32, f32, f32)> = Vec::new();
-        for (facet_id, ring) in &mesh.rings {
-            let Some(Some(normal)) = facet_normal.get(*facet_id).copied() else {
+        let mut piece_centroids: Vec<(f32, f32, f32)> = Vec::new();
+        self.edge_hidden.clear();
+        for (ring_index, (facet_id, ring)) in mesh.rings.iter().enumerate() {
+            let Some(normal) = ring_normal(mesh, &facet_normal, ring_index, *facet_id) else {
                 continue;
             };
             let Some(&first) = ring.first() else {
@@ -99,6 +94,16 @@ impl SolidRasterizer {
             self.edge_ranges
                 .push((*facet_id, self.edge_points.len(), screen.len()));
             self.edge_points.extend_from_slice(&screen);
+            if let Some(visible) = &mesh.edge_visible {
+                let flags = simplified_edge_flags(
+                    ring,
+                    &ring_scratch,
+                    visible.get(ring_index).map_or(&[], Vec::as_slice),
+                );
+                self.edge_hidden
+                    .extend(flags.into_iter().map(|drawn| !drawn));
+                piece_centroids.push(screen_centroid(&screen));
+            }
             let (min_x, max_x, min_y, max_y) = screen_bounds(&screen);
             label_spots.push((
                 *facet_id,
@@ -110,12 +115,17 @@ impl SolidRasterizer {
         }
         self.ring_scratch = ring_scratch;
         self.dedup_scratch = dedup_scratch;
+        if mesh.piece_normals.is_some() {
+            label_spots = largest_piece_label_spots(&label_spots, &piece_centroids);
+        }
 
         let edge_ranges = std::mem::take(&mut self.edge_ranges);
         let edge_points = std::mem::take(&mut self.edge_points);
-        self.draw_facet_edges(&edge_ranges, &edge_points, style);
+        let edge_hidden = std::mem::take(&mut self.edge_hidden);
+        self.draw_facet_edges(&edge_ranges, &edge_points, &edge_hidden, style);
         self.edge_ranges = edge_ranges;
         self.edge_points = edge_points;
+        self.edge_hidden = edge_hidden;
         self.draw_facet_labels(&label_spots, style);
         if style.show_orientation_marker {
             self.draw_orientation_marker(mesh, camera);
@@ -136,20 +146,15 @@ impl SolidRasterizer {
         let (w, h) = (self.width as f32, self.height as f32);
         let mesh = &prepared.mesh;
 
-        let facet_count = mesh.rings.iter().map(|(id, _)| id + 1).max().unwrap_or(0);
-        let mut facet_normal: Vec<Option<DVec3>> = vec![None; facet_count];
-        for (&id, &normal) in mesh.facet_id.iter().zip(&mesh.normals) {
-            if let Some(slot) = facet_normal.get_mut(id)
-                && slot.is_none()
-            {
-                *slot = Some(normal);
-            }
-        }
+        let facet_normal = facet_normal_table(mesh);
 
         let mut screen: Vec<(f32, f32, f32)> = Vec::new();
         let mut label_spots: Vec<(usize, f32, f32, f32, f32)> = Vec::new();
-        for (facet_id, ring) in &prepared.rings {
-            let Some(Some(normal)) = facet_normal.get(*facet_id).copied() else {
+        let mut piece_centroids: Vec<(f32, f32, f32)> = Vec::new();
+        self.edge_hidden.clear();
+        for (prepared_index, (facet_id, ring)) in prepared.rings.iter().enumerate() {
+            let ring_index = prepared.ring_source[prepared_index];
+            let Some(normal) = ring_normal(mesh, &facet_normal, ring_index, *facet_id) else {
                 continue;
             };
             let Some(&first) = ring.first() else {
@@ -193,6 +198,11 @@ impl SolidRasterizer {
             self.edge_ranges
                 .push((*facet_id, self.edge_points.len(), screen.len()));
             self.edge_points.extend_from_slice(&screen);
+            if let Some(visible) = &prepared.edge_visible {
+                self.edge_hidden
+                    .extend(visible[prepared_index].iter().map(|&drawn| !drawn));
+                piece_centroids.push(screen_centroid(&screen));
+            }
             let (min_x, max_x, min_y, max_y) = screen_bounds(&screen);
             label_spots.push((
                 *facet_id,
@@ -202,12 +212,17 @@ impl SolidRasterizer {
                 max_y - min_y,
             ));
         }
+        if mesh.piece_normals.is_some() {
+            label_spots = largest_piece_label_spots(&label_spots, &piece_centroids);
+        }
 
         let edge_ranges = std::mem::take(&mut self.edge_ranges);
         let edge_points = std::mem::take(&mut self.edge_points);
-        self.draw_facet_edges(&edge_ranges, &edge_points, style);
+        let edge_hidden = std::mem::take(&mut self.edge_hidden);
+        self.draw_facet_edges(&edge_ranges, &edge_points, &edge_hidden, style);
         self.edge_ranges = edge_ranges;
         self.edge_points = edge_points;
+        self.edge_hidden = edge_hidden;
         self.draw_facet_labels(&label_spots, style);
         if style.show_orientation_marker {
             self.draw_orientation_marker(mesh, camera);
@@ -412,6 +427,101 @@ impl SolidRasterizer {
             self.color[offset + 3] = 255;
         }
     }
+}
+
+/// One flat normal per facet (`normals[i]` belongs to facet `facet_id[i]`, the first
+/// vertex of a facet wins) -- the planar path's normal source, see [`ring_normal`].
+fn facet_normal_table(mesh: &SolidMesh) -> Vec<Option<DVec3>> {
+    let facet_count = mesh.rings.iter().map(|(id, _)| id + 1).max().unwrap_or(0);
+    let mut facet_normal: Vec<Option<DVec3>> = vec![None; facet_count];
+    for (&id, &normal) in mesh.facet_id.iter().zip(&mesh.normals) {
+        if let Some(slot) = facet_normal.get_mut(id)
+            && slot.is_none()
+        {
+            *slot = Some(normal);
+        }
+    }
+    facet_normal
+}
+
+/// The outward normal of ring `ring_index` of `mesh`.
+///
+/// A concave mesh stores one per ring in `piece_normals`: a facet has several rings
+/// with different normals once tools cut it, and a tool piece is curved, so the
+/// per-facet table is wrong there. The planar path (`piece_normals == None`) reads
+/// the per-facet table exactly as it always did.
+fn ring_normal(
+    mesh: &SolidMesh,
+    facet_normal: &[Option<DVec3>],
+    ring_index: usize,
+    facet_id: usize,
+) -> Option<DVec3> {
+    mesh.piece_normals.as_ref().map_or_else(
+        || facet_normal.get(facet_id).copied().flatten(),
+        |pieces| pieces.get(ring_index).copied(),
+    )
+}
+
+/// `(area, centroid_x, centroid_y)` of a projected convex polygon, by the shoelace
+/// formula (absolute area; a degenerate sliver falls back to its vertex mean).
+pub fn screen_centroid(pts: &[(f32, f32, f32)]) -> (f32, f32, f32) {
+    let (mut doubled_area, mut cx, mut cy) = (0.0_f32, 0.0_f32, 0.0_f32);
+    for (i, &(x0, y0, _)) in pts.iter().enumerate() {
+        let (x1, y1, _) = pts[(i + 1) % pts.len()];
+        let cross = x0.mul_add(y1, -(x1 * y0));
+        doubled_area += cross;
+        cx = (x0 + x1).mul_add(cross, cx);
+        cy = (y0 + y1).mul_add(cross, cy);
+    }
+    if doubled_area.abs() < 1e-6 {
+        let n = pts.len().max(1) as f32;
+        let (sx, sy) = pts
+            .iter()
+            .fold((0.0, 0.0), |(ax, ay), &(x, y, _)| (ax + x, ay + y));
+        return (0.0, sx / n, sy / n);
+    }
+    (
+        doubled_area.abs() * 0.5,
+        cx / (3.0 * doubled_area),
+        cy / (3.0 * doubled_area),
+    )
+}
+
+/// Collapses the per-piece label spots of a concave stone to one per facet.
+///
+/// A facet with one drawn piece keeps its bounding-box midpoint, as on the planar
+/// path. A facet cut into several pieces is labelled at the area-weighted centroid
+/// of its largest *drawn* (so visible) piece, which is where a label has the best
+/// chance of sitting on the facet itself; `draw_facet_labels` still requires the
+/// pick buffer to agree there. `centroids[i]` is `(area, x, y)` for `spots[i]`.
+/// Output is ordered by facet id, so it is deterministic.
+pub fn largest_piece_label_spots(
+    spots: &[(usize, f32, f32, f32, f32)],
+    centroids: &[(f32, f32, f32)],
+) -> Vec<(usize, f32, f32, f32, f32)> {
+    let mut per_facet: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
+    for (i, &(facet_id, ..)) in spots.iter().enumerate() {
+        per_facet
+            .entry(facet_id)
+            .and_modify(|(count, best)| {
+                *count += 1;
+                if centroids[i].0 > centroids[*best].0 {
+                    *best = i;
+                }
+            })
+            .or_insert((1, i));
+    }
+    per_facet
+        .into_iter()
+        .map(|(facet_id, (count, best))| {
+            let (_, mid_x, mid_y, w, h) = spots[best];
+            if count == 1 {
+                (facet_id, mid_x, mid_y, w, h)
+            } else {
+                (facet_id, centroids[best].1, centroids[best].2, w, h)
+            }
+        })
+        .collect()
 }
 
 /// Screen-space `(min_x, max_x, min_y, max_y)` bounds of a facet's projected

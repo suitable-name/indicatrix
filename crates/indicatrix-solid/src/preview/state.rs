@@ -8,7 +8,7 @@
 
 use super::{
     request::{PlannedFrame, RedrawRequest, panel_kind_from_index},
-    types::CameraPose,
+    types::{CameraPose, StoneGeometryBuf},
 };
 use crate::{
     diagram2d::{DiagramStyle, PanelKind},
@@ -17,7 +17,7 @@ use crate::{
     raster::SolidStyle,
 };
 use glam::Vec3;
-use indicatrix::geometry::{meet_solver::SolvedTier, stone_metrics::SolidStatus};
+use indicatrix::geometry::{ToolPrimitive, meet_solver::SolvedTier, stone_metrics::SolidStatus};
 use std::sync::{Arc, Mutex, PoisonError};
 
 /// Facet outlines an embedding app owns OUTSIDE the request stream: the Slice tool's
@@ -115,6 +115,11 @@ pub struct WorkerMemory {
     /// `Reproject` request's planes actually changed (a different design was just
     /// loaded/solved).
     pub planes: Option<Vec<(Vec3, f32)>>,
+    /// The concave tools of the stone last rendered (empty for a flat stone); with
+    /// [`Self::planes`] this is the stone a `Reproject` is compared against.
+    pub tools: Vec<ToolPrimitive>,
+    /// `(concave tier, placement)` of each of [`Self::tools`].
+    pub placements: Vec<(usize, usize)>,
     /// The camera last rendered at -- what a [`RedrawRequest::UpdateFacetOverlay`]
     /// re-renders with, since it carries none of its own. `None` only before the
     /// very first request; an overlay update arriving that early is a no-op.
@@ -134,6 +139,18 @@ pub struct WorkerMemory {
 }
 
 impl WorkerMemory {
+    /// The stone last rendered (planes plus tools), `None` before the very first
+    /// request.
+    #[must_use]
+    pub fn geometry(&self) -> Option<StoneGeometryBuf> {
+        self.planes.as_ref().map(|planes| {
+            let mut geometry = StoneGeometryBuf::from_halfspaces(planes);
+            geometry.tools.clone_from(&self.tools);
+            geometry.placements.clone_from(&self.placements);
+            geometry
+        })
+    }
+
     /// `style` with the shared [`Outlines`] (if any) copied over its `provisional` and
     /// `moved` sets.
     #[must_use]
@@ -201,8 +218,9 @@ fn update_diagram_memory_from_design(
     solved: Option<&[SolvedTier]>,
     solid_style: &SolidStyle,
     n_d: f64,
+    placements: &[(usize, usize)],
 ) {
-    let facet_map = FacetMap::from_design(design, solved.unwrap_or(&[]));
+    let facet_map = FacetMap::from_design_with_tools(design, solved.unwrap_or(&[]), placements);
     let facet_count = facet_map.facet_count();
     let mut labels = vec![String::new(); facet_count];
     let mut hover_text = vec![String::new(); facet_count];
@@ -224,6 +242,7 @@ fn update_diagram_memory_from_design(
         // built above for the label/hover/tier tables.
         facet_index_on_gear,
         meet_marker_pairs: facet_map.meeting_facet_pairs(design),
+        tool_facet_block: facet_map.tool_facet_blocks(),
         ..DiagramStyle::default()
     };
     last_diagram.hover_text = hover_text;
@@ -241,11 +260,11 @@ const fn apply_reproject_gear(last_diagram: &mut DiagramMemory, gear: Option<(u3
 
 /// The state [`resolve_request_state`] resolves one [`RedrawRequest`] into.
 ///
-/// In order: planes, camera, size, view mode, style, solved masts,
+/// In order: stone geometry (planes and tools), camera, size, view mode, style, solved masts,
 /// stale flag, the ready-to-show unsolvable/unbounded status (always `None` for a
 /// [`RedrawRequest::Reproject`], which never plans), and the generation.
 pub type RequestState = (
-    Vec<(Vec3, f32)>,
+    StoneGeometryBuf,
     CameraPose,
     (u32, u32),
     u8,
@@ -269,7 +288,7 @@ pub fn resolve_request_state(
 ) -> Option<RequestState> {
     match request {
         RedrawRequest::Reproject {
-            planes,
+            geometry,
             camera,
             size,
             view_mode,
@@ -284,16 +303,20 @@ pub fn resolve_request_state(
             // them leak onto a design that never produced them. An ordinary
             // orbit/zoom always resubmits the SAME planes, so this never fires
             // mid-drag.
-            if memory.planes.as_deref() != Some(planes.as_slice()) {
+            let planes = geometry.halfspaces();
+            if memory.planes.as_deref() != Some(planes.as_slice()) || memory.tools != geometry.tools
+            {
                 memory.style = SolidStyle::default();
                 memory.diagram = DiagramMemory::default();
             }
-            memory.planes = Some(planes.clone());
+            memory.planes = Some(planes);
+            memory.tools.clone_from(&geometry.tools);
+            memory.placements.clone_from(&geometry.placements);
             memory.camera = Some(camera);
             memory.size = Some(size);
             memory.view_mode = Some(view_mode);
             Some((
-                planes,
+                geometry,
                 camera,
                 size,
                 view_mode,
@@ -320,7 +343,7 @@ pub fn resolve_request_state(
             memory.diagram.style.selected_facet = overlay.selected_facet;
             memory.diagram.style.multi_selected = overlay.multi_selected;
             Some((
-                memory.planes.clone().unwrap_or_default(),
+                memory.geometry().unwrap_or_default(),
                 memory.camera.unwrap_or(CameraPose {
                     yaw: 0.0,
                     pitch: 0.0,
@@ -350,6 +373,8 @@ fn resolve_planned_state(
     let PlannedFrame {
         design,
         planes,
+        tools,
+        placements,
         style,
         solved,
         stale,
@@ -363,7 +388,12 @@ fn resolve_planned_state(
     } = frame;
     // This frame's arrangement may not close. Name the tier whose facet escapes.
     // Cheap even though it looks like a second mesh build: guaranteed cache hit.
-    let closes = mesh_cache.get_or_build(&planes).is_some();
+    let geometry = StoneGeometryBuf {
+        tools,
+        placements,
+        ..StoneGeometryBuf::from_halfspaces(&planes)
+    };
+    let closes = mesh_cache.get_or_build_geometry(&geometry).is_some();
     let unbounded_status = if unsolvable_status.is_none() && !closes {
         match mesh_cache.status() {
             Some(SolidStatus::Unbounded { escaping }) => {
@@ -396,7 +426,9 @@ fn resolve_planned_state(
     if solved.is_some() {
         memory.solved_masts.clone_from(&solved);
     }
-    memory.planes = Some(planes.clone());
+    memory.planes = Some(planes);
+    memory.tools.clone_from(&geometry.tools);
+    memory.placements.clone_from(&geometry.placements);
     memory.camera = Some(camera);
     memory.size = Some(size);
     memory.view_mode = Some(view_mode);
@@ -411,9 +443,16 @@ fn resolve_planned_state(
     // tables fresh, so switching to Diagram mode afterward (a `Reproject`, which
     // has no `Design` to rebuild them from) shows a live, correct diagram
     // immediately.
-    update_diagram_memory_from_design(&mut memory.diagram, &design, solved.as_deref(), &style, n_d);
+    update_diagram_memory_from_design(
+        &mut memory.diagram,
+        &design,
+        solved.as_deref(),
+        &style,
+        n_d,
+        &geometry.placements,
+    );
     (
-        planes,
+        geometry,
         camera,
         size,
         view_mode,

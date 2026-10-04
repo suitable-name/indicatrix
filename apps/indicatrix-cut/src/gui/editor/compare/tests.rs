@@ -389,7 +389,7 @@ fn overlay_has_the_frame_size_and_only_the_defined_alphas() {
         assert_eq!(overlay.len(), 12 * 12 * 4);
         for pixel in overlay.as_chunks::<4>().0.iter().map(<[u8; 4]>::as_slice) {
             match pixel[3] {
-                0 => assert_eq!(pixel, CLEAR, "a transparent pixel carries no colour"),
+                0 => assert_eq!(pixel, CLEAR, "a transparent pixel carries no color"),
                 a => assert!(
                     [
                         REMOVED_TINT,

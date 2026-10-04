@@ -6,7 +6,7 @@
 use super::convert::{
     SaveExtras, material_table_from_selection, native_meet_constraint_from,
     native_tier_target_from, preform_table_from_spec, source_table_from_proportions,
-    stash_schedule_meta, to_native_file,
+    stash_concave_tiers, stash_schedule_meta, to_native_file,
 };
 use crate::design::{Design, DesignSolveError};
 use indicatrix::{
@@ -334,6 +334,9 @@ pub fn save_paired_extended_from_solved(
     // offset into the exported indices at all.
     let mut current_schedule =
         design.to_asc_schedule_from_solved_with_cheater_offsets(solved, extras.custom_catalogue);
+    // `.asc` cannot hold a concave tier: it is carried as two footnotes per tier
+    // (and, losslessly, in the sidecar) instead.
+    design.append_concave_footnotes(&mut current_schedule);
 
     if let Some(note) = placeholder_note {
         indicatrix_formats::asc::mark_reconstructed(&mut current_schedule, note);
@@ -473,6 +476,7 @@ fn draft_save(
         native = native.with_source(source_table_from_proportions(props));
     }
     stash_schedule_meta(&mut native.unknown, &design.meta);
+    stash_concave_tiers(&mut native.unknown, design);
     let native_toml = to_toml_string(&native).map_err(SaveError::Toml)?;
 
     Ok(PairedSave {
@@ -533,7 +537,9 @@ fn draft_asc_schedule(
         })
         .collect();
 
-    design.to_asc_schedule_from_solved_with(&placeholder_solved, custom)
+    let mut schedule = design.to_asc_schedule_from_solved_with(&placeholder_solved, custom);
+    design.append_concave_footnotes(&mut schedule);
+    schedule
 }
 
 /// A placeholder facet name/mast for the ONE dummy record
@@ -553,7 +559,7 @@ const NO_TIERS_PLACEHOLDER_NAME: &str = "placeholder";
 /// [`Design::effective_refractive_index_with`]; an empty slice behaves exactly like
 /// [`Design::effective_refractive_index`]'s own built-ins-only resolution.
 fn draft_asc_schedule_for_no_tiers(design: &Design, custom: &[GemMaterial]) -> AscSchedule {
-    AscSchedule {
+    let mut schedule = AscSchedule {
         gemcad_version: design.meta.gemcad_version.clone(),
         gear_teeth: design.meta.gear_teeth,
         gear_reference_angle: design.meta.gear_reference_angle,
@@ -572,7 +578,9 @@ fn draft_asc_schedule_for_no_tiers(design: &Design, custom: &[GemMaterial]) -> A
         }],
         warnings: Vec::new(),
         line_ending: indicatrix_formats::asc::AscLineEnding::default(),
-    }
+    };
+    design.append_concave_footnotes(&mut schedule);
+    schedule
 }
 
 /// Builds a draft save's FULL per-tier native record -- every `ConstraintTier`
@@ -668,6 +676,7 @@ pub fn save_native_only(
         native = native.with_source(source_table_from_proportions(props));
     }
     stash_schedule_meta(&mut native.unknown, &design.meta);
+    stash_concave_tiers(&mut native.unknown, design);
     native
 }
 

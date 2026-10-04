@@ -11,7 +11,7 @@ use super::{
     types::{CameraPose, FacetOverlay},
 };
 use glam::Vec3;
-use indicatrix_solid::preview::{Outlines, SharedOutlines};
+use indicatrix_solid::preview::{Outlines, SharedOutlines, StoneGeometryBuf};
 use std::sync::{
     Arc, Mutex, PoisonError, Weak,
     atomic::{AtomicU64, Ordering},
@@ -118,7 +118,7 @@ impl SolidPreviewState {
     /// already does.
     pub fn request_redraw(
         &self,
-        planes: Vec<(Vec3, f32)>,
+        planes: &[(Vec3, f32)],
         camera: CameraPose,
         size: (u32, u32),
         view_mode: u8,
@@ -136,20 +136,48 @@ impl SolidPreviewState {
     /// last-known gear info untouched.
     pub fn request_redraw_with_gear(
         &self,
-        planes: Vec<(Vec3, f32)>,
+        planes: &[(Vec3, f32)],
         camera: CameraPose,
         size: (u32, u32),
         view_mode: u8,
         gear: Option<(u32, f32)>,
     ) {
-        let planes = self
+        self.request_redraw_geometry(
+            StoneGeometryBuf::from_halfspaces(planes),
+            camera,
+            size,
+            view_mode,
+            gear,
+        );
+    }
+
+    /// [`Self::request_redraw_with_gear`] for a stone that may carry concave tools: the
+    /// camera-follow redraw of the whole `geometry`, planes, tools and the
+    /// `(tier, placement)` of each tool. Every caller that knows the design's tools
+    /// (`refresh_viewport`, the background-solve apply, a camera drag from
+    /// `RenderContext`) goes through here so a concave stone never loses its notches on
+    /// the way to the worker; the planes-only entry point wraps it.
+    ///
+    /// The Slice tool's [`Self::set_planes_override`] still replaces the PLANES only: a
+    /// provisional flat facet is drawn over the committed stone, tools included.
+    pub fn request_redraw_geometry(
+        &self,
+        mut geometry: StoneGeometryBuf,
+        camera: CameraPose,
+        size: (u32, u32),
+        view_mode: u8,
+        gear: Option<(u32, f32)>,
+    ) {
+        let override_planes = self
             .planes_override
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-            .unwrap_or(planes);
+            .clone();
+        if let Some(planes) = override_planes {
+            geometry.planes = StoneGeometryBuf::from_halfspaces(&planes).planes;
+        }
         self.submit(RedrawRequest::Reproject {
-            planes,
+            geometry,
             camera,
             size,
             view_mode,

@@ -63,6 +63,7 @@ fn search_diagrams_matches_a_term_found_only_in_tier_notes() {
                 angle: "41".to_string(),
                 index: "0".to_string(),
                 notes: "cut to a client's heirloom spec".to_string(),
+                ..Default::default()
             }],
             ..Default::default()
         },
@@ -714,4 +715,77 @@ fn search_indexes_exist_and_the_planner_uses_them() {
     drop(db);
     let db2 = Database::new(Some(path.to_str().unwrap())).expect("second open is idempotent");
     drop(db2);
+}
+
+/// `has_concave` keys off `diagram_details.concave_tiers`: `Some(true)` keeps only
+/// designs with at least one concave tier, `Some(false)` only planar ones, `None`
+/// both. The tier's tool columns also round-trip through the angle table.
+#[test]
+fn has_concave_filter_matches_only_designs_with_concave_tiers() {
+    let path = temp_db_path("search_has_concave");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("create migrated db");
+    let mut ids = Vec::new();
+    for (title, concave_tiers, concave_facets) in [("Planar", 0, 0), ("Scooped", 2, 12)] {
+        let entry_id = db
+            .save_diagram_entry(
+                &FacetingDiagramEntry {
+                    title: title.to_string(),
+                    url: format!("https://example.test/{title}"),
+                    design_id: String::new(),
+                },
+                LEGACY_SOURCE_ID,
+            )
+            .expect("save entry");
+        let concave = concave_tiers > 0;
+        db.save_diagram_detail(
+            &FacetingDiagramDetail {
+                concave_tiers,
+                concave_facets,
+                angle_settings_table: vec![crate::model::angle::AngleSetting {
+                    facet: "C1".to_string(),
+                    tool: concave.then(|| "Ball 6mm".to_string()),
+                    tool_line: concave.then(|| "depth 0.40".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            entry_id,
+        )
+        .expect("save detail");
+        ids.push(entry_id);
+    }
+
+    let titles = |has_concave: Option<bool>| -> Vec<String> {
+        let range = RangeFilter {
+            has_concave,
+            ..Default::default()
+        };
+        let mut titles: Vec<String> = db
+            .search_diagrams("", "All", "All", &range)
+            .expect("search must succeed")
+            .into_iter()
+            .map(|r| r.title)
+            .collect();
+        titles.sort();
+        titles
+    };
+    assert_eq!(titles(Some(true)), vec!["Scooped"]);
+    assert_eq!(titles(Some(false)), vec!["Planar"]);
+    assert_eq!(titles(None), vec!["Planar", "Scooped"]);
+
+    let record = db
+        .get_diagram_full(ids[1])
+        .expect("read back")
+        .expect("record exists");
+    assert_eq!(
+        record.angle_settings[0].tool.as_deref(),
+        Some("Ball 6mm"),
+        "the tool column must round-trip"
+    );
+    assert_eq!(
+        record.angle_settings[0].tool_line.as_deref(),
+        Some("depth 0.40")
+    );
+
+    let _ = std::fs::remove_file(&path);
 }

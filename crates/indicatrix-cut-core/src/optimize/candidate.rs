@@ -358,7 +358,14 @@ impl BaselineWarningCounts {
                 ManufacturabilityWarning::UndersizedFacet { .. } => counts.undersized += 1,
                 ManufacturabilityWarning::FractionalIndex { .. }
                 | ManufacturabilityWarning::OutOfOrderMeet { .. }
-                | ManufacturabilityWarning::MeetNameNotAscSafe { .. } => {}
+                | ManufacturabilityWarning::MeetNameNotAscSafe { .. }
+                | ManufacturabilityWarning::ConcaveTiersOmittedFromExport { .. }
+                | ManufacturabilityWarning::ToolMissesStone { .. }
+                | ManufacturabilityWarning::ToolBreaksThrough { .. }
+                | ManufacturabilityWarning::ToolRemovesMeet { .. }
+                | ManufacturabilityWarning::ToolsOverlap { .. }
+                | ManufacturabilityWarning::ConcaveSliver { .. }
+                | ManufacturabilityWarning::ToolRemovesHullVertex { .. } => {}
             }
         }
         counts

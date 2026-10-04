@@ -7,9 +7,10 @@
 use super::{sample_cursor::SampleCursor, scene_snapshot::SceneSnapshot};
 use glam::Vec3;
 use indicatrix::{
+    geometry::tool::StoneGeometry,
     optics::raytracer::{
-        Camera, EnvironmentSource, add_finite_sample, pixel_rotations, sample_draws,
-        trace_spectral_ray_with_finish,
+        Camera, EnvironmentSource, add_finite_sample, build_plane_soa, pixel_rotations,
+        sample_draws, trace_spectral_ray_with_finish_soa_geom,
     },
     renderer::gpu_backend::{GpuBackend, GpuSceneRef},
 };
@@ -391,10 +392,19 @@ pub fn render_batch(
         EnvironmentSource::HdrMap,
     );
 
+    // Built once per batch: the plane arena depends on `scene.active_planes` alone (the
+    // tools have none), and the kernel's output is the same as building it per sample.
+    let plane_soa = build_plane_soa(&scene.active_planes);
+    let stone = StoneGeometry {
+        planes: &scene.active_planes,
+        tools: &scene.tools,
+    };
+
     thread::scope(|s| {
         for _ in 0..num_threads {
             let rows = &rows;
             let next_row = &next_row;
+            let plane_soa = &plane_soa;
 
             s.spawn(move || {
                 loop {
@@ -436,11 +446,13 @@ pub fn render_batch(
                             // Frosted girdle: `scene.facet_finishes` is empty
                             // whenever the toggle was off at capture time, which is
                             // exactly equivalent to `trace_spectral_ray`.
-                            let sample = trace_spectral_ray_with_finish(
+                            let sample = trace_spectral_ray_with_finish_soa_geom(
                                 ray,
-                                &scene.active_planes,
+                                stone,
+                                plane_soa,
                                 &scene.facet_finishes,
                                 &scene.material,
+                                &scene.fluorescence,
                                 scene.max_bounces,
                                 environment,
                                 draws.seed,

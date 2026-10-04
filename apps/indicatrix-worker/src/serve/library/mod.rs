@@ -102,6 +102,7 @@ pub fn handle_request(request: &LibraryRequest, db: &Database) -> LibraryRespons
             db,
         ),
         LibraryRequest::FetchDesignSource { entry_id } => handlers::design_source(db, *entry_id),
+        LibraryRequest::FetchDesignNative { entry_id } => handlers::design_native(db, *entry_id),
     }
 }
 

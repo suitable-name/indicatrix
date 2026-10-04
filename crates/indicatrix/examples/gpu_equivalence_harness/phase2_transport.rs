@@ -73,7 +73,7 @@ fn report_phase2_layout_checks(ctx: &GpuContext) -> bool {
     all_passed
 }
 
-/// The energy-conservation furnace anchor (real gem geometry, colourless
+/// The energy-conservation furnace anchor (real gem geometry, colorless
 /// non-dispersive material, uniform environment) -- see [`estimator_check::run_furnace`]'s
 /// doc comment.
 fn report_furnace_anchor_v2(ctx: &GpuContext) -> bool {

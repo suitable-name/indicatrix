@@ -37,7 +37,7 @@ impl GemMaterial {
                 },
                 birefringence_delta: 0.0,
                 // Chromophore: the classic Cr3+ (505nm)/Fe2+ (570nm) pair
-                // responsible for pyrope's deep red colour. Widths (35nm/45nm) and
+                // responsible for pyrope's deep red color. Widths (35nm/45nm) and
                 // peaks (1.2/1.4) TUNED for a clear deep red; band CENTRES cited.
                 absorption: AbsorptionTensor::isotropic(vec![
                     AbsorptionBand::new(505.0, 35.0, 1.2),

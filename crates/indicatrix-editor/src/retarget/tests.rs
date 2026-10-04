@@ -83,7 +83,7 @@ fn rbc_445() -> Design {
         name: Some("Diamond".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     design
 }
@@ -93,7 +93,7 @@ fn quartz() -> ResolvedMaterial {
         name: Some("Quartz".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     }
     .resolve(&BuiltinMaterials)
 }
@@ -299,7 +299,7 @@ fn risk_badges_match_the_windowing_risk_boundaries() {
             name: None,
             specific_gravity_override: None,
             refractive_index_override: Some(n),
-            body_colour_override: None,
+            body_color_override: None,
         },
         ..Design::new(
             PreformSpec::block(2.0, 1.0, 2.0),
@@ -469,7 +469,7 @@ fn build_proposal_uses_the_custom_materials_own_ri() {
         name: Some("My Garnet".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     let custom = vec![my_garnet];
 
@@ -525,4 +525,14 @@ fn build_proposal_uses_the_custom_materials_own_ri() {
         );
         assert!((row.new_angle - expected).abs() < 1e-9);
     }
+}
+
+#[test]
+fn retarget_scope_holds_only_flat_tier_positions_when_concave_tiers_exist() {
+    let design = indicatrix_cut_core::Design::concave_fixture();
+    let (scope, blocks) = retarget_scope(&design);
+    assert_eq!(blocks.len(), design.tiers.len());
+    assert!(scope.iter().all(|&i| i < design.tiers.len()));
+    // The girdle (tier 0) is excluded; every other flat tier is in.
+    assert_eq!(scope, vec![1, 2, 3, 4]);
 }

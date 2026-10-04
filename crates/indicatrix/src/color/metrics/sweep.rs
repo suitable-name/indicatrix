@@ -1,16 +1,16 @@
 //! The Tilt Performance dialog's whole sweep: the full-axis profile
-//! ([`evaluate_full_axis_profile_at_azimuth`]) at every [`PROFILE_AZIMUTHS_DEG`] axis.
+//! ([`super::profile::evaluate_full_axis_profile_at_azimuth`]) at every [`PROFILE_AZIMUTHS_DEG`] axis.
 //!
 //! This is the loop the desktop's `gui::tilt::tilt_profile` used to hold itself; both apps
 //! now call it from here. [`evaluate_all_axes_profiles_stepped`] is the same sweep with a
 //! progress/cancel hook between the raytrace evaluations, for the browser app's Worker.
 
 use super::profile::{
-    EVALUATIONS_PER_AXIS, PROFILE_AZIMUTHS_DEG, evaluate_full_axis_profile_at_azimuth,
-    evaluate_full_axis_profile_at_azimuth_stepped,
+    EVALUATIONS_PER_AXIS, PROFILE_AZIMUTHS_DEG, evaluate_full_axis_profile_at_azimuth_geom,
+    evaluate_full_axis_profile_at_azimuth_stepped_geom,
 };
 use crate::{
-    geometry::plane::GpuFacetPlane,
+    geometry::{plane::GpuFacetPlane, tool::StoneGeometry},
     optics::{materials::GemMaterial, raytracer::EnvironmentSource},
 };
 
@@ -64,10 +64,22 @@ pub fn evaluate_all_axes_profiles(
     material: &GemMaterial,
     environment: EnvironmentSource<'_>,
 ) -> Vec<AxisProfile> {
+    evaluate_all_axes_profiles_geom(StoneGeometry::planes_only(planes), material, environment)
+}
+
+/// [`evaluate_all_axes_profiles`] for a stone with tools; bit-identical to it when
+/// `geom.tools` is empty.
+#[must_use]
+pub fn evaluate_all_axes_profiles_geom(
+    geom: StoneGeometry<'_>,
+    material: &GemMaterial,
+    environment: EnvironmentSource<'_>,
+) -> Vec<AxisProfile> {
     PROFILE_AZIMUTHS_DEG
         .iter()
         .map(|&azimuth_deg| {
-            evaluate_full_axis_profile_at_azimuth(planes, material, azimuth_deg, environment).into()
+            evaluate_full_axis_profile_at_azimuth_geom(geom, material, azimuth_deg, environment)
+                .into()
         })
         .collect()
 }
@@ -84,12 +96,29 @@ pub fn evaluate_all_axes_profiles_stepped(
     environment: EnvironmentSource<'_>,
     step: &mut dyn FnMut(SweepProgress) -> bool,
 ) -> Option<Vec<AxisProfile>> {
+    evaluate_all_axes_profiles_stepped_geom(
+        StoneGeometry::planes_only(planes),
+        material,
+        environment,
+        step,
+    )
+}
+
+/// [`evaluate_all_axes_profiles_stepped`] for a stone with tools; bit-identical to it
+/// when `geom.tools` is empty.
+#[must_use]
+pub fn evaluate_all_axes_profiles_stepped_geom(
+    geom: StoneGeometry<'_>,
+    material: &GemMaterial,
+    environment: EnvironmentSource<'_>,
+    step: &mut dyn FnMut(SweepProgress) -> bool,
+) -> Option<Vec<AxisProfile>> {
     let total = total_evaluations();
     let mut done = 0usize;
     let mut axes = Vec::with_capacity(PROFILE_AZIMUTHS_DEG.len());
     for (axis, &azimuth_deg) in PROFILE_AZIMUTHS_DEG.iter().enumerate() {
-        let curves = evaluate_full_axis_profile_at_azimuth_stepped(
-            planes,
+        let curves = evaluate_full_axis_profile_at_azimuth_stepped_geom(
+            geom,
             material,
             azimuth_deg,
             environment,
@@ -108,7 +137,10 @@ pub fn evaluate_all_axes_profiles_stepped(
 mod tests {
     use super::*;
     use crate::{
-        color::metrics::{TILT_ANGLES_DEG, evaluate_gem_optical_metrics},
+        color::metrics::{
+            TILT_ANGLES_DEG, evaluate_full_axis_profile_at_azimuth,
+            evaluate_full_axis_profile_at_azimuth_stepped, evaluate_gem_optical_metrics,
+        },
         geometry::cuts::StandardGemCuts,
         optics::raytracer::LightingPreset,
     };

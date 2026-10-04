@@ -130,7 +130,7 @@ Where the choice lives:
 
 - **Export dialog** and **tilt video** — a **Transfer** row (shown when a
   remote is available and the Compute choice includes it). Each exported
-  PNG (or video frame) is written by this app, with the same colour
+  PNG (or video frame) is written by this app, with the same color
   profile an all-local export would carry. If the final picture fails
   under Local + Remote, the image is rendered with full data instead; under
   Remote only it fails.

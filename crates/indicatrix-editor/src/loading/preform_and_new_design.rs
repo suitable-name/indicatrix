@@ -103,7 +103,7 @@ pub fn parse_new_design_form(
             name: material_name_from_index(material_index),
             specific_gravity_override: None,
             refractive_index_override: None,
-            body_colour_override: None,
+            body_color_override: None,
         },
         preform,
     })

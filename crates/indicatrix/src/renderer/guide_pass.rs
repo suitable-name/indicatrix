@@ -42,8 +42,11 @@
 //! `renderer::frame_denoise`'s pin test covers this prepass together with the denoise.
 
 use crate::{
-    geometry::plane::GpuFacetPlane,
-    optics::raytracer::{Camera, build_plane_soa, intersect_polyhedron_soa},
+    geometry::{
+        plane::GpuFacetPlane,
+        tool::{StoneGeometry, ToolPrimitive},
+    },
+    optics::raytracer::{Camera, build_plane_soa, intersect_stone::intersect_stone_soa},
     simd::PlanesSoA32,
 };
 use glam::Vec3;
@@ -52,8 +55,9 @@ use std::{
     thread,
 };
 
-/// One pixel-per-camera-ray depth/normal/facet-id capture, row-major
-/// (`index = y * width + x`) -- exactly the shape [`crate::renderer::denoise::GBuffers`]
+/// One pixel-per-camera-ray depth/normal/facet-id capture.
+///
+/// Row-major (`index = y * width + x`) -- exactly the shape [`crate::renderer::denoise::GBuffers`]
 /// expects for its `depth`/`normal`/`facet_id` fields.
 #[derive(Debug, Clone)]
 pub struct GuideBuffers {
@@ -99,6 +103,26 @@ pub fn generate_guide_buffers(
         .expect("a cancel flag that is never set to true never yields a cancelled result")
 }
 
+/// [`generate_guide_buffers`] for a stone with tools.
+///
+/// A tool hit records a facet id of `planes.len() + k`, which fits the `i32` id buffer
+/// and the guide's equality-based edge test unchanged. With no tools the output is
+/// [`generate_guide_buffers`]'s, bit for bit.
+///
+/// # Panics
+///
+/// Never in practice, for the reason [`generate_guide_buffers`] gives.
+#[must_use]
+pub fn generate_guide_buffers_geom(
+    width: u32,
+    height: u32,
+    camera: &Camera,
+    geom: StoneGeometry<'_>,
+) -> GuideBuffers {
+    generate_guide_buffers_cancellable_geom(width, height, camera, geom, &AtomicBool::new(false))
+        .expect("a cancel flag that is never set to true never yields a cancelled result")
+}
+
 /// The cancellable core [`generate_guide_buffers`] wraps.
 ///
 /// Casts one un-jittered camera ray per pixel and records its first hit. Parallel across
@@ -120,11 +144,30 @@ pub fn generate_guide_buffers_cancellable(
     planes: &[GpuFacetPlane],
     cancel: &AtomicBool,
 ) -> Option<GuideBuffers> {
+    generate_guide_buffers_cancellable_geom(
+        width,
+        height,
+        camera,
+        StoneGeometry::planes_only(planes),
+        cancel,
+    )
+}
+
+/// [`generate_guide_buffers_cancellable`] for a stone with tools.
+#[must_use]
+pub fn generate_guide_buffers_cancellable_geom(
+    width: u32,
+    height: u32,
+    camera: &Camera,
+    geom: StoneGeometry<'_>,
+    cancel: &AtomicBool,
+) -> Option<GuideBuffers> {
     let job = GuideJob {
         width,
         height,
         camera,
-        planes,
+        planes: geom.planes,
+        tools: geom.tools,
         cancel,
     };
     generate_with_threads(job, auto_thread_count())
@@ -149,11 +192,32 @@ pub fn generate_guide_buffers_into(
     cancel: &AtomicBool,
     out: &mut GuideBuffers,
 ) -> bool {
+    generate_guide_buffers_into_geom(
+        width,
+        height,
+        camera,
+        StoneGeometry::planes_only(planes),
+        cancel,
+        out,
+    )
+}
+
+/// [`generate_guide_buffers_into`] for a stone with tools.
+#[must_use]
+pub fn generate_guide_buffers_into_geom(
+    width: u32,
+    height: u32,
+    camera: &Camera,
+    geom: StoneGeometry<'_>,
+    cancel: &AtomicBool,
+    out: &mut GuideBuffers,
+) -> bool {
     let job = GuideJob {
         width,
         height,
         camera,
-        planes,
+        planes: geom.planes,
+        tools: geom.tools,
         cancel,
     };
     fill_with_threads(job, auto_thread_count(), out)
@@ -182,6 +246,8 @@ struct GuideJob<'a> {
     height: u32,
     camera: &'a Camera,
     planes: &'a [GpuFacetPlane],
+    /// Tools subtracted from the polyhedron `planes` define; empty for a planar stone.
+    tools: &'a [ToolPrimitive],
     cancel: &'a AtomicBool,
 }
 
@@ -297,7 +363,7 @@ fn fill_rows(
                 0.0,
                 0.0,
             );
-            let hit = intersect_polyhedron_soa(ray, soa);
+            let hit = intersect_stone_soa(ray, soa, soa.len(), job.tools);
 
             *depth_out = hit.map_or(1.0e6, |h| h.t);
             *normal_out = hit.map_or(Vec3::ZERO, |h| h.normal);
@@ -396,6 +462,7 @@ mod tests {
             height: 13,
             camera: &camera,
             planes: &planes,
+            tools: &[],
             cancel: &cancel,
         };
         let single = generate_with_threads(job, 1).expect("never cancelled");
@@ -457,5 +524,44 @@ mod tests {
             result.is_none(),
             "a generation cancelled before it starts must not produce buffers"
         );
+    }
+
+    #[test]
+    fn guide_buffers_with_no_tools_match_the_plane_only_entry_point_bit_for_bit() {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let camera = Camera::new(0.60, 0.45, 2.4, 42.0);
+        let old = generate_guide_buffers(16, 12, &camera, &planes);
+        let new = generate_guide_buffers_geom(16, 12, &camera, StoneGeometry::planes_only(&planes));
+        assert_eq!(old.facet_id, new.facet_id);
+        let bits = |b: &GuideBuffers| -> Vec<u32> { b.depth.iter().map(|d| d.to_bits()).collect() };
+        assert_eq!(bits(&old), bits(&new));
+    }
+
+    #[test]
+    fn guide_buffers_encode_tool_facet_ids_above_the_plane_count() {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        // A groove across the table, seen from almost straight above.
+        let tools = [ToolPrimitive::cylinder(
+            Vec3::new(0.0, 0.44, 0.0),
+            Vec3::X,
+            0.3,
+            2.0,
+        )];
+        let camera = Camera::new(0.0, 1.5, 4.0, 20.0);
+        let guides = generate_guide_buffers_geom(
+            24,
+            24,
+            &camera,
+            StoneGeometry {
+                planes: &planes,
+                tools: &tools,
+            },
+        );
+        let first_tool_id = planes.len() as i32;
+        assert!(
+            guides.facet_id.contains(&first_tool_id),
+            "the groove floor must appear as tool facet {first_tool_id}"
+        );
+        assert!(guides.facet_id.iter().all(|&id| id <= first_tool_id));
     }
 }

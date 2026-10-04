@@ -159,7 +159,7 @@ impl LibraryTransport for FakeTransport {
                 }
             }
             LibraryRequest::FilterOptions => unreachable!("mirror sync never sends this"),
-            LibraryRequest::FetchDesignSource { .. } => {
+            LibraryRequest::FetchDesignSource { .. } | LibraryRequest::FetchDesignNative { .. } => {
                 unreachable!(
                     "mirror sync never sends this -- only the editor's remote 'Load Selected' does"
                 )
@@ -256,6 +256,7 @@ pub(super) fn design_record_at(
             angle: "41.0".to_string(),
             index: "96".to_string(),
             notes: String::new(),
+            tool_line: None,
         }],
         attachments: Vec::new(),
         version: revision_token(url, revision),
@@ -299,6 +300,7 @@ pub(super) fn design_summary_at(
         ignored: false,
         version: content_hash(&[title.as_bytes(), url.as_bytes(), extra_field.as_bytes()]),
         design_version: revision_token(url, revision),
+        concave_tiers: 0,
     }
 }
 

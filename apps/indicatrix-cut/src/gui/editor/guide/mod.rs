@@ -35,6 +35,10 @@ fn guide_allow(allow: &[Group]) -> GuideAllow {
         view_tabs: allow.contains(&Group::ViewTabs),
         file_ops: allow.contains(&Group::FileOps),
         history: allow.contains(&Group::History),
+        // Concave tiers are not part of the worked example: authoring one edits both
+        // the tier form and the tier table, so a step leaves it open only when it
+        // leaves both of those open (the closing step, which blocks nothing).
+        concave_tier: allow.contains(&Group::TierForm) && allow.contains(&Group::TierTable),
     }
 }
 

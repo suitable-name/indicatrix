@@ -4,7 +4,11 @@
 //! round-trip safety check on a `MeetNamed` target's name
 //! ([`meet_name_is_asc_safe`]).
 
-use crate::design::{ConstraintTier, Design, DesignSolveError, SolveMismatch};
+use crate::{
+    cutting_sheet::format_index,
+    design::{ConstraintTier, Design, DesignSolveError, SolveMismatch, TierRef},
+    manufacturability::ManufacturabilityWarning,
+};
 use indicatrix::{
     geometry::meet_solver::{MeetConstraint, SolvedTier},
     optics::materials::GemMaterial,
@@ -176,6 +180,91 @@ impl Design {
         })
     }
 
+    /// The schedule a file-writing path should write: [`Self::to_asc_schedule_from_solved`]
+    /// plus the concave tiers as footnotes (see [`Self::append_concave_footnotes`]).
+    ///
+    /// A separate method, not a change to [`Self::to_asc_schedule_from_solved`],
+    /// because that one also feeds [`Self::planes_from_solved`] (which re-imports its
+    /// own schedule) and the manufacturability prefix schedules; footnotes there
+    /// would only be noise. A design without concave tiers gets exactly the plain
+    /// schedule.
+    ///
+    /// # Panics
+    ///
+    /// Same alignment contract as [`Self::to_asc_schedule_from_solved`].
+    #[must_use]
+    pub fn to_asc_schedule_for_export(&self, solved: &[SolvedTier]) -> AscSchedule {
+        let mut schedule = self.to_asc_schedule_from_solved(solved);
+        self.append_concave_footnotes(&mut schedule);
+        schedule
+    }
+
+    /// Appends two `F` footnotes per concave tier to `schedule`, in
+    /// [`Self::cutting_order`] (plan §6.2): the facet line
+    /// `"{name}  {φ:.2}  {indices}  {instructions}"` and the tool line from
+    /// [`ConcaveTier::second_line_fields`](crate::design::ConcaveTier::second_line_fields),
+    /// both without the `F ` prefix the writer adds. Concave tiers are never emitted
+    /// as `.asc` tiers.
+    ///
+    /// Idempotent across re-import: a previous export's footnotes come back as
+    /// ordinary [`ScheduleMeta::footnotes`](crate::design::ScheduleMeta::footnotes),
+    /// possibly describing tiers that have since been edited. Every footnote of the
+    /// generated shape ([`strip_generated_concave_footnotes`]: a tool line and the
+    /// facet line before it) is therefore dropped from `schedule` first (never from
+    /// the design), along with any entry byte-equal to a line about to be written;
+    /// the user's own footnotes are otherwise untouched. Line breaks inside free text become spaces because the
+    /// writer refuses a footnote that spans lines. Does nothing for a design
+    /// without concave tiers.
+    pub fn append_concave_footnotes(&self, schedule: &mut AscSchedule) {
+        if self.concave_tiers.is_empty() {
+            return;
+        }
+        let single_line = |text: &str| -> String {
+            text.split(['\r', '\n'])
+                .collect::<Vec<_>>()
+                .join(" ")
+                .trim()
+                .to_owned()
+        };
+        let mut generated = Vec::with_capacity(self.concave_tiers.len() * 2);
+        for tier_ref in self.cutting_order() {
+            let TierRef::Concave(index) = tier_ref else {
+                continue;
+            };
+            let tier = &self.concave_tiers[index];
+            let indices = tier
+                .indices
+                .iter()
+                .map(|&i| format_index(i))
+                .collect::<Vec<_>>()
+                .join(" ");
+            generated.push(single_line(&format!(
+                "{}  {:.2}  {}  {}",
+                tier.name, tier.angle_deg, indices, tier.instructions
+            )));
+            generated.push(single_line(&tier.second_line_fields().join("  ")));
+        }
+        strip_generated_concave_footnotes(&mut schedule.footnotes);
+        schedule
+            .footnotes
+            .retain(|footnote| !generated.contains(footnote));
+        schedule.footnotes.extend(generated);
+    }
+
+    /// What a file export of this design loses, for the UI to say before saving:
+    /// `.asc`, `.gem` and `.gcs` cannot represent concave tiers, so they are
+    /// omitted from the tier records. Empty for a planar design.
+    #[must_use]
+    pub fn export_warnings(&self) -> Vec<ManufacturabilityWarning> {
+        if self.concave_tiers.is_empty() {
+            Vec::new()
+        } else {
+            vec![ManufacturabilityWarning::ConcaveTiersOmittedFromExport {
+                count: self.concave_tiers.len(),
+            }]
+        }
+    }
+
     /// [`Self::to_asc_schedule_from_solved_with`], but also bakes every tier's
     /// authored [`Self::cheater_offsets_deg`] into that tier's own exported
     /// `indices` -- see [`Self::cheater_offsets_deg`]'s own doc comment for why:
@@ -315,4 +404,96 @@ pub fn meet_name_is_asc_safe(name: &str) -> bool {
     let first = name.chars().next().expect("checked non-empty above");
     let last = name.chars().next_back().expect("checked non-empty above");
     first.is_alphanumeric() && last.is_alphanumeric()
+}
+
+/// Whether `text` is `digits.decimals` with an optional sign and exactly `decimals`
+/// fractional digits: the shape of every number [`ConcaveTier::second_line_fields`]
+/// and the facet line print.
+fn is_fixed_number(text: &str, decimals: usize) -> bool {
+    let digits = text.strip_prefix(['-', '+']).unwrap_or(text);
+    digits.split_once('.').is_some_and(|(whole, fraction)| {
+        !whole.is_empty()
+            && whole.bytes().all(|b| b.is_ascii_digit())
+            && fraction.len() == decimals
+            && fraction.bytes().all(|b| b.is_ascii_digit())
+    })
+}
+
+/// Whether `line` is exactly the shape of a generated concave tool line
+/// (`CYL  +10.00°  X = 0.000, Y = 0.000, Z = 0.000  D/W = 0.400, reciprocating`, with
+/// `, angle = 60.00°` before the motion for `CON` and `DSC`). Matches the structure,
+/// not the values, so a line from an earlier version of the tier is recognised.
+fn is_generated_tool_line(line: &str) -> bool {
+    let fields: Vec<&str> = line.split("  ").collect();
+    let [code, theta, displacement, size] = fields[..] else {
+        return false;
+    };
+    if !["CYL", "CON", "CIR", "DSC", "SPH"].contains(&code) {
+        return false;
+    }
+    if !theta
+        .strip_suffix('\u{b0}')
+        .is_some_and(|n| is_fixed_number(n, 2))
+    {
+        return false;
+    }
+    let displacement_ok = displacement
+        .strip_prefix("X = ")
+        .and_then(|rest| rest.split_once(", Y = "))
+        .and_then(|(x, rest)| Some((x, rest.split_once(", Z = ")?)))
+        .is_some_and(|(x, (y, z))| [x, y, z].iter().all(|n| is_fixed_number(n, 3)));
+    if !displacement_ok {
+        return false;
+    }
+    let Some(rest) = size.strip_prefix("D/W = ") else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split(", ").collect();
+    let (ratio, middle, motion) = match parts[..] {
+        [ratio, motion] => (ratio, None, motion),
+        [ratio, angle, motion] => (ratio, Some(angle), motion),
+        _ => return false,
+    };
+    is_fixed_number(ratio, 3)
+        && ["reciprocating", "plunge"].contains(&motion)
+        && middle.is_none_or(|angle| {
+            angle
+                .strip_prefix("angle = ")
+                .and_then(|n| n.strip_suffix('\u{b0}'))
+                .is_some_and(|n| is_fixed_number(n, 2))
+        })
+}
+
+/// Whether `line` could be a generated concave facet line
+/// (`{name}  {phi:.2}  {indices}  {instructions}`): one of its double-space
+/// separated fields is a two-decimal number. Only ever asked about the line that
+/// precedes a recognised tool line.
+fn is_generated_facet_line(line: &str) -> bool {
+    line.split("  ")
+        .any(|field| is_fixed_number(field.trim(), 2))
+}
+
+/// Removes every generated concave footnote from `footnotes`: each line that has
+/// the shape of a tool line ([`Design::append_concave_footnotes`] writes one per
+/// concave tier) together with the facet line immediately before it. Anything else
+/// is a user's footnote and stays, in order.
+///
+/// A paired load runs this on the footnotes an earlier export left in the `.asc`,
+/// so edited tiers cannot leave stale lines behind that contradict the new ones.
+pub fn strip_generated_concave_footnotes(footnotes: &mut Vec<String>) {
+    let mut drop = vec![false; footnotes.len()];
+    for (i, line) in footnotes.iter().enumerate() {
+        if !is_generated_tool_line(line) {
+            continue;
+        }
+        drop[i] = true;
+        if i > 0
+            && !is_generated_tool_line(&footnotes[i - 1])
+            && is_generated_facet_line(&footnotes[i - 1])
+        {
+            drop[i - 1] = true;
+        }
+    }
+    let mut keep = drop.into_iter().map(|d| !d);
+    footnotes.retain(|_| keep.next().unwrap_or(true));
 }

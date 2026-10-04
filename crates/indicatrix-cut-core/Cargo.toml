@@ -19,6 +19,8 @@ description = "Editor-core library for faceting cutting instructions: preform, t
 # entry), never a copy; see `../../Cargo.toml`'s own note on the public/private split.
 indicatrix = { workspace = true }
 glam = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 # `native/convert.rs`'s `stash_schedule_meta`/`unstash_schedule_meta` pack a
 # `ScheduleMeta` into `indicatrix_formats::native::NativeDesignFile::unknown` (a
 # `toml::Table`, the format's own sanctioned "a future build wrote this" extension

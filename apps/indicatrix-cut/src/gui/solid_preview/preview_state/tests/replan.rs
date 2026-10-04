@@ -15,6 +15,7 @@ use super::{
 use glam::Vec3;
 use indicatrix::geometry::meet_solver::MeetConstraint;
 use indicatrix_cut_core::{ConstraintTier, Design, PreformSpec, ScheduleMeta};
+use indicatrix_solid::preview::StoneGeometryBuf;
 use std::{
     sync::{Arc, PoisonError},
     time::Duration,
@@ -426,7 +427,7 @@ fn a_reproject_after_a_planned_frame_is_not_planned_but_keeps_its_generation() {
         &mut edges_rasterizer,
         &mut memory,
         RedrawRequest::Reproject {
-            planes,
+            geometry: StoneGeometryBuf::from_halfspaces(&planes),
             camera: CameraPose {
                 yaw: 1.0,
                 pitch: 0.3,
@@ -592,7 +593,7 @@ fn reproject_frame_carries_geometry_at_the_new_pose_and_size() {
         &mut edges_rasterizer,
         &mut memory,
         RedrawRequest::Reproject {
-            planes: replan_frame.planes,
+            geometry: StoneGeometryBuf::from_halfspaces(&replan_frame.planes),
             camera: turned,
             size: (32, 24),
             view_mode: 0,
@@ -634,7 +635,7 @@ fn a_reproject_frame_carries_forward_the_last_replans_generation() {
         &mut edges_rasterizer,
         &mut memory,
         RedrawRequest::Reproject {
-            planes: replan_frame.planes,
+            geometry: StoneGeometryBuf::from_halfspaces(&replan_frame.planes),
             camera: CAMERA,
             size: (16, 16),
             view_mode: 0,

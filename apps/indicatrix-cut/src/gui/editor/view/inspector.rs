@@ -5,7 +5,7 @@
 //! per-facet chip row ([`selected_tier_chips`]/[`push_selected_tier_chips`]).
 
 use super::state::{
-    EditorState, ScratchDelta, body_colour_index_for, body_colour_options, builtin_preset_names,
+    EditorState, ScratchDelta, body_color_index_for, body_color_options, builtin_preset_names,
     design_material_index_from_name, gear_index_from_teeth, index_chip_items, push_rows,
     ri_source_text,
 };
@@ -43,42 +43,53 @@ fn push_material_guess(ui: &MainWindow, design: &Design, n_d: f64) {
         .set_material_guess_other_candidates_text(others.into());
 }
 
-/// The Live Render readout for a design's body-colour variant: the traced material's
-/// name with the colour's label (`Sapphire (Yellow)`), or `""` when the design sets
-/// no colour or nothing traces at all (`traced_material_for`'s refusal) -- the same
+/// The Live Render readout for a design's body-color variant: the traced material's
+/// name with the color's label (`Sapphire (Yellow)`), or `""` when the design sets
+/// no color or nothing traces at all (`traced_material_for`'s refusal) -- the same
 /// name `sync_viewport_material_link` traces, so the readout can never name a
 /// different stone than the one rendered. Computed whether or not the viewport is
 /// linked; the toolbar only shows it while linked.
-fn body_colour_readout(design: &Design, custom: &[GemMaterial]) -> String {
+fn body_color_readout(design: &Design, custom: &[GemMaterial]) -> String {
     design
         .material
-        .body_colour_label()
-        .map_or_else(String::new, |colour| {
+        .body_color_label()
+        .map_or_else(String::new, |color| {
             let (name, unresolved) = traced_material_for(design, custom);
             if unresolved.is_some() {
                 String::new()
             } else {
-                format!("{name} ({colour})")
+                format!("{name} ({color})")
             }
         })
 }
 
-/// The design settings panel's Colour combo half of [`refresh_design_settings`] --
+/// Whether the design's material is a custom material whose color is a physics recipe -- the
+/// explicit `RenderContext::custom_material_physics` list, never inferred from the bands.
+fn is_physics_material(design: &Design, ctx: &RenderContext) -> bool {
+    design.material.name.as_deref().is_some_and(|name| {
+        ctx.custom_material_physics
+            .iter()
+            .any(|n| n.eq_ignore_ascii_case(name))
+    })
+}
+
+/// The design settings panel's color combo half of [`refresh_design_settings`] --
 /// split out purely to keep that function under clippy's function-length lint. The
 /// option list is static, so it is pushed only while the combo does not hold it yet;
 /// the selected index is re-seeded from the design only when `material_changed` (the
 /// same [`ScratchDelta::material`] gate as the material combo, so an in-progress pick
-/// survives an unrelated refresh); `readout` (see [`body_colour_readout`]) always.
-fn push_body_colour_fields(
+/// survives an unrelated refresh); `readout` (see [`body_color_readout`]) always.
+fn push_body_color_fields(
     ui: &MainWindow,
     design: &Design,
     readout: String,
+    physics_material: bool,
     material_changed: bool,
 ) {
     let model = ui.global::<EditorModel>();
-    let options = body_colour_options();
-    if model.get_body_colour_options().row_count() != options.len() {
-        model.set_body_colour_options(ModelRc::new(VecModel::from(
+    let options = body_color_options();
+    if model.get_body_color_options().row_count() != options.len() {
+        model.set_body_color_options(ModelRc::new(VecModel::from(
             options
                 .into_iter()
                 .map(SharedString::from)
@@ -86,9 +97,15 @@ fn push_body_colour_fields(
         )));
     }
     if material_changed {
-        model.set_body_colour_index(body_colour_index_for(design.material.body_colour_override));
+        model.set_body_color_index(body_color_index_for(design.material.body_color_override));
     }
-    model.set_body_colour_readout(readout.into());
+    model.set_body_color_readout(readout.into());
+    // The override replaces the whole absorption tensor, so it is unavailable (greyed out) for a
+    // physics material; one that is already set gets a warning rather than a silent override.
+    model.set_design_material_is_physics(physics_material);
+    model.set_physics_override_conflict(
+        physics_material && design.material.body_color_override.is_some(),
+    );
 }
 
 /// Pushes the design settings panel's state (material combo options and index,
@@ -132,11 +149,11 @@ pub(super) fn refresh_design_settings(
     // it, and is a real `Drop` guard released at the end of this block rather
     // than sitting locked across the `delta`-gated pushes below, which touch
     // only `design`/`ui` -- clippy::nursery's `significant_drop_tightening`.
-    let (n_d, options, colour_readout) = {
+    let (n_d, options, color_readout, physics_material) = {
         let ctx = render_ctx
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let colour_readout = body_colour_readout(design, &ctx.custom_materials);
+        let color_readout = body_color_readout(design, &ctx.custom_materials);
         // Custom-catalogue-aware: unlike `effective_refractive_index`,
         // this also resolves a custom material by name before falling back to a built-in
         // or the design's `I` line -- see `ri_source_text` below for the matching
@@ -148,10 +165,11 @@ pub(super) fn refresh_design_settings(
         // option LIST is always refreshed; only the in-out `*_index`/`*_text`
         // selections below are gated on `delta`.
         let options = state.material_combo_options(&ctx.custom_materials);
+        let physics_material = is_physics_material(design, &ctx);
         drop(ctx);
-        (n_d, options, colour_readout)
+        (n_d, options, color_readout, physics_material)
     };
-    push_body_colour_fields(ui, design, colour_readout, delta.material);
+    push_body_color_fields(ui, design, color_readout, physics_material, delta.material);
     // A second, separate lock acquisition (rather than reusing the guard
     // above): its own last use sits right at this block's own end, so the
     // lock is never held across work -- the `delta`-gated pushes below -- that
@@ -308,13 +326,13 @@ pub(in crate::gui::editor) fn sync_viewport_material_link(
     // no-name fallback is `GemMaterial::diamond()`: every `.asc` import and every
     // new design names no material, so the override was diamond, the override beats
     // the name, and the stone rendered with diamond's (empty) absorption bands --
-    // colourless whatever the schedule said. `traced_gem_material` returns `None`
+    // colorless whatever the schedule said. `traced_gem_material` returns `None`
     // instead of substituting, and an absent override falls through to
     // `context::resolve_material`'s own by-name lookup, so the name and the override
-    // can no longer describe two different stones. The design's body-colour variant
+    // can no longer describe two different stones. The design's body-color variant
     // rides along here too (`MaterialSelection::apply_overrides`, inside
     // `traced_gem_material`): `material_name` stays the species ("Sapphire"), the
-    // override carries its recoloured absorption.
+    // override carries its recolored absorption.
     let resolved = unresolved
         .is_none()
         .then(|| {
@@ -349,7 +367,7 @@ pub(in crate::gui::editor) fn sync_viewport_material_link(
     // material above -- without this write, `context::apply_material_overrides`
     // would always skip absorption-path scaling (treating every design as if it
     // had no physical size), and the Yield panel's millimetre carat estimate
-    // would have no counterpart in the render's own colour depth.
+    // would have no counterpart in the render's own color depth.
     let stone_width_mm = design.girdle_diameter_mm.unwrap_or(0.0) as f32;
     if (ctx.stone_width_mm - stone_width_mm).abs() > f32::EPSILON {
         ctx.stone_width_mm = stone_width_mm;

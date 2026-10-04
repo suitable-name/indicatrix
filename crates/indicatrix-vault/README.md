@@ -42,8 +42,8 @@ only under WAL -- `synchronous = NORMAL`. Tables:
 | Table | Purpose |
 |---|---|
 | `diagram_entries` | One row per design: `title`, `url` (**unique** — the dedup key within one source), `design_id`, `source_id`, `ignored`, `created_at`/`updated_at` (a revision stamp: every write strictly advances it, even within one second), `derived_from_entry_id` |
-| `diagram_details` | One row per entry (1:1, cascade-deleted with it): shape, refractive index, gear, ratios, volume, facet counts, symmetry, designer split, PDF/GEM attachment names, etc. Blob column (`diagram_image_data`) declared last — see "Blob columns last" below |
-| `angle_settings` | The cutting-instructions rows for one detail: facet, angle, index, notes — ordered |
+| `diagram_details` | One row per entry (1:1, cascade-deleted with it): shape, refractive index, gear, ratios, volume, facet counts, symmetry, designer split, PDF/GEM attachment names, `concave_tiers`/`concave_facets` counts (`0` for a planar design; `facets_count` keeps its two-component `"55+6"` text), etc. Blob column (`diagram_image_data`) declared last — see "Blob columns last" below |
+| `angle_settings` | The cutting-instructions rows for one detail: facet, angle, index, notes, plus nullable `tool`/`tool_line` (the concave tool and its formatted second line; `NULL` for a flat tier) — ordered |
 | `attached_files` | Raw file bytes attached to one detail (an original `.asc`, an image, a PDF) — indexed on `detail_id` |
 | `custom_gem_materials` | User-defined materials (name, RI, dispersion, birefringence, absorption, crystal system/optical character, per-axis dispersion, specific gravity) |
 | `shape_vocabulary` | The canonical shape picker list (`name`, `sort_order`) — seeded from `DEFAULT_SHAPES`, see below |
@@ -90,6 +90,7 @@ open — `create_tables_if_not_exist`, then (in order) `migrate_numeric_columns`
 `migrate_diagram_solid_hull_table`, `migrate_saved_rough_plans_table`,
 `migrate_planner_exclusion_table`,
 `migrate_mirror_state_tombstone_column`, `migrate_prune_tilt_curve_aggregate_columns`,
+`migrate_concave_columns` (the four concave columns above, each gated on its own `column_exists`, one transaction; it must precede the rebuild, which names `diagram_details`' columns),
 `migrate_blob_columns_last`, `migrate_tag_tables`, and finally
 `migrate_search_indexes` (see `db/sqlite/migrations/mod.rs` for the full list and
 why the order matters — e.g. `migrate_search_indexes` must run after

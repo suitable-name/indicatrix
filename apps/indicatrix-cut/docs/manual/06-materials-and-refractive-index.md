@@ -37,9 +37,9 @@ about 1.54) at the same angle, because quartz's critical angle is larger.
 
 The renderer ships 32 built-in materials, used both by the Live Render
 viewport and as starting templates in the Material Editor. Full dispersion
-and colour detail for every one is in Appendix C; the figures that matter
+and color detail for every one is in Appendix C; the figures that matter
 for cutting -- refractive index, birefringence, and whether the material
-has real absorption bands modelled (which mostly affects render colour, not
+has real absorption bands modelled (which mostly affects render color, not
 cutting) -- are:
 
 | Material | n_D | Birefringence (Δn) | Optical character | Absorption modelled |
@@ -105,10 +105,95 @@ dropdown (Chapter 2) to open the **Material Editor**. Its fields are:
 | Crystal System | combo | Cubic, Tetragonal, Hexagonal, Trigonal, Orthorhombic, Monoclinic, Triclinic. |
 | Optical Character | combo | Isotropic, Uniaxial (+), Uniaxial (−), Biaxial (+), Biaxial (−). |
 | Biaxial nβ − nα | slider | Only shown when Optical Character is one of the two Biaxial choices. |
-| Gem Body Color & Transmission | swatches | Clear, Blue, Red, Green, Violet, Yellow, Pink, Teal, Amber. |
+| color Mode | radio toggle | **Fantasy** (unconstrained colors) or **Physics** (mineralogical host crystal + real chromophores). |
+| Gem Body Color (Fantasy) | swatches + Pick... | Clear, Blue, Red, Green, Violet, Yellow, Pink, Teal, Amber, a custom kept color, or a free pick fitted to the three bands. |
+| Chromophore Recipe (Physics) | controls & swatches | Host crystal, element rows with log sliders, locks, sources, strength + fractions or absolute view, treatments, equivalent path, D65 / 3200 K swatches, color picker with the inverse solver, and Undo. |
 
 Buttons: **Delete**, **Cancel**, **Save**, and **Save & Apply** (saves, then
 also selects it as the current render material).
+
+### Physics color mode
+
+The **color Mode** toggle switches between **Fantasy** and **Physics**. Both
+colors are kept: switching never discards the other one. Going to Physics for
+the first time solves your *current fantasy color* into the chosen host
+(closest reachable); going back to Fantasy keeps the recipe, and saving while
+Fantasy is active still stores the recipe, so physics -> fantasy -> save does
+not delete it. A fantasy color that was still "Clear" is seeded from the
+physics color on the first switch back.
+
+In **Fantasy** mode the nine swatches are joined by **Pick...**, a color
+picker (saturation/value square, hue strip, hex field) that fits the three
+legacy absorption bands to your pick -- three bands reach only a thin set of
+colors, so the result is the closest reachable one.
+
+In **Physics** mode the body color comes from absorption spectroscopy:
+
+- **Host crystal.** The list is the color data's own host list (corundum,
+  beryl, chrysoberyl, spinel, quartz, topaz, tourmaline, zircon, garnets,
+  peridot, diamond, and so on). Choosing a host fixes the crystal system and
+  optical character (those combos are greyed out) and prefills refractive
+  index, dispersion, birefringence and specific gravity from the host's
+  built-in material. For a garnet the RI and SG are interpolated over the
+  end-member mix and re-prefilled as you change it. Picking a built-in
+  template in "Load Preset Template" preselects its host.
+- **Data-confidence banner.** One banner per host, shown only when some of its
+  coefficients are not verified measurements ("Strengths uncalibrated --
+  approximate").
+- **Elements.** Each recipe row has a log-scale amount slider bounded by the
+  host's maximum for that item, the amount with its unit (ppm, wt% oxide,
+  mole fraction), a **Lock** toggle (the solver keeps locked amounts), a
+  remove button, an "estimated data" note when the data behind the item are an
+  estimate, and a **Sources** popover (confidence, source citations, skipped
+  bands). **+ Add** lists only the items the data offer for the host; ones
+  that cannot be added right now (no room in a garnet's end-member budget, a
+  required or excluding chromophore, a centre that only a treatment creates)
+  are greyed with the reason. Garnet and olivine items are mole fractions that
+  add up to at most 100 % with a colorless remainder.
+- **Two views.** *Strength + fractions* shows each item's share and one
+  **Strength** slider (a multiplier on every item's absorption, so the hue
+  does not change); *Absolute amounts* shows the amounts themselves.
+- **Treatments.** Only the treatments the data define for the host, and only
+  when their required elements are present.
+- **Equivalent path.** The reference light path in millimetres. It defaults to
+  1.5 x the open design's girdle diameter (a rough proxy for the table-to-culet
+  path plus return) and to 5 mm when no design with a size is open.
+- **Swatches.** The computed body color under D65 daylight and under 3200 K
+  incandescent light, each unpolarised plus the ordinary, extraordinary and
+  (biaxial hosts) beta ray, the color-change dE between the two, and, when it
+  differs from the reference path, the color at this stone's size.
+- **Pick color...** opens the color picker; the picked color becomes the
+  solver's target. The solver runs on a background thread (the dialog shows
+  "Solving..." and never freezes); if you pick again the latest request wins and
+  the older result is dropped. The readout shows "dE x from your pick (D65)",
+  with "closest reachable shown" when the pick cannot be matched within
+  dE 1, in the warning color above dE 2.
+- **Undo.** The dialog keeps its own recipe undo stack (50 entries): every
+  slider release, add/remove, treatment, host change and solver result is
+  undoable with **Undo**/**Redo** or Ctrl-Z / Ctrl-Y.
+
+Edits to a recipe count as unsaved changes: closing the dialog asks before
+discarding them, and every time the dialog opens its physics state is rebuilt
+from the selected material (nothing carries over from a previous open).
+
+**What is saved, and older versions.** The material stores both colors and the
+recipe together with its *resolved bands* and the color-data version. Rendering
+always uses the stored resolved bands: if a later release recalibrates the
+color data, the material keeps its color, the material list shows a "color
+data updated" badge for it, and the editor offers **Update to current data**
+(undoable, never automatic). The top-level color written next to a recipe is the
+nearest legacy color, so an older version of Indicatrix Cut that does not know
+physics color still shows an approximate color (within dE 15 for the reference
+recipes). If such an older version edited that color and saved the file, this
+version notices on opening it and asks whether to keep the physics recipe or use
+the edited color. A physics material also takes a 7 mm default stone width when
+the design has no size, so its color depth is not rendered at model scale.
+
+**Per-design body color.** The design settings' *color* override replaces the
+whole absorption, i.e. the physical color, so it is greyed out for a physics
+material ("replaces the physical color"); if an override was already set when
+the material was selected, a warning says it still wins until set back to
+"Material default".
 
 **Where a custom material lives.** Saving writes it to your catalogue's own
 database -- this is the copy every material picker across the app actually
@@ -190,7 +275,7 @@ guess onto a material it cannot place.
 
 Each pavilion tier (a tier with a negative angle) shows how many degrees
 its authored angle sits above the design's own effective critical angle,
-colour-coded:
+color-coded:
 
 - **Green** (Safe) -- 2 degrees or more of margin.
 - **Amber** (Marginal) -- less than 2 degrees, but still past the critical
@@ -210,7 +295,7 @@ never the same weight as a pavilion row's own plain margin. A girdle tier
 (angle exactly zero), or a crown tier in a design with no pavilion tier at
 all to estimate against, shows a plain dash.
 
-The same colour-coded bar appears live in the inspector's Tier tab, next
+The same color-coded bar appears live in the inspector's Tier tab, next
 to the Angle field itself, updating as you type -- so a pavilion angle you
 are about to save shows red, with its margin and a one-line reason,
 *before* you leave the field or click Save Tier.

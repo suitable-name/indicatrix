@@ -13,8 +13,8 @@ impl GemMaterial {
     /// Citrine, both quartz.
     pub(super) fn built_in_materials_amethyst_through_citrine() -> Vec<Self> {
         vec![
-            // Amethyst (alpha-Quartz, SiO2, colour centre) -- physically the same
-            // SiO2 crystal as the colourless "Quartz" entry above: reuses that
+            // Amethyst (alpha-Quartz, SiO2, color centre) -- physically the same
+            // SiO2 crystal as the colorless "Quartz" entry above: reuses that
             // entry's exact Ghosh 1999 o-ray Sellmeier3 fit and its e-ray
             // `uniaxial_extraordinary_dispersion` and `birefringence_delta`
             // bit-for-bit, differing only in absorption. n_d = 1.54421, Delta n(F-C)
@@ -30,9 +30,9 @@ impl GemMaterial {
                     c: [0.0, 0.010_058_6, 100.0],
                 },
                 birefringence_delta: 0.0091,
-                // Chromophore: an irradiation-induced Fe-related colour centre (not a
+                // Chromophore: an irradiation-induced Fe-related color centre (not a
                 // simple Fe3+/Fe4+ d-d transition -- broadly analogous to blue
-                // topaz's colour centre above but a different defect), a broad band
+                // topaz's color centre above but a different defect), a broad band
                 // centred ~545nm (green-yellow), leaving violet/purple transmitted.
                 // Width (55nm) and peak (1.8) tuned; band centre cited.
                 absorption: AbsorptionTensor::isotropic(vec![AbsorptionBand::new(
@@ -64,7 +64,7 @@ impl GemMaterial {
                 // the near-UV into blue (a tail rather than a discrete band) --
                 // modelled as a broad Gaussian centred just below the visible band
                 // (400nm, width 70nm) so its red-side tail absorbs violet-blue while
-                // leaving yellow-orange transmitted, citrine's characteristic colour.
+                // leaving yellow-orange transmitted, citrine's characteristic color.
                 // Peak (1.6) tuned; the UV-blue placement is the cited feature.
                 absorption: AbsorptionTensor::isotropic(vec![AbsorptionBand::new(
                     400.0, 70.0, 1.6,

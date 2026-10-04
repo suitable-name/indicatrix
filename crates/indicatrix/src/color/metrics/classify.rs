@@ -7,10 +7,10 @@ use glam::Vec3;
 use super::{
     fan::FanGeometry,
     lighting::ExitLighting,
-    ray_trace::{RayFate, trace_wavelength},
+    ray_trace::{RayFate, StoneArena, trace_wavelength},
     visibility::ray_is_visibly_returned,
 };
-use crate::optics::raytracer::{Ray, intersect_polyhedron_soa};
+use crate::optics::raytracer::Ray;
 
 /// Per-evaluation context threaded through [`classify_aperture_sample`]: everything
 /// needed to fire and classify one grid-cell aperture-sample ray at the fixed camera
@@ -19,7 +19,7 @@ use crate::optics::raytracer::{Ray, intersect_polyhedron_soa};
 /// `grid_size * grid_size * aperture_samples.len()` calls per invocation. Mirrors
 /// [`super::scintillation::TemporalPoseContext`]'s reason for existing, one level up.
 pub(super) struct ApertureSampleContext<'a> {
-    pub(super) plane_soa: &'a crate::simd::PlanesSoA32,
+    pub(super) stone: StoneArena<'a>,
     pub(super) nd: f32,
     pub(super) n_f: f32,
     pub(super) n_c: f32,
@@ -76,7 +76,7 @@ pub(super) fn classify_aperture_sample(
         dir: ray_dir,
     };
 
-    let hit = intersect_polyhedron_soa(ray, ctx.plane_soa);
+    let hit = ctx.stone.intersect(ray);
     let hit_rec = hit?;
 
     let hit_point_entry = ray.origin + hit_rec.t * ray.dir;
@@ -85,14 +85,7 @@ pub(super) fn classify_aperture_sample(
     // Refract from air (1.0) into gemstone (nd) using Snell's Law
     let cos_i = (-ray.dir).dot(n_entry).clamp(0.0, 1.0);
 
-    match trace_wavelength(
-        hit_point_entry,
-        ray.dir,
-        n_entry,
-        cos_i,
-        ctx.plane_soa,
-        ctx.nd,
-    ) {
+    match trace_wavelength(hit_point_entry, ray.dir, n_entry, cos_i, ctx.stone, ctx.nd) {
         RayFate::EntryBlocked => Some(RayClassification::EntryBlocked),
         RayFate::Leaked => Some(RayClassification::Windowed),
         // The d-line's own exit cosine is deliberately not used as a Fire weight: it
@@ -117,22 +110,10 @@ pub(super) fn classify_aperture_sample(
             // qualifying count (see fire_index below). Considered only if BOTH F-line
             // and C-line companion traces also exit upward -- a ray whose F or C image
             // is lost to TIR or pavilion leakage contributes no Fire sample.
-            let fate_f = trace_wavelength(
-                hit_point_entry,
-                ray.dir,
-                n_entry,
-                cos_i,
-                ctx.plane_soa,
-                ctx.n_f,
-            );
-            let fate_c = trace_wavelength(
-                hit_point_entry,
-                ray.dir,
-                n_entry,
-                cos_i,
-                ctx.plane_soa,
-                ctx.n_c,
-            );
+            let fate_f =
+                trace_wavelength(hit_point_entry, ray.dir, n_entry, cos_i, ctx.stone, ctx.n_f);
+            let fate_c =
+                trace_wavelength(hit_point_entry, ray.dir, n_entry, cos_i, ctx.stone, ctx.n_c);
             let Some(fire) = (match (fate_f, fate_c) {
                 (RayFate::ExitedUpward(exit_f), RayFate::ExitedUpward(exit_c)) => {
                     // F/C bifurcation gate: when the F-line and C-line traces exit

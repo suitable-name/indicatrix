@@ -42,6 +42,12 @@ export struct GuideAllow {
     file_ops: bool,
     // Undo/Redo and Ctrl+Z/Ctrl+Y.
     history: bool,
+    // Authoring a concave (tool-cut) tier: "+ Add Concave Tier" (tier table, command
+    // bar) and the inspector's concave form. The worked example never teaches
+    // concave tiers, so a step leaves this open only when it leaves BOTH the tier form
+    // and the tier table open (derived in `gui::editor::guide::guide_allow`, which is
+    // why the shared step list needed no new group).
+    concave_tier: bool,
 }
 
 export struct GuideStepData {
@@ -131,6 +137,8 @@ export global GuideModel {
     public pure function allows_view_tabs() -> bool { return !root.open || root.current.allow.view_tabs; }
     /// Whether file actions (load, open, save, export) are usable.
     public pure function allows_file_ops() -> bool { return !root.open || root.current.allow.file_ops; }
+    /// Whether concave tiers can be added and edited.
+    public pure function allows_concave_tier() -> bool { return !root.open || root.current.allow.concave_tier; }
     /// Whether Undo/Redo are usable.
     public pure function allows_history() -> bool { return !root.open || root.current.allow.history; }
 

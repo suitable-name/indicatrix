@@ -130,9 +130,9 @@ fn depth_weight(a: f32, b: f32, neg_inv_sigma_depth: f32) -> f32 {
     }
 }
 
-/// Same edge-stopping term as the module docs describe for "Colour", but taking a
+/// Same edge-stopping term as the module docs describe for "color", but taking a
 /// precomputed `-1 / (2 * sigma_color_effective^2)` instead of `sigma_color_effective`
-/// itself. Both colours must be finite (the caller skips non-finite texels). An exact
+/// itself. Both colors must be finite (the caller skips non-finite texels). An exact
 /// tie skips the `exp` for the same reason as in [`depth_weight`].
 #[inline]
 fn color_weight(a: Vec3, b: Vec3, neg_inv_two_sigma_sq: f32) -> f32 {
@@ -266,7 +266,7 @@ fn tap_contribution(
     Some((texel, kernel_w * wf * wn * wd * wc))
 }
 
-/// Computes the filtered colour for a single output pixel at `(x, y)`. Pure function of
+/// Computes the filtered color for a single output pixel at `(x, y)`. Pure function of
 /// `src` and the guide buffers `g`/`tap` -- no accumulation across pixels, no ordering
 /// dependency on any other pixel's result. This is what makes the band-parallel
 /// schedule bit-identical to the single-threaded form.

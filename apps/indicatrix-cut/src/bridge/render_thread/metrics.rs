@@ -16,4 +16,4 @@
 /// implementation.
 pub use indicatrix::render_setup::hash_planes;
 
-pub(super) use indicatrix::color::metrics::{MetricsCache, compute_or_reuse_metrics};
+pub(super) use indicatrix::color::metrics::{MetricsCache, compute_or_reuse_metrics_geom};

@@ -289,6 +289,7 @@ mod p2_uniaxial_internal_wiring_energy_conservation_tests {
                         let mut split_radiance_t = [0.0f32; NUM_CHANNELS];
                         let mut exit_ctx = ExitSplitCtx {
                             plane_soa: &empty_soa,
+                            tools: &[],
                             environment: EnvironmentSource::Studio {
                                 preset: crate::optics::LightingPreset::RingLights,
                                 exposure: 1.0,
@@ -503,6 +504,7 @@ mod entry_mode_projection_tests {
         let mut split_radiance = [0.0f32; NUM_CHANNELS];
         let mut exit_ctx = ExitSplitCtx {
             plane_soa: &empty_soa,
+            tools: &[],
             environment: EnvironmentSource::Studio {
                 preset: crate::optics::LightingPreset::RingLights,
                 exposure: 1.0,

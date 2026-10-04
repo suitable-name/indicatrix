@@ -133,7 +133,7 @@ fn pick_buffer_returns_the_right_facet_id_at_known_pixels() {
 }
 
 /// The orientation marker (a bright line from the stone's centre along +x) is drawn over
-/// the fill on the very row these pixels sit on, so the colour tests turn it off.
+/// the fill on the very row these pixels sit on, so the color tests turn it off.
 #[test]
 fn two_facet_mesh_with_two_colors_paints_two_different_fills() {
     let mesh = two_quads_mesh();
@@ -199,13 +199,13 @@ fn a_facet_index_past_the_end_of_facet_base_colors_falls_back_to_base_color() {
         show_orientation_marker: false,
         ..SolidStyle::default()
     });
-    assert_ne!(short_near, plain_near, "facet 0 must use its own colour");
+    assert_ne!(short_near, plain_near, "facet 0 must use its own color");
     assert_eq!(
         short_far, plain_far,
         "facet 1 is past the end and must be painted with base_color"
     );
 
-    // The fallback is exactly the colour an explicit entry of base_color gives.
+    // The fallback is exactly the color an explicit entry of base_color gives.
     let base_color = SolidStyle::default().base_color;
     let (_, explicit_far) = render_pixels(&SolidStyle {
         facet_base_colors: vec![[220, 40, 40], base_color],
@@ -737,5 +737,109 @@ fn timing_crackotto_step_103_tier_800x600() {
     println!(
         "CrackOtto-Step (103 tiers) 800x600: {per_frame:?} per frame over {iters} \
          iterations (target < 5 ms)"
+    );
+}
+
+/// Two rings of one facet id with opposite per-ring normals, side by side at `z = 0`
+/// (camera at `+z`). The per-facet table (`mesh.normals`) says both face the camera,
+/// as it would if it were read for a facet whose pieces differ.
+fn two_pieces_one_facet_mesh(visible: bool) -> SolidMesh {
+    let mut mesh = SolidMesh::default();
+    let mut piece_normals = Vec::new();
+    for (x0, x1, normal_z) in [(-1.0_f64, -0.2_f64, 1.0_f64), (0.2, 1.0, -1.0)] {
+        let corners = [
+            DVec3::new(x0, -0.5, 0.0),
+            DVec3::new(x1, -0.5, 0.0),
+            DVec3::new(x1, 0.5, 0.0),
+            DVec3::new(x0, 0.5, 0.0),
+        ];
+        let base = mesh.positions.len() as u32;
+        for c in corners {
+            mesh.positions.push(c);
+            mesh.normals.push(DVec3::Z);
+            mesh.facet_id.push(0);
+        }
+        mesh.indices
+            .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+        mesh.rings.push((0, corners.to_vec()));
+        piece_normals.push(DVec3::new(0.0, 0.0, normal_z));
+    }
+    mesh.piece_normals = Some(piece_normals);
+    mesh.edge_visible = Some(vec![vec![visible; 4]; 2]);
+    mesh
+}
+
+#[test]
+fn concave_pieces_are_culled_by_their_own_ring_normal_not_the_facet_table() {
+    let mesh = two_pieces_one_facet_mesh(true);
+    let mut rasterizer = SolidRasterizer::new(64, 64);
+    rasterizer.render(&mesh, &two_quads_camera(), &SolidStyle::default());
+    assert_eq!(
+        rasterizer.pick_at(20, 32),
+        Some(0),
+        "the camera-facing piece paints"
+    );
+    assert_eq!(
+        rasterizer.pick_at(44, 32),
+        None,
+        "the piece facing away is culled although the facet table says it faces the camera"
+    );
+}
+
+#[test]
+fn concave_prepared_render_matches_the_direct_render() {
+    // The cached path must read the same per-ring normals and edge flags as the
+    // direct one, even though the cache re-indexes rings after simplification.
+    let mesh = two_pieces_one_facet_mesh(true);
+    let camera = two_quads_camera();
+    let style = SolidStyle::default();
+    let mut direct = SolidRasterizer::new(64, 64);
+    direct.render(&mesh, &camera, &style);
+    let prepared = crate::mesh_cache::CachedMesh::build(mesh, 1);
+    let mut via_cache = SolidRasterizer::new(64, 64);
+    via_cache.render_prepared(&prepared, &camera, &style);
+    assert_eq!(direct.color, via_cache.color);
+    assert_eq!(direct.pick, via_cache.pick);
+}
+
+#[test]
+fn edges_flagged_invisible_are_not_stroked() {
+    let camera = two_quads_camera();
+    let style = SolidStyle::default();
+    let count_edge_pixels = |visible: bool| {
+        let mut rasterizer = SolidRasterizer::new(64, 64);
+        rasterizer.render(&two_pieces_one_facet_mesh(visible), &camera, &style);
+        rasterizer
+            .color
+            .chunks_exact(4)
+            .filter(|px| px[..3] == style.edge_color)
+            .count()
+    };
+    assert!(count_edge_pixels(true) > 0, "visible edges are drawn");
+    assert_eq!(count_edge_pixels(false), 0, "seam edges are skipped");
+}
+
+#[test]
+fn simplified_edge_flags_merge_the_flags_of_dropped_collinear_points() {
+    let ring = [
+        DVec3::new(0.0, 0.0, 0.0),
+        DVec3::new(0.5, 0.0, 0.0),
+        DVec3::new(1.0, 0.0, 0.0),
+        DVec3::new(1.0, 1.0, 0.0),
+        DVec3::new(0.0, 1.0, 0.0),
+    ];
+    let (mut dedup, mut simplified) = (Vec::new(), Vec::new());
+    simplify_ring(&ring, &mut dedup, &mut simplified);
+    assert_eq!(
+        simplified.len(),
+        4,
+        "the midpoint of the bottom edge is dropped"
+    );
+    // Only the second half of the bottom edge is a real boundary.
+    let flags = simplified_edge_flags(&ring, &simplified, &[false, true, false, false, false]);
+    assert_eq!(flags, vec![true, false, false, false]);
+    assert_eq!(
+        simplified_edge_flags(&ring, &simplified, &[false; 5]),
+        vec![false; 4]
     );
 }

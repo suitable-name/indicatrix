@@ -1,7 +1,7 @@
 //! The hover-text/label formatting and the critical-angle/pending/selected overlay
 //! flags computed from a built [`FacetMap`].
 
-use super::{FacetMap, OverlayFlags};
+use super::{FacetKind, FacetMap, OverlayFlags};
 use indicatrix::geometry::meet_solver::Block;
 use indicatrix_cut_core::{
     Design,
@@ -21,6 +21,9 @@ impl FacetMap {
         let Some(info) = self.facets.get(facet_id) else {
             return String::new();
         };
+        if matches!(info.kind, FacetKind::Concave { .. }) {
+            return info.name.clone();
+        }
         let Some(tier_index) = info.tier_index else {
             return String::new();
         };
@@ -54,6 +57,13 @@ impl FacetMap {
         let Some(info) = self.facets.get(facet_id) else {
             return String::new();
         };
+        if matches!(info.kind, FacetKind::Concave { .. }) {
+            return facet_id
+                .checked_sub(self.flat_facet_count)
+                .and_then(|k| self.concave_hover.get(k))
+                .cloned()
+                .unwrap_or_default();
+        }
         let Some(_tier_index) = info.tier_index else {
             return "Preform".to_string();
         };
@@ -63,12 +73,14 @@ impl FacetMap {
             Some(Block::Girdle) => "Girdle",
             None => "?",
         };
-        let name = if info.name.is_empty() {
-            "(unnamed)"
-        } else {
+        let name = if !info.display_name.is_empty() {
+            info.display_name.as_str()
+        } else if !info.name.is_empty() {
             info.name.as_str()
+        } else {
+            "(unnamed)"
         };
-        let angle = info.angle_deg;
+        let angle = info.angle_deg.abs();
         let index = info.index_on_gear;
         if info.block == Some(Block::Pavilion) {
             let margin = optics_hints::tier_margin_deg(info.angle_deg, n_d);

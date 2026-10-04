@@ -69,8 +69,11 @@ pub(super) fn planes_gear_and_reference_angle(
 
     // `indicatrix` must not depend on Slint, so convert the Slint-generated `AngleItem`
     // rows into plain `FacetSpec`s at this boundary.
+    // A concave tier (a row with a tool line) is no flat facet: reconstructing it as one
+    // would draw a facet the stone does not have, so it is left out of the placeholder.
     let facet_specs: Vec<FacetSpec> = angle_items
         .iter()
+        .filter(|a| a.second_line.is_empty())
         .map(|a| FacetSpec {
             facet: a.facet.to_string(),
             angle: a.angle.to_string(),

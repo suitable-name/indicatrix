@@ -205,10 +205,13 @@ fn a_refused_claim_leaves_every_field_untouched() {
     ctx.design_gear = Some((96, 0.5));
     ctx.planes_owner = PlanesOwner::Editor { generation: 10 };
 
+    // Only a superseded editor write is refused (a Library selection may take the
+    // slot over, see `may_claim_active_planes`): an auto-solve from generation 9
+    // finishing after the user's edit at generation 10.
     let accepted = ctx.claim_active_planes(
         Arc::new(StandardGemCuts::standard_round_brilliant()),
         Some((64, 0.0)),
-        PlanesOwner::Catalogue { entry_id: 7 },
+        PlanesOwner::Editor { generation: 9 },
     );
 
     assert!(!accepted);
@@ -341,4 +344,88 @@ fn the_editors_material_survives_a_library_selection_and_comes_back() {
     assert_eq!(ctx.material_name, "Sapphire");
     assert!(ctx.material_unresolved.is_none());
     assert!(ctx.editor_material_stash.is_none());
+}
+
+// ---- claim_active_geometry: planes and concave tools move together -------------
+
+fn a_ball() -> Arc<Vec<indicatrix::geometry::tool::ToolPrimitive>> {
+    Arc::new(vec![indicatrix::geometry::tool::ToolPrimitive::ball(
+        glam::Vec3::new(0.0, 0.3, 0.0),
+        0.1,
+    )])
+}
+
+#[test]
+fn a_geometry_claim_replaces_planes_tools_and_placements_together() {
+    let mut ctx = RenderContext::default();
+    assert!(ctx.active_tools.is_empty(), "a default stone is convex");
+    let tools = a_ball();
+    assert!(ctx.claim_active_geometry(
+        Arc::new(StandardGemCuts::emerald_cut()),
+        Arc::clone(&tools),
+        vec![(1, 0)],
+        None,
+        PlanesOwner::Editor { generation: 1 },
+    ));
+    assert!(Arc::ptr_eq(&ctx.active_tools, &tools));
+    assert_eq!(ctx.active_placements, vec![(1, 0)]);
+}
+
+#[test]
+fn a_planes_only_claim_clears_the_previous_designs_tools() {
+    let mut ctx = RenderContext::default();
+    assert!(ctx.claim_active_geometry(
+        Arc::new(StandardGemCuts::emerald_cut()),
+        a_ball(),
+        vec![(0, 0)],
+        None,
+        PlanesOwner::Editor { generation: 1 },
+    ));
+    // A catalogue row knows no tools: its stone is the flat one, not the editor's
+    // design with the previous tool still cut into it.
+    assert!(ctx.claim_active_planes(
+        Arc::new(StandardGemCuts::standard_round_brilliant()),
+        None,
+        PlanesOwner::Catalogue { entry_id: 5 },
+    ));
+    assert!(ctx.active_tools.is_empty());
+    assert!(ctx.active_placements.is_empty());
+}
+
+#[test]
+fn a_refused_geometry_claim_leaves_the_tools_untouched() {
+    let mut ctx = RenderContext::default();
+    let tools = a_ball();
+    assert!(ctx.claim_active_geometry(
+        Arc::new(StandardGemCuts::emerald_cut()),
+        Arc::clone(&tools),
+        vec![(0, 0)],
+        None,
+        PlanesOwner::Editor { generation: 9 },
+    ));
+    assert!(!ctx.claim_active_geometry(
+        Arc::new(StandardGemCuts::standard_round_brilliant()),
+        Arc::new(Vec::new()),
+        Vec::new(),
+        None,
+        PlanesOwner::Editor { generation: 3 },
+    ));
+    assert!(Arc::ptr_eq(&ctx.active_tools, &tools));
+    assert_eq!(ctx.active_placements, vec![(0, 0)]);
+}
+
+#[test]
+fn re_claiming_a_planar_stone_keeps_the_same_empty_tool_arc_so_the_scene_identity_holds() {
+    let mut ctx = RenderContext::default();
+    let before = Arc::clone(&ctx.active_tools);
+    // Every editor refresh claims again; a planar design must not look like a new scene
+    // each time because the empty tool list was reallocated.
+    assert!(ctx.claim_active_geometry(
+        Arc::new(StandardGemCuts::emerald_cut()),
+        Arc::new(Vec::new()),
+        Vec::new(),
+        None,
+        PlanesOwner::Editor { generation: 1 },
+    ));
+    assert!(Arc::ptr_eq(&ctx.active_tools, &before));
 }

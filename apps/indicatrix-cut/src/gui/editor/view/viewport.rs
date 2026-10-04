@@ -30,6 +30,7 @@ use crate::{
 use indicatrix::geometry::meet_solver::SolvedTier;
 use indicatrix_cut_core::Design;
 use indicatrix_editor::solve_policy::{SolveCostEstimate, should_solve_synchronously_for};
+use indicatrix_solid::preview::StoneGeometryBuf;
 use slint::{ComponentHandle, SharedString};
 use std::{
     cell::RefCell,
@@ -120,8 +121,14 @@ fn refresh_viewport(
         || design_to_gpu_planes(&state.design),
         |solved| auto_solve::design_to_gpu_planes_from_solved(&state.design, solved),
     );
-    ctx.claim_active_planes(
+    // The concave tools of the same solve (empty, at no cost, for a planar design);
+    // claimed with the planes so the tracer never sees one without the other.
+    let (tools_for_claim, placements_for_claim) =
+        auto_solve::design_to_gpu_tools_from_solved(&state.design, solved);
+    ctx.claim_active_geometry(
         std::sync::Arc::new(planes_for_claim),
+        std::sync::Arc::new(tools_for_claim),
+        placements_for_claim,
         Some((
             state.design.meta.gear_teeth_abs(),
             state.design.meta.gear_reference_angle as f32,
@@ -132,11 +139,11 @@ fn refresh_viewport(
     );
     ctx.dirty = true;
     let design_gear = ctx.design_gear;
-    let planes: Vec<(glam::Vec3, f32)> = ctx
-        .active_planes
-        .iter()
-        .map(|p| (glam::Vec3::from(p.normal), -p.d))
-        .collect();
+    let stone = StoneGeometryBuf {
+        planes: ctx.active_planes.as_ref().clone(),
+        tools: ctx.active_tools.as_ref().clone(),
+        placements: ctx.active_placements.clone(),
+    };
     let view_mode = ui.global::<SolidPreviewModel>().get_view_mode() as u8;
     // Letterboxes the request to the traced image's own
     // rectangle in Path-traced/Both, exactly like `camera_lighting::
@@ -144,8 +151,8 @@ fn refresh_viewport(
     // switch -- see `contained_request_size`'s own doc comment for why this
     // call site needs the identical treatment.
     let size = contained_request_size(view_mode, scaled_viewport_size(ui), (ctx.width, ctx.height));
-    preview_state.request_redraw_with_gear(
-        planes,
+    preview_state.request_redraw_geometry(
+        stone,
         CameraPose {
             yaw: ctx.yaw,
             pitch: ctx.pitch,
@@ -330,7 +337,11 @@ pub(in crate::gui::editor) fn submit_preview_replan_chained(
             design.effective_refractive_index_with(&ctx.custom_materials),
         )
     };
-    let selected_tier = usize::try_from(ui.global::<EditorModel>().get_selected_tier_index()).ok();
+    // A selected CONCAVE row has a table position past the flat tiers, which names no
+    // flat tier to tint -- the filter keeps that position out of the replan.
+    let selected_tier = usize::try_from(ui.global::<EditorModel>().get_selected_tier_index())
+        .ok()
+        .filter(|&index| index < design.tiers.len());
     let view_mode = ui.global::<SolidPreviewModel>().get_view_mode() as u8;
     // See `refresh_viewport`'s identical call, just above,
     // for why -- this is the post-edit path `contained_request_size`'s own doc

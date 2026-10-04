@@ -9,8 +9,17 @@ use serde::{Deserialize, Serialize};
 /// The expected format identifier in the header of a plan file.
 pub const ROUGH_PLAN_FORMAT: &str = "indicatrix-rough-plan";
 
-/// The newest schema version this build reads and the version it writes.
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+/// The newest schema version this build reads. A plan with a non-convex mesh rough is
+/// written with this version; every other plan is written with [`BASE_SCHEMA_VERSION`], so
+/// the plans of convex roughs are byte for byte what they always were.
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+
+/// The schema version that introduced the `rough.mesh` table.
+pub const MESH_SCHEMA_VERSION: u32 = 2;
+
+/// The schema version of a plan without a mesh rough (version 1; also the oldest this
+/// build reads).
+pub const BASE_SCHEMA_VERSION: u32 = 1;
 
 /// The largest plan document that is parsed, in bytes. A plan with 99 stones in ten
 /// layouts is well under 1 MiB; anything near this limit is not a plan.
@@ -104,6 +113,10 @@ pub struct RoughDto {
     /// Corners in mm of an imported mesh's convex outline (hull).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hull: Vec<[f64; 3]>,
+    /// The closed triangle mesh of a non-convex imported rough (schema version 2). The
+    /// hull is derived from it, so `hull` is empty then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<MeshDto>,
     /// Material name (e.g. "Quartz").
     pub material: String,
     /// Material specific gravity.
@@ -114,6 +127,15 @@ pub struct RoughDto {
     /// Planar cuts modifying the base shape.
     #[serde(default)]
     pub cuts: Vec<CutDto>,
+}
+
+/// A rough's triangle mesh: vertices in mm and triangles as 0-based vertex indices.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MeshDto {
+    /// Vertex positions in mm.
+    pub vertices: Vec<[f64; 3]>,
+    /// Triangles as indices into `vertices`.
+    pub triangles: Vec<[u32; 3]>,
 }
 
 /// Serialized planar cut.

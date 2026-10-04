@@ -12,22 +12,22 @@ pub(super) const ROUGH_TINT: [u8; 3] = [150, 170, 200];
 /// How much of [`ROUGH_TINT`] covered pixels take, in percent.
 pub(super) const ROUGH_TINT_PERCENT: u32 = 10;
 
-/// The colour of the rough's edges.
+/// The color of the rough's edges.
 pub(super) const ROUGH_EDGE: [u8; 3] = [190, 205, 235];
 
-/// How much of the rough's edge colour an edge pixel takes, in percent.
+/// How much of the rough's edge color an edge pixel takes, in percent.
 pub(super) const ROUGH_EDGE_PERCENT: u32 = 70;
 
-/// The colour of the saw pieces' edges (`Theme.accent-amber`).
+/// The color of the saw pieces' edges (`Theme.accent-amber`).
 pub(super) const SAW_EDGE: [u8; 3] = [245, 158, 11];
 
-/// How much of the saw colour an edge pixel takes, in percent.
+/// How much of the saw color an edge pixel takes, in percent.
 pub(super) const SAW_EDGE_PERCENT: u32 = 55;
 
-/// The colour of the outline around the stones of the selected design.
+/// The color of the outline around the stones of the selected design.
 pub(super) const OUTLINE: [u8; 3] = [56, 189, 248];
 
-/// The colour of the hovered edge or corner marker.
+/// The color of the hovered edge or corner marker.
 pub(super) const HOVER_MARK: [u8; 3] = [56, 189, 248];
 
 /// The rough pass: its edges (alpha 255 on an edge pixel, 0 elsewhere) and which pixels
@@ -67,8 +67,8 @@ fn tint_covered(out: &mut [u8], cover: &[u32]) {
     }
 }
 
-/// Blends the painted pixels of `edges` over `out` with `colour`, `percent` strong.
-fn blend_edges(out: &mut [u8], edges: &[u8], colour: [u8; 3], percent: u32) {
+/// Blends the painted pixels of `edges` over `out` with `color`, `percent` strong.
+fn blend_edges(out: &mut [u8], edges: &[u8], color: [u8; 3], percent: u32) {
     let (pixels, _) = out.as_chunks_mut::<4>();
     let (edge_pixels, _) = edges.as_chunks::<4>();
     for (pixel, edge) in pixels.iter_mut().zip(edge_pixels) {
@@ -76,7 +76,7 @@ fn blend_edges(out: &mut [u8], edges: &[u8], colour: [u8; 3], percent: u32) {
             continue;
         }
         let weight = percent * u32::from(edge[3]);
-        for (channel, tint) in pixel.iter_mut().zip(colour) {
+        for (channel, tint) in pixel.iter_mut().zip(color) {
             *channel = mix(*channel, tint, weight);
         }
     }
@@ -157,13 +157,13 @@ pub(super) fn outline_region(
 }
 
 /// Paints the pixel `(x, y)` when it is inside the image.
-fn put(out: &mut [u8], size: (u32, u32), x: i32, y: i32, colour: [u8; 3]) {
+fn put(out: &mut [u8], size: (u32, u32), x: i32, y: i32, color: [u8; 3]) {
     if x < 0 || y < 0 || x as u32 >= size.0 || y as u32 >= size.1 {
         return;
     }
     let at = ((y as usize) * (size.0 as usize) + x as usize) * 4;
     if let Some(pixel) = out.get_mut(at..at + 3) {
-        pixel.copy_from_slice(&colour);
+        pixel.copy_from_slice(&color);
     }
 }
 
@@ -222,7 +222,7 @@ pub(super) fn draw_line(
     from: (f32, f32),
     to: (f32, f32),
     width: i32,
-    colour: [u8; 3],
+    color: [u8; 3],
 ) {
     let reach = width / 2;
     let margin = reach as f32;
@@ -242,7 +242,7 @@ pub(super) fn draw_line(
         let y = t.mul_add(to.1 - from.1, from.1).round() as i32;
         for dy in -reach..=reach {
             for dx in -reach..=reach {
-                put(out, size, x + dx, y + dy, colour);
+                put(out, size, x + dx, y + dy, color);
             }
         }
     }
@@ -254,13 +254,13 @@ pub(super) fn draw_dot(
     size: (u32, u32),
     centre: (f32, f32),
     radius: i32,
-    colour: [u8; 3],
+    color: [u8; 3],
 ) {
     let (cx, cy) = (centre.0.round() as i32, centre.1.round() as i32);
     for dy in -radius..=radius {
         for dx in -radius..=radius {
             if dx * dx + dy * dy <= radius * radius {
-                put(out, size, cx + dx, cy + dy, colour);
+                put(out, size, cx + dx, cy + dy, color);
             }
         }
     }
@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn edge_pixels_take_their_percentage_of_the_colour() {
+    fn edge_pixels_take_their_percentage_of_the_color() {
         let mut out = solid(2, [0, 0, 0]);
         blend_edges(&mut out, &edges(2, &[1]), [200, 100, 0], 70);
         assert_eq!(&out[0..4], &[0, 0, 0, 255], "an unpainted pixel stays");
@@ -335,7 +335,7 @@ mod tests {
             .map(|(&d, s)| mix(d, s, SAW_EDGE_PERCENT * 255))
             .collect();
         assert_eq!(&out[4..7], expected.as_slice());
-        // Pixel 2: 55 % of the saw colour over black.
+        // Pixel 2: 55 % of the saw color over black.
         assert_eq!(&out[8..11], &[135, 87, 6]);
         assert_eq!(out[7], 255);
     }

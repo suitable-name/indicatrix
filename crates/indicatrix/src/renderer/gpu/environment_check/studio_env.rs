@@ -84,7 +84,12 @@ pub fn build_studio_env_cases() -> Vec<StudioEnvCase> {
     let no_observer = [Vec3::ZERO];
     let lit_observers = [Vec3::ZERO, lit_observer];
 
-    for preset in LightingPreset::ALL {
+    // The UV lamps are CPU-only (`scene_routes_to_gpu`): the shader has no Gaussian lamp
+    // spectrum, so there is nothing on the GPU to compare against.
+    for preset in LightingPreset::ALL
+        .into_iter()
+        .filter(|preset| !preset.is_uv_lamp())
+    {
         let params = preset.params();
         let use_d65 = f32::from(preset.uses_d65());
         let model = preset.model().gpu_id() as f32;

@@ -22,7 +22,7 @@ use indicatrix_net::messages::{
 use std::io::Write;
 
 /// Writes one `DISPLAY_FRAME`: `sum` (`samples_done` samples) tone-mapped for sRGB (the
-/// live view's colour space) WITHOUT denoising -- the fallback when the display denoiser
+/// live view's color space) WITHOUT denoising -- the fallback when the display denoiser
 /// is unavailable. Nothing is written for an empty sum.
 pub(super) fn write_display_frame<S: Write>(
     stream: &mut S,

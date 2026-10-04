@@ -196,7 +196,7 @@ fn ruby_face_up_is_darker_with_c_axis_along_view_axis_than_perpendicular_to_it()
 /// the Tourmaline test above is for the uniaxial o/e convention: swapping gamma's
 /// strong band set onto another slot flips or collapses this margin (measured 5.08%
 /// relative at this sample count -- milder than Tourmaline's, as expected for a
-/// paired comparison where BOTH orientations still engage two coloured principal
+/// paired comparison where BOTH orientations still engage two colored principal
 /// spectra, but 5x the 1% assertion bound and well above the ~0.0002 luminance-unit
 /// noise floor characterised for the Tourmaline test's identical setup).
 #[test]

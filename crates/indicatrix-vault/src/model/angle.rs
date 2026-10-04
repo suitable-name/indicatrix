@@ -24,4 +24,12 @@ pub struct AngleSetting {
     /// query matches against (see `crate::db::sqlite::search`'s "notes" third of its
     /// "title, designer or notes" search scope).
     pub notes: String,
+    /// The concave tool's name for this tier (e.g. `"Ball 6mm"`), or `None` for a flat
+    /// tier. Stored apart from [`Self::notes`] so the library search's notes match
+    /// never sees tool text.
+    pub tool: Option<String>,
+    /// The formatted second line of this tier's cutting-sheet row (the tool's
+    /// placement, ready to display), or `None` for a flat tier. Kept as the display
+    /// string, like [`Self::angle`], so the library renders it without resolving tools.
+    pub tool_line: Option<String>,
 }

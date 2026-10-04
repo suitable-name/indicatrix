@@ -14,7 +14,7 @@ import { GuideLockTip } from "guide_lock.slint";
 
 // The Edit sub-tab's schedule-wide settings -- material combo (built-ins, custom
 // catalogue materials, then "Custom RI…"), RI override/effective/critical-angle
-// readouts, gear combo, symmetry order and mirror. Rows: 1a material/RI/colour/apply,
+// readouts, gear combo, symmetry order and mirror. Rows: 1a material/RI/color/apply,
 // 1b chips/new-edit/linked, then gear/symmetry, then printed details, each ending in a stretch spacer so nothing here stretches
 // to fill the dock's own width. Collapsible as a whole (`SectionHeader`, title
 // "DESIGN") via `EditorModel.settings_collapsed`; the gear-remap confirmation
@@ -128,7 +128,7 @@ export component EditorDesignSettings inherits Rectangle {
                     placeholder-text: "auto";
                     edited => { root.material_pending = true; }
                     accepted => {
-                        EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text, EditorModel.body_colour_index);
+                        EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text, EditorModel.body_color_index);
                         root.material_pending = false;
                     }
                     changed has-focus => { EditorModel.text_focus = self.has-focus; }
@@ -137,17 +137,28 @@ export component EditorDesignSettings inherits Rectangle {
             VerticalLayout {
                 spacing: 3px;
                 Rectangle {
-                    height: colour_lbl.preferred-height;
-                    Tooltip { text: @markdown("Body colour -- render this design in a different colour of the same material (e.g. a yellow instead of a blue sapphire) without creating a custom material. Isotropic: the material's pleochroism is not modelled while a colour override is set."); }
-                    colour_lbl := Text { text: "Colour"; font-size: 10px; color: Theme.text-muted; }
+                    height: color_lbl.preferred-height;
+                    Tooltip { text: @markdown("Body color -- render this design in a different color of the same material (e.g. a yellow instead of a blue sapphire) without creating a custom material. Isotropic: the material's pleochroism is not modelled while a color override is set."); }
+                    color_lbl := Text { text: "color"; font-size: 10px; color: Theme.text-muted; }
                 }
                 ComboBox {
-                    enabled: root.unlocked;
+                    // Greyed out for a physics-color material: the override would replace the
+                    // physical color (spec 5).
+                    enabled: root.unlocked && !EditorModel.design_material_is_physics;
                     min-width: 0px;
                     max-width: 160px;
-                    model: EditorModel.body_colour_options;
-                    current-index <=> EditorModel.body_colour_index;
+                    model: EditorModel.body_color_options;
+                    current-index <=> EditorModel.body_color_index;
                     selected => { root.material_pending = true; }
+                }
+                if EditorModel.design_material_is_physics : Text {
+                    text: EditorModel.physics_override_conflict
+                        ? "\u{26a0} A color override is set and replaces this material's physical color. Choose \"Material default\" to restore it."
+                        : "Replaces the physical color \u{2014} unavailable for physics materials.";
+                    font-size: 9px;
+                    color: EditorModel.physics_override_conflict ? Theme.accent-amber : Theme.text-muted;
+                    wrap: word-wrap;
+                    max-width: 160px;
                 }
             }
             VerticalLayout {
@@ -163,7 +174,7 @@ export component EditorDesignSettings inherits Rectangle {
                     text: root.material_pending ? "Apply Material *" : "Apply Material";
                     primary: root.material_pending;
                     clicked => {
-                        EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text, EditorModel.body_colour_index);
+                        EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text, EditorModel.body_color_index);
                         root.material_pending = false;
                     }
                 }

@@ -80,6 +80,11 @@ export struct AngleItem {
     // `angle` string: the catalogue's angle text is unsigned, so the sign alone
     // cannot tell a crown row from a pavilion one.
     side: int,
+    // A concave tier's tool line (the cutting sheet's second line: tool code, theta,
+    // displacement and `D/W`/motion, joined with two spaces), "" for a flat tier.
+    // Drawn under the facet line inside the same shaded band, so a tool tier reads as
+    // one two-line entry rather than two unrelated rows.
+    second_line: string,
 }
 
 export struct FileItem {
@@ -278,6 +283,42 @@ export struct EditorTierItem {
     // one, alongside (not only through) the Optimize "Preview" toggle's whole-
     // viewport ghost.
     proposed_angle: string,
+    // 0 = a flat tier (`design.tiers`), 1 = a concave tier (`design.concave_tiers`,
+    // cut with a tool). A concave row is read-only in the table -- its angle cell,
+    // Pin/Detach/Adopt/Complete-orbit actions and multi-select are all off -- and is
+    // authored in the inspector's concave form instead. Its `index` is the row's
+    // POSITION in the table (flat rows first, then concave ones), so every
+    // `item.index == selected_tier_index` comparison and the keyboard cursor keep
+    // working unchanged; Rust maps a position past the flat count back to the concave
+    // tier (`gui::editor::callbacks::tier_actions::concave_tier`).
+    kind: int,
+    // A concave row's tool line (the cutting sheet's second line: tool code, theta,
+    // displacement, `D/W` and motion, joined with two spaces), "" for a flat row.
+    // Shown as the tool badge's tooltip. A plain string so this struct stays `Send`.
+    tool_line: string,
+}
+
+// The concave tier form's fields, as typed -- passed whole to
+// `EditorModel.save_concave_tier` and returned whole by `EditorModel.
+// concave_form_data` (a tier read back at full precision, so a re-save of an
+// untouched form is a no-op). Every number is a string on purpose: Rust parses them
+// (`indicatrix_editor::loading::parse_concave_tier_form`) and names the offending
+// field in its error, which the inspector reads through `EditorModel.
+// tier_form_error_field` exactly as the flat form does. `tool` is the tool code
+// (`CYL`, `CON`, `CIR`, `DSC`, `SPH`); `tool_angle_deg` is only used by `CON`/`DSC`.
+export struct ConcaveFormData {
+    name: string,
+    angle_deg: string,
+    indices: string,
+    instructions: string,
+    tool: string,
+    tool_azimuth_deg: string,
+    x: string,
+    y: string,
+    z: string,
+    diameter_ratio: string,
+    tool_angle_deg: string,
+    reciprocating: bool,
 }
 
 // One row of the gear-remap confirmation panel (`editor_view.slint`) -- shown after
@@ -304,7 +345,7 @@ export struct OptimizeResultRow {
     label: string,
     before: string,
     after: string,
-    // Which way this metric moved, so the row can be coloured rather than leaving
+    // Which way this metric moved, so the row can be colored rather than leaving
     // the cutter to read a sign out of the text: -1 worse,
     // 0 unchanged, 1 better. "Better" is per-metric, not per-sign -- windowing
     // going DOWN is an improvement, brilliance going down is not -- so this is

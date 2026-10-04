@@ -84,6 +84,7 @@ pub fn read_range_filter(ui: &MainWindow) -> RangeFilter {
             }),
         performance: read_performance_filters(ui),
         include_ignored: ui.global::<LibraryModel>().get_show_ignored(),
+        has_concave: None,
     }
 }
 

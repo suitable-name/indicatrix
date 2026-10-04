@@ -156,8 +156,8 @@ pub struct MaterialSelectionData {
     pub specific_gravity_override: Option<f64>,
     /// A typed refractive index.
     pub refractive_index_override: Option<f64>,
-    /// A body-colour absorption triple.
-    pub body_colour_override: Option<[f32; 3]>,
+    /// A body-color absorption triple.
+    pub body_color_override: Option<[f32; 3]>,
 }
 
 impl From<&MaterialSelection> for MaterialSelectionData {
@@ -166,7 +166,7 @@ impl From<&MaterialSelection> for MaterialSelectionData {
             name: selection.name.clone(),
             specific_gravity_override: selection.specific_gravity_override,
             refractive_index_override: selection.refractive_index_override,
-            body_colour_override: selection.body_colour_override,
+            body_color_override: selection.body_color_override,
         }
     }
 }
@@ -177,7 +177,7 @@ impl From<MaterialSelectionData> for MaterialSelection {
             name: data.name,
             specific_gravity_override: data.specific_gravity_override,
             refractive_index_override: data.refractive_index_override,
-            body_colour_override: data.body_colour_override,
+            body_color_override: data.body_color_override,
         }
     }
 }

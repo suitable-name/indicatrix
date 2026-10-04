@@ -101,7 +101,7 @@ export global TiltVideoExportModel {
     pure callback custom_resolution_index() -> int;
 
     // Quality -- same shape as `export_dialog.slint`'s own controls (power-of-two
-    // sample slider, bounce ladder, colour space), kept as this dialog's OWN state
+    // sample slider, bounce ladder, color space), kept as this dialog's OWN state
     // rather than shared with `ExportModel` so tuning a video export never silently
     // changes the still-image export dialog's own remembered settings, or vice versa.
     in-out property <float> sample_exponent_raw: 6.0; // 64 spp default -- multiplied by frame count, so lower than the image export's own default

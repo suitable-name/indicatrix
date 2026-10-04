@@ -561,6 +561,7 @@ pub(super) fn alternative_table(
         grid: params.grid,
         front: pool,
         non_box_planes: &params.ctx.non_box,
+        mesh: params.ctx.mesh.as_deref(),
         size_table: &size_table,
         settings: params.settings,
         slice: 0..params.grid.cells[0],

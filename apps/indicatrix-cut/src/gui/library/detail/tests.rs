@@ -276,6 +276,7 @@ fn falls_back_to_the_placeholder_reconstruction_with_no_real_design() {
         angle: "-41.0".into(),
         index_val: "0, 24, 48, 72".into(),
         notes: "".into(),
+        second_line: "".into(),
     }];
     let (planes, gear_teeth, reference_angle) =
         planes_gear_and_reference_angle(None, Some("Round"), Some("96"), &angle_items);
@@ -314,6 +315,7 @@ fn angle_item(side: i32) -> AngleItem {
         angle: "0.0".into(),
         index_val: "".into(),
         notes: "".into(),
+        second_line: "".into(),
     }
 }
 

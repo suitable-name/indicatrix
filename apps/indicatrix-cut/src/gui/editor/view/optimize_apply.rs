@@ -245,7 +245,7 @@ fn draw_ghost(ui: &MainWindow, pending: &PendingGhost, solved: &[SolvedTier]) {
     drop(ctx);
     pending
         .preview_state
-        .request_redraw_with_gear(planes, camera, size, view_mode, design_gear);
+        .request_redraw_with_gear(&planes, camera, size, view_mode, design_gear);
 }
 
 #[cfg(test)]

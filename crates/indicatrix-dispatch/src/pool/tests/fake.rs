@@ -36,6 +36,8 @@ pub(super) fn scene(width: u32, height: u32) -> SceneState {
         backdrop: 0.0,
         environment: indicatrix_net::scene::SceneEnvironment::Studio,
         surface_glare: 1.0,
+        tools: Vec::new(),
+        fluorescence: Default::default(),
     }
 }
 

@@ -71,8 +71,9 @@ name for screen readers. The shortcuts are listed at the end of the chapter.
 
 ### The starting shape
 
-The **ROUGH** section starts with three choices, **Block**, **Cylinder** and
-**Pebble**.
+The **ROUGH** section starts with four choices, **Block**, **Cylinder**,
+**Pebble** and **Mesh (OBJ)**; the first three are described here, the mesh under
+"Non-convex roughs".
 
 - **Block** and **Pebble** take **Rough X (mm)**, **Rough Y (mm)** and
   **Rough Z (mm)**: the three sides of the box the rough fits in. A pebble is
@@ -81,6 +82,8 @@ The **ROUGH** section starts with three choices, **Block**, **Cylinder** and
 - **Cylinder** takes **Diameter (mm)** and **Length (mm)**, and an **Axis**
   choice, **X**, **Y** or **Z** (**Y** by default): the direction the cylinder
   runs along.
+- **Mesh (OBJ)** imports a Wavefront `.obj` file as the rough, a closed
+  non-convex mesh included; see "Non-convex roughs" below.
 
 Type a number such as `12.0`; a decimal comma also works. Each size must be
 greater than 0 and no more than 2000 mm ("Dimensions must not exceed 2000
@@ -97,6 +100,64 @@ becomes an upright cylinder whose diameter is the smaller of X and Z and whose
 length is Y. Cuts are kept when you switch; see below for what happens to edge
 and corner cuts on a round shape.
 
+### Non-convex roughs
+
+A scanned or modelled rough that has a notch, a hollow or a re-entrant side can be
+imported with **Mesh (OBJ)**. Pick a Wavefront `.obj` file; its units are read as
+millimetres, and **Fit to weight** rescales the whole mesh like any other rough.
+
+If the file is a **closed mesh** (a solid surface with no holes), the planner uses
+the mesh itself, not just its convex outline:
+
+- **Notches and hollows are respected.** No planned stone extends into material that
+  is not there. A stone must lie inside the mesh with the skin and allowance as
+  clearance, and the sawn pieces of a several-stone layout are checked against the
+  mesh as well. The planner works from the rough's convex outline and then rejects
+  or shrinks whatever would reach into air, so near a notch it can be a little more
+  cautious than the best possible layout.
+- **The mesh volume is the rough's volume.** The model readout, the weight check,
+  **Fit to weight**, the yield and every fill percentage use the volume of the
+  material, not of the convex outline around it. A face, edge or corner cut that
+  you add takes the volume of the mesh inside it.
+- **The 3D view draws the mesh**, with an edge line wherever the surface bends by
+  more than 30 degrees and around each cut face. Cut faces can still be clicked.
+- **Cuts and undo work as for any rough.** The cuts are flat planes over the
+  mesh's bounding box, so a cut can run through a notch.
+- **Saved plans keep the mesh** (plan file version 2). Plans of every other rough
+  are saved exactly as before, and older plans still open.
+
+A face that names a vertex the file does not have fails the import with a message
+naming the line.
+
+A closed mesh needs every edge to be shared by exactly two triangles that run
+along it in opposite directions, with its faces consistently wound. When the file
+cannot be used as a mesh, the import falls back to the **convex hull of its
+vertices** and says why in a note on the status line:
+
+- **No faces**: a file with only `v` lines is a point cloud; its convex hull is the
+  rough.
+- **Open mesh** (a hole in the surface), a **non-manifold** edge (more than two
+  faces on one edge), or **inconsistent winding**: the hull is used.
+- **A mesh with no volume** (or whose faces have no area): the hull is used; if the
+  vertices themselves lie in one plane, the import fails.
+- **More than 50,000 triangles**: the mesh is too heavy for the planner and the hull
+  is used. The limit counts triangles after polygon faces are split (a quad is
+  two triangles). Decimate the scan in a mesh tool first.
+
+A mesh that turns out to be convex (a cube, a faceted ball) is simply a convex
+rough, with no note, and plans exactly as the hull would.
+
+Faces may be triangles or polygons (polygons are split into triangles; a polygon that is not convex is split inside its own plane, and if that fails the hull is used) and may
+name their vertices as `v`, `v/vt`, `v//vn`, `v/vt/vn`, with positive or negative
+indices. Texture coordinates and normals are ignored.
+
+One limitation matters: **a self-intersecting mesh is not detected.** Scans often
+have overlapping shells or a surface that passes through itself. Such a file can
+satisfy the closed-mesh checks yet leave the planner unsure which side of the
+surface is material, so it may plan into air or miss good material. Repair it in
+a mesh tool (remove internal faces, merge shells) before importing, and compare
+the readout volume with what you expect.
+
 ### Material and carat: the weight check and Fit to weight
 
 - **Material** — the material the stones will be cut from, listed as its name
@@ -112,7 +173,7 @@ and corner cuts on a round shape.
 
 Below these fields the planner shows a live readout of the model, for example
 "Model 257 mm³ · 3.40 ct (Quartz, SG 2.65)", and, once you have typed a weighed
-carat over the model's own, a coloured **weight check**:
+carat over the model's own, a colored **weight check**:
 
 | Difference between model and weighed carat | Chip |
 | --- | --- |
@@ -139,7 +200,8 @@ clear the field.
 
 Real rough is rarely a perfect box. The **SHAPE** section lets you take flat
 cuts off the starting shape. Every cut removes material with one flat plane, so
-the model always stays convex (see "Limitations"). Each cut is measured against
+a cut never makes a rough less convex than its starting shape (to model a notch
+or a hollow, import a mesh; see "Non-convex roughs"). Each cut is measured against
 the starting shape, not against the cuts before it, so you can edit or delete
 any cut without disturbing the meaning of the others.
 
@@ -431,7 +493,7 @@ grey and the faces of your cuts are tinted amber while **Cut faces** is on. The
 selected cut is outlined.
 
 **A selected result.** The stones are drawn as their real designs, each design in
-its own colour (eight soft colours that repeat), the same colour as the swatch on
+its own color (eight soft colors that repeat), the same color as the swatch on
 its design row. The rough is drawn around them as a faint glass volume with its
 edges. The saw pieces are drawn as amber outlines. The toggles are **Rough**,
 **Saw** and **Stones**.
@@ -518,7 +580,7 @@ first.
 
 Each design row shows:
 
-- a **colour swatch** matching the design's stones in the 3D view, and the
+- a **color swatch** matching the design's stones in the 3D view, and the
   design's library preview if it has one;
 - "*count* × *design name*" — the name is a link that selects the design in the
   library, exactly as if you had clicked its card, while the planner stays open;
@@ -737,10 +799,26 @@ planner's own; they are not part of the main window's list in Appendix B.
 
 ## Limitations, and how to read the numbers
 
-- **Convex only.** Every cut removes material with one flat plane, and the shape
-  stays convex. The planner cannot model a concave notch, a hollow, or keep-out
-  zones for inclusions and cracks. Model the largest clean convex part of the
-  rough you would actually cut from.
+- **A design's concave tiers are honoured; the fit uses its outer hull.** The
+  concave (tool-cut) tiers of [Chapter 16](16-concave-tiers.md) only ever remove
+  material from the flat stone, so the planner takes the stone's volume, carat
+  weight and yield from the carved stone, and the 3D view draws the tool cuts.
+  The stone's width, length and height, and the outline the fit places in the
+  rough, are those of the flat facets: a cut never enlarges the outer hull, so a
+  design is not fitted any tighter because it has a dimple. A design whose concave
+  tiers cannot be resolved (an invalid tier, too many placements) is skipped and
+  counted in the result's note; it is never planned as a flat stone. A design whose
+  tools remove the whole stone cannot be measured and is left out like one that
+  does not close. Plans saved before the planner took the carved volume are
+  compared on the measuring-rule version and are not reported as changed for that
+  reason alone. The shape of the rough itself is covered in the section on
+  non-convex roughs. A keep-out zone for an inclusion or crack cannot be modelled;
+  model the largest clean part of the rough you would actually cut from.
+- **A non-convex rough is checked, not optimised, around its notches.** The planner
+  verifies every stone against the mesh and drops or shrinks what reaches into air,
+  so near a notch a layout can be a little worse than the best possible one. A
+  mesh with more than 50,000 triangles (counted after polygon faces are split) falls back to its convex hull, and a
+  self-intersecting mesh is not detected (see "Non-convex roughs").
 - **A cylinder and a pebble are approximations, always slightly on the small side.**
   The cylinder is a prism with 64 sides inscribed in the circle, whose volume is
   99.84 % of the true cylinder's (0.16 % less). The pebble is a polyhedron with
@@ -768,7 +846,7 @@ planner's own; they are not part of the main window's list in Appendix B.
 - **The model is only as good as your measurements.** The planner assumes a
   flawless rough, stones that come out exactly to their design's proportions,
   and allowances and kerf exactly as you typed them. Real rough has inclusions,
-  cracks and colour zoning that decide where you actually cut, and each stone
+  cracks and color zoning that decide where you actually cut, and each stone
   starts as a preform that you shape before faceting. Calipers and a scale give
   you a few percent of error each. Use the weight check to catch a model that is
   clearly off, treat the weights and yields as an estimate for clean, inclusion-free

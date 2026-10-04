@@ -2,7 +2,7 @@
 //!
 //! # The trap this exists to avoid
 //!
-//! A PNG holding Display P3 or Rec.2020 pixel values with no colour-space tag is
+//! A PNG holding Display P3 or Rec.2020 pixel values with no color-space tag is
 //! interpreted by every viewer as sRGB -- silently wrong, not just unlabeled.
 //!
 //! Rather than embedding a third-party profile's raw bytes (unverifiable here, and
@@ -124,7 +124,7 @@ const fn column(m: [[f32; 3]; 3], col: usize) -> [f32; 3] {
 }
 
 /// General 3x3 matrix inverse via the adjugate/cofactor formula. Never guards against
-/// a singular `m` -- the well-conditioned colour matrices this module works with
+/// a singular `m` -- the well-conditioned color matrices this module works with
 /// always have a non-zero determinant; a singular input would indicate a broken
 /// `ColorSpace::xyz_to_rgb_matrix`, which the cross-check tests below would catch.
 #[expect(
@@ -360,7 +360,7 @@ fn build_header(total_size: u32) -> [u8; 128] {
     // CMM type (4..8): zero, see fn doc comment.
     h[8..12].copy_from_slice(&[0x02, 0x40, 0x00, 0x00]); // profile version 2.4.0.0
     h[12..16].copy_from_slice(b"mntr"); // device class: display monitor
-    h[16..20].copy_from_slice(b"RGB "); // data colour space
+    h[16..20].copy_from_slice(b"RGB "); // data color space
     h[20..24].copy_from_slice(b"XYZ "); // profile connection space
     // Fixed, arbitrary creation date/time (24..36) -- this profile is generated fresh
     // at every export, so there is no real "authored on" date to record; any
@@ -538,7 +538,7 @@ mod tests {
                 "{space:?}: shorter than the fixed header"
             );
             assert_eq!(&bytes[12..16], b"mntr", "{space:?}: device class");
-            assert_eq!(&bytes[16..20], b"RGB ", "{space:?}: data colour space");
+            assert_eq!(&bytes[16..20], b"RGB ", "{space:?}: data color space");
             assert_eq!(&bytes[20..24], b"XYZ ", "{space:?}: PCS");
             assert_eq!(&bytes[36..40], b"acsp", "{space:?}: profile file signature");
 

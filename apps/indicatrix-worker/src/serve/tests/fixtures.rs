@@ -74,6 +74,8 @@ pub(super) fn tiny_scene() -> SceneState {
         backdrop: 0.0,
         environment: indicatrix_net::scene::SceneEnvironment::Studio,
         surface_glare: 1.0,
+        tools: Vec::new(),
+        fluorescence: Default::default(),
     }
 }
 
@@ -116,6 +118,8 @@ pub(super) fn heavier_scene() -> SceneState {
         backdrop: 0.0,
         environment: indicatrix_net::scene::SceneEnvironment::Studio,
         surface_glare: 1.0,
+        tools: Vec::new(),
+        fluorescence: Default::default(),
     }
 }
 

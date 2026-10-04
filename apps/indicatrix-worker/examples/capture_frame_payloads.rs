@@ -73,6 +73,8 @@ fn scene(preset: LightingPreset, material: &GemMaterial, width: u32, height: u32
         backdrop: BACKDROP_GREY,
         environment: indicatrix_net::scene::SceneEnvironment::Studio,
         surface_glare: 1.0,
+        tools: Vec::new(),
+        fluorescence: Default::default(),
     }
 }
 

@@ -102,6 +102,7 @@ fn save_custom_material_round_trips_crystal_optics_fields() {
         biaxial_delta_beta_alpha: Some(0.0070),
         per_axis_dispersion_json: Some(r#"{"kind":"uniaxial_extraordinary","a":1.7,"b":0.01}"#),
         specific_gravity: Some(3.35),
+        color_recipe_json: None,
     })
     .expect("save biaxial custom material");
 
@@ -117,6 +118,7 @@ fn save_custom_material_round_trips_crystal_optics_fields() {
         biaxial_delta_beta_alpha: None,
         per_axis_dispersion_json: None,
         specific_gravity: Some(4.00),
+        color_recipe_json: None,
     })
     .expect("save uniaxial custom material");
 
@@ -164,6 +166,7 @@ fn save_custom_material_round_trips_crystal_optics_fields() {
         biaxial_delta_beta_alpha: None,
         per_axis_dispersion_json: None,
         specific_gravity: None,
+        color_recipe_json: None,
     })
     .expect("re-save clears crystal-optics fields");
     let materials = db.get_custom_materials().expect("read back after re-save");
@@ -332,6 +335,164 @@ fn specific_gravity_migration_adds_the_column_and_leaves_existing_rows_nullable(
         .expect("read back materials again");
     assert_eq!(materials.len(), 1);
     assert_eq!(materials[0].specific_gravity, None);
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_fresh_database_already_has_the_color_recipe_column() {
+    let path = temp_db_path("fresh_color_recipe");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("create fresh db");
+    assert!(
+        Database::column_exists(&db.conn, "custom_gem_materials", "color_recipe_json").unwrap(),
+        "a fresh database's CREATE TABLE must already include color_recipe_json"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+fn seed_pre_color_recipe_custom_material(path: &std::path::Path) {
+    let conn = Connection::open(path).expect("open raw connection for seeding");
+    conn.execute_batch(
+        "CREATE TABLE custom_gem_materials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            refractive_index REAL NOT NULL,
+            dispersion REAL NOT NULL,
+            birefringence REAL NOT NULL,
+            absorption_r REAL NOT NULL,
+            absorption_g REAL NOT NULL,
+            absorption_b REAL NOT NULL,
+            crystal_system TEXT,
+            optical_character TEXT,
+            biaxial_delta_beta_alpha REAL,
+            per_axis_dispersion_json TEXT,
+            specific_gravity REAL
+        );
+        INSERT INTO custom_gem_materials
+            (name, refractive_index, dispersion, birefringence, absorption_r, absorption_g, absorption_b,
+             crystal_system, optical_character, biaxial_delta_beta_alpha, per_axis_dispersion_json, specific_gravity)
+            VALUES ('Legacy Custom Ruby', 1.768, 0.018, -0.008, 0.1, 2.5, 2.0,
+                    'Trigonal', 'UniaxialNegative', NULL, NULL, 4.0);",
+    )
+    .expect("create pre-color-recipe custom_gem_materials and seed a row");
+}
+
+#[test]
+fn color_recipe_migration_adds_the_column_and_leaves_existing_rows_nullable() {
+    let path = temp_db_path("color_recipe_migration");
+    seed_pre_color_recipe_custom_material(&path);
+
+    {
+        let db = Database::new(Some(path.to_str().unwrap())).expect("first open migrates");
+        assert!(
+            Database::column_exists(&db.conn, "custom_gem_materials", "color_recipe_json").unwrap(),
+            "migration must add color_recipe_json"
+        );
+
+        let materials = db.get_custom_materials().expect("read back materials");
+        assert_eq!(materials.len(), 1);
+        let m = &materials[0];
+        assert_eq!(m.name, "Legacy Custom Ruby");
+        assert_eq!(m.color_recipe_json, None);
+    }
+
+    let db2 = Database::new(Some(path.to_str().unwrap())).expect("second open is idempotent");
+    let materials = db2
+        .get_custom_materials()
+        .expect("read back materials again");
+    assert_eq!(materials.len(), 1);
+    assert_eq!(materials[0].color_recipe_json, None);
+
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A real, resolved ruby recipe (the typed payload the desktop stores).
+fn typed_ruby_recipe() -> indicatrix::optics::chromophore::colorRecipe {
+    use indicatrix::optics::chromophore::{
+        ChromophoreCatalogue, ResolvedBands, colorRecipe, resolve,
+    };
+    let cat = ChromophoreCatalogue::global();
+    let mut recipe = colorRecipe::new("corundum", cat.data_version);
+    recipe.set_amount("Cr", 0.3);
+    let (tensor, _) = resolve(&recipe, cat).expect("ruby resolves");
+    recipe.resolved_bands = ResolvedBands::from_tensor(&tensor);
+    recipe
+}
+
+/// The column is opaque text to this crate: whatever string is stored comes back byte for byte.
+#[test]
+fn custom_material_color_recipe_round_trip() {
+    let path = temp_db_path("color_recipe_round_trip");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("create db");
+
+    // The real `ResolvedBands` field names (`o_ray`/`e_ray`/`beta_ray`/`is_pleochroic`).
+    let recipe_json = r#"{"host":"corundum","data_version":2,"entries":[],"treatments":[],"strength":1.0,"reference_path_mm":5.0,"resolved_bands":{"o_ray":[],"e_ray":[],"is_pleochroic":true}}"#;
+    assert!(
+        serde_json::from_str::<indicatrix::optics::chromophore::colorRecipe>(recipe_json).is_ok(),
+        "the fixture JSON must deserialize into the real recipe type"
+    );
+
+    db.save_custom_material(&CustomMaterialParams {
+        name: "Physics Sapphire",
+        refractive_index: 1.768,
+        dispersion: 0.018,
+        birefringence: -0.008,
+        absorption_rgb: [1.0, 0.5, 0.0],
+        crystal_system: Some("Trigonal"),
+        optical_character: Some("UniaxialNegative"),
+        biaxial_delta_beta_alpha: None,
+        per_axis_dispersion_json: None,
+        specific_gravity: Some(4.0),
+        color_recipe_json: Some(recipe_json),
+    })
+    .expect("save custom material");
+
+    let materials = db.get_custom_materials().expect("get custom materials");
+    let mat = materials
+        .iter()
+        .find(|m| m.name == "Physics Sapphire")
+        .expect("find mat");
+    assert_eq!(mat.color_recipe_json.as_deref(), Some(recipe_json));
+
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Typed round trip: a real recipe (with its resolved bands and data version) serialised, stored
+/// in the vault, read back and deserialised is equal to the original.
+#[test]
+fn typed_color_recipe_survives_the_vault() {
+    use indicatrix::optics::chromophore::colorRecipe;
+
+    let path = temp_db_path("color_recipe_typed_round_trip");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("create db");
+    let recipe = typed_ruby_recipe();
+    assert!(!recipe.resolved_bands.o_ray.is_empty(), "a ruby has bands");
+    let json = serde_json::to_string(&recipe).expect("serialise recipe");
+
+    db.save_custom_material(&CustomMaterialParams {
+        name: "Typed Ruby",
+        refractive_index: 1.768,
+        dispersion: 0.018,
+        birefringence: -0.008,
+        absorption_rgb: [0.2, 1.4, 2.8],
+        crystal_system: Some("Trigonal"),
+        optical_character: Some("UniaxialNegative"),
+        biaxial_delta_beta_alpha: None,
+        per_axis_dispersion_json: None,
+        specific_gravity: None,
+        color_recipe_json: Some(&json),
+    })
+    .expect("save custom material");
+
+    let rows = db.get_custom_materials().expect("get custom materials");
+    let stored = rows
+        .iter()
+        .find(|m| m.name == "Typed Ruby")
+        .and_then(|m| m.color_recipe_json.as_deref())
+        .expect("recipe stored");
+    let back: colorRecipe = serde_json::from_str(stored).expect("deserialise the stored recipe");
+    assert_eq!(back, recipe);
+    assert_eq!(back.data_version, recipe.data_version);
 
     let _ = std::fs::remove_file(&path);
 }

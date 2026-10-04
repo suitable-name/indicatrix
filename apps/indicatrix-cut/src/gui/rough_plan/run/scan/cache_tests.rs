@@ -207,3 +207,24 @@ fn unsaved_measurements_are_laid_over_the_database_read_back() {
     assert_eq!(hulls.keys().copied().collect::<Vec<_>>(), vec![2, 3]);
     assert_eq!(hulls[&2], other_hull);
 }
+
+#[test]
+fn a_design_with_unresolvable_concave_tiers_is_counted_and_never_saved() {
+    let (db, ids) = memory_db(3);
+    let (reporter, _cancel) = quiet();
+    let skipped = ids[1];
+    let outcome = scan_with(&db, &reporter, &ids, false, 2, &|db, id| {
+        if id == skipped {
+            Loaded::ConcaveUnresolved
+        } else {
+            ready(db)
+        }
+    });
+    assert_eq!(outcome.concave_unresolved, 1);
+    assert_eq!(
+        outcome.load_failures + outcome.panics + outcome.save_failures,
+        0
+    );
+    assert_eq!(saved_rows(&db, &ids), 2, "the skipped design has no row");
+    assert!(outcome.measured.is_empty());
+}

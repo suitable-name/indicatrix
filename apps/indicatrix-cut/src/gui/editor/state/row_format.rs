@@ -4,7 +4,7 @@
 //! `indicatrix_editor::view_model::row_format` (shared with the web app).
 
 use crate::{EditorTierItem, IndexChipItem, MainWindow};
-use indicatrix_editor::view_model::{IndexChip, TierRow};
+use indicatrix_editor::view_model::{IndexChip, TierRow, TierRowKind};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 /// One plain [`TierRow`] as the Slint `EditorTierItem` the tier table renders --
@@ -37,12 +37,49 @@ pub(in crate::gui::editor) fn tier_item_from_row(row: TierRow) -> EditorTierItem
         warning_text: row.warning_text.into(),
         multi_selected: row.multi_selected,
         proposed_angle: row.proposed_angle.into(),
+        kind: i32::from(row.kind == TierRowKind::Concave),
+        tool_line: row.tool_line.into(),
     }
 }
 
 /// Maps a whole plain row list with [`tier_item_from_row`].
+///
+/// A concave row's `index` is its position in `design.concave_tiers`, which would
+/// collide with a flat tier of the same number in every `item.index ==
+/// selected_tier_index` comparison and in the keyboard cursor. The table is flat rows
+/// first, then concave ones, so the Slint item carries the row's POSITION instead
+/// (flat count plus the concave index) and Rust maps it back with
+/// [`concave_tier_index`]. Flat rows are untouched.
 pub(in crate::gui::editor) fn tier_items_from_rows(rows: Vec<TierRow>) -> Vec<EditorTierItem> {
-    rows.into_iter().map(tier_item_from_row).collect()
+    let flat_count = rows
+        .iter()
+        .filter(|row| row.kind == TierRowKind::Flat)
+        .count();
+    rows.into_iter()
+        .map(|row| {
+            let concave_index = row.index;
+            let mut item = tier_item_from_row(row);
+            if item.kind == 1 {
+                item.index = (flat_count as i32).saturating_add(concave_index);
+            }
+            item
+        })
+        .collect()
+}
+
+/// The concave tier a table position names: `position` past the flat tiers, within the
+/// concave ones. `None` for a flat position, a negative one, or one beyond the table.
+/// The inverse of the position [`tier_items_from_rows`] gives a concave row.
+#[must_use]
+pub(in crate::gui::editor) fn concave_tier_index(
+    flat_count: usize,
+    concave_count: usize,
+    position: i32,
+) -> Option<usize> {
+    usize::try_from(position)
+        .ok()?
+        .checked_sub(flat_count)
+        .filter(|&index| index < concave_count)
 }
 
 /// [`indicatrix_editor::view_model::row_format::index_chip_items`], mapped to the
@@ -169,5 +206,70 @@ pub(in crate::gui::editor) fn push_rows<T: Clone + 'static>(
         }
     } else {
         set(ModelRc::new(VecModel::from(rows)));
+    }
+}
+
+#[cfg(test)]
+mod concave_row_tests {
+    use super::*;
+
+    fn row(kind: TierRowKind, index: i32, name: &str) -> TierRow {
+        TierRow {
+            index,
+            name: name.to_owned(),
+            kind,
+            tool_line: if kind == TierRowKind::Concave {
+                "CYL  +10.00\u{b0}".to_owned()
+            } else {
+                String::new()
+            },
+            ..TierRow::default()
+        }
+    }
+
+    #[test]
+    fn a_concave_row_carries_its_table_position_so_it_never_collides_with_a_flat_tier() {
+        let rows = vec![
+            row(TierRowKind::Flat, 0, "P1"),
+            row(TierRowKind::Flat, 1, "C1"),
+            row(TierRowKind::Concave, 0, "Groove"),
+            row(TierRowKind::Concave, 1, "Dimple"),
+        ];
+        let items = tier_items_from_rows(rows);
+        let positions: Vec<i32> = items.iter().map(|item| item.index).collect();
+        assert_eq!(positions, [0, 1, 2, 3], "one position per table row");
+        let kinds: Vec<i32> = items.iter().map(|item| item.kind).collect();
+        assert_eq!(kinds, [0, 0, 1, 1]);
+        assert_eq!(items[2].tool_line.as_str(), "CYL  +10.00\u{b0}");
+        assert_eq!(items[0].tool_line.as_str(), "");
+    }
+
+    #[test]
+    fn a_planar_row_list_maps_exactly_as_before() {
+        let rows = vec![
+            row(TierRowKind::Flat, 0, "P1"),
+            row(TierRowKind::Flat, 1, "C1"),
+        ];
+        let items = tier_items_from_rows(rows);
+        assert_eq!(
+            items.iter().map(|item| item.index).collect::<Vec<_>>(),
+            [0, 1]
+        );
+        assert!(items.iter().all(|item| item.kind == 0));
+    }
+
+    #[test]
+    fn a_position_past_the_flat_tiers_names_the_concave_tier_and_nothing_else_does() {
+        // Two flat tiers, two concave ones: positions 2 and 3 are the concave tiers.
+        assert_eq!(concave_tier_index(2, 2, 2), Some(0));
+        assert_eq!(concave_tier_index(2, 2, 3), Some(1));
+        assert_eq!(concave_tier_index(2, 2, 1), None, "a flat position");
+        assert_eq!(concave_tier_index(2, 2, 4), None, "beyond the table");
+        assert_eq!(concave_tier_index(2, 2, -1), None, "no selection");
+        assert_eq!(
+            concave_tier_index(2, 0, 2),
+            None,
+            "a planar design has none"
+        );
     }
 }

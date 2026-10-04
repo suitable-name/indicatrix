@@ -4,11 +4,16 @@
 //! comment for why each has an "already solved" variant alongside the
 //! solve-it-yourself convenience wrapper.
 
+mod concave;
+pub mod concave_frame;
 mod planes;
 mod refractive;
 mod schedule;
 
 #[cfg(test)]
+mod concave_tests;
+#[cfg(test)]
 mod tests;
 
-pub use schedule::meet_name_is_asc_safe;
+pub use concave::{ConcaveResolveError, FlatAndTools, ToolPlacements};
+pub use schedule::{meet_name_is_asc_safe, strip_generated_concave_footnotes};

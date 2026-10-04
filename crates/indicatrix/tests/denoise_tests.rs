@@ -73,7 +73,7 @@ fn region_mse(buf: &[Vec3], truth: Vec3, width: usize, xs: &Range<usize>, ys: Ra
 // 1. Error reduction (not merely variance reduction).
 // ---------------------------------------------------------------------------------
 
-/// Builds a two-region ground-truth image (distinct constant colour per half, distinct
+/// Builds a two-region ground-truth image (distinct constant color per half, distinct
 /// facet id per half, matching the "sharp facet boundary" structure of an actual
 /// gemstone render), adds strong per-pixel chromatic noise simulating single-hero-
 /// wavelength speckle, filters it, and asserts the filtered image is measurably closer
@@ -109,7 +109,7 @@ fn filtering_reduces_error_against_ground_truth() {
     let depth = vec![1.0f32; len];
     let normal = vec![Vec3::Z; len];
 
-    // Strong chromatic per-pixel noise: each pixel's colour is knocked toward a random
+    // Strong chromatic per-pixel noise: each pixel's color is knocked toward a random
     // saturated hue, at a magnitude comparable to the signal itself -- this is meant to
     // stand in for single-hero-wavelength speckle, not small Gaussian sensor noise.
     let mut rng = Xorshift32::new(12345);
@@ -145,8 +145,8 @@ fn filtering_reduces_error_against_ground_truth() {
 // 2. Edges survive: facet boundary stays sharp.
 // ---------------------------------------------------------------------------------
 
-/// Two regions of very different colour, split by facet id, meeting at a sharp
-/// vertical boundary and no noise. After filtering, the cross-edge colour jump (the
+/// Two regions of very different color, split by facet id, meeting at a sharp
+/// vertical boundary and no noise. After filtering, the cross-edge color jump (the
 /// last pixel of region A vs. the first pixel of region B, at the strongest kernel
 /// dilation) must remain close to the original jump -- the facet hard-rejection term
 /// should have prevented the filter from softening the boundary.
@@ -432,7 +432,7 @@ fn one_by_one_image_does_not_panic() {
     let d = (filtered[0] - color[0]).length();
     assert!(
         d < 1.0e-4,
-        "single-pixel image should trivially reproduce its own colour"
+        "single-pixel image should trivially reproduce its own color"
     );
 }
 
@@ -562,7 +562,7 @@ fn mismatched_buffer_lengths_degrade_gracefully() {
 /// Exercised through `AtrousDenoiser::denoise_into_with_threads` (the full 5-pass
 /// default pipeline, ping-ponging scratch buffers exactly as the real render loop
 /// does), on a deliberately non-trivial, non-square, non-power-of-two-sized image with
-/// several facet regions, jittered normals, varying depth and noisy colour, so every
+/// several facet regions, jittered normals, varying depth and noisy color, so every
 /// edge-stopping term actually does work and row-chunk boundaries fall unevenly across
 /// most of the tested thread counts.
 #[test]
@@ -674,8 +674,8 @@ fn zero_passes_param_does_not_panic() {
 // 8. Non-finite texels, background pixels, and frames with no samples.
 // ---------------------------------------------------------------------------------
 
-/// One NaN or infinite colour texel must stay a local problem: every other pixel of a
-/// uniform image has to come out as the uniform colour, and the damaged texels themselves
+/// One NaN or infinite color texel must stay a local problem: every other pixel of a
+/// uniform image has to come out as the uniform color, and the damaged texels themselves
 /// must be repaired from their neighbours rather than staying non-finite. (Previously a single NaN poisoned the whole 5x5 window of every pass.)
 #[test]
 fn a_non_finite_texel_does_not_contaminate_its_neighbours() {
@@ -706,7 +706,7 @@ fn a_non_finite_texel_does_not_contaminate_its_neighbours() {
     // A NaN distance also fails the comparison, so this covers finiteness too.
     for (i, v) in filtered.iter().enumerate() {
         let d = (*v - constant).length();
-        assert!(d < 1.0e-4, "pixel {i} is {v:?}, not the uniform colour");
+        assert!(d < 1.0e-4, "pixel {i} is {v:?}, not the uniform color");
     }
 }
 

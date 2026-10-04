@@ -8,6 +8,84 @@ use indicatrix_vault::{db::sqlite::Database, local};
 use slint::ComponentHandle;
 use std::sync::{Arc, Mutex};
 
+/// How many of `full`'s schedule rows are concave tiers (rows carrying a tool).
+fn concave_row_count(full: &indicatrix_vault::model::entry::FullDiagramRecord) -> usize {
+    full.angle_settings
+        .iter()
+        .filter(|row| row.tool.is_some())
+        .count()
+}
+
+/// What exporting `full` as a tier list loses, as one confirm-dialog paragraph; `None`
+/// for a planar design. The same words the editor's export says
+/// (`ManufacturabilityWarning::ConcaveTiersOmittedFromExport`), so the two never drift.
+fn concave_export_notice(
+    full: &indicatrix_vault::model::entry::FullDiagramRecord,
+) -> Option<String> {
+    let count = concave_row_count(full);
+    (count > 0).then(|| {
+        indicatrix_cut_core::ManufacturabilityWarning::ConcaveTiersOmittedFromExport { count }
+            .to_string()
+    })
+}
+
+/// `full`'s schedule rows split for a reconstructed `.asc`: the flat rows (the tier
+/// list) and one footnote pair per concave row, in the shape
+/// `Design::append_concave_footnotes` writes (facet line, then the tool line). Without
+/// the split a concave row would be written as a flat tier with a placeholder mast, a
+/// facet the stone does not have.
+fn split_concave_rows(
+    full: &indicatrix_vault::model::entry::FullDiagramRecord,
+) -> (
+    Vec<indicatrix_vault::model::angle::AngleSetting>,
+    Vec<String>,
+) {
+    let single_line = |text: &str| -> String {
+        text.split(['\r', '\n'])
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim()
+            .to_owned()
+    };
+    let mut flat = Vec::with_capacity(full.angle_settings.len());
+    let mut footnotes = Vec::new();
+    for row in &full.angle_settings {
+        if row.tool.is_none() {
+            flat.push(row.clone());
+            continue;
+        }
+        footnotes.push(single_line(&format!(
+            "{}  {}  {}  {}",
+            row.facet, row.angle, row.index, row.notes
+        )));
+        if let Some(line) = &row.tool_line {
+            footnotes.push(single_line(line));
+        }
+    }
+    (flat, footnotes)
+}
+
+/// Runs `proceed` straight away for a planar design, and after the cutter accepts the
+/// loss of the concave tiers otherwise -- before any picker opens, so declining writes
+/// nothing.
+fn confirm_concave_loss_then(
+    ui: &MainWindow,
+    notice: Option<String>,
+    proceed: impl FnOnce(&MainWindow) + 'static,
+) {
+    match notice {
+        None => proceed(ui),
+        Some(notice) => crate::gui::editor::native_io::ask_write_confirm(
+            ui,
+            "Concave tiers are not part of this format",
+            format!("{notice}\n\nExport anyway?"),
+            "Export Anyway",
+            None,
+            proceed,
+        ),
+    }
+}
+
 /// Wires up "Export .asc": for a design with an original `.asc` attachment, exports
 /// the stored attachment byte-for-byte (delegates to
 /// `gui::library::detail::export_diagram_file`, the same path the Attachments tab's
@@ -98,29 +176,41 @@ pub fn setup_export_asc_callback(
         // back on the UI thread.
         let default_dir = std::path::Path::new("exports");
         let db_for_pick = Arc::clone(&db_export);
-        crate::gui::pickers::pick(
-            &ui,
-            crate::gui::pickers::PickerRequest {
-                kind: crate::gui::pickers::PickerKind::SaveFile,
-                title: None,
-                filters: vec![crate::gui::pickers::PickerFilter {
-                    label: ".asc design".to_string(),
-                    extensions: vec!["asc".to_string()],
-                }],
-                default_file_name: Some(default_file_name),
-                starting_dir: default_dir.is_dir().then(|| default_dir.to_path_buf()),
-            },
-            move |ui, dest_path| {
-                finish_export_asc(
-                    ui,
-                    &db_for_pick,
-                    entry_id,
-                    &full,
-                    existing_name,
-                    dest_path,
-                );
-            },
-        );
+        // Only the reconstruction loses anything: a stored `.asc` is exported as it
+        // is (its concave tiers already are footnotes) and a `.gem`/`.gcs` cannot
+        // hold a concave tier to begin with.
+        let notice = (existing_name.is_none()
+            && local::design_attachment_position(
+                full.attached_files.iter().map(|f| f.name.as_str()),
+            )
+            .is_none())
+        .then(|| concave_export_notice(&full))
+        .flatten();
+        confirm_concave_loss_then(&ui, notice, move |ui| {
+            crate::gui::pickers::pick(
+                ui,
+                crate::gui::pickers::PickerRequest {
+                    kind: crate::gui::pickers::PickerKind::SaveFile,
+                    title: None,
+                    filters: vec![crate::gui::pickers::PickerFilter {
+                        label: ".asc design".to_string(),
+                        extensions: vec!["asc".to_string()],
+                    }],
+                    default_file_name: Some(default_file_name),
+                    starting_dir: default_dir.is_dir().then(|| default_dir.to_path_buf()),
+                },
+                move |ui, dest_path| {
+                    finish_export_asc(
+                        ui,
+                        &db_for_pick,
+                        entry_id,
+                        &full,
+                        existing_name,
+                        dest_path,
+                    );
+                },
+            );
+        });
     });
 
     setup_export_gcs_callback(ui, db, source);
@@ -176,20 +266,27 @@ fn setup_export_gcs_callback(
             }
         };
         let default_dir = std::path::Path::new("exports");
-        crate::gui::pickers::pick(
-            &ui,
-            crate::gui::pickers::PickerRequest {
-                kind: crate::gui::pickers::PickerKind::SaveFile,
-                title: None,
-                filters: vec![crate::gui::pickers::PickerFilter {
-                    label: "Gem Cut Studio design (.gcs)".to_string(),
-                    extensions: vec!["gcs".to_string()],
-                }],
-                default_file_name: Some(export.file_name.clone()),
-                starting_dir: default_dir.is_dir().then(|| default_dir.to_path_buf()),
-            },
-            move |ui, dest_path| finish_export_gcs(ui, &export, dest_path),
-        );
+        // An original `.gcs` attachment is written byte for byte; one rebuilt from the
+        // design's schedule has no place for a concave tier.
+        let notice = (!export.is_original)
+            .then(|| concave_export_notice(&full))
+            .flatten();
+        confirm_concave_loss_then(&ui, notice, move |ui| {
+            crate::gui::pickers::pick(
+                ui,
+                crate::gui::pickers::PickerRequest {
+                    kind: crate::gui::pickers::PickerKind::SaveFile,
+                    title: None,
+                    filters: vec![crate::gui::pickers::PickerFilter {
+                        label: "Gem Cut Studio design (.gcs)".to_string(),
+                        extensions: vec!["gcs".to_string()],
+                    }],
+                    default_file_name: Some(export.file_name.clone()),
+                    starting_dir: default_dir.is_dir().then(|| default_dir.to_path_buf()),
+                },
+                move |ui, dest_path| finish_export_gcs(ui, &export, dest_path),
+            );
+        });
     });
 }
 
@@ -402,13 +499,17 @@ fn finish_export_asc(
         return;
     }
 
+    let (flat_rows, concave_footnotes) = split_concave_rows(full);
     let schedule = match local::reconstruct_asc_schedule(
         &full.title,
         full.refractive_index.as_deref(),
         full.index_gear.as_deref(),
-        &full.angle_settings,
+        &flat_rows,
     ) {
-        Ok(Some(schedule)) => schedule,
+        Ok(Some(mut schedule)) => {
+            schedule.footnotes.extend(concave_footnotes);
+            schedule
+        }
         Ok(None) => {
             show_toast(
                 ui,

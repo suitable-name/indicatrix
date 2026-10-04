@@ -14,7 +14,7 @@
 // upgrade nests deeper.
 #![recursion_limit = "256"]
 
-/// Colour science: CIE 1931 colour matching, gamut mapping, tone mapping, and the
+/// color science: CIE 1931 color matching, gamut mapping, tone mapping, and the
 /// brilliance/fire/scintillation optical metrics.
 pub mod color;
 /// Faceted gemstone solid geometry: the plane-arrangement B-rep, standard cut

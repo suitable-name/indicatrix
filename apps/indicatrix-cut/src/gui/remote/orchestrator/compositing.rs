@@ -9,7 +9,10 @@ use crate::bridge::{
     },
 };
 use glam::Vec3;
-use indicatrix::geometry::plane::GpuFacetPlane;
+use indicatrix::geometry::{
+    plane::GpuFacetPlane,
+    tool::{StoneGeometry, ToolPrimitive},
+};
 
 /// The remote accumulator's current running sum, as [`render_merged_frame`] receives it:
 /// dimensions, sample count, and the merged radiance itself. `Copy` -- every field is a
@@ -32,6 +35,9 @@ pub(super) struct PoseAndGeometry<'a> {
     pub(super) pitch: f32,
     pub(super) distance: f32,
     pub(super) planes: &'a [GpuFacetPlane],
+    /// The concave tools cut out of `planes` (empty for a planar stone): the guides must
+    /// see the notches the image shows, or the denoiser would smooth across their edges.
+    pub(super) tools: &'a [ToolPrimitive],
 }
 
 /// Turns a remote accumulator's current running sum into a displayable RGBA byte
@@ -75,13 +81,16 @@ pub(super) fn render_merged_frame(
             accum.buffer,
         );
     }
-    let guides = guide_cache.ensure(
+    let guides = guide_cache.ensure_geom(
         accum.width,
         accum.height,
         pose.yaw,
         pose.pitch,
         pose.distance,
-        pose.planes,
+        StoneGeometry {
+            planes: pose.planes,
+            tools: pose.tools,
+        },
     );
     denoise_and_tonemap_frame(
         FirstHitSnapshot {
@@ -142,6 +151,7 @@ mod tests {
                 pitch: 0.45,
                 distance: 2.4,
                 planes: &planes,
+                tools: &[],
             },
             &mut guide_cache,
             &mut DenoiseScratch {
@@ -187,6 +197,7 @@ mod tests {
                     pitch: 0.45,
                     distance: 2.4,
                     planes: &planes,
+                    tools: &[],
                 },
                 &mut guide_cache,
                 &mut DenoiseScratch {
@@ -228,6 +239,7 @@ mod tests {
                 pitch: 0.45,
                 distance: 2.4,
                 planes: &planes,
+                tools: &[],
             },
             &mut guide_cache,
             &mut DenoiseScratch {
@@ -249,6 +261,7 @@ mod tests {
                 pitch: 0.45,
                 distance: 2.4,
                 planes: &planes,
+                tools: &[],
             },
             &mut guide_cache,
             &mut DenoiseScratch {
@@ -303,6 +316,7 @@ mod tests {
                 pitch: 0.45,
                 distance: 2.4,
                 planes: &planes,
+                tools: &[],
             },
             &mut guide_cache,
             &mut DenoiseScratch {
@@ -353,6 +367,7 @@ mod tests {
                 pitch,
                 distance,
                 planes: &planes,
+                tools: &[],
             },
             &mut guide_cache,
             &mut DenoiseScratch {

@@ -29,6 +29,8 @@ mod tests_checks;
 #[cfg(test)]
 mod tests_db;
 #[cfg(test)]
+mod tests_mesh;
+#[cfg(test)]
 mod tests_save;
 #[cfg(test)]
 mod tests_shape;
@@ -155,7 +157,7 @@ pub(in crate::gui::rough_plan) fn show_status(host: &Host, message: &str) {
     model.set_status_level(0);
 }
 
-/// Shows `message` as the window's status line in the warning colour (a staleness note).
+/// Shows `message` as the window's status line in the warning color (a staleness note).
 fn show_warning(host: &Host, message: &str) {
     let model = host.window.global::<RoughPlanModel>();
     model.set_status_text(message.into());

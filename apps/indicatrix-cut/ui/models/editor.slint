@@ -1,4 +1,4 @@
-import { AngleItem, DeepSolveTierRow, EditorTierItem, GearRemapRow, IndexChipItem, OptimizeChangeRow, OptimizeResultRow } from "../types.slint";
+import { AngleItem, ConcaveFormData, DeepSolveTierRow, EditorTierItem, GearRemapRow, IndexChipItem, OptimizeChangeRow, OptimizeResultRow } from "../types.slint";
 
 export global EditorModel {
     in property <bool> enabled: false;
@@ -133,17 +133,24 @@ export global EditorModel {
     // the "Eff. RI" chip.
     in property <string> ri_source_text: "";
     in property <string> critical_angle_text: "";
-    // Body-colour variant of the design's material: "Material default" (index 0,
+    // Body-color variant of the design's material: "Material default" (index 0,
     // no override) then the fixed presets, pushed from Rust
-    // (`indicatrix_editor::material::body_colour_options`); index `i >= 1` is
+    // (`indicatrix_editor::material::body_color_options`); index `i >= 1` is
     // preset `i - 1`.
-    in property <[string]> body_colour_options: ["Material default"];
-    in-out property <int> body_colour_index: 0;
-    // The linked viewport's material name with its colour (`Sapphire (Yellow)`),
-    // empty while the design has no colour override or the viewport is unlinked.
+    in property <[string]> body_color_options: ["Material default"];
+    in-out property <int> body_color_index: 0;
+    // The linked viewport's material name with its color (`Sapphire (Yellow)`),
+    // empty while the design has no color override or the viewport is unlinked.
     // Shown beside the Live Render tab's Render Material dropdown.
-    in property <string> body_colour_readout: "";
-    // (material combo index, RI override text, body colour combo index).
+    in property <string> body_color_readout: "";
+    // The design's material is a custom material whose color is a physics recipe. The per-design
+    // body-color override replaces the whole absorption tensor, i.e. the physical color, so the
+    // color combo is greyed out for it ("replaces the physical color") until a physics
+    // override exists (follow-up). `physics_override_conflict` is true when an override is already
+    // set on such a design -- shown as a warning (the override still wins until cleared).
+    in property <bool> design_material_is_physics: false;
+    in property <bool> physics_override_conflict: false;
+    // (material combo index, RI override text, body color combo index).
     callback apply_design_material(int, string, int);
 
     // Inferred material shown as a guess, never a fact. Imported `.asc` files
@@ -223,6 +230,17 @@ export global EditorModel {
     callback redo();
     callback apply_preform(int, string, string, string);
     callback save_tier(int, string, int, string, string, string);
+    // The concave tier form's Save/Add: `index` is the concave tier's position in
+    // `design.concave_tiers`, or -1 to add one. A separate callback rather than a
+    // wider `save_tier`, whose six arguments stay as they are.
+    callback save_concave_tier(int, ConcaveFormData);
+    // "+ Add Concave Tier" (tier table toolbar, command bar): Rust opens the inspector's
+    // Tier tab on a blank concave form (`inspector_concave_mode`).
+    callback add_concave_tier();
+    // A concave tier read back as form fields at full precision (`concave_tier_form_fields`),
+    // for the inspector to seed its draft from; `index` is the table position of a
+    // concave row. Pure: it reads the design and changes nothing.
+    pure callback concave_form_data(int) -> ConcaveFormData;
     callback remove_tier(int);
     callback toggle_detach(int);
     callback inline_set_angle(int, string);
@@ -591,6 +609,11 @@ export global EditorModel {
     // never reads either.
     in-out property <string> hover_hint: "";
     in-out property <int> inspector_tab: 0;
+    // Whether the inspector's Tier tab shows the concave form for an "Add" draft
+    // (selection -1). A selected concave row shows it regardless. Set by Rust's
+    // `add_concave_tier` and cleared in Slint when a flat row is selected or "New Tier"
+    // is pressed, hence in-out. Purely UI state, like `inspector_tab`.
+    in-out property <bool> inspector_concave_mode: false;
 
     // The resizable/collapsible dock layout: `dock_width` is the
     // viewport|dock split (`app.slint`'s edit-mode row, dragged via

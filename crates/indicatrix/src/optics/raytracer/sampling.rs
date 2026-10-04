@@ -51,6 +51,15 @@ pub(crate) const NEE_ENV_DIR_V_STREAM: u32 = 0x2F1E_8A4D;
 /// disabled stays bit-identical to one traced with NEE support absent altogether.
 pub(crate) const FROSTED_NEE_ENV_DIR_U_STREAM: u32 = 0x6A09_E667;
 pub(crate) const FROSTED_NEE_ENV_DIR_V_STREAM: u32 = 0xBB67_AE85;
+/// Fluorescence vertex draws (`transport::inner`): the free-path distance to the vertex,
+/// the emitter choice, the excitation wavelength and the 2D isotropic emission direction.
+/// Streams no other draw uses, and only ever hashed when a scene has fluorescence, so a
+/// trace with an empty `Fluorescence` consumes no extra randomness.
+pub(crate) const FLUORESCENCE_DISTANCE_STREAM: u32 = 0x3C6E_F372;
+pub(crate) const FLUORESCENCE_EMITTER_STREAM: u32 = 0xA54F_F53A;
+pub(crate) const FLUORESCENCE_EXCITATION_STREAM: u32 = 0x510E_527F;
+pub(crate) const FLUORESCENCE_DIR_U_STREAM: u32 = 0x9B05_688C;
+pub(crate) const FLUORESCENCE_DIR_V_STREAM: u32 = 0x1F83_D9AB;
 
 /// Fast integer hash for high-quality spatial/temporal PRNG
 #[must_use]

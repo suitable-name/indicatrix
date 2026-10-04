@@ -1,4 +1,4 @@
-//! CIE 1931 colour-matching-function integrals and XYZ-to-sRGB gamma mapping tests.
+//! CIE 1931 color-matching-function integrals and XYZ-to-sRGB gamma mapping tests.
 
 use glam::Vec3;
 use indicatrix::{
@@ -88,6 +88,6 @@ fn test_xyz_to_srgb_out_of_gamut_is_finite() {
 
     assert!(
         rgba[0] > 0 || rgba[1] > 0 || rgba[2] > 0,
-        "Strongly saturated out-of-gamut monochromatic colour must not collapse to pure black (got {rgba:?})"
+        "Strongly saturated out-of-gamut monochromatic color must not collapse to pure black (got {rgba:?})"
     );
 }

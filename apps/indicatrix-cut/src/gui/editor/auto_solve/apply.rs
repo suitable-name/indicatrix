@@ -26,8 +26,9 @@ use crate::{
         solid_preview::preview_state::CameraPose,
     },
 };
-use indicatrix::geometry::{GpuFacetPlane, meet_solver::SolvedTier};
+use indicatrix::geometry::{GpuFacetPlane, ToolPrimitive, meet_solver::SolvedTier};
 use indicatrix_cut_core::Design;
+use indicatrix_solid::preview::StoneGeometryBuf;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::{
     sync::{
@@ -52,6 +53,11 @@ pub(super) struct BackgroundSolveResult {
     pub(super) warnings: Vec<(usize, String)>,
     pub(super) yield_texts: (String, String, String, String),
     pub(super) planes: Vec<GpuFacetPlane>,
+    /// The concave tools cut out of `planes`, and each tool's `(concave tier,
+    /// placement)`; both empty for a planar design. Built on the worker thread from
+    /// the same solve as `planes`, so the viewport claims them together.
+    pub(super) tools: Vec<ToolPrimitive>,
+    pub(super) placements: Vec<(usize, usize)>,
     pub(super) solved: Option<Vec<SolvedTier>>,
     /// `true` iff `status_text`
     /// above is `super::dispatch::too_many_planes_message`'s plane-cap sentence --
@@ -115,6 +121,8 @@ impl BackgroundSolveResult {
             warnings: Vec::new(),
             yield_texts: (String::new(), String::new(), String::new(), String::new()),
             planes: Vec::new(),
+            tools: Vec::new(),
+            placements: Vec::new(),
             solved: None,
             too_many_planes: false,
             gear: (
@@ -315,7 +323,11 @@ pub(super) fn apply_background_solve_result(
         ui,
         render_ctx,
         started_generation,
-        result.planes,
+        StoneGeometryBuf {
+            planes: result.planes,
+            tools: result.tools,
+            placements: result.placements,
+        },
         result.gear,
         result.solved,
     ) {
@@ -338,18 +350,20 @@ fn push_viewport_after_background_solve(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
     started_generation: u64,
-    planes: Vec<GpuFacetPlane>,
+    stone: StoneGeometryBuf,
     gear: (u32, f32),
     solved: Option<Vec<SolvedTier>>,
 ) -> bool {
-    let planes = Arc::new(planes);
+    let planes = Arc::new(stone.planes);
     let mut ctx = render_ctx.lock().unwrap_or_else(PoisonError::into_inner);
     // `started_generation` rather than the live counter: a
     // background solve that finished against an older design must not out-rank the
     // claim a newer edit already made, which is exactly what `may_claim_active_planes`
     // compares.
-    if !ctx.claim_active_planes(
+    if !ctx.claim_active_geometry(
         Arc::clone(&planes),
+        Arc::new(stone.tools.clone()),
+        stone.placements.clone(),
         Some(gear),
         PlanesOwner::Editor {
             generation: started_generation,
@@ -366,10 +380,11 @@ fn push_viewport_after_background_solve(
     };
     let render_size = (ctx.width, ctx.height);
     drop(ctx);
-    let redraw_planes: Vec<(glam::Vec3, f32)> = planes
-        .iter()
-        .map(|p| (glam::Vec3::from(p.normal), -p.d))
-        .collect();
+    let redraw_stone = StoneGeometryBuf {
+        planes: planes.as_ref().clone(),
+        tools: stone.tools,
+        placements: stone.placements,
+    };
     let view_mode = ui.global::<SolidPreviewModel>().get_view_mode() as u8;
     // This is the "immediately after the next edit or Solve" call site that
     // `camera_lighting::contained_request_size`'s own doc comment names as still
@@ -386,7 +401,7 @@ fn push_viewport_after_background_solve(
         (rt.preview_state.clone(), rt.solid_last_solved.clone())
     });
     if let Some(preview_state) = preview_state {
-        preview_state.request_redraw_with_gear(redraw_planes, camera, size, view_mode, design_gear);
+        preview_state.request_redraw_geometry(redraw_stone, camera, size, view_mode, design_gear);
     }
     if let (Some(solved), Some(cache)) = (solved, solid_last_solved) {
         // stamped with `started_generation`, not the live counter --

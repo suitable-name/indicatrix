@@ -13,8 +13,9 @@ use super::{
     legend::{draw_index_wheel, draw_selected_index_radials, draw_symmetry_and_mirror_lines},
     simplify_ring,
 };
+use crate::raster::{largest_piece_label_spots, screen_centroid, simplified_edge_flags};
 use glam::{DVec3, Vec3};
-use indicatrix::geometry::stone_metrics::SolidMesh;
+use indicatrix::geometry::{meet_solver::Block, stone_metrics::SolidMesh};
 
 /// Renders `mesh` into a three-panel [`DiagramFrame`] per the parent module's doc
 /// comment.
@@ -202,9 +203,16 @@ fn render_panel(
         visible,
         project,
     };
-    let (edge_points, edge_ranges, label_spots) =
+    let (edge_points, edge_ranges, label_spots, edge_hidden) =
         fill_panel_facets(frame, &fill_ctx, dedup_scratch, ring_scratch);
-    draw_panel_edges(frame, layout, style, &edge_points, &edge_ranges);
+    draw_panel_edges(
+        frame,
+        layout,
+        style,
+        &edge_points,
+        &edge_ranges,
+        &edge_hidden,
+    );
     draw_panel_labels(frame, layout, style, label_spots);
 
     if layout.kind.has_index_wheel() {
@@ -257,7 +265,23 @@ type PanelFillOutput = (
     Vec<(f32, f32, f32)>,
     Vec<(usize, usize, usize)>,
     Vec<(usize, f32, f32, f32, f32)>, // facet_id, cx, cy, w, h
+    Vec<bool>, // parallel to the edge points: segment not drawn (concave seams only)
 );
+
+/// Whether `panel` may show a concave tool facet whose tier is in `block`.
+///
+/// Crown and pavilion tool pieces belong to their own panel only; the profile
+/// (side elevation) panel shows every piece its normal predicate accepts, since it
+/// is depth-tested along `z` and has no crown/pavilion side of its own. A girdle
+/// block has no crown/pavilion panel.
+const fn panel_shows_block(panel: PanelKind, block: Block) -> bool {
+    matches!(
+        (panel, block),
+        (PanelKind::Crown, Block::Crown)
+            | (PanelKind::Pavilion, Block::Pavilion)
+            | (PanelKind::Profile, _)
+    )
+}
 
 /// The facet fill pass of [`render_panel`]'s "two passes, exactly like
 /// `raster::SolidRasterizer::render`" scheme: fills every visible facet, and
@@ -275,13 +299,26 @@ fn fill_panel_facets(
     let mut edge_points: Vec<(f32, f32, f32)> = Vec::new();
     let mut edge_ranges: Vec<(usize, usize, usize)> = Vec::new();
     let mut label_spots: Vec<(usize, f32, f32, f32, f32)> = Vec::new();
+    let mut edge_hidden: Vec<bool> = Vec::new();
+    let mut piece_centroids: Vec<(f32, f32, f32)> = Vec::new();
 
-    for (facet_id, ring) in &ctx.mesh.rings {
-        let Some(Some(normal_f64)) = ctx.facet_normal.get(*facet_id).copied() else {
+    for (ring_index, (facet_id, ring)) in ctx.mesh.rings.iter().enumerate() {
+        // A concave mesh carries one normal per ring (a facet has several pieces and a
+        // tool piece is curved); the planar path keeps its per-facet table.
+        let normal_f64 = ctx.mesh.piece_normals.as_ref().map_or_else(
+            || ctx.facet_normal.get(*facet_id).copied().flatten(),
+            |pieces| pieces.get(ring_index).copied(),
+        );
+        let Some(normal_f64) = normal_f64 else {
             continue;
         };
         let normal = to_vec3(normal_f64);
         if !(ctx.visible)(normal) {
+            continue;
+        }
+        if let Some(block) = ctx.style.tool_facet_block.get(*facet_id).copied().flatten()
+            && !panel_shows_block(ctx.layout.kind, block)
+        {
             continue;
         }
         simplify_ring(ring, dedup_scratch, ring_scratch);
@@ -305,13 +342,25 @@ fn fill_panel_facets(
         );
         edge_ranges.push((*facet_id, edge_points.len(), screen.len()));
         edge_points.extend_from_slice(&screen);
+        if let Some(visible) = &ctx.mesh.edge_visible {
+            let flags = simplified_edge_flags(
+                ring,
+                ring_scratch,
+                visible.get(ring_index).map_or(&[], Vec::as_slice),
+            );
+            edge_hidden.extend(flags.into_iter().map(|drawn| !drawn));
+            piece_centroids.push(screen_centroid(&screen));
+        }
 
         let (min_x, max_x, min_y, max_y) = bounds(&screen);
         let (cx, cy) = (min_x.midpoint(max_x), min_y.midpoint(max_y));
         label_spots.push((*facet_id, cx, cy, max_x - min_x, max_y - min_y));
     }
+    if ctx.mesh.piece_normals.is_some() {
+        label_spots = largest_piece_label_spots(&label_spots, &piece_centroids);
+    }
 
-    (edge_points, edge_ranges, label_spots)
+    (edge_points, edge_ranges, label_spots, edge_hidden)
 }
 
 /// Which of [`draw_panel_edges`]'s ordered passes an edge segment belongs to --
@@ -347,6 +396,7 @@ fn draw_panel_edges(
     style: &DiagramStyle,
     edge_points: &[(f32, f32, f32)],
     edge_ranges: &[(usize, usize, usize)],
+    edge_hidden: &[bool],
 ) {
     let is_selected = |facet_id: usize| style.selected.get(facet_id).copied().unwrap_or(false);
     let is_pending = |facet_id: usize| style.pending.get(facet_id).copied().unwrap_or(false);
@@ -392,6 +442,9 @@ fn draw_panel_edges(
             }
             let pts = &edge_points[start..start + count];
             for (i, &a) in pts.iter().enumerate() {
+                if edge_hidden.get(start + i).copied().unwrap_or(false) {
+                    continue;
+                }
                 let b = pts[(i + 1) % count];
                 draw_edge(frame, a, b, color, layout.clip, width);
             }

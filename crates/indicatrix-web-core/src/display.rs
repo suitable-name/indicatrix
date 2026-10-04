@@ -13,7 +13,7 @@
 //!   `AtrousParams::default()`.
 //! - **PNG export:** [`export_png`] is the desktop's still export
 //!   (`bridge/export_thread`: `render_image_rgba`'s full-data branch, then `save_png`):
-//!   `tonemap::tonemap_accumulation` for the chosen colour space, then
+//!   `tonemap::tonemap_accumulation` for the chosen color space, then
 //!   `render_setup::encode_png_with_icc`. The desktop export never denoises; the web
 //!   dialog's optional denoise filters the mean with the live view's filter first
 //!   ([`Denoiser::denoised_mean`]) and tone-maps the filtered mean through the same
@@ -46,10 +46,10 @@ pub fn live_rgba(sum: &[Vec3], sample_count: u32) -> Vec<u8> {
     tonemap_to_rgba(sum, 1.0 / sample_count.max(1) as f32)
 }
 
-/// The colour spaces the web export offers, in the dialog's order.
+/// The color spaces the web export offers, in the dialog's order.
 pub const EXPORT_COLOR_SPACES: [ColorSpace; 2] = [ColorSpace::Srgb, ColorSpace::DisplayP3];
 
-/// The dialog's label for an export colour space (the desktop's `{colorspace}` text).
+/// The dialog's label for an export color space (the desktop's `{colorspace}` text).
 #[must_use]
 pub const fn color_space_label(color_space: ColorSpace) -> &'static str {
     match color_space {
@@ -60,7 +60,7 @@ pub const fn color_space_label(color_space: ColorSpace) -> &'static str {
     }
 }
 
-/// The export colour space for a dialog index (out of range = sRGB).
+/// The export color space for a dialog index (out of range = sRGB).
 #[must_use]
 pub fn export_color_space(index: i32) -> ColorSpace {
     usize::try_from(index)

@@ -57,7 +57,7 @@ fn diamond_design() -> Design {
         name: Some("Diamond".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     design
 }
@@ -203,7 +203,7 @@ fn apply_pending_retarget_combines_a_material_change_into_one_undo_step() {
         name: Some("Quartz".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     apply_pending_retarget(&mut state, (proposal, generation), Some(material_change))
         .unwrap_or_else(|_| panic!("a fresh, matching-generation proposal must apply"));
@@ -251,7 +251,7 @@ fn initial_target_index_finds_the_designs_own_named_material() {
         name: Some("Quartz".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     let quartz_index = design_material_index_from_name(Some("Quartz"), &options);
     assert_eq!(initial_target_index(&material, &options), quartz_index);
@@ -265,7 +265,7 @@ fn initial_target_index_seeds_the_custom_ri_sentinel_for_a_nameless_override() {
         name: None,
         specific_gravity_override: None,
         refractive_index_override: Some(1.6),
-        body_colour_override: None,
+        body_color_override: None,
     };
     assert_eq!(
         initial_target_index(&material, &options),
@@ -341,7 +341,7 @@ fn target_display_name_shows_custom_ri_for_a_nameless_override() {
         name: None,
         specific_gravity_override: None,
         refractive_index_override: Some(1.74),
-        body_colour_override: None,
+        body_color_override: None,
     };
     assert_eq!(target_display_name(&selection), "Custom RI");
 }
@@ -352,7 +352,7 @@ fn target_display_name_shows_the_picked_material_name() {
         name: Some("Quartz".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
-        body_colour_override: None,
+        body_color_override: None,
     };
     assert_eq!(target_display_name(&selection), "Quartz");
 }

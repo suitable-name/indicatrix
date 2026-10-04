@@ -21,16 +21,25 @@ use super::super::{
     environment::{
         EnvironmentSource, environment_nee_pdf, environment_white_balance, fill_backdrop,
     },
-    intersect::{intersect_polyhedron_soa, shading_normal_near_edge},
+    intersect::shading_normal_near_edge,
+    intersect_stone::intersect_stone_soa,
     refraction::{
         ExitSplitCtx, RayMaterialContext, RayWavelengthCache, build_ray_wavelength_cache,
         compute_bounce_refraction_geometry,
     },
+    sampling::{
+        FLUORESCENCE_DIR_U_STREAM, FLUORESCENCE_DIR_V_STREAM, FLUORESCENCE_DISTANCE_STREAM,
+        FLUORESCENCE_EMITTER_STREAM, FLUORESCENCE_EXCITATION_STREAM, hash_u32,
+    },
     scattering::{NeeContext, ScatterStepOutcome, balance_heuristic, try_scatter_step},
 };
 use crate::{
-    geometry::plane::GpuFacetPlane,
+    geometry::{
+        plane::GpuFacetPlane,
+        tool::{StoneGeometry, ToolPrimitive},
+    },
     optics::{
+        fluorescence::{Fluorescence, sample_vertex},
         materials::{CrystalSystem, GemMaterial},
         polarization::StokesVector,
     },
@@ -55,6 +64,83 @@ fn capture_primary_hit(
 /// The facet's finish, with `Polished` for any index `facet_finishes` doesn't cover.
 fn facet_finish_for(facet_finishes: &[FacetFinish], facet_idx: usize) -> FacetFinish {
     facet_finishes.get(facet_idx).copied().unwrap_or_default()
+}
+
+/// Edge-rounded shading normal for a hit on a (possibly concave) stone.
+///
+/// A convex stone calls [`shading_normal_near_edge`] unchanged, so the planar output is
+/// bit-identical. With tools, rounding is skipped (v1) for a hit on a tool surface, and
+/// for a plane hit within `rounding_radius` of a tool: `shading_normal_near_edge` blends
+/// toward the nearest *plane* normal, which would be the wrong neighbour there. The
+/// tool-proximity test probes the four in-plane points one radius away, which is exact
+/// for the common case of a tool crossing the facet and cheap (tools are few).
+fn shading_normal_for_hit(
+    geom: StoneGeometry<'_>,
+    hit_point: Vec3,
+    hit_facet_idx: usize,
+    hit_normal: Vec3,
+    rounding_radius: f32,
+) -> Vec3 {
+    if geom.is_convex() || rounding_radius <= 0.0 {
+        return shading_normal_near_edge(
+            geom.planes,
+            hit_point,
+            hit_facet_idx,
+            hit_normal,
+            rounding_radius,
+        );
+    }
+    if hit_facet_idx >= geom.planes.len() {
+        return hit_normal;
+    }
+    let (u, v) = crate::optics::raytracer::scattering::frosted_orthonormal_basis(hit_normal);
+    let near_tool = [u, -u, v, -v].into_iter().any(|dir| {
+        let probe = hit_point + dir * rounding_radius;
+        geom.tools.iter().any(|tool| tool.contains(probe))
+    });
+    if near_tool {
+        return hit_normal;
+    }
+    shading_normal_near_edge(
+        geom.planes,
+        hit_point,
+        hit_facet_idx,
+        hit_normal,
+        rounding_radius,
+    )
+}
+
+/// `true` when `p` is in the stone's material: inside every plane and outside every tool.
+#[cfg(debug_assertions)]
+fn point_in_material(geom: StoneGeometry<'_>, p: Vec3) -> bool {
+    geom.planes
+        .iter()
+        .all(|pl| Vec3::from_array(pl.normal).dot(p) + pl.d <= 0.0)
+        && !geom.tools.iter().any(|tool| tool.contains(p))
+}
+
+/// Debug check of the `inside_gem` toggle against the geometry (concave stones only).
+///
+/// The toggle is correct because every boundary of the material is a crossing, so the
+/// point just before the next hit is in material exactly when `inside_gem`. A point
+/// within a few `1e-4` of another surface can classify either way, so the check fires
+/// only when two probe points straddling the `1e-4` hit offset agree with each other.
+#[cfg(debug_assertions)]
+fn debug_assert_inside_gem_matches_geometry(
+    geom: StoneGeometry<'_>,
+    ray: Ray,
+    t: f32,
+    inside_gem: bool,
+) {
+    if geom.is_convex() || t < 1e-3 {
+        return;
+    }
+    let a = point_in_material(geom, ray.origin + ray.dir * (t - 1e-4));
+    let b = point_in_material(geom, ray.origin + ray.dir * (t - 2e-4));
+    debug_assert!(
+        a != b || a == inside_gem,
+        "inside_gem = {inside_gem} disagrees with the point classification {a} at t = {t}"
+    );
 }
 
 /// Interior-side handling of one facet hit: flips the geometric normal to face the
@@ -186,11 +272,67 @@ pub(super) fn trace_spectral_ray_inner(
     enable_nee: bool,
     termination_out: Option<&mut (u32, PathTermination)>,
 ) -> Vec3 {
-    let scene = TraceScene {
+    trace_spectral_ray_inner_geom(
+        initial_ray,
         planes,
+        &[],
         plane_soa,
         facet_finishes,
         material,
+        Fluorescence::none(),
+        max_bounces,
+        environment,
+        rng_seed,
+        hero_rand,
+        primary_hit_out,
+        enable_internal_mode_coupling,
+        enable_exit_splitting,
+        enable_nee,
+        termination_out,
+    )
+}
+
+/// [`trace_spectral_ray_inner`] for a stone with tools: `tools` are subtracted from the
+/// polyhedron `planes` define, and `plane_soa` is still the arena built from `planes`
+/// alone. With `tools` empty this is the old function, bit for bit.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the shared bounce loop every public entry point delegates to -- see \
+              trace_spectral_ray's own reason, plus the debug/instrumentation output \
+              hooks (primary_hit_out, termination_out) and the caller-supplied \
+              plane_soa arena alongside the planes slice it was built from"
+)]
+pub(super) fn trace_spectral_ray_inner_geom(
+    initial_ray: Ray,
+    planes: &[GpuFacetPlane],
+    tools: &[ToolPrimitive],
+    plane_soa: &crate::simd::PlanesSoA32,
+    facet_finishes: &[FacetFinish],
+    material: &GemMaterial,
+    fluorescence: &Fluorescence,
+    max_bounces: u32,
+    environment: EnvironmentSource<'_>,
+    rng_seed: u32,
+    hero_rand: f32,
+    primary_hit_out: Option<&mut Option<HitRecord>>,
+    enable_internal_mode_coupling: bool,
+    enable_exit_splitting: bool,
+    // `true` only at every public entry point when `environment` is `HdrMap`
+    // (the procedural studio rig has no importance distribution to draw NEE samples
+    // from, and its own sampling already matches its structure -- see
+    // `NeeContext::enabled`'s doc comment), or when this file's own tests force it
+    // explicitly for an on/off A-B comparison, mirroring `enable_exit_splitting`'s
+    // identical precedent.
+    enable_nee: bool,
+    termination_out: Option<&mut (u32, PathTermination)>,
+) -> Vec3 {
+    let scene = TraceScene {
+        planes,
+        tools,
+        plane_soa,
+        facet_finishes,
+        material,
+        fluorescence,
         max_bounces,
         environment,
         surface_glare: environment.surface_glare(),
@@ -216,9 +358,14 @@ pub(super) fn trace_spectral_ray_inner(
 #[derive(Clone, Copy)]
 struct TraceScene<'a> {
     planes: &'a [GpuFacetPlane],
+    /// Convex volumes subtracted from the polyhedron; empty for a planar stone.
+    tools: &'a [ToolPrimitive],
     plane_soa: &'a crate::simd::PlanesSoA32,
     facet_finishes: &'a [FacetFinish],
     material: &'a GemMaterial,
+    /// Fluorescent emitters beside the material; empty (the usual case) leaves the
+    /// whole trace exactly as it was without the field.
+    fluorescence: &'a Fluorescence,
     max_bounces: u32,
     environment: EnvironmentSource<'a>,
     surface_glare: f32,
@@ -231,6 +378,36 @@ struct TraceSwitches {
     internal_mode_coupling: bool,
     exit_splitting: bool,
     nee: bool,
+}
+
+/// Upper bound on the expected number of fluorescence vertices the free-path sampler
+/// of one segment aims for (`mu_s * segment <= CAP`): the sampling rate is
+/// `min(mu_f, CAP / segment)`, and the estimator weights absorb the difference
+/// (`mu_f / mu_s` at a vertex, `exp(mu_s * ell)` for a path that goes on). The plain
+/// exponential at `mu_s = mu_f` is unbiased too, but a strongly emitting line
+/// (`mu_f * segment` in the tens) would give the surviving paths weights of
+/// `exp(mu_f * segment)`, an unusable variance; capped at 2 the largest such weight is 7.4.
+const FLUORESCENCE_SAMPLING_CAP: f32 = 2.0;
+
+/// A `[0, 1]` draw from `rng_seed`'s stream `stream` at `bounce`, in the same form every
+/// other per-bounce draw of this module tree uses.
+fn unit_draw(rng_seed: u32, bounce: u32, stream: u32) -> f32 {
+    (hash_u32(rng_seed ^ hash_u32(bounce ^ stream)) as f32) / 4_294_967_295.0
+}
+
+/// Sets every channel's Stokes vector to unpolarized light of `weight` times its
+/// current intensity: the fluorescence emission is isotropic and unpolarized.
+fn depolarize_and_scale(stokes: &mut [StokesVector; NUM_CHANNELS], weight: f32) {
+    for s in &mut *stokes {
+        *s = StokesVector::unpolarized(s.intensity() * weight);
+    }
+}
+
+/// Scales every channel's Stokes vector (polarization state kept).
+fn scale_stokes(stokes: &mut [StokesVector; NUM_CHANNELS], weight: f32) {
+    for s in &mut *stokes {
+        *s = s.scale(weight);
+    }
 }
 
 /// Applies the surface-glare scale to every channel's Stokes vector. Called only for a
@@ -263,9 +440,11 @@ fn trace_spectral_ray_core(
 ) -> Vec3 {
     let TraceScene {
         planes,
+        tools,
         plane_soa,
         facet_finishes,
         material,
+        fluorescence,
         max_bounces,
         environment,
         surface_glare,
@@ -284,7 +463,38 @@ fn trace_spectral_ray_core(
     // premise spectral MIS (`spectral_mis_weight` below) requires: every wavelength
     // must be reachable as the hero channel at positive, uniform probability. See
     // `wrapped_hero_wavelengths`'s doc comment for the formula.
-    let lambdas: [f32; NUM_CHANNELS] = wrapped_hero_wavelengths(hero_rand);
+    //
+    // A scene with fluorescence traces SINGLE-wavelength paths instead: all channels carry
+    // the one camera wavelength `lambda_em` (drawn over [380, 780) from `hero_rand`, see
+    // `Fluorescence::camera_wavelength`), so the in-medium fluorescence vertex can switch the whole path to the
+    // excitation wavelength and the image still converges unbiased. Exit-event
+    // splitting is off then (its companions would all be the same wavelength). Without
+    // fluorescence none of this runs and `lambdas` is the comb.
+    let fluorescent = !fluorescence.is_empty();
+    let enable_exit_splitting = enable_exit_splitting && !fluorescent;
+    // `camera_weight` corrects the importance-sampled camera wavelength (see
+    // `Fluorescence::camera_wavelength`); 1 and unused without fluorescence.
+    let (camera_wavelength, camera_weight) = if fluorescent {
+        fluorescence.camera_wavelength(hero_rand)
+    } else {
+        (0.0, 1.0)
+    };
+    let mut lambdas: [f32; NUM_CHANNELS] = if fluorescent {
+        [camera_wavelength; NUM_CHANNELS]
+    } else {
+        wrapped_hero_wavelengths(hero_rand)
+    };
+    // The wavelengths the camera integrates the result at; `lambdas` itself moves to the
+    // excitation wavelength at a fluorescence vertex.
+    let camera_lambdas = lambdas;
+    // Fluorescence pseudo-extinction at the camera wavelength (1/absorption-length) and
+    // whether this path may still take its (single) vertex.
+    let fluorescence_rate = if fluorescent {
+        fluorescence.pseudo_extinction(camera_lambdas[0])
+    } else {
+        0.0
+    };
+    let mut fluorescence_armed = fluorescence_rate > 0.0;
 
     let mut stokes = [StokesVector::unpolarized(1.0); NUM_CHANNELS];
     let mut radiance = [0.0f32; NUM_CHANNELS];
@@ -335,7 +545,7 @@ fn trace_spectral_ray_core(
     let mut is_extraordinary = false;
 
     // Fixed across every bounce below -- see `RayMaterialContext`/`RayWavelengthCache`.
-    let (mat_ctx, wavelength_cache) =
+    let (mut mat_ctx, mut wavelength_cache) =
         build_ray_context(material, lambdas, hero_idx, enable_internal_mode_coupling);
 
     // Built once per trace and shared: the exit-split probes read it through
@@ -362,6 +572,7 @@ fn trace_spectral_ray_core(
     // "Exit-event spectral splitting" doc comment.
     let mut exit_split_ctx = ExitSplitCtx {
         plane_soa,
+        tools,
         environment,
         studio_rig: exit_split_studio_rig,
         observer,
@@ -384,6 +595,7 @@ fn trace_spectral_ray_core(
     let nee_ctx = NeeContext {
         environment,
         plane_soa,
+        tools,
         enabled: enable_nee,
     };
     let mut pending_light_mis: Option<(f32, Vec3)> = None;
@@ -394,7 +606,9 @@ fn trace_spectral_ray_core(
         // dropped, which is correct -- a phase-sampled continuation that instead hits
         // more geometry has no competing NEE sample to weigh itself against.
         let phase_pdf_for_mis_this_check = pending_light_mis.take();
-        let hit = intersect_polyhedron_soa(current_ray, plane_soa);
+        // With no tools this is `intersect_polyhedron_soa` exactly. On a concave stone a
+        // hit after an exit is a legitimate re-entry across the cavity, not an error.
+        let hit = intersect_stone_soa(current_ray, plane_soa, planes.len(), tools);
 
         // Denoiser wiring: the primary ray's first-hit depth/normal/facet index feed
         // the A-Trous denoiser's guide buffers (see `renderer::denoise`). Captured
@@ -441,6 +655,33 @@ fn trace_spectral_ray_core(
             record_termination(&mut termination_out, bounce, PathTermination::Escaped);
             break;
         };
+        #[cfg(debug_assertions)]
+        debug_assert_inside_gem_matches_geometry(
+            StoneGeometry { planes, tools },
+            current_ray,
+            hit_rec.t,
+            inside_gem,
+        );
+        // Fluorescence: sample a vertex along the interior segment, competing with the
+        // scattering sample and the boundary below (see `FLUORESCENCE_SAMPLING_CAP`).
+        // `segment_t` is where the scatter sampler must stop: the vertex if one fires
+        // first, else the boundary. Without fluorescence `segment_t == hit_rec.t` and
+        // nothing here draws.
+        let mut segment_t = hit_rec.t;
+        let mut vertex_t = None;
+        let mut sampling_rate = 0.0f32;
+        let path_scale = material.absorption_path_scale;
+        if fluorescence_armed && inside_gem && hit_rec.t > 0.0 {
+            let segment_scaled = hit_rec.t * path_scale;
+            sampling_rate = fluorescence_rate.min(FLUORESCENCE_SAMPLING_CAP / segment_scaled);
+            let u = unit_draw(rng_seed, bounce, FLUORESCENCE_DISTANCE_STREAM);
+            let t_scaled = -((1.0 - u).max(1e-7).ln()) / sampling_rate;
+            if t_scaled < segment_scaled {
+                segment_t = t_scaled / path_scale;
+                vertex_t = Some(t_scaled);
+            }
+        }
+        let origin_before = current_ray.origin;
         // Attempt a Henyey-Greenstein scattering event along this segment before
         // processing the facet -- see `try_scatter_step`'s doc comment.
         if inside_gem {
@@ -451,7 +692,7 @@ fn trace_spectral_ray_core(
                 is_extraordinary,
                 &mut current_ray,
                 &mut current_k,
-                hit_rec.t,
+                segment_t,
                 rng_seed,
                 bounce,
                 &mut stokes,
@@ -464,8 +705,78 @@ fn trace_spectral_ray_core(
                 exit_split_ctx.compat,
                 facet_finishes,
             ) {
-                ScatterStepOutcome::NotApplicable | ScatterStepOutcome::ReachedBoundary => {}
+                ScatterStepOutcome::NotApplicable | ScatterStepOutcome::ReachedBoundary => {
+                    if let Some(t_scaled) = vertex_t {
+                        // The fluorescence vertex fired before the boundary: the
+                        // medium's extinction up to it is already applied for a
+                        // scattering material (`try_scatter_step`), else apply the
+                        // Beer-Lambert absorption of the stretch to the vertex here.
+                        if material.scattering_sigma_s <= 0.0 {
+                            apply_absorption(
+                                &mat_ctx,
+                                &wavelength_cache,
+                                current_k,
+                                is_extraordinary,
+                                segment_t,
+                                &mut stokes,
+                            );
+                        }
+                        let Some(vertex) = sample_vertex(
+                            fluorescence,
+                            camera_lambdas[0],
+                            unit_draw(rng_seed, bounce, FLUORESCENCE_EMITTER_STREAM),
+                            unit_draw(rng_seed, bounce, FLUORESCENCE_EXCITATION_STREAM),
+                        ) else {
+                            record_termination(
+                                &mut termination_out,
+                                bounce,
+                                PathTermination::RussianRoulette,
+                            );
+                            break;
+                        };
+                        // Estimator weight: the rate ratio of the capped sampler, the
+                        // reweighting of its truncated exponential (`exp(mu_s * t)`),
+                        // and the photon-energy ratio of the Stokes shift.
+                        let weight = (fluorescence_rate / sampling_rate)
+                            * (sampling_rate * t_scaled).exp()
+                            * vertex.energy_ratio;
+                        depolarize_and_scale(&mut stokes, weight);
+                        // Isotropic emission from the vertex, continuing at the
+                        // excitation wavelength, with no further vertex.
+                        let z = (-2.0f32)
+                            .mul_add(unit_draw(rng_seed, bounce, FLUORESCENCE_DIR_U_STREAM), 1.0);
+                        let phi = std::f32::consts::TAU
+                            * unit_draw(rng_seed, bounce, FLUORESCENCE_DIR_V_STREAM);
+                        let r = (1.0 - z * z).max(0.0).sqrt();
+                        let new_dir = Vec3::new(r * phi.cos(), r * phi.sin(), z);
+                        current_ray.origin += segment_t * current_ray.dir;
+                        current_ray.dir = new_dir;
+                        current_k = new_dir;
+                        prev_plane_normal = None;
+                        lambdas = [vertex.lambda_ex; NUM_CHANNELS];
+                        (mat_ctx, wavelength_cache) = build_ray_context(
+                            material,
+                            lambdas,
+                            hero_idx,
+                            enable_internal_mode_coupling,
+                        );
+                        fluorescence_armed = false;
+                        continue;
+                    }
+                    // No vertex before the boundary: the path goes on, reweighted by
+                    // the inverse of that probability (1 / exp(-mu_s * ell)).
+                    if sampling_rate > 0.0 {
+                        let g = (sampling_rate * hit_rec.t * path_scale).exp();
+                        scale_stokes(&mut stokes, g);
+                    }
+                }
                 ScatterStepOutcome::ScatteredAndSurvived(phase_pdf_for_mis) => {
+                    if sampling_rate > 0.0 {
+                        // Scattered at distance `s` with the vertex clock not having
+                        // fired: weight `exp(mu_s * s)`.
+                        let s = (current_ray.origin - origin_before).length() * path_scale;
+                        scale_stokes(&mut stokes, (sampling_rate * s).exp());
+                    }
                     // Scattered Stokes vectors are already depolarized, so the previous
                     // plane of incidence is no longer meaningful -- reset it so the
                     // next facet hit applies no spurious frame rotation.
@@ -488,8 +799,8 @@ fn trace_spectral_ray_core(
 
         let hit_point = current_ray.origin + hit_rec.t * current_ray.dir;
         // Facet edge rounding: see `shading_normal_near_edge`'s doc comment.
-        let mut normal = shading_normal_near_edge(
-            planes,
+        let mut normal = shading_normal_for_hit(
+            StoneGeometry { planes, tools },
             hit_point,
             hit_rec.facet_idx,
             hit_rec.normal,
@@ -599,9 +910,9 @@ fn trace_spectral_ray_core(
     // channel is weighted over its own family instead -- see
     // `integrate_channels_to_xyz_families`'s doc comment.
     let xyz = if enable_exit_splitting {
-        integrate_channels_to_xyz_families(&radiance, &lambdas, &path_pdf, hero_idx, compat)
+        integrate_channels_to_xyz_families(&radiance, &camera_lambdas, &path_pdf, hero_idx, compat)
     } else {
-        integrate_channels_to_xyz(&radiance, &lambdas, &path_pdf, hero_idx)
+        integrate_channels_to_xyz(&radiance, &camera_lambdas, &path_pdf, hero_idx)
     };
     // `nee_xyz` (see its own doc comment above) is already fully integrated to XYZ --
     // added in directly, not run back through `integrate_channels_to_xyz[_families]`
@@ -609,11 +920,16 @@ fn trace_spectral_ray_core(
     // at every public entry point), so this is a no-op for the white-balanced branch
     // below.
     let xyz = xyz + nee_xyz;
+    let xyz = if fluorescent {
+        xyz * camera_weight
+    } else {
+        xyz
+    };
 
     // Von Kries white-balance (diagonalised in Bradford LMS, not raw XYZ -- see
     // `compute_illuminant_white_balance`'s doc comment) so the chosen illuminant
     // itself renders as neutral white. Only the analytic `Studio` rig has a
-    // single well-defined illuminant colour temperature to neutralize against -- see
+    // single well-defined illuminant color temperature to neutralize against -- see
     // `environment_white_balance`'s own doc comment, which already documents the
     // `HdrMap` no-op. The transform is skipped entirely for `HdrMap` rather than run at
     // that documented-no-op `Vec3::ONE` scale, because the round trip is not

@@ -33,13 +33,16 @@ pub fn apply_material_overrides(
     overrides: &MaterialOverrides,
     active_planes: &[GpuFacetPlane],
     width_cache: &mut StoneWidthCache,
+    physics_color: bool,
 ) -> GemMaterial {
-    let model_width = if overrides.stone_width_mm > 0.0 {
+    let eff_width =
+        indicatrix::render_setup::effective_stone_width_mm(overrides.stone_width_mm, physics_color);
+    let model_width = if eff_width > 0.0 {
         width_cache.ensure(active_planes)
     } else {
         None
     };
-    render_setup::apply_material_overrides(material, overrides, model_width)
+    render_setup::apply_material_overrides_for_mode(material, overrides, model_width, physics_color)
 }
 
 /// Everything needed to name the material for a frame: the two tables to look a
@@ -54,6 +57,8 @@ pub struct MaterialSources<'a> {
     pub material_override: Option<&'a GemMaterial>,
     /// Name of the selected material.
     pub material_name: &'a str,
+    /// Whether the selected material's color is physics mode (see `RenderContext::physics_color`).
+    pub physics_color: bool,
 }
 
 /// Resolves the current gem material (see [`resolve_material_with_override`], which
@@ -87,7 +92,13 @@ pub(in crate::bridge::render_thread) fn resolve_material_and_quality(
         sources.material_name,
     )
     .unwrap_or_else(GemMaterial::diamond);
-    let current_mat = apply_material_overrides(current_mat, overrides, active_planes, width_cache);
+    let current_mat = apply_material_overrides(
+        current_mat,
+        overrides,
+        active_planes,
+        width_cache,
+        sources.physics_color,
+    );
 
     // Samples-per-frame is derived from the target, not chosen directly: every loop
     // iteration pays a fixed cost (dispatch set-up, readback, display hand-off) that does

@@ -87,10 +87,10 @@ render in progress, refreshed about twice a second alongside the progress bar.
 It is box-downsampled straight from the live accumulation buffers (both of them,
 on a hybrid CPU+GPU export) and normalised by the samples actually completed, so
 it looks correct from the first tick rather than dark until the end. It is
-always tone-mapped through the sRGB path regardless of the export's chosen colour
+always tone-mapped through the sRGB path regardless of the export's chosen color
 space, because it is displayed on screen by a widget that cannot carry an ICC
 profile — the preview is a guide to composition and convergence, not a proof of
-the final file's colour.
+the final file's color.
 
 ### Remote compute: timeouts and liveness
 

@@ -24,6 +24,7 @@ use crate::{
     gui::{remote::worker_callbacks::backend_label, show_toast},
     settings::LiveComputeTarget,
 };
+use indicatrix::geometry::tool::StoneGeometry;
 use indicatrix_net::client::Accumulator;
 use slint::{ComponentHandle, Weak};
 use std::{
@@ -553,17 +554,22 @@ pub(super) fn redraw_from_epoch(
     }
     let (buffer, remote_count) = epoch.remote_snapshot();
     let samples_done = remote_count.max(1);
-    let (yaw, pitch, distance, planes, denoise_enabled) = {
+    let (yaw, pitch, distance, planes, tools, denoise_enabled) = {
         let ctx = render_ctx.lock().unwrap_or_else(PoisonError::into_inner);
         (
             ctx.yaw,
             ctx.pitch,
             ctx.distance,
             ctx.active_planes.clone(),
+            ctx.active_tools.clone(),
             ctx.denoise_enabled,
         )
     };
-    let desired_key = GuideCache::key_for(width, height, yaw, pitch, distance, &planes);
+    let stone = StoneGeometry {
+        planes: &planes,
+        tools: &tools,
+    };
+    let desired_key = GuideCache::key_for_geom(width, height, yaw, pitch, distance, stone);
 
     // First (brief) lock: adopt any freshly finished background denoise for this pose,
     // and read out a cached denoised frame if one is already valid -- both O(1) next to
@@ -630,7 +636,7 @@ pub(super) fn redraw_from_epoch(
                 } = &mut *orch;
                 if adopt_ready_guides(&desired_key, guide_cache, pending_guide_gen.as_ref()) {
                     let guides = guide_cache
-                        .ensure(width, height, yaw, pitch, distance, &planes)
+                        .ensure_geom(width, height, yaw, pitch, distance, stone)
                         .clone();
                     orch.pending_denoise_gen = Some(spawn_denoise_generation(
                         desired_key,
@@ -649,6 +655,7 @@ pub(super) fn redraw_from_epoch(
                             // `Arc::clone` above kept the read cheap; this is the one
                             // place that copy actually has to happen.
                             planes: planes.as_ref().clone(),
+                            tools: tools.as_ref().clone(),
                         },
                     ));
                 }

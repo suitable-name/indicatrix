@@ -12,7 +12,7 @@ export struct GearRemapRow {
 }
 
 // The design's schedule-wide settings (modelled on the desktop's
-// `editor_design_settings.slint`): material, RI override and colour, index gear (with
+// `editor_design_settings.slint`): material, RI override and color, index gear (with
 // the remap confirmation), symmetry and mirror, title / headers / footnotes, printed
 // proportions. Pushed by `src/editor/settings`.
 export global DesignSettingsModel {
@@ -22,8 +22,8 @@ export global DesignSettingsModel {
     in property <[string]> material-options: [];
     in-out property <int> material-index: 0;
     in-out property <string> ri-override-text: "";
-    in property <[string]> colour-options: [];
-    in-out property <int> colour-index: 0;
+    in property <[string]> color-options: [];
+    in-out property <int> color-index: 0;
     in property <string> effective-ri-text: "";
     in property <string> critical-angle-text: "";
     // Where the effective RI came from (`indicatrix_editor::material::ri_source_text`).
@@ -73,7 +73,7 @@ export global DesignSettingsModel {
     in-out property <string> custom-dispersion: "0.020";
     in-out property <string> custom-birefringence: "0";
     in-out property <string> custom-specific-gravity: "";
-    in-out property <int> custom-colour-index: 0;
+    in-out property <int> custom-color-index: 0;
     in property <string> custom-error: "";
 
     callback apply-material();
@@ -246,11 +246,11 @@ export component DesignSettingsDialog inherits Rectangle {
                         VerticalLayout {
                             horizontal-stretch: 1;
                             spacing: 3px;
-                            Lbl { text: "Colour"; }
+                            Lbl { text: "color"; }
                             ComboBox {
                                 min-width: 0px;
-                                model: DesignSettingsModel.colour-options;
-                                current-index <=> DesignSettingsModel.colour-index;
+                                model: DesignSettingsModel.color-options;
+                                current-index <=> DesignSettingsModel.color-index;
                                 selected => { DesignSettingsModel.material-pending = true; }
                             }
                         }
@@ -330,7 +330,7 @@ export component DesignSettingsDialog inherits Rectangle {
                     if DesignSettingsModel.custom-open: VerticalLayout {
                         spacing: 6px;
                         Text {
-                            text: "Define a material by its optics. Saving offers it in every material list and sets it as this design's material; the .indicatrix file keeps it, colour included.";
+                            text: "Define a material by its optics. Saving offers it in every material list and sets it as this design's material; the .indicatrix file keeps it, color included.";
                             font-size: 9px;
                             color: Theme.text-muted;
                             wrap: word-wrap;
@@ -366,11 +366,11 @@ export component DesignSettingsDialog inherits Rectangle {
                             VerticalLayout {
                                 horizontal-stretch: 1;
                                 spacing: 3px;
-                                Lbl { text: "Colour"; }
+                                Lbl { text: "color"; }
                                 ComboBox {
                                     min-width: 0px;
-                                    model: DesignSettingsModel.colour-options;
-                                    current-index <=> DesignSettingsModel.custom-colour-index;
+                                    model: DesignSettingsModel.color-options;
+                                    current-index <=> DesignSettingsModel.custom-color-index;
                                 }
                             }
                             VerticalLayout {

@@ -13,9 +13,9 @@ use super::{
         material_from_dto, rough_from_dto, rough_to_dto, settings_from_dto, settings_to_dto,
     },
     dto::{
-        CURRENT_SCHEMA_VERSION, DesignShape, HeaderDto, MAX_LAYOUTS, MAX_NAME_CHARS,
-        MAX_PAYLOAD_BYTES, ROUGH_PLAN_FORMAT, SavedDesignDto, SavedLayoutDto, SavedPlanDto,
-        SummaryDto,
+        BASE_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION, DesignShape, HeaderDto, MAX_LAYOUTS,
+        MAX_NAME_CHARS, MAX_PAYLOAD_BYTES, MESH_SCHEMA_VERSION, ROUGH_PLAN_FORMAT, SavedDesignDto,
+        SavedLayoutDto, SavedPlanDto, SummaryDto,
     },
 };
 use indicatrix_cut_core::rough_plan::{PlanSettings, RoughLayout, RoughModel};
@@ -197,11 +197,13 @@ pub fn payload_version_of(text: &str) -> Option<u32> {
 
 /// Brings the text of a plan written with schema `version` up to the current schema.
 ///
-/// Version 1 is the current schema and needs nothing. A later format change adds an arm
-/// here that rewrites the older text, so the DTOs only ever describe the newest schema.
+/// Version 2 is the current schema and needs nothing. Version 1 differs only by the
+/// optional `rough.mesh` table, which its files do not have, so its text reads as it is. A
+/// later format change adds an arm here that rewrites the older text, so the DTOs only
+/// ever describe the newest schema.
 fn migrate(text: &str, version: u32) -> Result<Cow<'_, str>, String> {
     match version {
-        CURRENT_SCHEMA_VERSION => Ok(Cow::Borrowed(text)),
+        BASE_SCHEMA_VERSION | CURRENT_SCHEMA_VERSION => Ok(Cow::Borrowed(text)),
         older => Err(format!(
             "This build cannot bring a version {older} plan up to version {CURRENT_SCHEMA_VERSION}."
         )),
@@ -282,6 +284,11 @@ fn check_design_use(designs: &[SavedDesignDto], layouts: &[RoughLayout]) -> Resu
 /// Checks and converts a parsed document; `version` is the one its header declared.
 fn plan_from_dto(dto: SavedPlanDto, version: u32) -> Result<LoadedPlan, String> {
     check_limits(&dto)?;
+    if version < MESH_SCHEMA_VERSION && dto.rough.mesh.is_some() {
+        return Err(format!(
+            "rough.mesh needs plan version {MESH_SCHEMA_VERSION}; this plan declares version {version}."
+        ));
+    }
     let model = rough_from_dto(&dto.rough)?;
     let measure = model.measure().map_err(|e| format!("rough: {e}"))?;
     let (material_name, specific_gravity, weighed_ct) = material_from_dto(&dto.rough)?;
@@ -457,18 +464,26 @@ pub struct SerializeInput<'a> {
 ///
 /// Returns an error if the TOML writer fails.
 pub fn serialize_plan_to_toml(input: &SerializeInput<'_>) -> Result<String, String> {
+    let rough = rough_to_dto(
+        input.model,
+        input.material_name,
+        input.settings.specific_gravity,
+        input.weighed_ct,
+    );
+    // Only a plan with a mesh needs the newer schema: every other plan is what it always
+    // was, byte for byte.
+    let version = if rough.mesh.is_some() {
+        MESH_SCHEMA_VERSION
+    } else {
+        BASE_SCHEMA_VERSION
+    };
     let doc = SavedPlanDto {
         format: ROUGH_PLAN_FORMAT.to_string(),
-        version: CURRENT_SCHEMA_VERSION,
+        version,
         name: input.name.to_string(),
         created_at: input.created_at,
         library_id: input.library_id,
-        rough: rough_to_dto(
-            input.model,
-            input.material_name,
-            input.settings.specific_gravity,
-            input.weighed_ct,
-        ),
+        rough,
         settings: settings_to_dto(input.settings, input.candidate_source),
         designs: input.designs.to_vec(),
         layouts: input

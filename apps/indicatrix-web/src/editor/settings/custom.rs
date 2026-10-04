@@ -36,7 +36,7 @@ fn save_and_use(ctx: &Ctx) {
         dispersion: &dispersion,
         birefringence: &birefringence,
         specific_gravity: &specific_gravity,
-        colour_index: model.get_custom_colour_index(),
+        color_index: model.get_custom_color_index(),
     }) {
         Ok(built) => built,
         Err(message) => {
@@ -53,7 +53,7 @@ fn save_and_use(ctx: &Ctx) {
             return;
         };
         // Only the NAME (and no RI override, which would shadow the new material's own
-        // index) changes; the design's colour override stays as the cutter set it.
+        // index) changes; the design's color override stays as the cutter set it.
         let mut selection = design_state.session.design.material.clone();
         selection.name = Some(material_name.clone());
         selection.refractive_index_override = None;
@@ -79,7 +79,7 @@ fn save_and_use(ctx: &Ctx) {
                 MessageKind::Success,
                 &format!(
                     "'{material_name}' saved and set as this design's material. It is kept \
-                     with the design's .indicatrix file, colour included."
+                     with the design's .indicatrix file, color included."
                 ),
             );
         }

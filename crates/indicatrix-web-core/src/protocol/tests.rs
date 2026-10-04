@@ -199,8 +199,8 @@ fn hex(bytes: &[u8]) -> String {
 #[test]
 fn wire_format_is_pinned() {
     assert_eq!(
-        PROTOCOL_VERSION, 8,
-        "the bytes below were pinned for version 8"
+        PROTOCOL_VERSION, 9,
+        "the bytes below were pinned for version 9"
     );
 
     // TraceChunk = variant 4; scene id 300 = varint AC 02.
@@ -224,7 +224,7 @@ fn wire_format_is_pinned() {
         hex(&encode_to_worker(&watch).expect("encodes")),
         "08 05 06 62 6C 6F 62 3A 78"
     );
-    // Init = variant 0, then version 8, role Render = 0, worker index 2.
+    // Init = variant 0, then version 9, role Render = 0, worker index 2.
     let init = ToWorker::Init {
         protocol_version: PROTOCOL_VERSION,
         role: WorkerRole::Render,
@@ -232,7 +232,7 @@ fn wire_format_is_pinned() {
     };
     assert_eq!(
         hex(&encode_to_worker(&init).expect("encodes")),
-        "00 08 00 02"
+        "00 09 00 02"
     );
 
     // ChunkResult = variant 2; one [0.5, 1.0, 2.0] sum; 187.25 ms = 0x4067680000000000.
@@ -263,7 +263,33 @@ fn wire_format_is_pinned() {
     let loaded = FromWorker::Loaded {
         protocol_version: PROTOCOL_VERSION,
     };
-    assert_eq!(hex(&encode_from_worker(&loaded).expect("encodes")), "00 08");
+    assert_eq!(hex(&encode_from_worker(&loaded).expect("encodes")), "00 09");
+}
+
+/// A `CustomMaterialSpec` carrying a `color_recipe`, pinned like the messages above:
+/// the name is a length-prefixed string, each `f64` eight little-endian bytes, an
+/// `Option` a 0/1 tag before its payload, `recipe_json` a length-prefixed string and
+/// `fallback_rgb` a fixed array without a length. It travels inside
+/// `SceneSpec::custom_materials`, so a change here is a protocol change too.
+#[test]
+fn custom_material_with_color_recipe_wire_format_is_pinned() {
+    let spec = crate::scene::CustomMaterialSpec {
+        name: "Ruby".to_string(),
+        mean_ri: 1.5,
+        dispersion_delta: 0.25,
+        birefringence_delta: 0.0,
+        absorption_rgb: Some([0.5, 1.0, 2.0]),
+        color_recipe: Some(indicatrix_formats::native::colorRecipeDto {
+            recipe_json: "{}".to_string(),
+            fallback_rgb: [0.5, 1.0, 2.0],
+        }),
+    };
+    // "Ruby" = 04 + 4 bytes; 1.5, 0.25, 0.0 as f64; Some = 01 then [0.5, 1.0, 2.0];
+    // Some = 01, "{}" = 02 7B 7D, then fallback_rgb [0.5, 1.0, 2.0].
+    assert_eq!(
+        hex(&postcard::to_allocvec(&spec).expect("encodes")),
+        "04 52 75 62 79 00 00 00 00 00 00 F8 3F 00 00 00 00 00 00 D0 3F 00 00 00 00 00 00 00 00 01 00 00 00 00 00 00 E0 3F 00 00 00 00 00 00 F0 3F 00 00 00 00 00 00 00 40 01 02 7B 7D 00 00 00 00 00 00 E0 3F 00 00 00 00 00 00 F0 3F 00 00 00 00 00 00 00 40"
+    );
 }
 
 #[test]

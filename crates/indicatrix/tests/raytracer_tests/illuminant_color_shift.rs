@@ -1,4 +1,4 @@
-//! Illuminant-dependent colour shift tests: ruby and alexandrite must render
+//! Illuminant-dependent color shift tests: ruby and alexandrite must render
 //! measurably redder under warm incandescent light than under D65 daylight, driven
 //! by their narrow chromophore transmission windows.
 
@@ -14,7 +14,7 @@ use indicatrix::{
 /// Renders `material` under `lighting_preset`, averaged over `samples` independent
 /// spectral ray samples (each with its own hashed seed) through the same fixed ray, and
 /// returns the CIE xy chromaticity of the averaged XYZ. Averaging suppresses per-sample
-/// Monte Carlo noise so the comparison below isolates the illuminant-driven colour
+/// Monte Carlo noise so the comparison below isolates the illuminant-driven color
 /// shift rather than sampling variance, following the same pattern used by
 /// `render_pixel_grid_chromaticities` and the birefringence-split test above.
 fn render_chromaticity_under_preset(
@@ -50,7 +50,7 @@ fn render_chromaticity_under_preset(
 /// transmission windows sits (see the Ruby entry's doc comment in
 /// `GemMaterial::all_materials` for the cited Cr3+ band positions, 410nm/550nm, that
 /// produce this narrow-window structure) -- daylight's relatively stronger blue content
-/// lets more of that blue window through, pulling the daylight-rendered colour slightly
+/// lets more of that blue window through, pulling the daylight-rendered color slightly
 /// toward blue/away from red relative to incandescent. A three-broad-fixed-lobe
 /// absorption model has no such narrow window to begin
 /// with, so it cannot reproduce this shift; this test is what actually discriminates
@@ -93,17 +93,17 @@ fn ruby_shifts_redder_under_incandescent_than_d65() {
         x_inc > x_d65 + 0.003,
         "Ruby's CIE x-chromaticity under Incandescent (3200K) ({x_inc:.4}) must be measurably \
          higher (redder) than under D65 Daylight ({x_d65:.4}) -- the narrow-window Cr3+ band \
-         model should reproduce this well-known illuminant-dependent colour shift"
+         model should reproduce this well-known illuminant-dependent color shift"
     );
 }
 
-/// Alexandrite counterpart of the ruby illuminant-shift test above -- the colour
+/// Alexandrite counterpart of the ruby illuminant-shift test above -- the color
 /// change (daylight green / incandescent red) is alexandrite's DEFINING trait, driven
 /// by the same narrow-transmission-window mechanism as ruby's shift (two Cr3+ bands
 /// straddling the ~580/415nm Neuhaus critical values -- see the Alexandrite entry's
 /// comment in `GemMaterial::all_materials`). Added alongside the trichroic
 /// (three-band-set) absorption upgrade for Alexandrite specifically so that upgrade,
-/// and any future per-axis amplitude retune, cannot silently weaken the colour change:
+/// and any future per-axis amplitude retune, cannot silently weaken the color change:
 /// trichroism ADDS direction-dependence on top of the illuminant-dependence, and this
 /// test pins that the illuminant-dependence survives at the face-up view (propagation
 /// down `c_axis` = the n_gamma/crystal-b axis, so the ray mixes the alpha/red and
@@ -152,7 +152,7 @@ fn alexandrite_shifts_redder_under_incandescent_than_d65() {
         x_inc > x_d65 + 0.003,
         "Alexandrite's CIE x-chromaticity under Incandescent (3200K) ({x_inc:.4}) must be \
          measurably higher (redder) than under D65 Daylight ({x_d65:.4}) -- the defining \
-         daylight-green / incandescent-red colour change must survive the trichroic \
+         daylight-green / incandescent-red color change must survive the trichroic \
          absorption data"
     );
 }

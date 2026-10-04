@@ -7,6 +7,9 @@
 pub mod base;
 pub mod cuts;
 pub mod hull;
+pub mod mesh;
+#[cfg(test)]
+pub(crate) mod mesh_fixture;
 mod pebble_offsets;
 pub mod sampling;
 #[cfg(test)]
@@ -20,14 +23,15 @@ mod tests_pebble;
 #[cfg(test)]
 mod tests_validation;
 
-use std::{cmp::Ordering, fmt};
+use std::{cmp::Ordering, fmt, sync::Arc};
 
 use glam::DVec3;
 use indicatrix::geometry::stone_metrics::measure_solid_with_vertices;
 
 pub use base::RoughBase;
 pub use cuts::{BoxFace, RoughCut};
-pub use hull::{HullError, MAX_HULL_PLANES, import_hull};
+pub use hull::{HullError, MAX_HULL_PLANES, import_hull, import_mesh};
+pub use mesh::{BoxState, ClippedSurface, MAX_MESH_TRIANGLES, MeshError, RoughMesh, SurfaceCap};
 pub use sampling::{half_step_cos, pebble_directions, sphere_directions, unit_circle};
 
 /// The modelled rough: a starting base shape plus an ordered sequence of planar cuts.
@@ -258,6 +262,19 @@ impl RoughSolid {
 }
 
 impl RoughModel {
+    /// The non-convex mesh the rough is made of, `None` for every convex rough (box,
+    /// cylinder, pebble, hull, and an imported mesh that is its own hull).
+    ///
+    /// The planner works from the convex polytope of [`halfspaces`](Self::halfspaces) and
+    /// asks the mesh only to reject or shrink what reaches into air.
+    #[must_use]
+    pub fn mesh(&self) -> Option<Arc<RoughMesh>> {
+        match self.base {
+            RoughBase::Hull { id, .. } => hull::mesh(id),
+            _ => None,
+        }
+    }
+
     /// Constructs a new model from a base shape and a list of cuts.
     #[must_use]
     pub const fn new(base: RoughBase, cuts: Vec<RoughCut>) -> Self {
@@ -418,9 +435,21 @@ impl RoughModel {
             max_p = max_p.max(p);
         }
 
+        // A mesh rough's volume is the mesh's, within the cuts; the polytope is the hull.
+        let volume_mm3 = match self.mesh() {
+            Some(mesh) => {
+                let volume = mesh.volume_within(&self.cut_planes()?);
+                if !(volume.is_finite() && volume > 0.0) {
+                    return Err(ShapeError::NothingLeft);
+                }
+                volume
+            }
+            None => metrics.volume,
+        };
+
         Ok(RoughSolid {
             planes,
-            volume_mm3: metrics.volume,
+            volume_mm3,
             bbox_min: min_p,
             bbox_extents: max_p - min_p,
             vertex_count: trans_verts.len(),

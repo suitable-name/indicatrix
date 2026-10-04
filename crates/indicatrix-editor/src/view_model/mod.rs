@@ -22,12 +22,27 @@ pub mod yield_report;
 #[cfg(test)]
 mod tests;
 
+/// Whether a [`TierRow`] stands for a flat tier or a concave one.
+///
+/// A concave tier lives in `design.concave_tiers`, a separate list from
+/// `design.tiers`, so a row's [`TierRow::index`] is only meaningful together with
+/// its kind: it addresses the list the kind names.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TierRowKind {
+    /// A tier of `design.tiers`.
+    #[default]
+    Flat,
+    /// A tier of `design.concave_tiers`.
+    Concave,
+}
+
 /// One tier-table row. Field for field the desktop's `EditorTierItem` (see
 /// `ui/types.slint` for how each is displayed); the integer fields keep that type's
 /// `i32` so an adapter is a plain copy.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TierRow {
-    /// The tier's position in `design.tiers`.
+    /// The tier's position in `design.tiers`, or in `design.concave_tiers` for a
+    /// [`TierRowKind::Concave`] row.
     pub index: i32,
     /// The angle, two decimals (see [`row_format::format_angle_cell`]).
     pub angle_deg: String,
@@ -83,6 +98,13 @@ pub struct TierRow {
     /// A pending proposal's ghost angle, `""` when none (see
     /// [`rows::apply_proposed_angles`]).
     pub proposed_angle: String,
+    /// Flat or concave; decides which design list [`Self::index`] addresses.
+    pub kind: TierRowKind,
+    /// A concave row's tool line, the four
+    /// [`indicatrix_cut_core::design::ConcaveTier::second_line_fields`] columns
+    /// joined with two spaces (`"CYL  +10.00°  X = 0.000, ...  D/W = 0.400, plunge"`);
+    /// empty for a flat row.
+    pub tool_line: String,
 }
 
 /// One per-facet chip in the inspector's Tier tab -- see
@@ -112,4 +134,9 @@ pub struct CuttingRow {
     pub index_val: String,
     /// The tier's notes.
     pub notes: String,
+    /// A concave tier's tool line, one string per column (tool, theta, displacement,
+    /// details) from
+    /// [`indicatrix_cut_core::design::ConcaveTier::second_line_fields`], shown under
+    /// the facet line; `None` for a flat tier.
+    pub second_line: Option<[String; 4]>,
 }

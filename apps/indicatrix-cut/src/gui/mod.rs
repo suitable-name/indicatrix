@@ -163,7 +163,7 @@ pub fn run_gui() -> anyhow::Result<()> {
 /// (e.g. "your masts are placeholders", "the saved meet constraints were not
 /// restored") that deserves the same persistence as an error without implying the
 /// action itself failed; `ui/components/toast.slint`'s `Toast` component has
-/// its own amber `"warning"` branch on background/border/icon colour, so a
+/// its own amber `"warning"` branch on background/border/icon color, so a
 /// `"warning"` toast renders distinctly from both `"info"` and `"error"` rather
 /// than falling back to the info-style default.
 ///

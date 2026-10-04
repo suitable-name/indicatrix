@@ -26,7 +26,7 @@ import { BatchModel } from "../../models/batch.slint";
 export component GemViewportToolbarActions inherits HorizontalLayout {
     spacing: 8px;
 
-    // Set by `gem_viewport.slint` from the viewport width: drops the colour readout,
+    // Set by `gem_viewport.slint` from the viewport width: drops the color readout,
     // the "Tilt Curve" and "Linked to design" labels (their icons/toggle stay), so the
     // row fits a narrower window.
     in property <bool> compact: false;
@@ -39,7 +39,7 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
     // bare "Material", so it cannot be confused with
     // `editor_view.slint`'s unrelated Yield Material/SG-override
     // control. This one picks what's simulated for
-    // colour/dispersion/birefringence in the render; it never
+    // color/dispersion/birefringence in the render; it never
     // touches the cut itself.
     // A stretch item (96px up to its share of the free width) rather than a fixed
     // 140px: the fluent ComboBox has its own 160px minimum, so it is zeroed and
@@ -55,7 +55,7 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
         border-width: 1px;
         border-color: Theme.border-medium;
 
-        Tooltip { text: @markdown("Render Material -- material simulated for colour, dispersion and birefringence. Does not change the cut."); }
+        Tooltip { text: @markdown("Render Material -- material simulated for color, dispersion and birefringence. Does not change the cut."); }
 
         ComboBox {
             width: 100%;
@@ -66,27 +66,50 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
         }
     }
 
-    // The design's body-colour variant, beside the dropdown that names only the
-    // species: while linked, a yellow-sapphire design traces as `Sapphire (Yellow)`
-    // even though the dropdown itself says `Sapphire`.
-    if ViewportModel.viewport_material_linked && EditorModel.body_colour_readout != "" && !root.compact: Rectangle {
+    // "color data updated": the selected custom material's physics recipe was built with
+    // older catalogue data than this build has. It still renders from its stored bands --
+    // nothing is recolored silently; the Material Editor offers "Update to current data".
+    if ViewportModel.selected_material_color_outdated && !root.compact: Rectangle {
         height: 32px;
-        background: #1e293bee;
+        background: Theme.surface-info;
         border-radius: Theme.radius-sm;
         border-width: 1px;
-        border-color: Theme.border-medium;
-        Tooltip { text: @markdown("Rendered in this design's own body colour -- set with Colour in the Edit tab's Design settings."); }
-        colour_readout_layout := HorizontalLayout {
+        border-color: Theme.accent-cyan;
+        Tooltip { text: @markdown("This material's physics color recipe uses older color data. It still renders from its stored color; open the Material Editor to update it."); }
+        badge_layout := HorizontalLayout {
             padding-left: 8px;
             padding-right: 8px;
             Text {
-                text: EditorModel.body_colour_readout;
+                text: "color data updated";
                 font-size: 11px;
                 color: Theme.text-primary;
                 vertical-alignment: center;
             }
         }
-        width: colour_readout_layout.preferred-width;
+        width: badge_layout.preferred-width;
+    }
+
+    // The design's body-color variant, beside the dropdown that names only the
+    // species: while linked, a yellow-sapphire design traces as `Sapphire (Yellow)`
+    // even though the dropdown itself says `Sapphire`.
+    if ViewportModel.viewport_material_linked && EditorModel.body_color_readout != "" && !root.compact: Rectangle {
+        height: 32px;
+        background: #1e293bee;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.border-medium;
+        Tooltip { text: @markdown("Rendered in this design's own body color -- set with color in the Edit tab's Design settings."); }
+        color_readout_layout := HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            Text {
+                text: EditorModel.body_color_readout;
+                font-size: 11px;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+            }
+        }
+        width: color_readout_layout.preferred-width;
     }
 
     // "Linked to design" -- see `viewport_material_linked`'s own doc
@@ -147,7 +170,7 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
         edit_mat_touch := TouchArea {
             clicked => { ViewportModel.material_editor_open = !ViewportModel.material_editor_open; }
         }
-        Tooltip { text: @markdown("Define a custom material: R.I., dispersion, birefringence, colour."); }
+        Tooltip { text: @markdown("Define a custom material: R.I., dispersion, birefringence, color."); }
 
         Image {
             source: @image-url("../../icons/pencil.svg");
@@ -171,7 +194,7 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
         border-width: 1px;
         border-color: Theme.border-medium;
 
-        Tooltip { text: @markdown("Lighting: the four studio rigs, or the lit models -- ISO hemisphere, light tent with black cards, daylight sky with sun."); }
+        Tooltip { text: @markdown("Lighting: the four studio rigs, or the lit models -- ISO hemisphere, light tent with black cards, daylight sky with sun -- or a 365 nm or 395 nm UV lamp (CPU only, lights fluorescent materials)."); }
 
         ComboBox {
             width: 100%;

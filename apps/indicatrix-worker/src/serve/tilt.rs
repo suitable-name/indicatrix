@@ -247,8 +247,11 @@ fn handle_tilt_curves_request_inner<S: Read + Write + TimeoutRead>(
         }
 
         let axis_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            indicatrix::color::metrics::evaluate_full_axis_profile_at_azimuth(
-                &scene.planes,
+            indicatrix::color::metrics::evaluate_full_axis_profile_at_azimuth_geom(
+                indicatrix::geometry::StoneGeometry {
+                    planes: &scene.planes,
+                    tools: &scene.tools,
+                },
                 &scene.material,
                 azimuth_deg,
                 environment,
@@ -374,6 +377,8 @@ mod tests {
             backdrop: 0.0,
             environment: indicatrix_net::scene::SceneEnvironment::Studio,
             surface_glare: 1.0,
+            tools: Vec::new(),
+            fluorescence: Default::default(),
         }
     }
 

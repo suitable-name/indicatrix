@@ -570,3 +570,88 @@ fn ignored_migration_backfills_not_ignored_and_is_idempotent_across_two_opens() 
 
     let _ = std::fs::remove_file(&path);
 }
+
+/// The four concave-tier columns, as `(table, column)`.
+const CONCAVE_COLUMNS: [(&str, &str); 4] = [
+    ("diagram_details", "concave_tiers"),
+    ("diagram_details", "concave_facets"),
+    ("angle_settings", "tool"),
+    ("angle_settings", "tool_line"),
+];
+
+/// A fresh database's `CREATE TABLE`s must already declare every concave column, so
+/// `migrate_concave_columns` is a no-op the first time it runs.
+#[test]
+fn fresh_database_has_the_concave_columns() {
+    let path = temp_db_path("fresh_concave_columns");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("create fresh db");
+    for (table, column) in CONCAVE_COLUMNS {
+        assert!(
+            Database::column_exists(&db.conn, table, column).unwrap(),
+            "a fresh database must already have {table}.{column}"
+        );
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Old layout (blob-first `diagram_details`, no concave columns) -> migrated -> migrated
+/// again. Existing rows must keep their data, get `0` counts and NULL tool columns, and
+/// the second open (which runs every migration again) must change nothing -- including
+/// surviving the blob-columns-last rebuild that names the columns explicitly.
+#[test]
+fn migrate_concave_columns_is_idempotent_on_an_old_layout() {
+    let path = temp_db_path("concave_columns_old_layout");
+    seed_pre_migration_db(
+        &path,
+        &[(
+            "Solo",
+            "url-solo",
+            Some("1.62"),
+            Some("1.1"),
+            Some("0.3"),
+            Some("96"),
+            Some("55+6"),
+        )],
+    );
+    {
+        let conn = Connection::open(&path).unwrap();
+        let detail_id: i64 = conn
+            .query_row("SELECT id FROM diagram_details", [], |r| r.get(0))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO angle_settings (detail_id, order_idx, facet, angle, index_val, notes)
+             VALUES (?1, 0, 'P1', '41', '96', 'keep')",
+            params![detail_id],
+        )
+        .unwrap();
+        for (table, column) in CONCAVE_COLUMNS {
+            assert!(
+                !Database::column_exists(&conn, table, column).unwrap(),
+                "the seeded old layout must not have {table}.{column}"
+            );
+        }
+    }
+
+    let snapshot = |db: &Database| -> (i64, i64, Option<String>, Option<String>, String) {
+        db.conn
+            .query_row(
+                "SELECT dd.concave_tiers, dd.concave_facets, a.tool, a.tool_line, a.notes
+                 FROM diagram_details dd JOIN angle_settings a ON a.detail_id = dd.id",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap()
+    };
+    let expected = (0, 0, None, None, "keep".to_string());
+
+    let first = Database::new(Some(path.to_str().unwrap())).expect("first migrating open");
+    for (table, column) in CONCAVE_COLUMNS {
+        assert!(Database::column_exists(&first.conn, table, column).unwrap());
+    }
+    assert_eq!(snapshot(&first), expected);
+    drop(first);
+
+    let second = Database::new(Some(path.to_str().unwrap())).expect("second open is a no-op");
+    assert_eq!(snapshot(&second), expected);
+    let _ = std::fs::remove_file(&path);
+}

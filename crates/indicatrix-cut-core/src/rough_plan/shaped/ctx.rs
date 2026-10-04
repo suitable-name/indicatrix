@@ -4,12 +4,15 @@
 //! bounding box costs a vertex enumeration of the whole rough (about a tenth
 //! of a second for a pebble). [`ShapedCtx`] does it once per plan and is passed
 //! by reference to the grid, the DP, the layout builder, the uniform pass and
-//! the refinement.
+//! the refinement. For a rough with a non-convex mesh it also carries the mesh, which each
+//! of them consults before accepting a stone.
+
+use std::sync::Arc;
 
 use glam::DVec3;
 
 use super::clip::filter_non_box;
-use crate::rough_plan::{PlanSettings, RoughModel, ShapeError};
+use crate::rough_plan::{FitMesh, PlanSettings, RoughMesh, RoughModel, ShapeError};
 
 /// Geometry of one modelled rough, computed once per plan.
 #[derive(Debug, Clone, PartialEq)]
@@ -29,6 +32,11 @@ pub struct ShapedCtx {
     pub bbox_extents: [f64; 3],
     /// Corner of the first sawn piece: `bbox_min` plus the skin.
     pub origin_mm: [f64; 3],
+    /// The rough's non-convex mesh, `None` for a convex rough. The planes above are its
+    /// convex hull (and the cuts); every placement is also checked against the mesh.
+    pub mesh: Option<Arc<RoughMesh>>,
+    /// `skin + allowance` in mm: the clearance a stone keeps from the mesh surface.
+    pub inset_mm: f64,
 }
 
 impl ShapedCtx {
@@ -53,6 +61,18 @@ impl ShapedCtx {
             bbox_min: solid.bbox_min.to_array(),
             bbox_extents: solid.bbox_extents.to_array(),
             origin_mm: (solid.bbox_min + DVec3::splat(settings.skin_mm)).to_array(),
+            mesh: model.mesh(),
+            inset_mm: inset,
+        })
+    }
+
+    /// The mesh with its clearance for the fit and the piece checks, `None` for a convex
+    /// rough.
+    #[must_use]
+    pub fn fit_mesh(&self) -> Option<FitMesh<'_>> {
+        self.mesh.as_deref().map(|mesh| FitMesh {
+            mesh,
+            inset_mm: self.inset_mm,
         })
     }
 }

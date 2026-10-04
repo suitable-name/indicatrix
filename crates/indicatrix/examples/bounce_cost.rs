@@ -3,7 +3,7 @@
 //! The GUI offers a bounce-cap ladder (today: 4 / 8 / 12 / 16 / 24, default 12). This
 //! harness answers, with numbers rather than intuition, whether a much higher cap (the
 //! question on the table was 1024) is cheap or expensive, and where the image actually
-//! stops changing. Three measurements, each done separately per material (a colourless
+//! stops changing. Three measurements, each done separately per material (a colorless
 //! high-RI stone and a lower-RI absorbing one behave very differently here):
 //!
 //! 1. **Termination histogram.** Every traced path is instrumented (via
@@ -600,7 +600,7 @@ fn main() {
 
     let diamond = GemMaterial::diamond();
     run_material(
-        "Diamond (RI~2.417, colourless, cubic/isotropic)",
+        "Diamond (RI~2.417, colorless, cubic/isotropic)",
         &diamond,
         &scene,
     );
@@ -620,7 +620,7 @@ fn main() {
     // high-birefringence end, not just Quartz's comparatively mild case.
     let zircon = GemMaterial::by_name("Zircon").expect("Zircon must be a built-in material");
     run_material(
-        "Zircon (RI~1.93, colourless, strongly birefringent uniaxial)",
+        "Zircon (RI~1.93, colorless, strongly birefringent uniaxial)",
         &zircon,
         &scene,
     );

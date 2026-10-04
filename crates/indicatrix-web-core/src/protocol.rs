@@ -79,10 +79,12 @@ use crate::{
 /// 8: the solve role accepts `HdrMap` / `ClearHdr`; `MetricsParams::hdr_id` names the map
 /// the current-view metrics are scored under and `MetricsResultData::scored_under` says
 /// what they were scored under.
+/// 9: `CustomMaterialSpec::color_recipe`, the physics color recipe a custom material
+/// may carry (rendered from its stored resolved bands).
 ///
 /// A change to any message's bytes must bump this and update the pinned bytes in this
 /// module's `wire_format_is_pinned` test.
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// What [`ToWorker::Picture`] makes of a sum (see `crate::display`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

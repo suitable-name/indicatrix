@@ -110,4 +110,14 @@ pub struct FacetingDiagramDetail {
     /// numberings for several shapes (`04`/`10` both being Emerald) and so isn't a
     /// stable id.
     pub shape_category: Option<String>,
+
+    /// How many of the design's tiers are concave (tool-cut); `0` for a planar design.
+    /// What `RangeFilter::has_concave` tests. Separate from [`Self::facets_count`],
+    /// whose `"55+6"` text is parsed into `facets`/`girdle_facets` and must stay
+    /// two-component.
+    pub concave_tiers: u32,
+    /// How many concave placements the design has in total (a concave tier can be
+    /// repeated around the stone); `0` for a planar design. Counted apart from the
+    /// flat `facets` so existing facet-count filters keep their meaning.
+    pub concave_facets: u32,
 }

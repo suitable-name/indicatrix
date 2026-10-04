@@ -88,6 +88,7 @@ fn scene() -> SceneState {
         width: WIDTH,
         height: HEIGHT,
         surface_glare: 1.0,
+        tools: Vec::new(),
         ..tiny_scene()
     }
 }

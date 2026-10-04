@@ -1,0 +1,17 @@
+# sample: Caltech GRR 2292, zoisite (tanzanite), Arusha, Tanzania, blue zone
+# host: zoisite (Pnma), biaxial; a = E||a = gamma (16.2 A axis), b = E||b = alpha (5.55 A axis), c = E||c = beta (10.0 A axis)
+# composition: none published (no composition, shape only)
+# units: lambda_nm; A = decadic absorbance, nearest Caltech data point within 3 nm (derived digest, not raw data), reflection loss and baseline NOT removed
+# path_cm: a and c rays 0.3150; b ray 0.5142 (a different piece, so b is not comparable with a and c)
+# source: Caltech Mineral Spectroscopy Server (G. R. Rossman), http://minerals.gps.caltech.edu/FILES/Visible/zoisite/Zoisite2292_blue_a.asc, _b.asc, _c.asc; docs/chromophores/primary-2026-10/data/tanzanite/digest_caltech_zoisite.txt; only the wavelengths present for all three rays are listed
+# note: shape only; used for the 380-405 nm extension of the GRR 1265 rays in the data_version 4 tanzanite fit
+lambda_nm,A_a_gamma,A_b_alpha,A_c_beta
+380,1.614,0.362,0.845
+400,1.145,0.182,0.477
+420,0.345,0.124,0.22
+440,0.182,0.161,0.176
+600,0.433,0.387,0.515
+620,0.408,0.288,0.483
+660,0.282,0.122,0.337
+700,0.265,0.075,0.368
+750,0.285,0.063,0.482

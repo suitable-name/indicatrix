@@ -523,7 +523,7 @@ pub(in crate::gui) fn refresh_lighting_preset_options(
 /// both callbacks here only ever run on the Slint event loop -- so `cancel_export` can
 /// reach the in-flight export. Split out of `run_gui` purely to keep that function
 /// under clippy's function-length lint.
-/// Inverse of `export_dialog.slint`'s "Colour Space" pill selector
+/// Inverse of `export_dialog.slint`'s "color Space" pill selector
 /// (sRGB/Display P3/Rec.2020 at indices 0-2) -- same fixed-list-with-fallback treatment
 /// as `local_preview_scale_from_index` above. Falls back to `ColorSpace::Srgb` (index
 /// 0, the required default -- see `bridge::export_thread`'s module doc comment on why

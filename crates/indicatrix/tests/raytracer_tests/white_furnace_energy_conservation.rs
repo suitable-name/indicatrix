@@ -1,21 +1,25 @@
 //! White-furnace energy-conservation regression tests for anisotropic (birefringent)
-//! transport: a colourless, non-dispersive, birefringent gem immersed in a
+//! transport: a colorless, non-dispersive, birefringent gem immersed in a
 //! spatially uniform environment must still converge to that environment's own
 //! radiance, both with a polished girdle and with a bruted (frosted) one.
 
 use glam::Vec3;
 use indicatrix::{
-    geometry::cuts::StandardGemCuts,
+    geometry::{StoneGeometry, ToolPrimitive, cuts::StandardGemCuts},
     optics::{
+        fluorescence::Fluorescence,
         materials::GemMaterial,
-        raytracer::{EnvironmentSource, trace_spectral_ray, trace_spectral_ray_with_finish},
+        raytracer::{
+            EnvironmentSource, refraction::exit_split_truncated_energy_take, trace_spectral_ray,
+            trace_spectral_ray_geom, trace_spectral_ray_with_finish,
+        },
     },
     renderer::env_map::EnvironmentMap,
 };
 
 use crate::fixtures::{bruted_girdle_finishes, furnace_mean_xyz, uniform_furnace_target};
 
-/// CPU-side regression test for TWO energy-conservation bugs at once: a colourless,
+/// CPU-side regression test for TWO energy-conservation bugs at once: a colorless,
 /// non-dispersive, BIREFRINGENT (uniaxial) gem immersed in a spatially UNIFORM
 /// environment, traced at several bounce caps.
 ///
@@ -70,14 +74,14 @@ fn birefringent_white_furnace_energy_conservation_holds() {
     const BOUNCE_CAPS: [u32; 3] = [12, 64, 256];
 
     let planes = StandardGemCuts::standard_round_brilliant();
-    // Colourless, non-dispersive, and -- unlike
+    // colorless, non-dispersive, and -- unlike
     // `frosted_girdle_white_furnace_energy_conservation_still_holds`'s material above --
     // genuinely UNIAXIAL: nonzero `birefringence_delta` puts this on the
     // `is_anisotropic` path `apply_internal_mode_coupling` only fires on.
     // `GemMaterial::new_custom`'s own birefringence_delta > 1e-4 branch sets
     // `crystal_system: Trigonal` and `optical_character: OpticalCharacter::UniaxialPositive`
     // automatically. Empty absorption bands (last argument) match the isotropic furnace
-    // anchor's own "colourless" construction exactly.
+    // anchor's own "colorless" construction exactly.
     let material = GemMaterial::new_custom(
         "CPU birefringent furnace probe",
         1.5,
@@ -244,5 +248,94 @@ fn frosted_girdle_birefringent_white_furnace_energy_conservation_holds() {
          apply_frosted_bounce's anisotropic entry-split bug (dividing stokes by its own \
          0.5 mode-selection probability on top of an already-full-share diffuse-transmitted \
          intensity)"
+    );
+}
+
+/// The main correctness check for the concave transport shortcuts (plan section 5.3): a
+/// colorless dispersive stone with a cylindrical groove cut across its table, immersed in
+/// a uniform environment, must still return that environment's radiance. Any missed
+/// re-entry across the groove (bounce loop, HG probe, NEE shadow, exit-split probe) shows
+/// up as lost energy.
+///
+/// The fixture is built by hand from [`ToolPrimitive::cylinder`]: the groove runs along
+/// X, its axis 0.12 above the table plane (y = 0.32), radius 0.3, so it removes a
+/// 0.18-deep, about 0.55-wide channel across the whole table.
+///
+/// The gate is the birefringent test's own analytic tolerance plus the measured
+/// exit-split truncation. `try_split_exit_channel` drops a dispersive channel whose own
+/// exit ray re-enters the stone, and across a groove that is no longer a corner case; the
+/// dropped energy is printed separately (and allowed for in the bound) so the v1/v2
+/// decision recorded in the plan is data-driven. The truncated fraction is estimated as
+/// the dropped channel intensity per traced sample over the eight channels that share a
+/// sample's unit throughput; the counter exists in debug builds only, so a release build
+/// reports `0` and gets the bare tolerance.
+#[test]
+fn concave_fixture_white_furnace_energy_conservation_holds() {
+    const L0: f32 = 2.5;
+    const SAMPLES_PER_PIXEL: u32 = 64;
+    // The birefringent furnace's bound (1.3 percent cap truncation plus noise); the cap
+    // here is 64, where that truncation is gone, so this is generous for the planar part.
+    const ANALYTIC_TOLERANCE: f32 = 0.025;
+    const MAX_BOUNCES: u32 = 64;
+
+    let planes = StandardGemCuts::standard_round_brilliant();
+    let tools = [ToolPrimitive::cylinder(
+        Vec3::new(0.0, 0.32 + 0.12, 0.0),
+        Vec3::X,
+        0.3,
+        2.0,
+    )];
+    let geom = StoneGeometry {
+        planes: &planes,
+        tools: &tools,
+    };
+    assert!(!geom.is_convex(), "the fixture must be concave");
+    // Dispersive, so exit events split channels and the truncation counter has something
+    // to report; colorless and isotropic otherwise.
+    let material =
+        GemMaterial::new_custom("Concave furnace probe", 1.5, 0.02, 0.0, [0.0, 0.0, 0.0]);
+    let env_map = EnvironmentMap::uniform(1, 1, [L0, L0, L0]);
+    let target = uniform_furnace_target(L0);
+
+    let _ = exit_split_truncated_energy_take();
+    let (mean, count) = furnace_mean_xyz(SAMPLES_PER_PIXEL, 0x434F_4E43, |ray, seed, hero| {
+        trace_spectral_ray_geom(
+            ray,
+            geom,
+            &material,
+            Fluorescence::none(),
+            MAX_BOUNCES,
+            EnvironmentSource::HdrMap(&env_map),
+            seed,
+            hero,
+            None,
+        )
+    });
+    let truncated = exit_split_truncated_energy_take();
+    let truncated_fraction = (truncated / (f64::from(count) * 8.0)) as f32;
+
+    let rel_err = |v: f32, t: f32| (v - t).abs() / t.abs().max(1e-6);
+    let (ex, ey, ez) = (
+        rel_err(mean.x, target.x),
+        rel_err(mean.y, target.y),
+        rel_err(mean.z, target.z),
+    );
+    let tolerance = ANALYTIC_TOLERANCE + truncated_fraction;
+    println!(
+        "[concave furnace] mean={mean:?} target={target:?} rel_err=({ex:.4}, {ey:.4}, {ez:.4}) \
+         over {count} samples; exit-split truncated energy={truncated:.1} \
+         (~{:.2}% of throughput), tolerance={tolerance:.4}",
+        truncated_fraction * 100.0
+    );
+    assert!(
+        mean.x.is_finite() && mean.y.is_finite() && mean.z.is_finite(),
+        "concave furnace mean must stay finite, got {mean:?}"
+    );
+    assert!(
+        ex <= tolerance && ey <= tolerance && ez <= tolerance,
+        "concave furnace should converge to the uniform environment's radiance \
+         (mean={mean:?}, target={target:?}, rel_err=({ex}, {ey}, {ez}), tolerance={tolerance}, \
+         exit-split truncation={truncated_fraction}) -- a residual beyond the measured \
+         truncation is a missed re-entry or a double-counted exit in the concave transport"
     );
 }

@@ -195,9 +195,9 @@ pub struct MaterialTable {
     /// grows one at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom: Option<CustomMaterialSnapshot>,
-    /// The design's per-design body colour, `body_colour_override = [r, g, b]`: the
+    /// The design's per-design body color, `body_color_override = [r, g, b]`: the
     /// absorption-RGB triple the editor applies on top of `name`'s own material
-    /// (`None` = the material's own colour). `#[serde(default)]` so a file written
+    /// (`None` = the material's own color). `#[serde(default)]` so a file written
     /// before this field existed loads with `None`, and omitted when unset so a
     /// design with no override never grows the key at all.
     ///
@@ -206,7 +206,7 @@ pub struct MaterialTable {
     /// round-trip decimal, so the file reads `[0.2, 0.4, 2.8]` rather than
     /// `[0.20000000298023224, ...]`, and loads back to the identical `f32` bits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub body_colour_override: Option<[f64; 3]>,
+    pub body_color_override: Option<[f64; 3]>,
     /// See [`PreformTable::unknown`]'s doc comment.
     #[serde(flatten, default)]
     pub unknown: toml::Table,
@@ -227,7 +227,7 @@ impl MaterialTable {
             specific_gravity_override,
             refractive_index_override,
             custom: None,
-            body_colour_override: None,
+            body_color_override: None,
             unknown: toml::Table::new(),
         }
     }
@@ -239,10 +239,10 @@ impl MaterialTable {
         self
     }
 
-    /// Attaches [`Self::body_colour_override`] -- see that field's own doc comment.
+    /// Attaches [`Self::body_color_override`] -- see that field's own doc comment.
     #[must_use]
-    pub const fn with_body_colour_override(mut self, rgb: Option<[f64; 3]>) -> Self {
-        self.body_colour_override = rgb;
+    pub const fn with_body_color_override(mut self, rgb: Option<[f64; 3]>) -> Self {
+        self.body_color_override = rgb;
         self
     }
 }
@@ -414,6 +414,48 @@ pub struct TierTable {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<NativeTierTarget>,
     /// See [`PreformTable::unknown`]'s doc comment -- the same rule, per tier.
+    #[serde(flatten, default)]
+    pub unknown: toml::Table,
+}
+
+/// One concave (fantasy-cut) tier of a self-contained design file: the two-line
+/// faceting-diagram standard's facet line plus its tool line, stored in the
+/// authored form so nothing is lost (plan §6.1).
+///
+/// A separate table from [`TierTable`] on purpose: a concave tier has no meet
+/// constraint, mast or target, and keeping it apart means a build that predates
+/// concave tiers cannot mistake one for a flat tier (it refuses the file by
+/// version instead). Tool and motion are the standard's own strings so the file
+/// reads like the diagram: `tool` is `"CYL"`, `"CON"`, `"CIR"`, `"DSC"` or
+/// `"SPH"`, `motion` is `"reciprocating"` or `"plunge"`. This crate does not
+/// interpret them; the loader in `indicatrix-cut-core` does and refuses a
+/// string it does not know. `tool`, `diameter_ratio` and `motion` have no serde
+/// default, so a record missing one is an error rather than a guessed tool.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ConcaveTierTable {
+    /// Facet name, free text.
+    pub name: String,
+    /// φ in degrees, signed like a flat tier's `angle_deg`.
+    pub angle_deg: f64,
+    /// Index-wheel positions of the placements.
+    pub indices: Vec<f64>,
+    /// Free-text cutting instructions, kept verbatim.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub instructions: String,
+    /// The tool code.
+    pub tool: String,
+    /// θ: direction of the tool axis in the facet plane, degrees.
+    pub tool_azimuth_deg: f64,
+    /// X, Y, Z displacement as ratios of the stone width.
+    pub displacement: [f64; 3],
+    /// Tool diameter as a ratio of the stone width.
+    pub diameter_ratio: f64,
+    /// Included angle of a cone or disc; absent for the other tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_angle_deg: Option<f64>,
+    /// How the tool moves while it cuts.
+    pub motion: String,
+    /// See [`PreformTable::unknown`]'s doc comment -- the same rule, per concave tier.
     #[serde(flatten, default)]
     pub unknown: toml::Table,
 }

@@ -40,7 +40,7 @@ fn gear_symmetry_mirror_and_material_all_round_trip_through_save_and_open() {
             name: Some("Quartz".to_string()),
             specific_gravity_override: Some(2.65),
             refractive_index_override: Some(1.55),
-            body_colour_override: None,
+            body_color_override: None,
         },
         preform: PreformSpec::cylinder(80, 1.4, 1.0, 1.3),
     };
@@ -454,12 +454,26 @@ fn the_replace_guard_asks_only_when_edits_landed_after_the_decision() {
 /// doesn't try to make `indicatrix`'s geometry code panic on demand: that mechanism
 /// (`std::panic::catch_unwind` around a deliberately panicking closure) is already
 /// covered directly there, and reused verbatim by `write_back_to_catalogue`.
+/// The self-contained design file Save writes next to the `.asc` and hands to the
+/// catalogue write-back (`save.rs` passes `design_file_text`'s output, not the paired
+/// `.asc` sidecar, whose TOML has no `format` key).
+fn saved_design_text(design: &indicatrix_cut_core::Design) -> String {
+    super::save_helpers::design_file_text(
+        design,
+        None,
+        &indicatrix_cut_core::native::DesignExtras::default(),
+        false,
+    )
+    .expect("a solved design serialises to a design file")
+}
+
 #[test]
 fn write_back_to_catalogue_still_creates_a_new_row_through_its_panic_guard() {
     let design = round_brilliant_design();
     design.solve().expect("standard round brilliant solves");
     let paired = save_paired(&design, "write_back_guard_test.asc", None, None, None)
         .expect("a closed, solved design must save without a draft fallback");
+    let design_text = saved_design_text(&design);
     assert!(
         paired.draft_reason.is_none(),
         "the round-brilliant fixture must not fall back to a draft save"
@@ -482,8 +496,8 @@ fn write_back_to_catalogue_still_creates_a_new_row_through_its_panic_guard() {
         None,
         "write_back_guard_test.asc",
         &paired.asc_text,
-        "write_back_guard_test.indicatrix.toml",
-        &paired.native_toml,
+        "write_back_guard_test.indicatrix",
+        &design_text,
     )
     .expect("an ordinary, non-panicking save must still succeed through the panic guard");
     assert!(
@@ -518,6 +532,7 @@ fn write_back_to_catalogue_declines_to_overwrite_a_design_that_owns_the_url() {
     let design = round_brilliant_design();
     design.solve().expect("standard round brilliant solves");
     let paired = save_paired(&design, "collide_test.asc", None, None, None).expect("saves");
+    let design_text = saved_design_text(&design);
     let db_path = std::env::temp_dir().join(format!(
         "indicatrix_cut_write_back_collision_test_{}.sqlite",
         std::process::id()
@@ -555,8 +570,8 @@ fn write_back_to_catalogue_declines_to_overwrite_a_design_that_owns_the_url() {
         None,
         "collide_test.asc",
         &paired.asc_text,
-        "collide_test.indicatrix.toml",
-        &paired.native_toml,
+        "collide_test.indicatrix",
+        &design_text,
     )
     .expect("a collision is an outcome, not an error");
     assert_eq!(id, owner_id);

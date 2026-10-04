@@ -3,8 +3,12 @@
 
 use super::gpu_backend::{BackendFrame, FrameOutputs};
 use glam::Vec3;
-use indicatrix::optics::raytracer::{
-    HitRecord, build_plane_soa, pixel_rotations, sample_draws, trace_spectral_ray_with_finish_soa,
+use indicatrix::{
+    geometry::tool::StoneGeometry,
+    optics::raytracer::{
+        HitRecord, build_plane_soa, pixel_rotations, sample_draws,
+        trace_spectral_ray_with_finish_soa_geom,
+    },
 };
 use std::{
     sync::{
@@ -145,12 +149,16 @@ pub(super) fn render_frame_scanlines(
                             // `RenderContext::girdle_frosted` is off, equivalent to
                             // `trace_spectral_ray` (every facet looks up
                             // `FacetFinish::default() == Polished`).
-                            let sample_xyz = trace_spectral_ray_with_finish_soa(
+                            let sample_xyz = trace_spectral_ray_with_finish_soa_geom(
                                 ray,
-                                frame.planes,
+                                StoneGeometry {
+                                    planes: frame.planes,
+                                    tools: frame.tools,
+                                },
                                 plane_soa,
                                 frame.facet_finishes,
                                 frame.material,
+                                frame.fluorescence,
                                 frame.max_bounces,
                                 frame.environment,
                                 draws.seed,

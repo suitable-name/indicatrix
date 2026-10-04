@@ -52,6 +52,7 @@
 //! estimated SG directly.
 
 mod catalogue;
+pub mod color;
 mod selection;
 mod specific_gravity;
 
@@ -59,6 +60,7 @@ mod specific_gravity;
 mod tests;
 
 pub use catalogue::{MaterialCatalogue, MaterialEntry, MaterialKind};
+pub use color::{Activecolor, RecipeHistory, colorMode};
 pub use selection::{
     BuiltinMaterials, MaterialLookup, MaterialSelection, ResolvedMaterial,
     built_in_material_by_exact_name, built_in_refractive_index,

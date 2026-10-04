@@ -39,4 +39,7 @@ pub use path::{
     DESIGN_MIME_TYPE, design_path_for, design_path_for_sibling, detect_kind_of_path,
     is_design_path,
 };
-pub use schema::{DESIGN_FORMAT, DESIGN_VERSION, DesignFile, MAX_DESIGN_TIERS, ScheduleTable};
+pub use schema::{
+    CONCAVE_FRAME_V0, DESIGN_FORMAT, DESIGN_VERSION, DESIGN_VERSION_CONCAVE, DesignFile,
+    MAX_DESIGN_TIERS, ScheduleTable,
+};

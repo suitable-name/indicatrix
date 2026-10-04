@@ -102,6 +102,7 @@ impl ClipFixture {
             grid: &self.grid,
             front: &self.front,
             non_box_planes: &self.ctx.non_box,
+            mesh: None,
             size_table: &self.size_table,
             settings: &self.settings,
             slice,

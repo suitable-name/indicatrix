@@ -42,4 +42,4 @@ pub use state::{
     DiagramMemory, Outlines, RequestState, SharedOutlines, WorkerMemory, dim_style,
     escaping_tier_label, resolve_request_state,
 };
-pub use types::{CameraPose, FacetOverlay, FrameGeometry, PickBuffer};
+pub use types::{CameraPose, FacetOverlay, FrameGeometry, PickBuffer, StoneGeometryBuf};

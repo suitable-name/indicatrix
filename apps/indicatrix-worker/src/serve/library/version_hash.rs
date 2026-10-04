@@ -25,7 +25,7 @@ fn hash_opt_str(hasher: &mut Sha256, s: Option<&str>) {
     }
 }
 
-/// SHA-256 over every [`DesignSummary`] field except [`DesignSummary::version`] itself,
+/// SHA-256 over every [`DesignSummary`] field (including `concave_tiers`) except [`DesignSummary::version`] itself,
 /// [`DesignSummary::design_version`] and [`DesignSummary::entry_id`].
 ///
 /// `entry_id` is the server database's row number, not part of the design: a mirror
@@ -47,6 +47,10 @@ pub(super) fn hash_summary(s: &DesignSummary) -> [u8; 32] {
     hash_opt_str(&mut hasher, s.volume.as_deref());
     hash_opt_str(&mut hasher, s.competition_diagram.as_deref());
     hasher.update([u8::from(s.ignored)]);
+    // v19: appended last, so the hash of a planar design differs from v18's only by this
+    // one zero word (every design's stamp still changes once -- see the protocol-19
+    // README entry).
+    hasher.update(s.concave_tiers.to_le_bytes());
     hasher.finalize().into()
 }
 
@@ -104,7 +108,57 @@ pub(super) fn revision_token(url: &str, revision: Revision) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
-    use super::{Revision, revision_token};
+    use super::{Revision, hash_summary, revision_token};
+    use indicatrix_net::library::DesignSummary;
+
+    fn summary() -> DesignSummary {
+        DesignSummary {
+            entry_id: 1,
+            title: "Scooped Round".to_string(),
+            url: "https://example.test/1".to_string(),
+            design_id: None,
+            shape: Some("Round".to_string()),
+            index_gear: Some("96".to_string()),
+            facets_count: Some("57+8".to_string()),
+            designer_info: None,
+            lw_ratio: None,
+            refractive_index: None,
+            volume: None,
+            competition_diagram: None,
+            ignored: false,
+            version: [0; 32],
+            design_version: [0; 32],
+            concave_tiers: 0,
+        }
+    }
+
+    /// The summary hash must move when only a concave field moves, or a mirror would
+    /// keep a design that gained a concave tier looking unchanged. It must also ignore
+    /// `entry_id` and the two revision fields, as before.
+    #[test]
+    fn design_summary_version_hash_changes_when_concave_fields_change() {
+        let planar = hash_summary(&summary());
+        let concave = hash_summary(&DesignSummary {
+            concave_tiers: 2,
+            ..summary()
+        });
+        assert_ne!(planar, concave);
+        assert_ne!(
+            concave,
+            hash_summary(&DesignSummary {
+                concave_tiers: 3,
+                ..summary()
+            })
+        );
+        assert_eq!(
+            planar,
+            hash_summary(&DesignSummary {
+                entry_id: 99,
+                design_version: [5; 32],
+                ..summary()
+            })
+        );
+    }
 
     #[test]
     fn the_token_follows_the_url_and_the_stamp_only() {

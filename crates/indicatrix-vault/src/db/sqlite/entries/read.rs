@@ -79,7 +79,7 @@ impl Database {
 
             let (angles, files) = if let Some(detail_id) = detail_id_opt {
                 let mut stmt_angles = self.conn.prepare(
-                    "SELECT facet, angle, index_val, notes, order_idx
+                    "SELECT facet, angle, index_val, notes, order_idx, tool, tool_line
                      FROM angle_settings
                      WHERE detail_id = ?1
                      ORDER BY order_idx ASC",
@@ -91,6 +91,8 @@ impl Database {
                         index: arow.get(2)?,
                         notes: arow.get(3)?,
                         order_index: arow.get(4)?,
+                        tool: arow.get(5)?,
+                        tool_line: arow.get(6)?,
                     })
                 })?;
                 let angles: Vec<_> =
@@ -192,7 +194,7 @@ impl Database {
 
             if let Some(detail_id) = detail_id_opt {
                 let mut stmt_angles = self.conn.prepare(
-                    "SELECT facet, angle, index_val, notes, order_idx
+                    "SELECT facet, angle, index_val, notes, order_idx, tool, tool_line
                      FROM angle_settings
                      WHERE detail_id = ?1
                      ORDER BY order_idx ASC",
@@ -204,6 +206,8 @@ impl Database {
                         index: arow.get(2)?,
                         notes: arow.get(3)?,
                         order_index: arow.get(4)?,
+                        tool: arow.get(5)?,
+                        tool_line: arow.get(6)?,
                     })
                 })?;
                 for a in a_rows.flatten() {
@@ -308,6 +312,26 @@ impl Database {
                 |row| row.get::<_, Option<i64>>(0),
             )
             .with_context(|| format!("Failed to read updated_at for entry_id: {entry_id}"))
+    }
+
+    /// How many of `entry_id`'s tiers are concave (`diagram_details.concave_tiers`); `0`
+    /// for a planar design, or one with no detail row. A primary-key lookup, so a search
+    /// reply can carry it per row without widening the list query.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub fn entry_concave_tiers(&self, entry_id: i64) -> Result<u32> {
+        let count: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(
+                     (SELECT concave_tiers FROM diagram_details WHERE entry_id = ?1), 0)",
+                params![entry_id],
+                |row| row.get(0),
+            )
+            .with_context(|| format!("Failed to read concave_tiers for entry_id: {entry_id}"))?;
+        Ok(u32::try_from(count.unwrap_or(0)).unwrap_or(0))
     }
 
     /// Every non-ignored `diagram_entries.id`, ordered by id: the whole local

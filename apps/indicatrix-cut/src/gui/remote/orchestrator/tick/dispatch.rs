@@ -24,7 +24,10 @@ use crate::{
     },
     settings::{LiveComputeTarget, RemoteEndpoint, WorkerSettings},
 };
-use indicatrix::optics::raytracer::{Camera, DEFAULT_FOV_DEG};
+use indicatrix::{
+    geometry::tool::StoneGeometry,
+    optics::raytracer::{Camera, DEFAULT_FOV_DEG},
+};
 use indicatrix_net::SceneState;
 use slint::{ComponentHandle, Weak};
 use std::{
@@ -99,13 +102,16 @@ pub(super) fn start_remote_render(
     // orchestrator) denoises the merged image with them. Skipped for a display-only
     // epoch too: the remote's frames arrive already denoised.
     if !combining && !display_only {
-        let guide_key = GuideCache::key_for(
+        let guide_key = GuideCache::key_for_geom(
             width,
             height,
             snapshot.yaw,
             snapshot.pitch,
             snapshot.distance,
-            &snapshot.active_planes,
+            StoneGeometry {
+                planes: &snapshot.active_planes,
+                tools: &snapshot.tools,
+            },
         );
         let guide_camera = Camera::new(
             snapshot.yaw,
@@ -121,6 +127,7 @@ pub(super) fn start_remote_render(
             guide_key,
             guide_camera,
             snapshot.active_planes, // moved: `snapshot` isn't used again after this
+            snapshot.tools,
             width,
             height,
         ));
@@ -292,8 +299,14 @@ fn scene_state_from_snapshot(snapshot: &SceneSnapshot, width: u32, height: u32) 
         girdle_frosted: !snapshot.facet_finishes.is_empty(),
         backdrop: snapshot.backdrop,
         surface_glare: snapshot.surface_glare,
+        // The concave tools, so the worker traces the same stone as the local tracer; empty
+        // for a planar design.
+        tools: snapshot.tools.clone(),
         // The loaded HDR map by content hash, else the studio rig.
         environment: crate::bridge::remote::hdr_asset::scene_environment(snapshot.env_map.as_ref()),
+        // The material's emitters, so the worker traces the same glow as the local tracer;
+        // empty for a non-fluorescent material.
+        fluorescence: snapshot.fluorescence.as_ref().clone(),
     }
 }
 

@@ -11,7 +11,7 @@ use super::{
         camera::{FacetFinish, Ray},
         color::{integrate_channels_to_xyz, integrate_channels_to_xyz_families},
         environment::{EnvironmentSource, sample_environment_for_nee},
-        intersect::intersect_polyhedron_soa,
+        intersect_stone::intersect_stone_soa,
         refraction::{RayMaterialContext, RayWavelengthCache},
         sampling::{
             DISTANCE_SAMPLE_STREAM, NEE_ENV_DIR_U_STREAM, NEE_ENV_DIR_V_STREAM, PHASE_DIR_U_STREAM,
@@ -19,9 +19,11 @@ use super::{
         },
         transport::apply_russian_roulette,
     },
-    NeeContext, balance_heuristic, frosted_orthonormal_basis,
+    HG_NEE_MAX_CROSSINGS, NeeContext, balance_heuristic, frosted_orthonormal_basis,
 };
-use crate::optics::{materials::GemMaterial, polarization::StokesVector};
+use crate::optics::{
+    materials::GemMaterial, polarization::StokesVector, raytracer::camera::HitRecord,
+};
 use glam::Vec3;
 
 /// Homogeneous Henyey-Greenstein volumetric scattering, decided/sampled once for the
@@ -453,42 +455,28 @@ pub(crate) fn nee_contribution_hg_scatter(
         origin: scatter_point + sample.dir * 1e-4,
         dir: sample.dir,
     };
-    let Some(hit) = intersect_polyhedron_soa(probe, nee.plane_soa) else {
+    let Some(first) = intersect_stone_soa(probe, nee.plane_soa, nee.plane_soa.len(), nee.tools)
+    else {
         // No exit facet found -- shouldn't happen for a point genuinely inside a closed
-        // convex solid, but a degenerate/open mesh must not panic or fabricate energy.
+        // solid, but a degenerate/open mesh must not panic or fabricate energy.
         return;
     };
-    // A frosted exit facet has no well-defined specular Fresnel/refraction
-    // for this shadow ray to use -- see this function's own doc comment for why that is
-    // a division of labour with `nee_contribution_frosted_exterior`, not a dropped case.
-    if facet_finishes
-        .get(hit.facet_idx)
-        .copied()
-        .unwrap_or_default()
-        == FacetFinish::Frosted
-    {
+    // A convex stone has exactly one crossing: the exit. A concave one may cross out into
+    // a cavity and back in before the final exit, so the probe walks its boundaries.
+    let Some(exit) = (if nee.tools.is_empty() {
+        single_exit(first, sample.dir, n_inside_hero, facet_finishes)
+    } else {
+        walk_exits(nee, probe, first, n_inside_hero, facet_finishes)
+    }) else {
         return;
-    }
-
-    // Scalar (hero-index, isotropic-approximation) exit Fresnel transmittance -- see
-    // this function's own "Simplification" doc section. `hit.normal` is the exit
-    // facet's own OUTWARD normal (`intersect_polyhedron`'s convention: an interior
-    // origin's far/exit intersection returns the plane's own stored normal, unflipped),
-    // and the shadow ray travels outward through it, so `cos_i = dot(sample.dir,
-    // hit.normal)` (no negation) is this interface's cosine of incidence -- the same
-    // sign convention `compute_channel_transmission`'s own `n1 -> n2` exit formula uses.
-    let cos_i = sample.dir.dot(hit.normal).clamp(0.0, 1.0);
-    let sin2_t = (n_inside_hero * n_inside_hero * cos_i.mul_add(-cos_i, 1.0)).min(1.0);
-    if sin2_t >= 1.0 {
-        // Total internal reflection along this direction -- see this function's own doc
-        // comment for why this is a legitimate zero, not a bias.
-        return;
-    }
-    let cos_t = (1.0 - sin2_t).max(0.0).sqrt();
-    let r_s = n_inside_hero.mul_add(cos_i, -cos_t) / n_inside_hero.mul_add(cos_i, cos_t);
-    let r_p = n_inside_hero.mul_add(-cos_t, cos_i) / n_inside_hero.mul_add(cos_t, cos_i);
-    let r_unpol = (0.5 * r_p.mul_add(r_p, r_s * r_s)).clamp(0.0, 1.0);
-    let t_unpol = 1.0 - r_unpol;
+    };
+    let ExitProbe {
+        normal: exit_normal,
+        t_material: hit_t,
+        cos_i,
+        cos_t,
+        t_unpol,
+    } = exit;
 
     // The competing (phase-function) technique's own density at this SAME
     // light-sampled direction -- the balance heuristic's other half.
@@ -507,7 +495,7 @@ pub(crate) fn nee_contribution_hg_scatter(
     // itself stays in the INTERIOR (pre-refraction) measure `sample_environment_for_nee`
     // sampled in -- only the radiance LOOKUP moves to the refracted direction.
     let refracted_dir = (n_inside_hero * sample.dir
-        - n_inside_hero.mul_add(cos_i, -cos_t) * hit.normal)
+        - n_inside_hero.mul_add(cos_i, -cos_t) * exit_normal)
         .normalize_or_zero();
     let EnvironmentSource::HdrMap(env_map) = nee.environment else {
         // `sample` is `Some` only for `HdrMap` (see `sample_environment_for_nee`), so
@@ -521,7 +509,7 @@ pub(crate) fn nee_contribution_hg_scatter(
     // doc section. Vectorized Beer-Lambert via the same `exp_f32x8` idiom
     // `maybe_scatter_or_extinguish`'s survive branch uses, so the CPU stays
     // self-consistent between the two estimators.
-    let hit_t_scaled = hit.t * absorption_path_scale;
+    let hit_t_scaled = hit_t * absorption_path_scale;
     let mut trans_args = [0f32; NUM_CHANNELS];
     for k in 0..NUM_CHANNELS {
         trans_args[k] = -(alphas[k] + sigma_s) * hit_t_scaled;
@@ -534,6 +522,159 @@ pub(crate) fn nee_contribution_hg_scatter(
         radiance[k] =
             (stokes[k].intensity() * transmittance[k] * common * env_k).mul_add(1.0, radiance[k]);
     }
+}
+
+/// The shadow probe's resolved exit: the surface the sample direction finally leaves
+/// through, and the chain's total Fresnel transmittance.
+struct ExitProbe {
+    /// Outward normal of the last exit facet, which refracts the direction the
+    /// environment is looked up along.
+    normal: Vec3,
+    /// Total path length inside the material: the sum of every in-material segment of
+    /// the walk (just the distance to the exit on a convex stone). Air gaps across a
+    /// cavity carry no absorption.
+    t_material: f32,
+    /// Cosine of incidence at the last exit.
+    cos_i: f32,
+    /// Cosine of the refracted angle at the last exit.
+    cos_t: f32,
+    /// Product of the unpolarised Fresnel transmittance at every exit crossed.
+    t_unpol: f32,
+}
+
+/// Unpolarised exit Fresnel transmittance and refracted-angle cosine for a ray leaving
+/// an interior of index `n_inside` at `cos_i`, or `None` on total internal reflection.
+///
+/// One scalar hero-index transmittance, as the doc comment of
+/// [`nee_contribution_hg_scatter`] describes.
+fn exit_transmittance(n_inside: f32, cos_i: f32) -> Option<(f32, f32)> {
+    let sin2_t = (n_inside * n_inside * cos_i.mul_add(-cos_i, 1.0)).min(1.0);
+    if sin2_t >= 1.0 {
+        // Total internal reflection along this direction -- see the NEE doc comment for
+        // why this is a legitimate zero, not a bias.
+        return None;
+    }
+    let cos_t = (1.0 - sin2_t).max(0.0).sqrt();
+    let r_s = n_inside.mul_add(cos_i, -cos_t) / n_inside.mul_add(cos_i, cos_t);
+    let r_p = n_inside.mul_add(-cos_t, cos_i) / n_inside.mul_add(cos_t, cos_i);
+    let r_unpol = (0.5 * r_p.mul_add(r_p, r_s * r_s)).clamp(0.0, 1.0);
+    Some((1.0 - r_unpol, cos_t))
+}
+
+/// Whether the facet `hit` is on has a frosted finish; tool facets are always polished.
+fn hit_is_frosted(facet_finishes: &[FacetFinish], hit: HitRecord) -> bool {
+    facet_finishes
+        .get(hit.facet_idx)
+        .copied()
+        .unwrap_or_default()
+        == FacetFinish::Frosted
+}
+
+/// The convex-stone probe result: the single crossing is the exit. This is the
+/// pre-concave logic, kept as its own function so a planar trace stays bit-identical.
+///
+/// A frosted exit facet has no well-defined specular Fresnel/refraction for this shadow
+/// ray to use -- see [`nee_contribution_hg_scatter`]'s doc comment for why that is a
+/// division of labour with `nee_contribution_frosted_exterior`, not a dropped case.
+fn single_exit(
+    hit: HitRecord,
+    dir: Vec3,
+    n_inside: f32,
+    facet_finishes: &[FacetFinish],
+) -> Option<ExitProbe> {
+    if hit_is_frosted(facet_finishes, hit) {
+        return None;
+    }
+    // `hit.normal` is the exit facet's own OUTWARD normal (`intersect_polyhedron`'s
+    // convention: an interior origin's far/exit intersection returns the plane's own
+    // stored normal, unflipped), and the shadow ray travels outward through it, so
+    // `cos_i = dot(dir, hit.normal)` (no negation) is this interface's cosine of
+    // incidence -- the same sign convention `compute_channel_transmission`'s own
+    // `n1 -> n2` exit formula uses.
+    let cos_i = dir.dot(hit.normal).clamp(0.0, 1.0);
+    let (t_unpol, cos_t) = exit_transmittance(n_inside, cos_i)?;
+    Some(ExitProbe {
+        normal: hit.normal,
+        t_material: hit.t,
+        cos_i,
+        cos_t,
+        t_unpol,
+    })
+}
+
+/// The concave-stone probe: follows the sample direction through up to
+/// [`HG_NEE_MAX_CROSSINGS`] boundaries, multiplying in the Fresnel transmittance at each
+/// exit and at each re-entry through a cavity's far wall (the same unpolarised Fresnel
+/// formula, evaluated at the interior-side cosine of the unbent direction, so the two
+/// interfaces of one air gap are both paid), and summing the length of every in-material
+/// segment for the Beer-Lambert term. Drops the sample
+/// above the cap, on TIR or a frosted exit at any crossing, and when the walk ends on an
+/// entry (a ray that never leaves a closed stone is degenerate geometry).
+///
+/// The walk keeps the interior direction through the air gaps rather than refracting it
+/// at each interface: v1 bends the direction only once, at the last exit, where the
+/// environment is looked up. That matches the single-exit estimator exactly for a stone
+/// with no cavity in the way and is an approximation, noted in `physics.md`, otherwise.
+fn walk_exits(
+    nee: NeeContext<'_>,
+    probe: Ray,
+    first: HitRecord,
+    n_inside: f32,
+    facet_finishes: &[FacetFinish],
+) -> Option<ExitProbe> {
+    let dir = probe.dir;
+    let mut ray = probe;
+    let mut hit = first;
+    let mut crossings = 1;
+    let mut chain = 1.0f32;
+    let mut material_len = 0.0f32;
+    // Whether the segment ending at the current hit starts just past a re-entry, whose
+    // origin offset lies inside the material.
+    let mut after_entry = false;
+    let mut last: Option<(Vec3, f32, f32)>;
+    loop {
+        if hit_is_frosted(facet_finishes, hit) {
+            return None;
+        }
+        let cos = dir.dot(hit.normal);
+        if cos > 0.0 {
+            // The segment ending at an exit is in-material.
+            material_len += if after_entry { hit.t + 1e-4 } else { hit.t };
+            let cos_i = cos.clamp(0.0, 1.0);
+            let (t, cos_t) = exit_transmittance(n_inside, cos_i)?;
+            chain *= t;
+            last = Some((hit.normal, cos_i, cos_t));
+            after_entry = false;
+        } else {
+            // Re-entry through a far cavity wall: the air-gap segment ending here is
+            // not absorbing, but the interface transmits only `T`.
+            let (t, _) = exit_transmittance(n_inside, (-cos).clamp(0.0, 1.0))?;
+            chain *= t;
+            last = None;
+            after_entry = true;
+        }
+        ray = Ray {
+            origin: ray.origin + hit.t * dir + dir * 1e-4,
+            dir,
+        };
+        let Some(next) = intersect_stone_soa(ray, nee.plane_soa, nee.plane_soa.len(), nee.tools)
+        else {
+            break;
+        };
+        crossings += 1;
+        if crossings > HG_NEE_MAX_CROSSINGS {
+            return None;
+        }
+        hit = next;
+    }
+    let (normal, cos_i, cos_t) = last?;
+    Some(ExitProbe {
+        normal,
+        t_material: material_len,
+        cos_i,
+        cos_t,
+        t_unpol: chain,
+    })
 }
 
 /// The Henyey-Greenstein phase function, normalized to integrate to `1.0` over the
@@ -595,4 +736,75 @@ pub(crate) fn sample_henyey_greenstein_direction(u1: f32, u2: f32, g: f32, forwa
     let (sin_p, cos_p) = phi.sin_cos();
     let (t, b) = frosted_orthonormal_basis(forward);
     (t * (sin_theta * cos_p) + b * (sin_theta * sin_p) + forward * cos_theta).normalize_or_zero()
+}
+
+#[cfg(test)]
+mod walk_tests {
+    use super::*;
+    use crate::{
+        geometry::{plane::GpuFacetPlane, tool::ToolPrimitive},
+        optics::raytracer::{build_plane_soa, environment::LightingPreset},
+    };
+
+    /// A shadow ray that exits through a groove wall, crosses the cavity and re-enters
+    /// the far wall must pay Beer-Lambert over BOTH in-material segments and the
+    /// Fresnel transmittance at all three interfaces (exit, re-entry, final exit).
+    #[test]
+    fn through_groove_probe_matches_analytic_segments_and_interfaces() {
+        // Unit cube, half-extent 0.5, with a Z-axis through-groove of radius 0.1.
+        let planes: Vec<GpuFacetPlane> = [
+            Vec3::X,
+            Vec3::NEG_X,
+            Vec3::Y,
+            Vec3::NEG_Y,
+            Vec3::Z,
+            Vec3::NEG_Z,
+        ]
+        .into_iter()
+        .map(|n| GpuFacetPlane::new(n, -0.5))
+        .collect();
+        let soa = build_plane_soa(&planes);
+        let tools = [ToolPrimitive::cylinder(Vec3::ZERO, Vec3::Z, 0.1, 2.0)];
+        let env = LightingPreset::Daylight.studio(1.0, 0.4, 0.35);
+        let nee = NeeContext {
+            environment: env,
+            plane_soa: &soa,
+            tools: &tools,
+            enabled: true,
+        };
+        let n = 1.76f32;
+        let start = Vec3::new(-0.4, 0.05, 0.0);
+        let probe = Ray {
+            origin: start + Vec3::X * 1e-4,
+            dir: Vec3::X,
+        };
+        let first = intersect_stone_soa(probe, &soa, planes.len(), &tools).expect("groove wall");
+        let exit = walk_exits(nee, probe, first, n, &[]).expect("probe escapes");
+
+        // Walls of the groove at this height: x = -+sqrt(0.1^2 - 0.05^2).
+        let half_chord = 0.05f32.mul_add(-0.05, 0.1f32 * 0.1).sqrt();
+        let seg_a = (-half_chord) - (-0.4);
+        let seg_b = 0.5 - half_chord;
+        assert!(
+            (exit.t_material - (seg_a + seg_b)).abs() < 1e-3,
+            "material path {} vs {}",
+            exit.t_material,
+            seg_a + seg_b
+        );
+        // Interface transmittances from the unpolarised Fresnel formula at each
+        // crossing's own cosine (the groove walls are tilted, the cube face is normal).
+        let cos_wall = (0.05f32 / 0.1).mul_add(-(0.05f32 / 0.1), 1.0).sqrt();
+        let t_wall = exit_transmittance(n, cos_wall).expect("no TIR").0;
+        let t_face = exit_transmittance(n, 1.0).expect("no TIR").0;
+        let analytic = t_wall * t_wall * t_face;
+        assert!(
+            (exit.t_unpol - analytic).abs() < 1e-4,
+            "chain {} vs {}",
+            exit.t_unpol,
+            analytic
+        );
+        // And the absorption the caller multiplies in is strictly larger than the old
+        // first-segment-only value.
+        assert!(exit.t_material > first.t + 0.4);
+    }
 }

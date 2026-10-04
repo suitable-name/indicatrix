@@ -9,6 +9,7 @@
 //! the collision-free names of duplicated, mirrored and generated tiers;
 //! [`step_series`] parses the Generate steps form and reports [`StepSeriesError`].
 
+pub mod concave_form;
 pub mod design;
 pub mod material;
 pub mod naming;
@@ -16,6 +17,7 @@ pub mod preform_and_new_design;
 pub mod step_series;
 pub mod tier_form;
 
+pub use concave_form::{ConcaveTierFormFields, concave_tier_form_fields, parse_concave_tier_form};
 pub use design::{LoadedDesign, default_preform_for_schedule, design_from_asc_text};
 pub use material::{
     RI_PRESERVE_TOLERANCE, material_selection_for_accepted_suggestion,

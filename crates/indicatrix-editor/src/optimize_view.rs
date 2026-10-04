@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 /// One row of the Optimize result table.
 ///
 /// A metric's before figure, its after figure with a signed delta and a plain-English
-/// verdict, and the direction the row is coloured by (`1` better, `-1` worse, `0`
+/// verdict, and the direction the row is colored by (`1` better, `-1` worse, `0`
 /// unchanged).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OptimizeResultLine {
@@ -240,6 +240,10 @@ pub fn parse_optimize_weights(
 }
 
 /// The tier name to show alongside a tier-index reference in a result table.
+///
+/// The index is a position in `design.tiers`: Optimize's variables are flat tiers only
+/// (a concave tier has no critical-angle margin to optimise), even though its objective
+/// is evaluated on the whole stone, tools included.
 ///
 /// `""` (never a placeholder) for an out-of-range index, since a design edited between
 /// when a background search started and when its result landed can shrink the tier list

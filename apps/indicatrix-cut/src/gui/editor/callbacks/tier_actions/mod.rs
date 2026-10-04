@@ -8,13 +8,14 @@
 //! forms ([`design_forms`]), the Save Tier form ([`tier_form`]), angle nudging
 //! ([`nudge`]), tier CRUD ([`tier_crud`]), generated tier series
 //! ([`tier_generation`]), multi-select ([`selection`]), Adopt/Pin ([`adopt`]),
-//! per-facet index editing ([`facet_editing`]), material/symmetry settings
+//! concave tiers ([`concave_tier`]), per-facet index editing ([`facet_editing`]), material/symmetry settings
 //! ([`materials_symmetry`]), gear remap ([`gear_remap`]), viewport material linking
 //! ([`viewport_material`]), solid-view facet picking ([`solid_picking`]), and small
 //! shared helpers ([`misc`]) -- plus the shared facet-overlay state
 //! ([`facet_overlay`]) every selection/picking path resubmits through.
 
 mod adopt;
+mod concave_tier;
 mod design_forms;
 mod facet_editing;
 mod facet_overlay;

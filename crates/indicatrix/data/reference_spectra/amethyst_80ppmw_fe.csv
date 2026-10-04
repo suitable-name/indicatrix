@@ -1,0 +1,27 @@
+# sample: amethyst (irradiated)
+# host: quartz, uniaxial; E_perp_c = o-ray
+# composition: 80 ppmw Fe
+# units: lambda_nm; alpha in cm^-1, Napierian (T = exp(-alpha*L), L in cm)
+# path_cm: 0.60
+# source: research-2026-10-polarized-spectra.md section 4 "Napierian alpha" table (user-delivered, secondary, unverified; sparse 19-point grid)
+# lab: E_perp_c | D65 | 0.6 | 62.4 | 22.8 | -18.5
+lambda_nm,E_perp_c
+350,4.80
+370,3.90
+400,2.60
+425,1.85
+450,1.40
+475,1.25
+500,1.45
+520,1.95
+545,2.80
+585,2.20
+605,1.45
+635,0.85
+660,0.48
+683.5,0.32
+740,0.18
+800,0.12
+850,0.15
+950,0.42
+1050,0.22

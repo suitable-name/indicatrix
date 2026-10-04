@@ -46,6 +46,7 @@ pub fn scene(width: u32, height: u32) -> SceneState {
         width,
         height,
         surface_glare: 1.0,
+        tools: Vec::new(),
         ..super::fixtures::tiny_scene()
     }
 }

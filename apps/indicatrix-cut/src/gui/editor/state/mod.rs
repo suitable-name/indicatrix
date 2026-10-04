@@ -42,7 +42,7 @@ pub(super) use indicatrix_editor::material::material_name_from_index;
 pub(super) use indicatrix_editor::session::angle_nudge_coalesce_key;
 pub(super) use indicatrix_editor::{
     material::{
-        MaterialComboCache, body_colour_from_index, body_colour_index_for, body_colour_options,
+        MaterialComboCache, body_color_from_index, body_color_index_for, body_color_options,
         builtin_preset_names, design_material_index_from_name, design_material_options,
         gear_choice_to_teeth, gear_index_from_teeth, parse_design_material_form, parse_yield_form,
         ri_source_text,
@@ -62,7 +62,8 @@ pub(super) use indicatrix_editor::{
 };
 pub(super) use material::gear_remap_preview;
 pub(super) use row_format::{
-    apply_multi_selection, index_chip_items, push_multi_selected_count, push_rows, push_tiers,
+    apply_multi_selection, concave_tier_index, index_chip_items, push_multi_selected_count,
+    push_rows, push_tiers,
 };
 pub(super) use rows::{
     apply_proposed_angles, manufacturability_warnings_tagged, tier_items, tier_items_from_solved,

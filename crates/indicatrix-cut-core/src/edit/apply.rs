@@ -56,6 +56,9 @@ impl Design {
             Edit::RemoveTier { index } => self.apply_remove_tier(index, tier_count),
             Edit::MoveTier { from, to } => self.apply_move_tier(from, to, tier_count),
             Edit::ModifyTier { index, tier } => {
+                if index >= tier_count || self.flat_tier_clashes_with_concave(&tier) {
+                    return Err(EditError { index, tier_count });
+                }
                 let Some(slot) = self.tiers.get_mut(index) else {
                     return Err(EditError { index, tier_count });
                 };
@@ -126,7 +129,7 @@ impl Design {
                 from_gear,
                 to_gear,
                 rounding,
-            } => Ok(self.apply_remap_indices(from_gear, to_gear, rounding)),
+            } => self.apply_remap_indices(from_gear, to_gear, rounding),
             Edit::RestoreIndices { tiers } => self.apply_restore_indices(tiers, tier_count),
             Edit::RetargetAngles { changes } => self.apply_retarget_angles(changes, tier_count),
             Edit::SetCheaterOffset { index, offset_deg } => {
@@ -137,6 +140,14 @@ impl Design {
                 self.apply_set_tier_target(index, target, tier_count)
             }
             Edit::RestoreTierId { index, id } => self.apply_restore_tier_id(index, id, tier_count),
+            Edit::AddConcaveTier { index, tier } => self.apply_add_concave_tier(index, tier),
+            Edit::RemoveConcaveTier { index } => self.apply_remove_concave_tier(index),
+            Edit::ModifyConcaveTier { index, tier } => self.apply_modify_concave_tier(index, tier),
+            Edit::MoveConcaveTier { from, to } => self.apply_move_concave_tier(from, to),
+            Edit::RestoreConcaveTierId { index, id } => {
+                self.apply_restore_concave_tier_id(index, id)
+            }
+            Edit::RestoreConcaveIndices { tiers } => self.apply_restore_concave_indices(tiers),
             Edit::Batch(edits) => self.apply_batch(edits),
         }
     }
@@ -191,7 +202,7 @@ impl Design {
         tier: crate::design::ConstraintTier,
         tier_count: usize,
     ) -> Result<Edit, EditError> {
-        if index > tier_count {
+        if index > tier_count || self.flat_tier_clashes_with_concave(&tier) {
             return Err(EditError { index, tier_count });
         }
         // Self-heals `tier_ids` -- see `Self::sync_tier_ids`'s own doc comment
@@ -602,15 +613,43 @@ impl Design {
 
     /// [`Edit::RemapIndices`]'s own apply half -- see that variant's own doc
     /// comment for why the inverse is [`Edit::RestoreIndices`] (a verbatim
-    /// snapshot) rather than a reverse remap. Never fails (touches every current
-    /// tier uniformly, names no specific index), so this returns the inverse
-    /// [`Edit`] directly.
+    /// snapshot) rather than a reverse remap. Concave tiers' indices are remapped
+    /// too, wrapped onto the new wheel (a rounded index can land on `to_gear`
+    /// itself, which is position 0) and validated, with the rest of the edit,
+    /// before anything is written.
+    ///
+    /// # Errors
+    ///
+    /// [`EditError`] naming the concave tier that would be invalid on the new
+    /// gear; `self` is then untouched.
     fn apply_remap_indices(
         &mut self,
         from_gear: i32,
         to_gear: i32,
         rounding: RemapRounding,
-    ) -> Edit {
+    ) -> Result<Edit, EditError> {
+        let to_teeth = f64::from(to_gear.unsigned_abs());
+        let concave_remapped: Vec<Vec<f64>> = self
+            .concave_tiers
+            .iter()
+            .map(|tier| {
+                tier.indices
+                    .iter()
+                    .map(|&idx| remap_index(idx, from_gear, to_gear, rounding).rem_euclid(to_teeth))
+                    .collect()
+            })
+            .collect();
+        for (index, (tier, indices)) in self.concave_tiers.iter().zip(&concave_remapped).enumerate()
+        {
+            let mut candidate = tier.clone();
+            candidate.indices.clone_from(indices);
+            if candidate.validate(to_gear).is_err() {
+                return Err(EditError {
+                    index,
+                    tier_count: self.concave_tiers.len(),
+                });
+            }
+        }
         let tiers = self
             .tiers
             .iter()
@@ -629,7 +668,28 @@ impl Design {
                 .map(|&idx| remap_index(idx, from_gear, to_gear, rounding))
                 .collect();
         }
-        Edit::RestoreIndices { tiers }
+        let flat_inverse = Edit::RestoreIndices { tiers };
+        // A gear change must carry concave placements along too, or they would
+        // silently keep their old tooth numbers. Only a design that has concave
+        // tiers gets the `Batch`, so every existing design's inverse stays exactly
+        // the plain `RestoreIndices` it has always been.
+        if self.concave_tiers.is_empty() {
+            return Ok(flat_inverse);
+        }
+        let snapshot = self
+            .concave_tiers
+            .iter()
+            .enumerate()
+            .map(|(index, tier)| (index, tier.indices.clone()))
+            .collect();
+        for (tier, indices) in self.concave_tiers.iter_mut().zip(concave_remapped) {
+            tier.indices = indices;
+        }
+        // The two halves touch disjoint lists, so their order is immaterial.
+        Ok(Edit::Batch(vec![
+            flat_inverse,
+            Edit::RestoreConcaveIndices { tiers: snapshot },
+        ]))
     }
 
     /// [`Edit::RestoreIndices`]'s own apply/inverse half. Validates every named

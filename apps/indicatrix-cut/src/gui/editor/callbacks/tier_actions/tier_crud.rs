@@ -14,6 +14,9 @@ use slint::{ComponentHandle, Model};
 
 use super::{
     adopt::{setup_adopt_all_callback, setup_adopt_selected_callback, setup_pin_to_mast_callback},
+    concave_tier::{
+        Services, concave_at, duplicate_concave_now, move_concave_now, remove_concave_now,
+    },
     facet_editing::{
         setup_facet_add_callback, setup_facet_remove_callback, setup_facet_toggle_detach_callback,
         setup_highlight_tooth_callback, setup_tier_mirror_indices_callback,
@@ -63,9 +66,27 @@ pub(in crate::gui::editor) fn setup_remove_tier_callback(
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            let Ok(index) = usize::try_from(index) else {
+            let Ok(position) = usize::try_from(index) else {
                 return;
             };
+            // A position past the flat tiers names a concave tier: no dependants to
+            // ask about, so it removes straight away.
+            let concave = concave_at(&state.borrow(), index);
+            if let Some(concave_index) = concave {
+                remove_concave_now(
+                    &ui,
+                    &Services {
+                        state: &state,
+                        render_ctx: &render_ctx,
+                        preview_state: &preview_state,
+                        solid_last_solved: &solid_last_solved,
+                    },
+                    concave_index,
+                    index,
+                );
+                return;
+            }
+            let index = position;
             remove_tier_now(
                 &ui,
                 &state,
@@ -178,9 +199,24 @@ pub(in crate::gui::editor) fn setup_duplicate_tier_callback(
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            let Ok(index) = usize::try_from(index) else {
+            let Ok(position) = usize::try_from(index) else {
                 return;
             };
+            let concave = concave_at(&state.borrow(), index);
+            if let Some(concave_index) = concave {
+                duplicate_concave_now(
+                    &ui,
+                    &Services {
+                        state: &state,
+                        render_ctx: &render_ctx,
+                        preview_state: &preview_state,
+                        solid_last_solved: &solid_last_solved,
+                    },
+                    concave_index,
+                );
+                return;
+            }
+            let index = position;
             let mut st = state.borrow_mut();
             // The copy's counted `" (N)"` name, cleared `imported_meet` and insertion
             // right after the source all live in `EditorSession::duplicate_tier`
@@ -360,9 +396,25 @@ fn setup_move_tier_callback(
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            let Ok(index) = usize::try_from(index) else {
+            let Ok(position) = usize::try_from(index) else {
                 return;
             };
+            let concave = concave_at(&state.borrow(), index);
+            if let Some(concave_index) = concave {
+                move_concave_now(
+                    &ui,
+                    &Services {
+                        state: &state,
+                        render_ctx: &render_ctx,
+                        preview_state: &preview_state,
+                        solid_last_solved: &solid_last_solved,
+                    },
+                    concave_index,
+                    direction,
+                );
+                return;
+            }
+            let index = position;
             let mut st = state.borrow_mut();
             // The end-of-list guard and the single `Edit::MoveTier` live in
             // `EditorSession::move_tier` (shared with the web app's tier table).

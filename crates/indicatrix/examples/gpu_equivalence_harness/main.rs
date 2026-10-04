@@ -64,7 +64,7 @@
 //!   `r_s`/`r_p`/`t_s`/`t_p`-from-physics sweep) and why.
 //! - **Furnace anchor**: [`indicatrix::renderer::gpu::furnace_check`] (uniform
 //!   environment, zero geometry) plus
-//!   [`indicatrix::renderer::gpu::estimator_check::run_furnace`] (a real colourless
+//!   [`indicatrix::renderer::gpu::estimator_check::run_furnace`] (a real colorless
 //!   non-dispersive gem inside a uniform environment) -- both glue every ported
 //!   function together against a uniform environment whose expected XYZ is
 //!   analytically computable, checking both CPU and GPU against that

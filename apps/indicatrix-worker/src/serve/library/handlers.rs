@@ -153,6 +153,42 @@ pub(super) fn design_source(db: &Database, entry_id: i64) -> LibraryResponse {
     }
 }
 
+/// Handles
+/// [`LibraryRequest::FetchDesignNative`](indicatrix_net::library::LibraryRequest::FetchDesignNative):
+/// returns `entry_id`'s first self-contained `.indicatrix` attachment (by
+/// `indicatrix_vault::local::native_design_attachment_position`, the rule the local
+/// loader uses) as raw bytes -- never parsed or re-encoded here, so nothing is lost on
+/// the way to a client that must see the concave tiers `.asc` cannot carry.
+///
+/// Same three outcomes as [`design_source`]: no such entry -> `NotFound`; no native
+/// attachment (or one that vanished mid-request) -> `DesignNativeNotAvailable`; else
+/// `DesignNative`.
+pub(super) fn design_native(db: &Database, entry_id: i64) -> LibraryResponse {
+    let meta = match db.get_diagram_full_meta(entry_id) {
+        Ok(Some(meta)) => meta,
+        Ok(None) => {
+            tracing::debug!("FetchDesignNative: entry {entry_id} not found");
+            return LibraryResponse::NotFound;
+        }
+        Err(e) => return db_error("get_diagram_full_meta", &e),
+    };
+    let Some(position) = indicatrix_vault::local::native_design_attachment_position(
+        meta.attached_files.iter().map(|f| f.name.as_str()),
+    ) else {
+        tracing::debug!("FetchDesignNative: entry {entry_id} has no .indicatrix attachment");
+        return LibraryResponse::DesignNativeNotAvailable;
+    };
+    match db.get_attachment_content(meta.attached_files[position].id) {
+        Ok(Some((file_name, content))) => LibraryResponse::DesignNative {
+            entry_id,
+            file_name,
+            content,
+        },
+        Ok(None) => LibraryResponse::DesignNativeNotAvailable,
+        Err(e) => db_error("get_attachment_content", &e),
+    }
+}
+
 /// [`design_source`]'s reply for one design-file attachment's bytes: a `.asc` as
 /// its own decoded text (Windows-1252 aware -- a legacy degree sign must reach the
 /// viewer as `°`, not as U+FFFD), a `.gem`/`.gcs` converted to `.asc` cutting

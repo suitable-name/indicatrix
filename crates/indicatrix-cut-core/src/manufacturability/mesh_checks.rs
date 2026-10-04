@@ -6,9 +6,14 @@
 
 use super::warning::ManufacturabilityWarning;
 use crate::design::Design;
+use glam::DVec3;
 use indicatrix::geometry::{
     meet_solver::{SolveStrategy, SolvedTier},
-    stone_metrics::{SolidStatus, build_solid_mesh, measure_solid},
+    stone_metrics::{
+        SolidMesh, SolidStatus, TOOL_SEGMENTS, build_solid_mesh, build_solid_mesh_geom,
+        measure_solid, measure_solid_with_vertices, mesh_volume, tessellate_tool,
+    },
+    tool::ToolPrimitive,
 };
 use std::collections::BTreeMap;
 
@@ -26,7 +31,8 @@ use std::collections::BTreeMap;
 /// as a parameter so a caller who disagrees can override it.
 pub const DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2: f64 = 1e-4;
 
-/// Runs all five checks over `design`'s current authored state.
+/// Runs all five checks over `design`'s current authored state, then (only when it
+/// has concave tiers) [`check_concave_tools`].
 ///
 /// Uses `solved` (an already-[`Design::solve`]'d, or [`Design::resolve_dirty`]'d,
 /// mast list -- see this module's doc comment for why a second solve is not
@@ -81,6 +87,12 @@ pub fn check_manufacturability(
             ));
         }
     }
+
+    warnings.extend(check_concave_tools(
+        design,
+        solved,
+        min_facet_area_fraction_of_w2,
+    ));
 
     warnings
 }
@@ -213,6 +225,360 @@ fn check_undersized_facets(
             }
         }
         prev = end;
+    }
+    warnings
+}
+
+/// A tool or overlap that removes less than this fraction of the stone's volume
+/// removes nothing a cutter could see: it is a graze, not a cut.
+const REMOVED_VOLUME_FRACTION: f64 = 1e-9;
+
+/// Two facet normals at least this far apart (cosine at most `-0.9`, about 154
+/// degrees) face opposite ways for the break-through test.
+const OPPOSITE_FACET_COS: f64 = -0.9;
+
+/// A reciprocating tool's break-through test ignores facets whose normal is
+/// within 60 degrees of its axis (cosine above `0.5`): those are the ends of its
+/// stroke, which leaves the stone there by design.
+const STROKE_END_FACET_COS: f64 = 0.5;
+
+/// Polygon sides for the overlap test's tool tessellation. Coarse on purpose: the
+/// test runs once per pair of nearby tools, and an octagon's equal-area radius
+/// keeps its overlap estimate within the noise of a threshold that is already a
+/// graze.
+const OVERLAP_SEGMENTS: usize = 8;
+
+/// Geometric slack, relative to `1 + width`, for "strictly inside" and "on the
+/// plane" tests of a vertex.
+const VERTEX_EPS: f64 = 1e-9;
+
+/// Total polygon area of each facet of `mesh`, keyed by facet id. A concave mesh
+/// may carry several rings for one facet, which add.
+fn facet_areas(mesh: &SolidMesh) -> BTreeMap<usize, f64> {
+    let mut areas = BTreeMap::new();
+    for (id, ring) in &mesh.rings {
+        *areas.entry(*id).or_insert(0.0) += polygon_area(ring);
+    }
+    areas
+}
+
+/// Unit axis of `tool` as an `f64` vector.
+fn tool_axis_f64(tool: &ToolPrimitive) -> DVec3 {
+    DVec3::new(
+        f64::from(tool.axis[0]),
+        f64::from(tool.axis[1]),
+        f64::from(tool.axis[2]),
+    )
+}
+
+/// A sphere that certainly contains `tool` with its sweep: centre, and the sum of
+/// its largest radius, half-length and half-stroke.
+fn bounding_sphere(tool: &ToolPrimitive) -> (DVec3, f64) {
+    let centre = DVec3::new(
+        f64::from(tool.origin[0]),
+        f64::from(tool.origin[1]),
+        f64::from(tool.origin[2]),
+    );
+    let radius = tool.origin[3].max(tool.profile[0]).max(tool.profile[1]);
+    (centre, f64::from(radius + tool.axis[3] + tool.profile[2]))
+}
+
+/// The lowest-numbered touching facet that has a touching facet facing the
+/// opposite way, or `None`. `stroke_axis` is the tool axis for a reciprocating
+/// tool, whose stroke-end facets are skipped ([`STROKE_END_FACET_COS`]).
+fn broken_through_facet(
+    planes: &[(DVec3, f64)],
+    touched: &[usize],
+    stroke_axis: Option<DVec3>,
+) -> Option<usize> {
+    let normal = |i: usize| planes[i].0.normalize_or_zero();
+    let radial = |n: DVec3| stroke_axis.is_none_or(|axis| n.dot(axis).abs() < STROKE_END_FACET_COS);
+    for (position, &a) in touched.iter().enumerate() {
+        let na = normal(a);
+        if !radial(na) {
+            continue;
+        }
+        for &b in &touched[position + 1..] {
+            let nb = normal(b);
+            if radial(nb) && na.dot(nb) <= OPPOSITE_FACET_COS {
+                return Some(a);
+            }
+        }
+    }
+    None
+}
+
+/// Check 6 (concave designs only): the concave-tool warnings of an already-solved design.
+///
+/// Empty for a design without concave tiers, and also when the tiers cannot be
+/// resolved (an invalid tier is reported by validation, not here), so planar
+/// manufacturability output never changes. See [`concave_tool_warnings`] for what each warning means.
+#[must_use]
+pub fn check_concave_tools(
+    design: &Design,
+    solved: &[SolvedTier],
+    min_facet_area_fraction_of_w2: f64,
+) -> Vec<ManufacturabilityWarning> {
+    if design.concave_tiers.is_empty() {
+        return Vec::new();
+    }
+    let Ok((planes, tools, placements)) = design.geometry_from_solved(solved) else {
+        return Vec::new();
+    };
+    let preform_len = design.preform.planes().len();
+    // The tier table asks on every refresh, and the warnings cost many full mesh
+    // builds, so an unchanged stone (same planes, tools and threshold) is answered
+    // from a small per-thread cache. The key covers every input the warnings read.
+    let key = concave_warnings_key(
+        &planes,
+        preform_len,
+        &tools,
+        &placements,
+        min_facet_area_fraction_of_w2,
+    );
+    if let Some(hit) = CONCAVE_WARNINGS_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .iter()
+            .find(|(cached, _)| *cached == key)
+            .map(|(_, warnings)| warnings.clone())
+    }) {
+        return hit;
+    }
+    let warnings = concave_tool_warnings(
+        &planes,
+        preform_len,
+        &tools,
+        &placements,
+        min_facet_area_fraction_of_w2,
+    );
+    CONCAVE_WARNINGS_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= CONCAVE_WARNINGS_CACHE_LEN {
+            cache.remove(0);
+        }
+        cache.push((key, warnings.clone()));
+    });
+    warnings
+}
+
+/// How many stones' concave warnings [`check_concave_tools`] remembers per thread (the
+/// design being edited plus a few it was just switched from).
+const CONCAVE_WARNINGS_CACHE_LEN: usize = 4;
+
+thread_local! {
+    /// Oldest first; see [`check_concave_tools`].
+    static CONCAVE_WARNINGS_CACHE: std::cell::RefCell<Vec<(u64, Vec<ManufacturabilityWarning>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A hash of everything [`concave_tool_warnings`] reads: the exact bits of the planes
+/// and of every tool, the placements, the preform's plane count and the area threshold.
+/// `DefaultHasher::new()` has fixed keys, so equal inputs always give equal keys.
+fn concave_warnings_key(
+    planes: &[(DVec3, f64)],
+    preform_len: usize,
+    tools: &[ToolPrimitive],
+    placements: &[(usize, usize)],
+    min_facet_area_fraction_of_w2: f64,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    planes.len().hash(&mut hasher);
+    for (normal, offset) in planes {
+        for value in [normal.x, normal.y, normal.z, *offset] {
+            value.to_bits().hash(&mut hasher);
+        }
+    }
+    preform_len.hash(&mut hasher);
+    tools.len().hash(&mut hasher);
+    for tool in tools {
+        (tool.kind, tool.sweep_kind).hash(&mut hasher);
+        for value in tool
+            .origin
+            .iter()
+            .chain(&tool.axis)
+            .chain(&tool.profile)
+            .chain(&tool.sweep_dir)
+        {
+            value.to_bits().hash(&mut hasher);
+        }
+    }
+    placements.hash(&mut hasher);
+    min_facet_area_fraction_of_w2.to_bits().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The concave-tool warnings for `tools` carved from the flat stone `planes` (plan §9.1).
+///
+/// The order is fixed: per tool in primitive order (`ToolMissesStone`, or else
+/// `ToolBreaksThrough`, `ToolRemovesMeet` per vertex, `ToolRemovesHullVertex`),
+/// then every `ToolsOverlap` pair, then every `ConcaveSliver` by facet id.
+///
+/// - **Misses**: the tool's convex polytope clipped to the stone has (almost) no
+///   volume. A missing tool is reported alone, the other per-tool checks being
+///   moot.
+/// - **Breaks through**: the removed region touches two flat facets facing
+///   opposite ways. A reciprocating tool's stroke-end facets are ignored.
+/// - **Removes a meet**: the tool strictly contains a vertex where at least three
+///   schedule facets (not the preform's walls, `preform_len` planes first) meet.
+/// - **Removes a hull vertex**: the tool strictly contains a vertex that is
+///   extreme in x, y or z, so the stone shrinks.
+/// - **Overlap**: two tools remove common volume (a bounding-sphere test first).
+/// - **Sliver**: a facet at least the minimum area on the flat stone is left
+///   below it, but not gone, by the tools (`min_facet_area_fraction_of_w2` times
+///   the flat width squared, like check 2).
+///
+/// `placements[k]` is the `(tier, placement)` of `tools[k]`.
+#[must_use]
+pub fn concave_tool_warnings(
+    planes: &[(DVec3, f64)],
+    preform_len: usize,
+    tools: &[ToolPrimitive],
+    placements: &[(usize, usize)],
+    min_facet_area_fraction_of_w2: f64,
+) -> Vec<ManufacturabilityWarning> {
+    let mut warnings = Vec::new();
+    let Some((metrics, vertices)) = measure_solid_with_vertices(planes) else {
+        return warnings;
+    };
+    if tools.is_empty() {
+        return warnings;
+    }
+    let area_threshold = min_facet_area_fraction_of_w2 * metrics.width_axis * metrics.width_axis;
+    let min_removed = REMOVED_VOLUME_FRACTION * metrics.volume;
+    let eps = VERTEX_EPS * (1.0 + metrics.width_axis);
+    let lo = vertices
+        .iter()
+        .fold(DVec3::splat(f64::INFINITY), |a, &v| a.min(v));
+    let hi = vertices
+        .iter()
+        .fold(DVec3::splat(f64::NEG_INFINITY), |a, &v| a.max(v));
+    let clipped = |polytopes: &[PlaneSlice<'_>]| {
+        let mut all = planes.to_vec();
+        for polytope in polytopes {
+            all.extend_from_slice(polytope);
+        }
+        match build_solid_mesh(&all) {
+            SolidStatus::Closed(mesh) => Some(mesh),
+            _ => None,
+        }
+    };
+
+    let polytopes: Vec<Vec<(DVec3, f64)>> = tools
+        .iter()
+        .map(|tool| tessellate_tool(tool, TOOL_SEGMENTS))
+        .collect();
+    for (k, polytope) in polytopes.iter().enumerate() {
+        let (tier, placement) = placements[k];
+        let removed = if polytope.is_empty() {
+            None
+        } else {
+            clipped(&[polytope]).filter(|mesh| mesh_volume(mesh) > min_removed)
+        };
+        let Some(removed) = removed else {
+            warnings.push(ManufacturabilityWarning::ToolMissesStone { tier, placement });
+            continue;
+        };
+
+        let touched: Vec<usize> = facet_areas(&removed)
+            .into_iter()
+            .filter(|&(id, area)| id < planes.len() && area >= area_threshold)
+            .map(|(id, _)| id)
+            .collect();
+        let stroke_axis = (tools[k].sweep_kind != 0).then(|| tool_axis_f64(&tools[k]));
+        if let Some(facet) = broken_through_facet(planes, &touched, stroke_axis) {
+            warnings.push(ManufacturabilityWarning::ToolBreaksThrough {
+                tier,
+                placement,
+                facet,
+            });
+        }
+
+        let mut removes_hull_vertex = false;
+        for (vertex, &v) in vertices.iter().enumerate() {
+            if !polytope.iter().all(|&(n, m)| n.dot(v) - m < -eps) {
+                continue;
+            }
+            let meeting = planes[preform_len.min(planes.len())..]
+                .iter()
+                .filter(|&&(n, m)| (n.dot(v) - m).abs() <= eps)
+                .count();
+            if meeting >= 3 {
+                warnings.push(ManufacturabilityWarning::ToolRemovesMeet {
+                    tier,
+                    placement,
+                    vertex,
+                });
+            }
+            removes_hull_vertex |= (0..3)
+                .any(|axis| (v[axis] - lo[axis]).abs() <= eps || (v[axis] - hi[axis]).abs() <= eps);
+        }
+        if removes_hull_vertex {
+            warnings.push(ManufacturabilityWarning::ToolRemovesHullVertex { tier, placement });
+        }
+    }
+
+    warnings.extend(overlap_warnings(tools, &clipped, min_removed));
+    warnings.extend(sliver_warnings(planes, tools, area_threshold));
+    warnings
+}
+
+/// A borrowed half-space list (`n . x <= m`), one tool's polytope.
+type PlaneSlice<'a> = &'a [(DVec3, f64)];
+
+/// `ToolsOverlap` for every pair of tools that remove common volume from `planes`.
+///
+/// A bounding-sphere test comes first so only nearby pairs pay for a clipped
+/// mesh. `clipped` meshes the intersection of the stone with the given tool
+/// polytopes, if it is a closed solid.
+fn overlap_warnings(
+    tools: &[ToolPrimitive],
+    clipped: &dyn Fn(&[PlaneSlice<'_>]) -> Option<SolidMesh>,
+    min_removed: f64,
+) -> Vec<ManufacturabilityWarning> {
+    let mut warnings = Vec::new();
+    let spheres: Vec<(DVec3, f64)> = tools.iter().map(bounding_sphere).collect();
+    let coarse: Vec<Vec<(DVec3, f64)>> = tools
+        .iter()
+        .map(|tool| tessellate_tool(tool, OVERLAP_SEGMENTS))
+        .collect();
+    for a in 0..tools.len() {
+        for b in a + 1..tools.len() {
+            let ((ca, ra), (cb, rb)) = (spheres[a], spheres[b]);
+            if coarse[a].is_empty() || coarse[b].is_empty() || ca.distance(cb) > ra + rb {
+                continue;
+            }
+            if clipped(&[&coarse[a], &coarse[b]])
+                .is_some_and(|mesh| mesh_volume(&mesh) > min_removed)
+            {
+                warnings.push(ManufacturabilityWarning::ToolsOverlap { a, b });
+            }
+        }
+    }
+
+    warnings
+}
+
+/// `ConcaveSliver` for every facet the tools leave smaller than `area_threshold`.
+fn sliver_warnings(
+    planes: &[(DVec3, f64)],
+    tools: &[ToolPrimitive],
+    area_threshold: f64,
+) -> Vec<ManufacturabilityWarning> {
+    let mut warnings = Vec::new();
+    if let (SolidStatus::Closed(flat), SolidStatus::Closed(carved)) = (
+        build_solid_mesh(planes),
+        build_solid_mesh_geom(planes, tools),
+    ) {
+        let flat_areas = facet_areas(&flat);
+        for (id, area) in facet_areas(&carved) {
+            let was_big_enough =
+                id >= planes.len() || flat_areas.get(&id).is_some_and(|&a| a >= area_threshold);
+            if was_big_enough && area > 0.0 && area < area_threshold {
+                warnings.push(ManufacturabilityWarning::ConcaveSliver { facet: id });
+            }
+        }
     }
     warnings
 }

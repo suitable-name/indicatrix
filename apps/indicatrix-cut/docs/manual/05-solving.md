@@ -66,7 +66,7 @@ This setting is remembered across sessions.
 
 ## Reading the status strip after Solve
 
-One **status strip** runs the width of the Edit tab: always a single coloured
+One **status strip** runs the width of the Edit tab: always a single colored
 dot plus one line, and a **Log** link at the right that opens every current
 message in full. The solver's own state always leads there — see "The
 status strip's priority order" below — so a running or failed solve can
@@ -187,7 +187,7 @@ begun; the chip disappears the moment that trace converges.
 ## The status strip's small state label
 
 Separately from the one-line message described above, the status strip
-also carries a small coloured state word of its own: **Stale**,
+also carries a small colored state word of its own: **Stale**,
 **Solving**, **Failed**, or **Solved**. This is a coarser signal than the
 message text — for instance, every validation failure (missing anchor,
 Degenerate, Unbounded) shows the same **Failed** state label even though

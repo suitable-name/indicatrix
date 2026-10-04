@@ -142,6 +142,7 @@ pub fn run_nee_frosted_exterior(
     let nee_ctx = NeeContext {
         environment: EnvironmentSource::HdrMap(&map),
         plane_soa: &empty_soa,
+        tools: &[],
         enabled: true,
     };
 
@@ -162,6 +163,7 @@ pub fn run_nee_frosted_exterior(
         });
         nee_contribution_frosted_exterior(
             nee_ctx,
+            Vec3::ZERO,
             &case.lambdas,
             Vec3::from_array(case.ext_normal),
             case.rng_seed,

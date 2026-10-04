@@ -10,7 +10,7 @@ use super::{
     remember_design_location,
 };
 use crate::{
-    EditorModel, MainWindow,
+    EditorModel, MainWindow, PhysicscolorModel,
     bridge::render_thread::RenderContext,
     gui::{
         editor::{
@@ -26,12 +26,16 @@ use crate::{
         solid_preview::preview_state::SolidPreviewState,
     },
 };
-use indicatrix::optics::materials::GemMaterial;
+use indicatrix::optics::{
+    chromophore::ChromophoreCatalogue, fluorescence::Fluorescence, materials::GemMaterial,
+};
 use indicatrix_cut_core::{
     FingerprintCheck, History, LoadPairedResult, TierOverlay,
+    material::colorMode,
     native::{
         CustomMaterialSnapshot, LoadNativeOnlyResult, LoadedDesign as DesignFileLoaded,
-        MaterialResolution, gem_material_from_custom_snapshot,
+        MaterialResolution, Snapshotcolor, gem_material_from_custom_snapshot,
+        gem_material_from_custom_snapshot_keeping_recipe, snapshot_color,
     },
 };
 use indicatrix_editor::EditorSession;
@@ -126,13 +130,20 @@ pub(super) struct SelfContainedLoad<'a> {
 /// whether the material is still unresolved (named, but neither built in nor
 /// restorable).
 fn restore_custom_material(
+    ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
     snapshot: Option<&CustomMaterialSnapshot>,
     material_name: Option<&str>,
     resolution: MaterialResolution,
 ) -> (Option<String>, bool) {
     if let (Some(snapshot), Some(name)) = (snapshot, material_name) {
+        // A physics recipe renders from its stored `resolved_bands`. When an older build edited
+        // the top-level color since (it differs from the fallback the file recorded) the file
+        // counts as fantasy-edited: the edited color is restored now and the user is asked
+        // whether to keep the recipe instead.
+        let color = snapshot_color(snapshot);
         let gem: GemMaterial = gem_material_from_custom_snapshot(name, snapshot);
+        let edited_elsewhere = matches!(color, Snapshotcolor::EditedElsewhere(_));
         let mut ctx = render_ctx
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -145,13 +156,34 @@ fn restore_custom_material(
         } else {
             materials.push(gem);
         }
-        drop(ctx);
-        return (
-            Some(format!(
-                " '{name}' was restored from this file's own saved material data."
-            )),
-            false,
+        ctx.set_custom_material_physics(name, matches!(color, Snapshotcolor::Physics(_)));
+        let catalogue = ChromophoreCatalogue::global();
+        let glow = |mode: &colorMode| mode.fluorescence(catalogue);
+        ctx.set_custom_material_fluorescence(
+            name,
+            match &color {
+                Snapshotcolor::Physics(mode) => glow(mode),
+                _ => Fluorescence::new(Vec::new()),
+            },
         );
+        ctx.pending_color_choice = match &color {
+            Snapshotcolor::EditedElsewhere(mode) => Some((
+                name.to_string(),
+                gem_material_from_custom_snapshot_keeping_recipe(name, snapshot),
+                glow(mode),
+            )),
+            _ => None,
+        };
+        drop(ctx);
+        let mut note = format!(" '{name}' was restored from this file's own saved material data.");
+        if edited_elsewhere {
+            note.push_str(
+                " Its color was changed by an older version since the physics recipe was saved.",
+            );
+            ui.global::<PhysicscolorModel>()
+                .set_color_conflict_name(name.into());
+        }
+        return (Some(note), false);
     }
     // A material name this build can't resolve AND has no snapshot to restore from
     // still silently becomes Diamond once `MaterialSelection::resolve` runs -- see
@@ -199,6 +231,7 @@ pub(super) fn open_design_file(
         remember_design_location(Some(native_path.clone()), None);
     }
     let (material_note, material_unresolved) = restore_custom_material(
+        ui,
         render_ctx,
         loaded.restorable_custom_material.as_ref(),
         loaded.design.material.name.as_deref(),
@@ -286,6 +319,7 @@ pub(super) fn open_native_self_contained(
     remember_design_location(None, None);
 
     let (material_note, material_still_unresolved) = restore_custom_material(
+        ui,
         render_ctx,
         loaded.restorable_custom_material.as_ref(),
         loaded.design.material.name.as_deref(),
@@ -556,7 +590,7 @@ pub(super) struct LoadedNativeOutcome {
     pub(super) asc_filename: String,
     pub(super) asc_text: String,
     /// Drives the toast's class: `"warning"` (which `gui::show_toast` never
-    /// auto-dismisses, same as `"error"`, but is coloured and captioned as a note
+    /// auto-dismisses, same as `"error"`, but is colored and captioned as a note
     /// rather than a failure) rather than `"info"`'s 3.5-second flash,
     /// since a mismatch means something about this design's authored intent may not
     /// have made the round trip -- worth a permanent, plainly-worded note, not a
@@ -613,6 +647,7 @@ pub(super) fn commit_loaded_native(
     // persistent "warning" class below the way a genuinely unresolved material
     // does.
     let (material_note, material_still_unresolved) = restore_custom_material(
+        ui,
         render_ctx,
         loaded.restorable_custom_material.as_ref(),
         loaded.design.material.name.as_deref(),

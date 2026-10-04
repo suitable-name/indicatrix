@@ -145,10 +145,14 @@ pub mod templates;
 /// carat weight, and the design-bigger-than-its-rough check.
 pub mod yield_metrics;
 
-pub use cutting_sheet::{CutSheetRow, CuttingSheet, TierDelta, diff_tiers};
+pub use cutting_sheet::{
+    ConcaveRowInfo, ConcaveTierDelta, CutSheetRow, CuttingSheet, SHEET_NAME_WIDTH, TierDelta,
+    diff_concave_tiers, diff_tiers,
+};
 pub use design::{
     ConstraintTier, Design, DesignSolveError, FreshDesignSpec, MissingAnchor, ScheduleMeta,
-    SolveMismatch, TargetResolveError, TierId, TierTarget,
+    SolveMismatch, TargetResolveError, TierId, TierLabelInfo, TierTarget, compute_tier_labels,
+    convert_legacy_facet_name, is_legacy_123_abc, name_indicates_pavilion,
 };
 pub use edit::{Edit, EditError, History, RemapRounding, remap_ratio};
 pub use manufacturability::{

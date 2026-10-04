@@ -14,7 +14,7 @@ use crate::{
         },
     },
 };
-use indicatrix::geometry::{meet_solver::SolvedTier, plane::GpuFacetPlane};
+use indicatrix::geometry::{ToolPrimitive, meet_solver::SolvedTier, plane::GpuFacetPlane};
 use slint::{ComponentHandle, Weak};
 use std::sync::{Arc, Mutex};
 
@@ -169,8 +169,34 @@ fn planes_equal_within(a: &[GpuFacetPlane], b: &[GpuFacetPlane], epsilon: f32) -
         })
 }
 
-/// Publishes `planes` into `render_ctx`'s `active_planes` when they actually
-/// differ (beyond [`PLANE_REPUBLISH_EPSILON`] per component) from what is already
+/// The stone a solid-preview frame was rendered from, as
+/// [`sync_planes_and_check_trace_match`] publishes it: the `(normal, offset)` planes, the
+/// concave tools cut out of them and each tool's `(tier, placement)`.
+#[derive(Clone, Copy)]
+struct StonePublish<'a> {
+    planes: &'a [(glam::Vec3, f32)],
+    tools: &'a [ToolPrimitive],
+    placements: &'a [(usize, usize)],
+}
+
+impl<'a> StonePublish<'a> {
+    const fn new(
+        planes: &'a [(glam::Vec3, f32)],
+        tools: &'a [ToolPrimitive],
+        placements: &'a [(usize, usize)],
+    ) -> Self {
+        Self {
+            planes,
+            tools,
+            placements,
+        }
+    }
+}
+
+/// Publishes `stone`'s planes into `render_ctx`'s `active_planes` -- and its concave
+/// tools into `active_tools` with them -- when they actually differ (planes beyond
+/// [`PLANE_REPUBLISH_EPSILON`] per component, tools exactly: they are copied, never
+/// re-normalised, so a round trip leaves them bit-equal) from what is already
 /// there (skipped entirely when `planes` is empty, so
 /// this never clobbers `RenderContext::default`'s own placeholder cut), stashes
 /// the resulting (possibly unchanged) arrangement into `solid_active_planes`, and
@@ -192,12 +218,17 @@ fn planes_equal_within(a: &[GpuFacetPlane], b: &[GpuFacetPlane], epsilon: f32) -
 /// `generation` is `0` -- no `Replan` has ever landed for the live design, see
 /// [`PreviewFrame::generation`]'s own doc comment -- is never published at all.
 fn sync_planes_and_check_trace_match(
-    planes: &[(glam::Vec3, f32)],
+    stone: &StonePublish<'_>,
     render_ctx: &Mutex<RenderContext>,
     solid_active_planes: &Mutex<Option<Arc<Vec<GpuFacetPlane>>>>,
     trace_active_planes: &Mutex<Option<Arc<Vec<GpuFacetPlane>>>>,
     generation: u64,
 ) -> bool {
+    let StonePublish {
+        planes,
+        tools,
+        placements,
+    } = *stone;
     if !planes.is_empty() {
         let converted: Vec<GpuFacetPlane> = planes
             .iter()
@@ -210,15 +241,17 @@ fn sync_planes_and_check_trace_match(
         // a load or edit; a trailing solid frame must not flip the viewport back.
         if generation != 0
             && !matches!(ctx.planes_owner, PlanesOwner::Catalogue { .. })
-            && !planes_equal_within(
+            && (!planes_equal_within(
                 ctx.active_planes.as_slice(),
                 &converted,
                 PLANE_REPUBLISH_EPSILON,
-            )
+            ) || ctx.active_tools.as_slice() != tools)
         {
             let design_gear = ctx.design_gear;
-            if ctx.claim_active_planes(
+            if ctx.claim_active_geometry(
                 Arc::new(converted),
+                Arc::new(tools.to_vec()),
+                placements.to_vec(),
                 design_gear,
                 PlanesOwner::Editor { generation },
             ) {
@@ -328,6 +361,8 @@ impl PreviewSink for SlintSolidSink {
             diagram_hover_text,
             diagram_facet_tier,
             planes,
+            tools,
+            placements,
             hover_text,
             facet_tier,
             generation,
@@ -462,7 +497,7 @@ impl PreviewSink for SlintSolidSink {
             // for `apply_matching_preview_frame`) so a stale frame's planes can be
             // told apart from the live design's.
             let trace_matches = sync_planes_and_check_trace_match(
-                &planes,
+                &StonePublish::new(&planes, &tools, &placements),
                 &render_ctx_state,
                 &solid_active_planes_state,
                 &trace_active_planes_state,
@@ -470,27 +505,23 @@ impl PreviewSink for SlintSolidSink {
                 // comment): a provisional frame's planes must not reach the tracer.
                 if committed { generation } else { 0 },
             );
-            ui.global::<SolidPreviewModel>()
-                .set_trace_matches_solid(trace_matches);
+            let model = ui.global::<SolidPreviewModel>();
+            model.set_trace_matches_solid(trace_matches);
 
-            ui.global::<SolidPreviewModel>()
-                .set_image(slint::Image::from_rgba8(image));
-            ui.global::<SolidPreviewModel>().set_has_solid(has_solid);
-            ui.global::<SolidPreviewModel>().set_status(status.into());
-            ui.global::<SolidPreviewModel>().set_stale(stale);
+            model.set_image(slint::Image::from_rgba8(image));
+            model.set_has_solid(has_solid);
+            model.set_status(status.into());
+            model.set_stale(stale);
             if let Some(edges_image) = edges_image {
-                ui.global::<SolidPreviewModel>()
-                    .set_edges_image(slint::Image::from_rgba8(edges_image));
-                ui.global::<SolidPreviewModel>().set_has_solid_edges(true);
+                model.set_edges_image(slint::Image::from_rgba8(edges_image));
+                model.set_has_solid_edges(true);
             } else {
-                ui.global::<SolidPreviewModel>().set_has_solid_edges(false);
+                model.set_has_solid_edges(false);
             }
             if let Some(diagram_image) = diagram_image {
-                ui.global::<SolidPreviewModel>()
-                    .set_diagram_image(slint::Image::from_rgba8(diagram_image));
+                model.set_diagram_image(slint::Image::from_rgba8(diagram_image));
             }
-            ui.global::<SolidPreviewModel>()
-                .set_has_diagram(has_diagram);
+            model.set_has_diagram(has_diagram);
             // LAST, so every store above is already visible: the manipulation
             // handles refresh from here. The frame's own generation tells the Slice
             // tool whether this frame replaced its provisional picture.

@@ -72,8 +72,8 @@ fn sapphire_pleochroic_absorption_still_attenuates_end_to_end() {
 
     let planes = StandardGemCuts::standard_round_brilliant();
     let sapphire = GemMaterial::sapphire();
-    let mut sapphire_colourless = sapphire.clone();
-    sapphire_colourless.absorption =
+    let mut sapphire_colorless = sapphire.clone();
+    sapphire_colorless.absorption =
         indicatrix::optics::absorption::AbsorptionTensor::isotropic(vec![]);
 
     let ray = Ray {
@@ -82,7 +82,7 @@ fn sapphire_pleochroic_absorption_still_attenuates_end_to_end() {
     };
 
     let mut sum_absorbing = Vec3::ZERO;
-    let mut sum_colourless = Vec3::ZERO;
+    let mut sum_colorless = Vec3::ZERO;
     for i in 0..SAMPLES {
         let seed = hash_u32(0xC0FF_EE00 ^ hash_u32(i));
         sum_absorbing += trace_spectral_ray(
@@ -95,10 +95,10 @@ fn sapphire_pleochroic_absorption_still_attenuates_end_to_end() {
             (hash_u32(seed) as f32) / 4_294_967_295.0,
             None,
         );
-        sum_colourless += trace_spectral_ray(
+        sum_colorless += trace_spectral_ray(
             ray,
             &planes,
-            &sapphire_colourless,
+            &sapphire_colorless,
             12,
             LightingPreset::RingLights.studio(1.0, 0.85, 0.95),
             seed,
@@ -107,21 +107,21 @@ fn sapphire_pleochroic_absorption_still_attenuates_end_to_end() {
         );
     }
     let luma_absorbing = sum_absorbing.y;
-    let luma_colourless = sum_colourless.y;
+    let luma_colorless = sum_colorless.y;
 
     assert!(
-        luma_absorbing < luma_colourless * 0.99,
+        luma_absorbing < luma_colorless * 0.99,
         "sapphire's real absorption bands should measurably dim the averaged output relative to an \
-         otherwise-identical colourless material (absorbing luma={luma_absorbing}, colourless luma={luma_colourless})"
+         otherwise-identical colorless material (absorbing luma={luma_absorbing}, colorless luma={luma_colorless})"
     );
 }
 
 /// headline physical claim is that tanzanite's trichroism -- three
-/// different colours down three axes -- is a direct consequence of it being biaxial,
+/// different colors down three axes -- is a direct consequence of it being biaxial,
 /// not uniaxial. `trace_spectral_ray`'s absorption block (wiring) now
 /// sources its two eigen-polarizations from `GemMaterial::biaxial_indicatrix` for
 /// tanzanite specifically, instead of the uniaxial ordinary/extraordinary
-/// approximation that can only ever distinguish TWO colours. This test pins that
+/// approximation that can only ever distinguish TWO colors. This test pins that
 /// substitution down directly: at a generic (non-axis-aligned) propagation direction,
 /// tanzanite's true biaxial eigenmodes must give a measurably different pleochroic
 /// absorption coefficient than the uniaxial fallback would have -- i.e. the new

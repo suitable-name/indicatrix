@@ -4,7 +4,9 @@
 //! Moved verbatim from the desktop's `gui::solid_preview::preview_state::types`,
 //! which re-exports them.
 
+use crate::mesh_cache::fnv1a_64;
 use glam::Vec3;
+use indicatrix::geometry::{GpuFacetPlane, StoneGeometry, ToolPrimitive};
 use std::sync::Arc;
 
 /// The shared `yaw`/`pitch`/`distance` orbit camera.
@@ -98,5 +100,106 @@ impl PickBuffer {
         }
         let v = self.pick[(y * self.width + x) as usize];
         (v != 0).then(|| v - 1)
+    }
+}
+
+/// An owning [`StoneGeometry`]: the planes, the concave tools subtracted from them
+/// and the `(concave tier, placement)` each tool came from.
+///
+/// A redraw request has to own what it draws (it crosses a thread boundary on the
+/// desktop), so it cannot carry the borrowed [`StoneGeometry`] the kernel takes.
+/// `planes` use the kernel's `n . x + d <= 0` convention; the preview's own
+/// `(normal, offset)` half-space tuples (`n . x <= m`) convert exactly, since
+/// `d = -m` is a sign flip.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct StoneGeometryBuf {
+    /// The flat facets, `n . x + d <= 0` inside.
+    pub planes: Vec<GpuFacetPlane>,
+    /// Convex volumes subtracted from the polyhedron the planes define. Tool `k`
+    /// is facet id `planes.len() + k`.
+    pub tools: Vec<ToolPrimitive>,
+    /// `(concave tier index, placement index)` of each tool, parallel to
+    /// `tools` -- what `FacetMap` and the hover text read. It is bookkeeping, not
+    /// geometry, so it is not part of [`Self::cache_key`].
+    pub placements: Vec<(usize, usize)>,
+}
+
+impl StoneGeometryBuf {
+    /// A stone with no tools: what every flat-only caller builds.
+    #[must_use]
+    pub const fn planes_only(planes: Vec<GpuFacetPlane>) -> Self {
+        Self {
+            planes,
+            tools: Vec::new(),
+            placements: Vec::new(),
+        }
+    }
+
+    /// A tool-free stone from the preview's own `n . x <= m` half-spaces.
+    ///
+    /// The conversion is bit-exact in both directions (`d = -m`, normals copied),
+    /// which is what keeps a planar frame byte-identical to the pre-concave one.
+    #[must_use]
+    pub fn from_halfspaces(planes: &[(Vec3, f32)]) -> Self {
+        Self::planes_only(
+            planes
+                .iter()
+                .map(|&(normal, m)| GpuFacetPlane {
+                    normal: normal.to_array(),
+                    d: -m,
+                })
+                .collect(),
+        )
+    }
+
+    /// The planes as `(normal, offset)` with `n . x <= m`, the convention
+    /// [`crate::mesh_cache::MeshCache`] and the planner use.
+    #[must_use]
+    pub fn halfspaces(&self) -> Vec<(Vec3, f32)> {
+        self.planes
+            .iter()
+            .map(|p| (Vec3::from_array(p.normal), -p.d))
+            .collect()
+    }
+
+    /// The borrowed view the kernel APIs take.
+    #[must_use]
+    pub fn as_geometry(&self) -> StoneGeometry<'_> {
+        StoneGeometry {
+            planes: &self.planes,
+            tools: &self.tools,
+        }
+    }
+
+    /// FNV-1a over the planes' `f32` bits, then over the tools' bytes only when
+    /// there are tools.
+    ///
+    /// The plane part hashes `(nx, ny, nz, -d)`, i.e. the `n . x <= m` tuple the
+    /// cache has always hashed, so with no tools the key equals the planar one and
+    /// no existing cache behaviour changes. The tool bytes continue the same FNV
+    /// stream (little-endian field order of `ToolPrimitive`, which is `Pod`), so
+    /// two stones that differ only in a tool never collide with each other or
+    /// with the tool-free stone.
+    #[must_use]
+    pub fn cache_key(&self) -> u64 {
+        let plane_bytes = self.planes.iter().flat_map(|p| {
+            [p.normal[0], p.normal[1], p.normal[2], -p.d]
+                .into_iter()
+                .flat_map(|component| component.to_bits().to_le_bytes())
+        });
+        let tool_bytes = self.tools.iter().flat_map(|t| {
+            let words = [t.kind, t.sweep_kind, t._pad[0], t._pad[1]]
+                .into_iter()
+                .flat_map(u32::to_le_bytes);
+            let floats = t
+                .origin
+                .into_iter()
+                .chain(t.axis)
+                .chain(t.profile)
+                .chain(t.sweep_dir)
+                .flat_map(|component| component.to_bits().to_le_bytes());
+            words.chain(floats)
+        });
+        fnv1a_64(plane_bytes.chain(tool_bytes))
     }
 }

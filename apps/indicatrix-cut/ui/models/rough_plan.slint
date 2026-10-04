@@ -28,7 +28,7 @@ export struct RoughPlanStoneGroup {
     name: string,         // design title
     count: int,           // stones of this design in the layout
     detail: string,       // e.g. "5.10 x 5.10 x 3.40 mm, 0.62 ct each"
-    swatch: color,        // palette colour
+    swatch: color,        // palette color
     thumbnail: image,     // library preview or placeholder
     has_thumbnail: bool,
     metrics: [RoughMetric],
@@ -145,7 +145,7 @@ export global RoughPlanModel {
     in property <int> skipped_count: 0;             // angle_table + unbounded rows
     in-out property <bool> results_unsaved: false;  // the results on screen are a fresh plan that has not been saved
     in-out property <string> status_text: "";       // neutral one-line note ("Saved 3 results as ..."), empty = none
-    in-out property <int> status_level: 0;          // colour of `status_text`: 0 neutral, 1 warning (for example a staleness note)
+    in-out property <int> status_level: 0;          // color of `status_text`: 0 neutral, 1 warning (for example a staleness note)
     in-out property <bool> view_busy: false;        // the 3D view is being redrawn
     in-out property <int> expanded_index: -1;       // which result's cut plan is open (UI-only)
 
@@ -166,7 +166,7 @@ export global RoughPlanModel {
     callback select_design(int);                    // entry_id -> Rust calls the LibraryModel select path
 
     callback set_base(int);
-    callback import_obj();                          // pick an OBJ file; its convex outline becomes the rough
+    callback import_obj();                          // pick an OBJ file; a closed mesh (or else its convex outline) becomes the rough
     callback base_field_committed();               // any base/material/weight field committed
     callback fit_to_weight();                       // Fit to weight: scales the model to the typed carat
     callback add_cut(int);                         // kind

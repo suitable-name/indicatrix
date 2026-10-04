@@ -1,6 +1,6 @@
 //! Space-aware gamut mapping.
 //!
-//! Compresses out-of-gamut CIE XYZ colours into a target [`ColorSpace`] by walking the
+//! Compresses out-of-gamut CIE XYZ colors into a target [`ColorSpace`] by walking the
 //! chromaticity radially toward that space's white point at constant luminance, rather
 //! than clipping each RGB channel independently (which shifts hue as well as
 //! saturation).
@@ -12,11 +12,11 @@ use glam::Vec3;
 
 use super::space::ColorSpace;
 
-/// Radially compresses an out-of-gamut colour toward `space`'s white point.
+/// Radially compresses an out-of-gamut color toward `space`'s white point.
 ///
 /// Walks the CIE xyY chromaticity of `xyz` toward `space`'s white point at constant
 /// luminance until every RGB channel from `space`'s XYZ->RGB matrix
-/// ([`ColorSpace::xyz_to_linear`]) is non-negative; in-gamut colours pass through
+/// ([`ColorSpace::xyz_to_linear`]) is non-negative; in-gamut colors pass through
 /// unchanged. Result is linear RGB -- apply [`ColorSpace::transfer_function`] or use
 /// [`ColorSpace::encode`] for the full pipeline. Non-finite or near-zero `xyz`
 /// (component sum `<= 1e-6`) maps to `Vec3::ZERO` rather than dividing by near-zero.
@@ -30,10 +30,10 @@ pub fn project_to_gamut(xyz: Vec3, space: ColorSpace) -> Vec3 {
 /// As [`project_to_gamut`], but also caps every output channel at `max`.
 ///
 /// `ColorSpace::encode`'s ACES tone mapping scales RGB by one luminance-derived
-/// factor so a saturated colour's hue survives (see
+/// factor so a saturated color's hue survives (see
 /// [`crate::color::ToneMap::AcesFilmic`]); hard-clamping a channel above `1.0`
 /// per channel during quantization would reintroduce that hue shift. This
-/// bounded walk desaturates an over-bright colour toward white instead.
+/// bounded walk desaturates an over-bright color toward white instead.
 ///
 /// Reuses [`project_to_gamut`]'s walk with both a floor and ceiling per channel.
 /// The white-point fallback step is not itself clamped to `max`: every channel

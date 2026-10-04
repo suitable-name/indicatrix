@@ -440,7 +440,7 @@ fn pdf_uv_to_solid_angle_from_sin(pdf_uv: f32, sin_theta: f32) -> f32 {
 }
 
 /// Rec.709 relative luminance -- used only to weight texels for the importance-sampling
-/// distribution, not for any colourimetric output.
+/// distribution, not for any colorimetric output.
 fn luminance(rgb: [f32; 3]) -> f32 {
     0.0722f32.mul_add(rgb[2], 0.7152f32.mul_add(rgb[1], 0.2126 * rgb[0]))
 }

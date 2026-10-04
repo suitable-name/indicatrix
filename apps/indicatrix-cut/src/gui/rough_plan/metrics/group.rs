@@ -9,12 +9,16 @@ use crate::gui::rough_plan::saved::dto::SavedDesignDto;
 use glam::DVec3;
 use indicatrix::geometry::stone_metrics::measure_solid;
 use indicatrix_cut_core::rough_plan::{
-    PlacedStone, RoughLayout, RoughModel,
+    PlacedStone, RoughLayout, RoughMesh, RoughModel,
     shaped::{CLASS_EXTERIOR, CLASS_INTERIOR, classify_box_into},
 };
 use indicatrix_vault::model::{
     solid_extents::SolidExtents,
     tilt_curves::{AxisTiltCurves, TILT_CURVE_POINTS_PER_AXIS, TiltPerformanceCurves},
+};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex, PoisonError},
 };
 
 /// The nearest rough faces for an orientation: name, axis label and outward normal.
@@ -45,7 +49,26 @@ pub struct ModelGeometry {
     pub extents_mm: [f64; 3],
     /// Its bounding planes `(n, m)` with `n · p <= m`, in the rough frame.
     pub planes: Vec<(DVec3, f64)>,
+    /// The mesh of a non-convex rough, which the pieces' volumes are measured against
+    /// instead of `planes`; `None` for a convex rough.
+    pub mesh: Option<MeshGeometry>,
 }
+
+/// A non-convex rough as the fill figure needs it.
+#[derive(Debug, Clone)]
+pub struct MeshGeometry {
+    /// The rough's closed mesh, in the rough frame.
+    pub mesh: Arc<RoughMesh>,
+    /// The model's cuts as planes `(n, m)` with `n · p <= m` (the base's own planes left
+    /// out: the mesh lies inside them).
+    pub cuts: Vec<(DVec3, f64)>,
+    /// The volumes already measured, by the bits of a piece's origin and size: every stone
+    /// of a card and every redraw asks for its piece, and many pieces are the same box.
+    volumes: PieceVolumes,
+}
+
+/// A piece box (origin and size, as bits) and the volume of the rough inside it.
+type PieceVolumes = Arc<Mutex<BTreeMap<[u64; 6], Option<f64>>>>;
 
 impl ModelGeometry {
     /// Measures `model`; `None` when it is not a valid solid.
@@ -53,10 +76,19 @@ impl ModelGeometry {
     pub fn of(model: &RoughModel) -> Option<Self> {
         let planes = model.halfspaces().ok()?;
         let measure = model.measure().ok()?;
+        let mesh = model.mesh().map(|mesh| {
+            let base = model.base.to_halfspaces(false).map_or(0, |base| base.len());
+            MeshGeometry {
+                mesh,
+                cuts: planes.get(base..).unwrap_or_default().to_vec(),
+                volumes: PieceVolumes::default(),
+            }
+        });
         Some(Self {
             volume_mm3: measure.volume_mm3,
             extents_mm: measure.extents_mm,
             planes,
+            mesh,
         })
     }
 }
@@ -306,13 +338,38 @@ fn orientation_value(stones: &[&PlacedStone]) -> String {
 
 /// The volume of the sawn piece `origin..origin + size` inside the modelled rough. A piece
 /// fully inside is its box; one that pokes out is measured as the polytope of the box and
-/// the planes it crosses. `None` for a degenerate piece or one outside the rough.
-fn piece_model_volume(planes: &[(DVec3, f64)], origin: [f64; 3], size: [f64; 3]) -> Option<f64> {
+/// the planes it crosses; with a mesh, as the exact volume of the mesh inside the box and
+/// the cuts. `None` for a degenerate piece or one outside the rough.
+fn piece_model_volume(model: &ModelGeometry, origin: [f64; 3], size: [f64; 3]) -> Option<f64> {
+    let planes = &model.planes;
     let box_volume = size[0] * size[1] * size[2];
     if !box_volume.is_finite() || box_volume <= 0.0 {
         return None;
     }
     let far = [0, 1, 2].map(|i| origin[i] + size[i]);
+    if let Some(rough) = &model.mesh {
+        let key = [0, 1, 2, 3, 4, 5].map(|i| if i < 3 { origin[i] } else { size[i - 3] }.to_bits());
+        if let Some(&known) = rough
+            .volumes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&key)
+        {
+            return known;
+        }
+        let mut region = rough.cuts.clone();
+        for (axis, normal) in [DVec3::X, DVec3::Y, DVec3::Z].into_iter().enumerate() {
+            region.push((normal, far[axis]));
+            region.push((-normal, -origin[axis]));
+        }
+        let volume = Some(rough.mesh.volume_within(&region)).filter(|volume| *volume > 0.0);
+        rough
+            .volumes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key, volume);
+        return volume;
+    }
     let mut crossed = Vec::new();
     match classify_box_into(origin, far, planes, &mut crossed) {
         CLASS_INTERIOR => Some(box_volume),
@@ -347,7 +404,7 @@ fn stone_fill(
         }
         return Some((stone.volume_mm3 / model.volume_mm3 * 100.0, FillBase::Model));
     }
-    let piece = piece_model_volume(&model.planes, stone.piece_origin_mm, stone.piece_size_mm)?;
+    let piece = piece_model_volume(model, stone.piece_origin_mm, stone.piece_size_mm)?;
     Some((stone.volume_mm3 / piece * 100.0, FillBase::Piece))
 }
 

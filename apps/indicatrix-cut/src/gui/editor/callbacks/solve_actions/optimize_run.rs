@@ -427,7 +427,7 @@ mod tests {
             name: Some("Diamond".to_string()),
             specific_gravity_override: None,
             refractive_index_override: None,
-            body_colour_override: None,
+            body_color_override: None,
         };
         assert_eq!(
             default_optimize_material_ri(&design, &mut selection, &[]),

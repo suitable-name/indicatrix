@@ -17,7 +17,7 @@ use crate::{
 };
 use indicatrix::{
     geometry::{
-        GpuFacetPlane,
+        GpuFacetPlane, ToolPrimitive,
         meet_solver::{SolveError, SolvedTier},
     },
     optics::materials::GemMaterial,
@@ -140,6 +140,9 @@ struct PanelInputs {
     warnings: Vec<(usize, String)>,
     yield_texts: (String, String, String, String),
     planes: Vec<GpuFacetPlane>,
+    /// The concave tools and placements that go with `planes`; empty for a planar design.
+    tools: Vec<ToolPrimitive>,
+    placements: Vec<(usize, usize)>,
     /// See [`BackgroundSolveResult::too_many_planes`]'s own doc comment -- the
     /// same flag, computed here (on the worker thread, where a real `solve_with`
     /// re-check is safe) and carried straight through.
@@ -190,33 +193,34 @@ fn panel_inputs(
     // UI thread.
     let too_many_planes = solved.is_some_and(|solved| likely_hit_plane_cap(solved))
         && too_many_planes_message(design).is_some();
-    solved.map_or_else(
-        || {
-            let (status_text, status_is_problem) = status_text_and_is_problem(design);
-            PanelInputs {
-                tiers: tier_items(design, n_d),
-                status_text,
-                status_is_problem,
-                warnings: manufacturability_warnings_tagged(design, None),
-                yield_texts: yield_report_texts(design, custom_sg),
-                planes: design_to_gpu_planes(design),
-                too_many_planes,
-            }
-        },
-        |solved| {
-            let (status_text, status_is_problem) =
-                status_text_and_is_problem_from_solved(design, solved);
-            PanelInputs {
-                tiers: tier_items_from_solved(design, solved, n_d),
-                status_text,
-                status_is_problem,
-                warnings: manufacturability_warnings_tagged(design, Some(solved)),
-                yield_texts: yield_report_texts_from_solved(design, solved, custom_sg),
-                planes: super::replan::design_to_gpu_planes_from_solved(design, solved),
-                too_many_planes,
-            }
-        },
-    )
+    let (tools, placements) =
+        super::replan::design_to_gpu_tools_from_solved(design, solved.map(Vec::as_slice));
+    let Some(solved) = solved else {
+        let (status_text, status_is_problem) = status_text_and_is_problem(design);
+        return PanelInputs {
+            tiers: tier_items(design, n_d),
+            status_text,
+            status_is_problem,
+            warnings: manufacturability_warnings_tagged(design, None),
+            yield_texts: yield_report_texts(design, custom_sg),
+            planes: design_to_gpu_planes(design),
+            tools,
+            placements,
+            too_many_planes,
+        };
+    };
+    let (status_text, status_is_problem) = status_text_and_is_problem_from_solved(design, solved);
+    PanelInputs {
+        tiers: tier_items_from_solved(design, solved, n_d),
+        status_text,
+        status_is_problem,
+        warnings: manufacturability_warnings_tagged(design, Some(solved)),
+        yield_texts: yield_report_texts_from_solved(design, solved, custom_sg),
+        planes: super::replan::design_to_gpu_planes_from_solved(design, solved),
+        tools,
+        placements,
+        too_many_planes,
+    }
 }
 
 /// Spawns the ticker thread that keeps `dispatch_background_solve`'s
@@ -379,6 +383,8 @@ fn solve_and_build_result(
         warnings,
         yield_texts,
         planes,
+        tools,
+        placements,
         too_many_planes,
     } = panel_inputs(
         &design,
@@ -400,6 +406,8 @@ fn solve_and_build_result(
         warnings,
         yield_texts,
         planes,
+        tools,
+        placements,
         solved,
         too_many_planes,
         gear,

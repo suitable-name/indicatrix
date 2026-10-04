@@ -51,7 +51,7 @@ pub(super) use rig::{
 use spectral::{BlackbodyNorm, IlluminantSpectrum};
 pub use spectral::{blackbody_spectrum, d65_relative_spectral_power};
 
-/// Colour temperature and rig-intensity parameters for one named studio lighting preset.
+/// color temperature and rig-intensity parameters for one named studio lighting preset.
 ///
 /// Returned by [`LightingPreset::params`] -- the single lookup both
 /// `sample_studio_environment` (which lights the traced image) and
@@ -59,7 +59,7 @@ pub use spectral::{blackbody_spectrum, d65_relative_spectral_power};
 /// image) share, so the two cannot independently drift.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LightingRigParams {
-    /// Blackbody colour temperature in Kelvin, fed to [`blackbody_spectrum`].
+    /// Blackbody color temperature in Kelvin, fed to [`blackbody_spectrum`].
     pub temp_k: f32,
     /// Multiplier on the key-softbox and ring-emitter intensity terms (does not affect
     /// the fill light or the ambient backdrop).
@@ -86,6 +86,13 @@ pub enum LightingPreset {
     IsoHemisphere,
     LightTent,
     DaylightDome,
+    /// A 365 nm UV lamp: the `Studio` rig geometry lit by a narrow Gaussian line, no
+    /// ambient backdrop and no white balance (see [`LightingPreset::uses_white_balance`]).
+    /// Appended last, so every earlier discriminant and postcard index is unchanged.
+    UvLamp365,
+    /// A 395 nm UV LED lamp (same rig as [`Self::UvLamp365`]); its tail reaches into the
+    /// violet, so a non-fluorescent stone looks faintly violet under it.
+    UvLamp395,
 }
 
 /// Which environment the preset samples -- see this module's "Lighting models" doc.
@@ -111,9 +118,9 @@ impl LightingModel {
 }
 
 impl LightingPreset {
-    /// All seven presets, in the same order as their UI index / the `lighting_options`
+    /// All nine presets, in the same order as their UI index / the `lighting_options`
     /// combo box list (`apps/indicatrix-cut/ui/models/viewport.slint`).
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::Daylight,
         Self::Incandescent,
         Self::RingLights,
@@ -121,9 +128,11 @@ impl LightingPreset {
         Self::IsoHemisphere,
         Self::LightTent,
         Self::DaylightDome,
+        Self::UvLamp365,
+        Self::UvLamp395,
     ];
 
-    /// This preset's colour temperature and rig-intensity multiplier -- the single
+    /// This preset's color temperature and rig-intensity multiplier -- the single
     /// source of truth both `sample_studio_environment` and `illuminant_temperature_k`
     /// read from. See the type's doc comment for why that matters.
     #[must_use]
@@ -145,7 +154,13 @@ impl LightingPreset {
                 temp_k: 5000.0,
                 spot_mult: 1.0,
             },
-            Self::Daylight | Self::IsoHemisphere | Self::DaylightDome => LightingRigParams {
+            // The UV lamps are not Planckian: `temp_k` is unused by their spectrum, white
+            // balance and CPU path (they never reach the GPU); 6500 K is a placeholder.
+            Self::Daylight
+            | Self::IsoHemisphere
+            | Self::DaylightDome
+            | Self::UvLamp365
+            | Self::UvLamp395 => LightingRigParams {
                 temp_k: 6500.0,
                 spot_mult: 1.0,
             },
@@ -155,7 +170,7 @@ impl LightingPreset {
     /// The user-facing display label.
     ///
     /// D65 daylight is 6500K, so this must read `"6500K"`, not `"5500K"`, to stay
-    /// consistent with the actually-rendered colour.
+    /// consistent with the actually-rendered color.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -166,6 +181,8 @@ impl LightingPreset {
             Self::IsoHemisphere => "ISO hemisphere",
             Self::LightTent => "Light tent + black cards",
             Self::DaylightDome => "Daylight sky + sun",
+            Self::UvLamp365 => "UV lamp 365 nm",
+            Self::UvLamp395 => "UV lamp 395 nm",
         }
     }
 
@@ -184,6 +201,8 @@ impl LightingPreset {
             "ISO hemisphere" | "ISO hemisphere (GemRay-style)" => Self::IsoHemisphere,
             "Light tent + black cards" | "Soft dome + ring lights" => Self::LightTent,
             "Daylight sky + sun" | "Daylight dome + sun" => Self::DaylightDome,
+            "UV lamp 365 nm" => Self::UvLamp365,
+            "UV lamp 395 nm" => Self::UvLamp395,
             _ => Self::Daylight,
         }
     }
@@ -199,6 +218,8 @@ impl LightingPreset {
             Self::IsoHemisphere => 4,
             Self::LightTent => 5,
             Self::DaylightDome => 6,
+            Self::UvLamp365 => 7,
+            Self::UvLamp395 => 8,
         }
     }
 
@@ -213,6 +234,8 @@ impl LightingPreset {
             4 => Self::IsoHemisphere,
             5 => Self::LightTent,
             6 => Self::DaylightDome,
+            7 => Self::UvLamp365,
+            8 => Self::UvLamp395,
             _ => Self::Daylight,
         }
     }
@@ -221,9 +244,12 @@ impl LightingPreset {
     #[must_use]
     pub const fn model(self) -> LightingModel {
         match self {
-            Self::Daylight | Self::Incandescent | Self::RingLights | Self::DarkSpotlight => {
-                LightingModel::Studio
-            }
+            Self::Daylight
+            | Self::Incandescent
+            | Self::RingLights
+            | Self::DarkSpotlight
+            | Self::UvLamp365
+            | Self::UvLamp395 => LightingModel::Studio,
             Self::IsoHemisphere => LightingModel::IsoHemisphere,
             Self::LightTent => LightingModel::LightTent,
             Self::DaylightDome => LightingModel::DaylightDome,
@@ -239,9 +265,43 @@ impl LightingPreset {
         )
     }
 
+    /// Whether this preset is a UV lamp ([`Self::UvLamp365`], [`Self::UvLamp395`]): a
+    /// narrow Gaussian line source, CPU-only (`scene_routes_to_gpu` is `false`).
+    #[must_use]
+    pub const fn is_uv_lamp(self) -> bool {
+        matches!(self, Self::UvLamp365 | Self::UvLamp395)
+    }
+
+    /// Centre wavelength and FWHM (nm) of a UV lamp's Gaussian line, `None` for every
+    /// other preset: 365 nm / 10 nm and 395 nm / 12 nm.
+    #[must_use]
+    pub const fn uv_line(self) -> Option<(f32, f32)> {
+        match self {
+            Self::UvLamp365 => Some((365.0, 10.0)),
+            Self::UvLamp395 => Some((395.0, 12.0)),
+            _ => None,
+        }
+    }
+
+    /// Whether the von-Kries white balance toward D65 applies: only the Planckian
+    /// presets (`Incandescent`, `RingLights`, `DarkSpotlight`, `LightTent`). The D65
+    /// presets are already D65-white (identity), and the UV lamps have no meaningful
+    /// white point at all (identity: the stone shows the lamp's own color).
+    #[must_use]
+    pub const fn uses_white_balance(self) -> bool {
+        !self.uses_d65() && !self.is_uv_lamp()
+    }
+
+    /// Whether the `Studio` rig adds its dim ambient backdrop term. `false` for the UV
+    /// lamps: a dark room with only the lamp lit.
+    #[must_use]
+    pub const fn has_ambient_fill(self) -> bool {
+        !self.is_uv_lamp()
+    }
+
     /// Relative spectral power of this preset's illuminant at `lambda_nm`: the
-    /// tabulated CIE D65 curve where [`Self::uses_d65`], else a Planckian fit at the
-    /// preset's colour temperature.
+    /// tabulated CIE D65 curve where [`Self::uses_d65`], a unit-peak Gaussian line for
+    /// the UV lamps, else a Planckian fit at the preset's color temperature.
     #[must_use]
     pub fn spectral_power(self, lambda_nm: f32) -> f32 {
         self.illuminant_spectrum().power(lambda_nm)
@@ -253,6 +313,11 @@ impl LightingPreset {
     fn illuminant_spectrum(self) -> IlluminantSpectrum {
         if self.uses_d65() {
             IlluminantSpectrum::D65
+        } else if let Some((centre_nm, fwhm_nm)) = self.uv_line() {
+            IlluminantSpectrum::Gaussian {
+                centre_nm,
+                sigma_nm: fwhm_nm / (2.0 * (2.0 * std::f32::consts::LN_2).sqrt()),
+            }
         } else {
             IlluminantSpectrum::Blackbody(BlackbodyNorm::new(self.params().temp_k))
         }
@@ -366,6 +431,15 @@ impl EnvironmentSource<'_> {
         }
     }
 
+    /// The analytic lighting preset, `None` for an HDR panorama.
+    #[must_use]
+    pub const fn lighting_preset(&self) -> Option<LightingPreset> {
+        match *self {
+            Self::Studio { preset, .. } => Some(preset),
+            Self::HdrMap(_) => None,
+        }
+    }
+
     /// The surface-glare scale in force: the `Studio` field, `1.0` for an HDR map.
     #[must_use]
     pub const fn surface_glare(&self) -> f32 {
@@ -391,7 +465,7 @@ const fn clamp_surface_glare(value: f32) -> f32 {
 /// [`compute_illuminant_white_balance`]) [`trace_spectral_ray`] applies, via
 /// [`apply_von_kries_white_balance`], to its final XYZ integration for a `Studio`
 /// `environment`. Only the analytic studio rig has a single well-defined illuminant
-/// colour temperature to neutralize against -- a loaded HDR panorama has no one
+/// color temperature to neutralize against -- a loaded HDR panorama has no one
 /// blackbody temperature standing in for it, so this returns `Vec3::ONE` for `HdrMap`
 /// (a mathematical no-op scale), but `trace_spectral_ray`'s own `HdrMap` arm does not
 /// even call [`apply_von_kries_white_balance`] with it: the full

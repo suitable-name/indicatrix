@@ -1,0 +1,44 @@
+# sample: S-Met metamorphic (Sri Lanka)
+# host: corundum (Al2O3), uniaxial; E_perp_c = o-ray, E_par_c = e-ray
+# composition: Fe 450 ppmw, Ti 160 ppmw, Mg 12 ppmw (research: Fe 820 ppma, Ti 340 ppma, Mg 50 ppma, Ti_active 290 ppma; its ppma are per Al2O3 formula unit, NOT per atom)
+# units: lambda_nm; alpha in cm^-1, Napierian (T = exp(-alpha*L), L in cm)
+# path_cm: 0.20
+# source: research-2026-10-polarized-spectra.md section 2 "Napierian alpha" table (user-delivered, secondary, unverified)
+# lab: E_perp_c | D65 | 0.2 | 64.2 | -6.8 | -41.2
+# lab: E_par_c | D65 | 0.2 | 73.5 | -14.2 | -18.5
+# lab: E_perp_c | D65 | 0.2 | 64.0 | -6.5 | -41.0
+lambda_nm,E_perp_c,E_par_c
+350,1.82,1.55
+360,1.95,1.62
+370,2.10,1.70
+377,3.45,2.10
+380,2.60,1.85
+388,3.82,2.30
+400,1.65,1.15
+410,1.25,0.88
+420,0.95,0.65
+430,0.88,0.58
+440,0.82,0.52
+450,2.15,1.10
+460,0.78,0.48
+470,0.82,0.49
+480,0.88,0.51
+490,1.05,0.58
+500,1.35,0.68
+520,2.25,1.02
+540,4.10,1.65
+560,6.85,2.55
+578,8.22,3.45
+600,7.90,4.60
+620,6.75,5.80
+640,5.20,6.85
+660,3.85,7.60
+680,2.70,8.10
+700,1.85,8.35
+730,1.05,8.20
+760,0.62,6.95
+800,0.35,4.85
+840,0.22,3.10
+880,0.18,1.85
+950,0.12,0.95
+1050,0.08,0.45

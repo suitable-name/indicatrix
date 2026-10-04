@@ -206,7 +206,7 @@ impl GemMaterial {
             // haze (cloud inclusions) rather than a strong directional character.
             "Diamond" => Some((0.02, 0.0)),
             // Typically eye-clean once faceted (heat-treated zircon in particular).
-            // Ordinary (non-colour-change) chrysoberyl, amethyst, citrine, pyrope,
+            // Ordinary (non-color-change) chrysoberyl, amethyst, citrine, pyrope,
             // spessartine, benitoite and andalusite share this same light-default tier:
             // they are likewise typically eye-clean.
             "Zircon"
@@ -252,9 +252,9 @@ impl GemMaterial {
             // forward-scattering, not a flaw to hide (the same "characteristic
             // inclusion, not a defect" reasoning as Emerald's jardin above).
             "Andradite Garnet (Demantoid)" => Some((0.35, 0.6)),
-            // Common (body-colour) opal: some visible internal haze/crazing is
+            // Common (body-color) opal: some visible internal haze/crazing is
             // typical, though this entry deliberately does not model
-            // play-of-colour -- see this entry's own comment in
+            // play-of-color -- see this entry's own comment in
             // `built_in_materials_andalusite_through_glass`.
             "Opal" => Some((0.1, 0.2)),
             _ => None,
@@ -272,22 +272,22 @@ impl GemMaterial {
         self.with_scattering(sigma_s, g)
     }
 
-    /// Body-colour variant: replaces this material's absorption with the isotropic
+    /// Body-color variant: replaces this material's absorption with the isotropic
     /// band set `absorption_rgb` expands to (the same `[R, G, B]` triple
-    /// [`Self::new_custom`] takes -- see [`super::body_colour::BODY_COLOUR_PRESETS`]
+    /// [`Self::new_custom`] takes -- see [`super::body_color::BODY_color_PRESETS`]
     /// for the fixed presets), leaving every other field -- dispersion,
     /// birefringence, c-axis, biaxial data, scattering, edge rounding, path scale --
-    /// untouched. `GemMaterial::sapphire().with_body_colour(yellow)` is a yellow
+    /// untouched. `GemMaterial::sapphire().with_body_color(yellow)` is a yellow
     /// sapphire with sapphire's own optics.
     ///
-    /// A colour variant is deliberately ISOTROPIC: whatever pleochroism the base
+    /// A color variant is deliberately ISOTROPIC: whatever pleochroism the base
     /// material's own absorption tensor models is dropped. This is a quick what-if
     /// ("this design in a yellow instead of a blue sapphire"), not a mineralogical
     /// record of a real yellow specimen. `name` is left unchanged on purpose, so
     /// every lookup keyed by name (specific gravity, the RI presets, the render
     /// material dropdown) keeps resolving to the same species.
     #[must_use]
-    pub fn with_body_colour(mut self, absorption_rgb: [f32; 3]) -> Self {
+    pub fn with_body_color(mut self, absorption_rgb: [f32; 3]) -> Self {
         self.absorption = AbsorptionTensor::isotropic(legacy_rgb_bands(absorption_rgb));
         self
     }
@@ -311,5 +311,35 @@ impl GemMaterial {
     pub const fn with_absorption_path_scale(mut self, scale: f32) -> Self {
         self.absorption_path_scale = scale;
         self
+    }
+
+    /// Replaces this material's absorption tensor with physically-based chromophore
+    /// absorption bands.
+    #[must_use]
+    pub fn with_chromophore_absorption(mut self, tensor: AbsorptionTensor) -> Self {
+        self.absorption = tensor;
+        self
+    }
+
+    /// Legacy heuristic: true if the bands are energy-domain Gaussians rather than legacy
+    /// fantasy RGB bands. A pure-host recipe has no bands, so this is not a reliable color-mode
+    /// test; `render_setup` and the desktop take an explicit physics flag instead. Kept only
+    /// until the web scene path passes one.
+    #[must_use]
+    pub fn is_physics_color(&self) -> bool {
+        self.absorption
+            .o_ray
+            .iter()
+            .any(|b| b.shape == crate::optics::absorption::BandShape::GaussianEnergy)
+            || self
+                .absorption
+                .e_ray
+                .iter()
+                .any(|b| b.shape == crate::optics::absorption::BandShape::GaussianEnergy)
+            || self.absorption.beta_ray.as_ref().is_some_and(|bands| {
+                bands
+                    .iter()
+                    .any(|b| b.shape == crate::optics::absorption::BandShape::GaussianEnergy)
+            })
     }
 }

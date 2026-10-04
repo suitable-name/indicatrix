@@ -59,6 +59,7 @@
 //! The profile panel has no index wheel (a side elevation has no azimuth to mark).
 
 use super::raster::simplify_ring;
+use indicatrix::geometry::meet_solver::Block;
 
 mod fill;
 mod labels;
@@ -179,14 +180,14 @@ pub struct DiagramConfig {
 /// `facet_map::FacetMap::overlay_flags` call.
 #[derive(Debug, Clone)]
 pub struct DiagramStyle {
-    /// Fill colour of an unhighlighted facet (RGB).
+    /// Fill color of an unhighlighted facet (RGB).
     pub base_color: [u8; 3],
-    /// Colour of facet edges (RGB).
+    /// color of facet edges (RGB).
     pub edge_color: [u8; 3],
     /// Matches `raster::SolidStyle::pending_color` / `ui/theme.slint`'s
     /// `accent-amber` -- see that field's doc comment.
     pub pending_color: [u8; 3],
-    /// Colour of the hatch pattern overlay (RGB).
+    /// color of the hatch pattern overlay (RGB).
     pub hatch_color: [u8; 3],
     /// Matches `raster::SolidStyle::selected_color` / `ui/theme.slint`'s `primary`
     /// -- see that field's doc comment.
@@ -199,7 +200,7 @@ pub struct DiagramStyle {
     /// Matches `raster::SolidStyle::multi_selected_color` -- see that field's doc
     /// comment.
     pub multi_selected_color: [u8; 3],
-    /// Background clear colour (RGBA8).
+    /// Background clear color (RGBA8).
     pub background: [u8; 4],
     /// Per-facet flag, indexed by facet id: facet is flagged by the critical-angle overlay.
     pub flagged: Vec<bool>,
@@ -240,10 +241,17 @@ pub struct DiagramStyle {
     /// among the ordinary sector guides.
     pub mirror_line_color: [u8; 3],
     /// Index-wheel ticks, tooth numbers and the panel captions -- drawn on the
-    /// dark `background`, so they need their own light, muted colour rather than
+    /// dark `background`, so they need their own light, muted color rather than
     /// `edge_color`, which is dark for contrast against the light facet fill and
     /// all but vanished against the background.
     pub wheel_color: [u8; 3],
+    /// Facet id -> the block of a concave tool facet's tier (`Some` only for tool
+    /// facets, whose ids lie above the plane count; flat facets and out-of-range ids
+    /// are `None`). A tool piece is drawn only on the panel of its own block, because a
+    /// normal-sign test alone is not a visibility test on a non-convex stone: the
+    /// undercut wall of a groove cut into a steep pavilion facet has an upward
+    /// normal that the crown panel's predicate would accept.
+    pub tool_facet_block: Vec<Option<Block>>,
 }
 
 impl Default for DiagramStyle {
@@ -271,6 +279,7 @@ impl Default for DiagramStyle {
             symmetry_line_color: [70, 74, 84],
             mirror_line_color: [45, 212, 191],
             wheel_color: [128, 136, 152],
+            tool_facet_block: Vec::new(),
         }
     }
 }

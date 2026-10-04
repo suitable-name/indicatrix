@@ -4,7 +4,7 @@
 //! this whole crate's undo/redo rests on.
 
 use crate::{
-    design::{ConstraintTier, Design, TierId, TierTarget},
+    design::{ConcaveTier, ConstraintTier, Design, TierId, TierTarget},
     material::MaterialSelection,
     preform::PreformSpec,
 };
@@ -186,6 +186,30 @@ pub enum Edit {
     /// applying this always sets `angle_deg` to `new_deg` and computes the real
     /// inverse from the tier's own actual previous value.
     RetargetAngles { changes: Vec<(usize, f64, f64)> },
+    /// Inserts a concave tier at position `index` of
+    /// [`Design::concave_tiers`] (`index == len` appends). Rejected, without
+    /// mutation, when the tier fails [`ConcaveTier::validate`] or reuses a flat
+    /// tier's name. Inverse: [`Edit::RemoveConcaveTier`].
+    AddConcaveTier { index: usize, tier: ConcaveTier },
+    /// Removes the concave tier at `index`. Inverse: an [`Edit::Batch`] of
+    /// [`Edit::AddConcaveTier`] and [`Edit::RestoreConcaveTierId`], so the same
+    /// [`TierId`] comes back (see [`Edit::RestoreTierId`] for why).
+    RemoveConcaveTier { index: usize },
+    /// Replaces the concave tier at `index` wholesale, validated like
+    /// [`Edit::AddConcaveTier`]. Inverse: the same variant holding the previous
+    /// tier.
+    ModifyConcaveTier { index: usize, tier: ConcaveTier },
+    /// Moves a concave tier from `from` to `to`, with [`Edit::MoveTier`]'s
+    /// remove-then-insert meaning. The order matters: it is the cutting order
+    /// inside a concave group. Inverse: the positions swapped.
+    MoveConcaveTier { from: usize, to: usize },
+    /// Never constructed by a caller directly -- the concave twin of
+    /// [`Edit::RestoreTierId`], needed because that one writes `tier_ids`.
+    RestoreConcaveTierId { index: usize, id: TierId },
+    /// Never constructed by a caller directly -- the concave half of the inverse
+    /// [`Edit::RemapIndices`] produces. Restores each named concave tier's
+    /// `indices` verbatim, as `(index, indices)`.
+    RestoreConcaveIndices { tiers: Vec<(usize, Vec<f64>)> },
     /// Several sub-edits applied as ONE undo step: [`Design::apply_edit`] validates
     /// every sub-edit against a scratch clone of the design before writing anything
     /// back, so a sub-edit that fails partway through never leaves the design
@@ -282,6 +306,34 @@ impl Edit {
                 format!("Restore index positions for {} tier(s)", tiers.len())
             }
             Self::RetargetAngles { changes } => describe_retarget_angles(changes, design),
+            Self::AddConcaveTier { tier, .. } => {
+                format!("Add concave tier {}", tier_display_name(&tier.name))
+            }
+            Self::RemoveConcaveTier { index } => {
+                format!("Remove concave tier {}", concave_label_at(design, *index))
+            }
+            Self::ModifyConcaveTier { index, .. } => {
+                format!("Modify concave tier {}", concave_label_at(design, *index))
+            }
+            Self::MoveConcaveTier { from, to } => {
+                let label = concave_label_at(design, *from);
+                match to.cmp(from) {
+                    std::cmp::Ordering::Less => format!("Move concave tier {label} up"),
+                    std::cmp::Ordering::Greater => format!("Move concave tier {label} down"),
+                    std::cmp::Ordering::Equal => format!("Move concave tier {label}"),
+                }
+            }
+            // Internal bookkeeping only, like `RestoreTierId`.
+            Self::RestoreConcaveTierId { index, .. } => format!(
+                "Restore concave tier identity for {}",
+                concave_label_at(design, *index)
+            ),
+            Self::RestoreConcaveIndices { tiers } => {
+                format!(
+                    "Restore index positions for {} concave tier(s)",
+                    tiers.len()
+                )
+            }
             Self::Batch(edits) => describe_batch(edits, design),
         }
     }
@@ -302,6 +354,14 @@ fn tier_display_name(name: &str) -> String {
 fn tier_label_at(design: &Design, index: usize) -> String {
     design.tiers.get(index).map_or_else(
         || format!("tier {}", index + 1),
+        |tier| tier_display_name(&tier.name),
+    )
+}
+
+/// [`tier_label_at`] for [`Design::concave_tiers`].
+fn concave_label_at(design: &Design, index: usize) -> String {
+    design.concave_tiers.get(index).map_or_else(
+        || format!("concave tier {}", index + 1),
         |tier| tier_display_name(&tier.name),
     )
 }
@@ -332,16 +392,16 @@ fn describe_tier_target(target: TierTarget) -> String {
 
 /// [`Edit::describe`]'s label for a [`MaterialSelection`] -- its name when set, else a
 /// placeholder (an RI-override-only selection has no catalogue name to show), with a
-/// body-colour override appended in brackets (`Sapphire (Yellow)`, or
-/// `Sapphire (custom colour)` for a triple that matches no preset -- see
-/// [`MaterialSelection::body_colour_label`]).
+/// body-color override appended in brackets (`Sapphire (Yellow)`, or
+/// `Sapphire (custom color)` for a triple that matches no preset -- see
+/// [`MaterialSelection::body_color_label`]).
 fn material_display_name(material: &MaterialSelection) -> String {
     let mut label = material
         .name
         .clone()
         .unwrap_or_else(|| "(custom material)".to_string());
-    if let Some(colour) = material.body_colour_label() {
-        label = format!("{label} ({colour})");
+    if let Some(color) = material.body_color_label() {
+        label = format!("{label} ({color})");
     }
     label
 }
@@ -380,7 +440,12 @@ fn describe_batch(edits: &[Edit], design: &Design) -> String {
     // combined edits", just because it also carries this step along.
     let visible: Vec<&Edit> = edits
         .iter()
-        .filter(|edit| !matches!(edit, Edit::RestoreTierId { .. }))
+        .filter(|edit| {
+            !matches!(
+                edit,
+                Edit::RestoreTierId { .. } | Edit::RestoreConcaveTierId { .. }
+            )
+        })
         .collect();
     match visible.as_slice() {
         [] => "No-op".to_string(),

@@ -40,6 +40,7 @@ pub(super) fn clipped_for(
         grid,
         front,
         non_box_planes: &ctx.non_box,
+        mesh: None,
         size_table: &size_table,
         settings,
         slice: 0..grid.cells[0],

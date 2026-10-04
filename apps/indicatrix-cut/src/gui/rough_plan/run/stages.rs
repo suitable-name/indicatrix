@@ -12,8 +12,9 @@ use super::{
 };
 use glam::DVec3;
 use indicatrix_cut_core::rough_plan::{
-    CandidateDesign, CutOrder, DesignHull, FitStage, PieceTable, PlanProgress, PlanSettings,
-    RoughLayout, SingleFit, fit_shortlisted, merge_fits, screen_designs,
+    CandidateDesign, CutOrder, DesignHull, FitMesh, FitStage, PieceTable, PlanProgress,
+    PlanSettings, RoughLayout, RoughMesh, SingleFit, fit_shortlisted_with, merge_fits,
+    screen_designs_with,
     shaped::{BuildClipParams, ClippedTable, ShapedGrid, build_clipped_table},
     shortlist,
 };
@@ -197,6 +198,8 @@ pub(super) struct ClipJob<'a> {
     pub size_table: &'a PieceTable,
     /// The plan's settings.
     pub settings: &'a PlanSettings,
+    /// The rough's non-convex mesh, `None` for a convex rough.
+    pub mesh: Option<&'a RoughMesh>,
 }
 
 /// Builds the clipped piece table one plane of the a axis at a time on up to `lanes`
@@ -212,6 +215,7 @@ pub(super) fn build_clipped_table_parallel(
             grid: job.grid,
             front: job.front,
             non_box_planes: job.non_box,
+            mesh: job.mesh,
             size_table: job.size_table,
             settings: job.settings,
             slice: a0..a0 + 1,
@@ -236,6 +240,8 @@ pub(super) struct FitJob<'a> {
     pub settings: &'a PlanSettings,
     /// How many fits to keep.
     pub keep: usize,
+    /// The rough's non-convex mesh with its clearance, `None` for a convex rough.
+    pub mesh: Option<FitMesh<'a>>,
 }
 
 /// Screens every chunk of the hulls; the scores come back concatenated in hull order.
@@ -246,10 +252,11 @@ fn screen_in_chunks(
 ) -> Option<Vec<(i64, f64)>> {
     let chunks = design_chunks(job.hulls.len(), lanes);
     let parts = run_dynamic(chunks.len(), lanes, &|| progress.abort(), |index| {
-        screen_designs(
+        screen_designs_with(
             job.coarse_region,
             &job.hulls[chunks[index].clone()],
             job.settings,
+            job.mesh,
             &mut |event| progress.event(event),
         )
     })?;
@@ -265,10 +272,11 @@ fn fit_in_chunks(
 ) -> Option<Vec<SingleFit>> {
     let chunks = design_chunks(subset.len(), lanes);
     let parts = run_dynamic(chunks.len(), lanes, &|| progress.abort(), |index| {
-        fit_shortlisted(
+        fit_shortlisted_with(
             job.region,
             &subset[chunks[index].clone()],
             job.settings,
+            job.mesh,
             &mut |event| progress.event(event),
         )
     })?;

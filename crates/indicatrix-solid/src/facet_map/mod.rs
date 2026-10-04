@@ -26,6 +26,14 @@
 //! three steps, so the facet id a surviving candidate ends up at is the exact index
 //! [`Design::planes_from_solved`] gives the same plane, by construction rather than
 //! by re-matching floats after the fact.
+//!
+//! # Concave facets
+//!
+//! A design's concave tiers resolve to tools, and a tool is one more facet of the
+//! stone: tool `k` has facet id `plane_count + k`. [`FacetMap::from_design_with_tools`]
+//! appends those ids *after* the flat ones from the `(concave tier, placement)` list
+//! `Design::concave_tools_from_solved` returns, so the flat construction above is not
+//! touched and a design without concave tiers builds the identical map.
 
 use glam::Vec3;
 use indicatrix::geometry::meet_solver::Block;
@@ -35,10 +43,28 @@ mod overlay;
 #[cfg(test)]
 mod tests;
 
+/// Whether a facet is one of the stone's flat planes or the surface a concave tool
+/// cut into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FacetKind {
+    /// A flat facet (or a preform plane): every id below the plane count.
+    Flat,
+    /// The surface of one concave tool: `tier` indexes `Design::concave_tiers` and
+    /// `placement` the tier's `indices`.
+    Concave {
+        /// Index into `Design::concave_tiers`.
+        tier: usize,
+        /// Index into that tier's `indices`.
+        placement: usize,
+    },
+}
+
 /// Everything this map remembers about one facet beyond its bare plane equation.
 ///
 /// `tier_index` is `None` for a preform plane (the rough's own bounding planes,
-/// preceding every schedule-derived facet); other fields are placeholders then.
+/// preceding every schedule-derived facet); other fields are placeholders then. It is
+/// also `None` for a concave facet, whose tier lives in a different list: read
+/// [`Self::kind`] for that.
 #[derive(Debug, Clone)]
 pub struct FacetInfo {
     /// Index of the owning tier, or `None` for a preform plane.
@@ -50,8 +76,14 @@ pub struct FacetInfo {
     pub angle_deg: f64,
     /// Block classification of the owning tier, if any.
     pub block: Option<Block>,
-    /// This facet's tier's own `name` (empty for unnamed/preform).
+    /// This facet's tier's own `name` (empty for unnamed/preform). For a concave
+    /// facet, its on-diagram label (tier name, plus the placement's index when the
+    /// tier has several).
     pub name: String,
+    /// Canonical display name for hover tooltips.
+    pub display_name: String,
+    /// Flat plane or concave tool surface.
+    pub kind: FacetKind,
 }
 
 impl FacetInfo {
@@ -62,6 +94,8 @@ impl FacetInfo {
             angle_deg: 0.0,
             block: None,
             name: String::new(),
+            display_name: String::new(),
+            kind: FacetKind::Flat,
         }
     }
 }
@@ -92,6 +126,11 @@ pub struct FacetMap {
     /// `orbits[tier_index]` is every surviving facet id that tier produced, in
     /// `ConstraintTier::indices` order -- see [`Self::facets_of_tier`].
     orbits: Vec<Vec<u32>>,
+    /// How many leading entries of `facets` are flat; the rest are concave facets
+    /// in tool order, whose hover texts are `concave_hover` (same order).
+    flat_facet_count: usize,
+    /// Hover text per concave facet: `"{tier name} {CODE} θ {theta:.1}° D {d:.3}"`.
+    concave_hover: Vec<String>,
 }
 
 /// One (tier, index-on-gear) candidate plane, carrying its provenance through the
@@ -137,8 +176,30 @@ impl FacetMap {
         self.orbits.get(tier_index).map_or(&[], Vec::as_slice)
     }
 
+    /// Whether `facet_id` is a flat facet or a concave tool's surface; `Flat` for an
+    /// out-of-range id.
+    #[must_use]
+    pub fn kind_of(&self, facet_id: usize) -> FacetKind {
+        self.facets
+            .get(facet_id)
+            .map_or(FacetKind::Flat, |info| info.kind)
+    }
+
+    /// Facet id -> the block of a concave facet's tier (`None` for a flat facet),
+    /// the table `diagram2d::DiagramStyle::tool_facet_block` is filled from.
+    #[must_use]
+    pub fn tool_facet_blocks(&self) -> Vec<Option<Block>> {
+        self.facets
+            .iter()
+            .map(|info| match info.kind {
+                FacetKind::Flat => None,
+                FacetKind::Concave { .. } => info.block,
+            })
+            .collect()
+    }
+
     /// Total number of facet ids this map covers (`Design::planes_from_solved`'s
-    /// output length) -- every valid `facet_id` for [`Self::tier_of`]/
+    /// output length, plus one per concave tool) -- every valid `facet_id` for [`Self::tier_of`]/
     /// [`Self::hover_text`]/[`Self::facet_label`] is in `0..self.facet_count()`.
     /// Used by `solid_preview::diagram2d`'s caller to build a facet-id-indexed
     /// label/hover-text table covering every facet, not just the visible ones.

@@ -225,3 +225,78 @@ fn meet_marker_points_finds_the_shared_edge_between_two_touching_facets() {
     // An unrelated pair (facets that never touch) must find nothing.
     assert_eq!(meet_marker_points(&mesh, &[(0, 1)], 1e-4).len(), 0);
 }
+
+/// A one-piece "tool" mesh: a square at `y = 0` with facet id 0 whose piece normal is
+/// `(0, normal_y, 0)`. Built by hand so the test pins the visibility rule, not any
+/// tool tessellation.
+fn tool_piece_mesh(normal_y: f64) -> SolidMesh {
+    let normal = DVec3::new(0.0, normal_y, 0.0);
+    let ring = vec![
+        DVec3::new(-0.5, 0.0, -0.5),
+        DVec3::new(-0.5, 0.0, 0.5),
+        DVec3::new(0.5, 0.0, 0.5),
+        DVec3::new(0.5, 0.0, -0.5),
+    ];
+    let mut mesh = SolidMesh::default();
+    for &corner in &ring {
+        mesh.positions.push(corner);
+        mesh.normals.push(normal);
+        mesh.facet_id.push(0);
+    }
+    mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+    mesh.rings.push((0, ring));
+    mesh.piece_normals = Some(vec![normal]);
+    mesh.edge_visible = Some(vec![vec![true; 4]]);
+    mesh
+}
+
+#[test]
+fn diagram_hides_undercut_tool_pieces_from_the_opposite_panel() {
+    use indicatrix::geometry::meet_solver::Block;
+    let config = DiagramConfig {
+        width: 300,
+        height: 120,
+        gear_teeth: 96,
+        gear_reference_angle: 0.0,
+        symmetry_order: 8,
+        mirror: true,
+    };
+    let pavilion_tool = DiagramStyle {
+        tool_facet_block: vec![Some(Block::Pavilion)],
+        ..DiagramStyle::default()
+    };
+    let crown_tool = DiagramStyle {
+        tool_facet_block: vec![Some(Block::Crown)],
+        ..DiagramStyle::default()
+    };
+
+    // An undercut wall of a pavilion tool: its normal points UP, which the crown
+    // panel's normal test alone would accept.
+    let undercut = tool_piece_mesh(1.0);
+    let hidden = render_diagram(&undercut, &config, &pavilion_tool);
+    assert_eq!(
+        hidden.pick_at(50, 60),
+        None,
+        "a pavilion tool's upward-facing piece must not show on the crown panel"
+    );
+    let shown = render_diagram(&undercut, &config, &crown_tool);
+    assert_eq!(
+        shown.pick_at(50, 60),
+        Some(0),
+        "the same piece does show for a crown-block tool"
+    );
+    // A flat facet (no block entry) with the same normal is unaffected.
+    let flat = render_diagram(&undercut, &config, &DiagramStyle::default());
+    assert_eq!(flat.pick_at(50, 60), Some(0));
+
+    // The ordinary pavilion wall: facing down, in its own block's panel.
+    let wall = tool_piece_mesh(-1.0);
+    let on_pavilion = render_diagram(&wall, &config, &pavilion_tool);
+    assert_eq!(on_pavilion.pick_at(150, 60), Some(0));
+    let on_crown_block = render_diagram(&wall, &config, &crown_tool);
+    assert_eq!(
+        on_crown_block.pick_at(150, 60),
+        None,
+        "a crown tool's piece never shows on the pavilion panel"
+    );
+}

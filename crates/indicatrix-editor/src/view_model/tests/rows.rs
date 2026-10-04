@@ -29,7 +29,7 @@ fn tier_items_reflects_position_and_fields_in_order() {
     let items = tier_items(&state.design, state.design.effective_refractive_index());
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].index, 0);
-    assert_eq!(items[0].angle_deg.as_str(), "-41.00");
+    assert_eq!(items[0].angle_deg.as_str(), "41.00");
     assert_eq!(items[0].mast.as_str(), "0.6500");
     assert_eq!(items[0].name.as_str(), "P1");
     assert_eq!(items[0].indices.as_str(), "0, 24");
@@ -95,7 +95,7 @@ fn tier_items_stale_reflects_authored_fields_without_solving() {
     let items = tier_items_stale(&state.design, state.design.effective_refractive_index());
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].index, 0);
-    assert_eq!(items[0].angle_deg.as_str(), "-41.00");
+    assert_eq!(items[0].angle_deg.as_str(), "41.00");
     assert_eq!(items[0].name.as_str(), "P1");
     assert_eq!(items[0].indices.as_str(), "0, 24");
     // Never a real mast, always flagged uncertain, even though this exact tier is a
@@ -367,4 +367,88 @@ fn tier_matches_filter_treats_a_blank_or_whitespace_only_filter_as_matching_ever
     assert!(tier_matches_filter("anything", ""));
     assert!(tier_matches_filter("anything", "   "));
     assert!(tier_matches_filter("", ""));
+}
+
+#[test]
+fn cutting_rows_emit_second_lines_in_cutting_order() {
+    use crate::view_model::yield_report::cutting_instructions_rows;
+    use indicatrix_cut_core::design::TierRef;
+
+    let design = Design::concave_fixture();
+    let solved = design.solve().expect("the fixture's flat tiers solve");
+    let rows = cutting_instructions_rows(&design, &solved);
+    let order = design.cutting_order();
+    assert_eq!(rows.len(), order.len());
+    for (position, (row, tier_ref)) in rows.iter().zip(&order).enumerate() {
+        assert_eq!(row.order_idx, position as i32);
+        match *tier_ref {
+            TierRef::Flat(_) => assert_eq!(row.second_line, None),
+            TierRef::Concave(i) => assert_eq!(
+                row.second_line,
+                Some(design.concave_tiers[i].second_line_fields())
+            ),
+        }
+    }
+    assert_eq!(
+        rows.iter().filter(|r| r.second_line.is_some()).count(),
+        design.concave_tiers.len()
+    );
+    // The pavilion tool line follows the pavilion flat rows and precedes the first
+    // flat crown row; the crown tool line closes the sheet (this fixture has no table
+    // tier to sit above).
+    let pavilion_tool = rows
+        .iter()
+        .position(|r| r.second_line.as_ref().is_some_and(|l| l[0] == "CYL"));
+    let first_crown = rows
+        .iter()
+        .position(|r| r.side == 1 && r.second_line.is_none());
+    assert!(pavilion_tool < first_crown);
+    assert!(
+        rows.last()
+            .is_some_and(|r| r.side == 1 && r.second_line.is_some())
+    );
+}
+
+#[test]
+fn unnamed_flat_cutting_rows_are_labelled_by_cutting_position() {
+    use crate::view_model::yield_report::cutting_instructions_rows;
+
+    let mut design = Design::concave_fixture();
+    for tier in &mut design.tiers {
+        tier.name.clear();
+    }
+    let solved = design.solve().expect("the fixture's flat tiers solve");
+    let rows = cutting_instructions_rows(&design, &solved);
+    let flat: Vec<_> = rows.iter().filter(|r| r.second_line.is_none()).collect();
+    assert_eq!(flat.len(), design.tiers.len());
+    for row in flat {
+        assert_eq!(row.facet, format!("#{}", row.order_idx + 1));
+    }
+    // The first crown tier is stored fourth but cut fifth, after the groove.
+    let first_crown = rows
+        .iter()
+        .find(|r| r.side == 1 && r.second_line.is_none())
+        .expect("a flat crown row");
+    assert_eq!(first_crown.facet, "#5");
+}
+
+#[test]
+fn tier_rows_append_concave_rows_with_their_tool_line() {
+    use crate::view_model::TierRowKind;
+
+    let design = Design::concave_fixture();
+    let rows = tier_items(&design, design.effective_refractive_index());
+    assert_eq!(rows.len(), design.tiers.len() + design.concave_tiers.len());
+    let (flat, concave) = rows.split_at(design.tiers.len());
+    assert!(
+        flat.iter()
+            .all(|r| r.kind == TierRowKind::Flat && r.tool_line.is_empty())
+    );
+    for (i, row) in concave.iter().enumerate() {
+        assert_eq!(row.kind, TierRowKind::Concave);
+        assert_eq!(row.index, i as i32);
+        assert_eq!(row.tool_line, concave_tool_line(&design.concave_tiers[i]));
+    }
+    assert_eq!(concave[0].block, "Pavilion");
+    assert_eq!(concave[1].block, "Crown");
 }

@@ -92,7 +92,7 @@ struct Level {
     worst: [f32; 3],
 }
 
-/// A colourless, non-dispersive custom material with birefringence `delta`.
+/// A colorless, non-dispersive custom material with birefringence `delta`.
 fn probe(name: &'static str, delta: f32) -> GemMaterial {
     GemMaterial::new_custom(name, 1.5, 0.0, delta, [0.0, 0.0, 0.0])
 }

@@ -53,7 +53,10 @@ mod save;
 #[cfg(test)]
 mod tests;
 
-pub use convert::{SaveExtras, gem_material_from_custom_snapshot, to_native_file};
+pub use convert::{
+    SaveExtras, Snapshotcolor, color_recipe_dto, gem_material_from_custom_snapshot,
+    gem_material_from_custom_snapshot_keeping_recipe, snapshot_color, to_native_file,
+};
 pub use design_file::{
     DESIGN_HISTORY_LIMIT, DesignExtras, DesignLoadError, LoadedDesign, design_from_file,
     design_from_str, design_to_file, design_to_string, migrate_sidecar_to_file,

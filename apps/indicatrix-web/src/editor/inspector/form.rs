@@ -311,6 +311,13 @@ fn apply_save(
     // A rename or angle edit must not silently re-link a deliberately detached tier.
     if let Some(current) = existing {
         tier.detached.clone_from(&current.detached);
+        if current.angle_deg.is_sign_negative() {
+            tier.angle_deg = -tier.angle_deg.abs();
+        }
+    } else if form.index < 0
+        && indicatrix_cut_core::design::labelling::name_indicates_pavilion(&tier.name)
+    {
+        tier.angle_deg = -tier.angle_deg.abs();
     }
     // An unresolved `MeetNamed` token would degrade silently inside the solver.
     if let MeetConstraint::MeetNamed(names) = &tier.constraint

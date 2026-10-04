@@ -129,6 +129,8 @@ fn scene(environment: SceneEnvironment) -> SceneState {
         backdrop: 0.0,
         environment,
         surface_glare: 1.0,
+        tools: Vec::new(),
+        fluorescence: Default::default(),
     }
 }
 

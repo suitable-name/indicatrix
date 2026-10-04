@@ -63,7 +63,7 @@ pub struct TemplateContext {
     pub spp: u32,
     /// Maximum number of ray bounces per path.
     pub bounces: u32,
-    /// The export's colour-space label (`{colorspace}`) -- e.g. "sRGB", "Display P3".
+    /// The export's color-space label (`{colorspace}`) -- e.g. "sRGB", "Display P3".
     pub colorspace: String,
     /// The lighting preset's name being rendered THIS file (`{preset}`) -- empty for
     /// the base current-view render in a fan-out export, the preset's own name for

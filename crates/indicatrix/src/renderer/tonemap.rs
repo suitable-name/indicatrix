@@ -24,7 +24,7 @@
 //!
 //! # The export's final 8-bit conversion
 //!
-//! [`tonemap_accumulation`] (float sum -> RGBA8 for an export's colour space) lives here,
+//! [`tonemap_accumulation`] (float sum -> RGBA8 for an export's color space) lives here,
 //! not in the viewer, so the viewer's still export and tilt video and a server rendering
 //! a "final picture only" request (`FinalImageRequest`) run the SAME code: the PNG a
 //! server sends is then byte-identical to the one the viewer would have written from the
@@ -394,7 +394,7 @@ mod tests {
     ];
 
     /// The moved function is byte-identical to the pre-move export code for every
-    /// colour space, on a buffer big enough to be split across threads.
+    /// color space, on a buffer big enough to be split across threads.
     #[test]
     fn tonemap_accumulation_matches_the_pre_move_export_code() {
         let (width, height) = (97_u32, 61_u32);
@@ -415,7 +415,7 @@ mod tests {
         }
     }
 
-    /// Pins the output bytes for a small fixed buffer, per colour space, so a later
+    /// Pins the output bytes for a small fixed buffer, per color space, so a later
     /// change to the shared tone curve (which would silently change every export AND
     /// every server-side final picture) fails here first. The hashes were taken from
     /// [`pre_move_export_tonemap`], i.e. the code as it was before the move.

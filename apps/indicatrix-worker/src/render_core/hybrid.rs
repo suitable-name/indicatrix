@@ -27,7 +27,7 @@
 //! into the cache when it ends, so the seed keeps improving across jobs exactly as
 //! [`hybrid_trace`]'s EMA improves it within one job.
 
-use super::{resolve_facet_finishes, trace_into};
+use super::{resolve_facet_finishes, scene_uses_gpu, trace_into};
 use crate::cli::ComputeMode;
 use glam::Vec3;
 use indicatrix::{
@@ -146,7 +146,8 @@ pub fn calibrate(
     out: &mut [Vec3],
     cancel: &AtomicBool,
 ) -> CalibrationOutcome {
-    if samples < 3 {
+    // A concave scene is CPU-only: there is nothing to calibrate a split against.
+    if samples < 3 || !scene_uses_gpu(scene) {
         return CalibrationOutcome::GpuDeclined;
     }
     if cancel.load(Ordering::Relaxed) {
@@ -276,6 +277,11 @@ pub fn hybrid_trace(
         return Some(buffer);
     }
 
+    // A cached `Split` decision is keyed by hardware, not geometry, so it can arrive here
+    // for a concave scene the GPU cannot trace: drop it and go CPU-only.
+    if !scene_uses_gpu(scene) {
+        *gpu_frac = None;
+    }
     let frac = gpu_frac.unwrap_or(0.0);
     let gpu_share = ((f64::from(samples) * frac).round() as u32).min(samples);
     let cpu_share = samples - gpu_share;

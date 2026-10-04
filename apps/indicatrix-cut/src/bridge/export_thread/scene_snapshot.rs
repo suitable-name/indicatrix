@@ -11,8 +11,9 @@ use crate::bridge::{
     },
 };
 use indicatrix::{
-    geometry::{girdle_facet_finishes, plane::GpuFacetPlane},
+    geometry::{girdle_facet_finishes, plane::GpuFacetPlane, tool::ToolPrimitive},
     optics::{
+        fluorescence::Fluorescence,
         materials::GemMaterial,
         raytracer::{FacetFinish, LightingPreset},
     },
@@ -58,6 +59,17 @@ pub struct SceneSnapshot {
     pub surface_glare: f32,
     /// Facet planes of the active design.
     pub active_planes: Vec<GpuFacetPlane>,
+    /// The concave tools cut out of `active_planes` (`RenderContext::active_tools`);
+    /// empty for a planar design, which is then exported exactly as before. A tool-bearing
+    /// scene is traced on the CPU alone (`scene_routes_to_gpu`) and sent to a remote
+    /// worker as `SceneState::tools`.
+    pub tools: Vec<ToolPrimitive>,
+    /// The material's fluorescent emitters (`RenderContext::active_fluorescence`, resolved
+    /// from the physics recipe), empty for every non-fluorescent material, which then exports
+    /// exactly as before. A fluorescent scene is traced on the CPU alone and sent to a remote
+    /// worker as `SceneState::fluorescence`. An `Arc` so a fan-out's clones share the sampling
+    /// tables the first trace builds.
+    pub fluorescence: Arc<Fluorescence>,
     /// Frosted girdle: `girdle_facet_finishes(&active_planes)` when
     /// `RenderContext::girdle_frosted` was on at capture time, empty otherwise --
     /// already resolved here (rather than a bare `bool` re-classified per batch) since
@@ -128,6 +140,7 @@ impl SceneSnapshot {
             },
             &guard.active_planes,
             &mut StoneWidthCache::new(),
+            guard.physics_color(),
         );
         // Frosted girdle: an empty `Vec` at the off position is
         // `trace_spectral_ray_with_finish`'s documented equivalent of
@@ -154,6 +167,8 @@ impl SceneSnapshot {
             // the one actual deep copy `capture` makes -- `.to_vec()` off the `Arc<Vec<..>>`
             // (via its `Deref<Target = [GpuFacetPlane]>`).
             active_planes: guard.active_planes.to_vec(),
+            tools: guard.active_tools.to_vec(),
+            fluorescence: guard.active_fluorescence().unwrap_or_default(),
             facet_finishes,
             // `Arc::clone`, not a deep copy of the decoded panorama.
             env_map: guard.env_map.clone(),

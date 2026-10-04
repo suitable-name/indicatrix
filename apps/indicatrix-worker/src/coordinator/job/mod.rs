@@ -501,7 +501,7 @@ pub fn serve_render<S: Read + Write + TimeoutRead + TimeoutWrite>(
 /// Serves one `FinalImageRequest`.
 ///
 /// The whole range runs as a `Batch` job, then one PNG goes out, tone-mapped for the
-/// requested colour space with the GUI export's own `tonemap_accumulation`, per the
+/// requested color space with the GUI export's own `tonemap_accumulation`, per the
 /// reply sequence in `indicatrix_net::messages::final_image`. `asset` as in
 /// [`serve_render`].
 ///

@@ -11,6 +11,10 @@
 //!
 //! A corner counts as outside a plane only when it lies more than [`PLANE_EPS_MM`] beyond it,
 //! so a box that touches a plane is interior however the two positions were rounded.
+//!
+//! A rough with a non-convex mesh adds a second test (see [`classify_box_in`]): a box in
+//! air is exterior, and a box the mesh surface meets is partial even when no plane
+//! crosses it, so the size-table shortcut for interior pieces is never taken for it.
 
 use std::ops::Range;
 
@@ -22,8 +26,9 @@ use super::{
     rows::{ClipRegion, PartialSolver, caliper_extents},
 };
 use crate::rough_plan::{
-    CandidateDesign, Grid, PieceTable, PlanProgress, PlanSettings,
+    CandidateDesign, FitMesh, Grid, PieceTable, PlanProgress, PlanSettings,
     piece::{ASSIGNMENTS, Norm, stone_value},
+    shape::{BoxState, RoughMesh},
 };
 
 /// Number of (design, orientation) candidate pairs evaluated via LP for a partial piece.
@@ -225,6 +230,37 @@ pub fn classify_box_into(
     }
 }
 
+/// [`classify_box_into`], then the rough's mesh if it has one.
+///
+/// A box in air (see [`BoxState::Air`]) is [`CLASS_EXTERIOR`]; a box the surface meets
+/// (inflated by the mesh's clearance) is [`CLASS_PARTIAL`] whatever the planes say, with
+/// `violated` as the planes alone left it (possibly empty); a box clear of the surface and
+/// inside the material keeps the plane class. Without a mesh this is exactly
+/// [`classify_box_into`].
+pub fn classify_box_in(
+    min_corner: [f64; 3],
+    max_corner: [f64; 3],
+    planes: &[(DVec3, f64)],
+    mesh: Option<FitMesh<'_>>,
+    violated: &mut Vec<usize>,
+) -> u8 {
+    let class = classify_box_into(min_corner, max_corner, planes, violated);
+    let Some(mesh) = mesh else {
+        return class;
+    };
+    if class == CLASS_EXTERIOR {
+        return class;
+    }
+    match mesh.mesh.box_state(min_corner, max_corner, mesh.inset_mm) {
+        BoxState::Clear => class,
+        BoxState::Crossing => CLASS_PARTIAL,
+        BoxState::Air => {
+            violated.clear();
+            CLASS_EXTERIOR
+        }
+    }
+}
+
 /// Input parameters for building a clipped piece table.
 #[derive(Debug, Clone)]
 pub struct BuildClipParams<'a> {
@@ -239,6 +275,9 @@ pub struct BuildClipParams<'a> {
     pub size_table: &'a PieceTable,
     /// Plan settings (allowance, min width).
     pub settings: &'a PlanSettings,
+    /// The rough's non-convex mesh, `None` for a convex rough (which takes exactly the
+    /// path it always did). Its clearance is `skin + allowance` of `settings`.
+    pub mesh: Option<&'a RoughMesh>,
     /// The a0 slice of ranges to process.
     pub slice: Range<usize>,
     /// Optional cached classification flags (the `classes` of an earlier table
@@ -373,6 +412,14 @@ struct PieceWork<'a> {
     polls: usize,
 }
 
+/// The mesh of `params` and its clearance (`skin + allowance`), `None` for a convex rough.
+fn fit_mesh<'a>(params: &BuildClipParams<'a>) -> Option<FitMesh<'a>> {
+    params.mesh.map(|mesh| FitMesh {
+        mesh,
+        inset_mm: params.settings.skin_mm + params.settings.allowance_mm,
+    })
+}
+
 impl PieceWork<'_> {
     /// Fills entry `entry` of `table` (an index into the slice's own table, not the
     /// whole grid's) for the piece with the given ranges.
@@ -384,12 +431,19 @@ impl PieceWork<'_> {
         cached: Option<u8>,
     ) {
         let params = self.params;
+        let mesh = fit_mesh(params);
         let (origin_mm, size_mm) = params.grid.piece_box(ranges);
         let (b_min, b_max) =
             ShapedGrid::stone_box(origin_mm, size_mm, params.settings.allowance_mm);
         let class = match cached {
             Some(class) if class != CLASS_PARTIAL => class,
-            _ => classify_box_into(b_min, b_max, params.non_box_planes, &mut self.violated),
+            _ => classify_box_in(
+                b_min,
+                b_max,
+                params.non_box_planes,
+                mesh,
+                &mut self.violated,
+            ),
         };
         table.classes[entry] = class;
         let lens = ranges.map(|(start, end)| end - start);
@@ -416,6 +470,7 @@ impl PieceWork<'_> {
                     params.settings.min_width_mm,
                     &mut self.solver,
                     shortlist.pairs_of(lens),
+                    mesh,
                 );
                 table.values[entry] = val;
                 table.design[entry] = des;
@@ -543,6 +598,7 @@ pub fn build_clipped_table_lanes(
                 non_box_planes: params.non_box_planes,
                 size_table: params.size_table,
                 settings: params.settings,
+                mesh: params.mesh,
                 slice,
                 cached_classes: cached,
             };
@@ -561,13 +617,16 @@ pub fn build_clipped_table_lanes(
 /// produced a stone; while none has, the search goes on down the list.
 ///
 /// Returns `(value, design index, assignment)`; the value is `-inf` when no
-/// pair fits.
+/// pair fits. With a `mesh` every solve is a [`PartialSolver::solve_in_mesh`], so a
+/// stone that would reach into air is shrunk or dropped; its value is still at most the
+/// pair's box bound, so the early exits hold.
 fn solve_partial_piece(
     region: &ClipRegion<'_>,
     norms: &[Norm],
     min_width: f64,
     solver: &mut PartialSolver,
     pairs: &[Pair],
+    mesh: Option<FitMesh<'_>>,
 ) -> (f64, u32, u8) {
     let mut best = (f64::NEG_INFINITY, 0u32, 0u8);
     for (attempt, pair) in pairs.iter().enumerate() {
@@ -578,7 +637,7 @@ fn solve_partial_piece(
         }
         let norm = &norms[pair.design as usize];
         let extents = caliper_extents(norm, usize::from(pair.orient));
-        if let Some((k, _)) = solver.solve(region, extents)
+        if let Some((k, _)) = solver.solve_with(region, extents, mesh)
             && k >= min_width
         {
             let val = norm.f * (k * k * k);
@@ -673,7 +732,7 @@ mod tests {
         };
         let mut solver = PartialSolver::new();
         let mut solve =
-            |pairs: &[Pair]| solve_partial_piece(&region, &norms, 1.0, &mut solver, pairs);
+            |pairs: &[Pair]| solve_partial_piece(&region, &norms, 1.0, &mut solver, pairs, None);
 
         // Six failures come first: the search goes on to the seventh pair.
         let mut pairs: Vec<Pair> = (0..6).map(|i| pair(100.0 - f64::from(i), 0)).collect();

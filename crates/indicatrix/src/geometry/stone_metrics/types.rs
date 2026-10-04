@@ -175,4 +175,21 @@ pub struct SolidMesh {
     /// into the slice `build_solid_mesh` was called with. Omits faces cut
     /// away entirely (fewer than 3 vertices on the plane).
     pub rings: Vec<(usize, Vec<DVec3>)>,
+    /// One outward normal per entry of `rings`; `None` on the planar path.
+    ///
+    /// A concave stone has several rings per `facet_id` (a facet is cut into
+    /// convex pieces) and the pieces of a tool surface are curved, so the
+    /// per-vertex flat normal no longer says which way a *piece* faces. This
+    /// is the exact normal there: the facet's plane normal for a flat piece,
+    /// the negated outward normal of the exact tool (not its polytope) at the
+    /// piece centroid for a tool piece.
+    pub piece_normals: Option<Vec<DVec3>>,
+    /// Per ring, per segment `i -> i + 1`: whether that edge is drawn. `None`
+    /// on the planar path, where every ring edge is a facet boundary.
+    ///
+    /// On a concave stone most ring edges are seams of the convex
+    /// decomposition or between two tessellation planes of one tool, both of
+    /// which sit inside a single facet and must stay invisible. An edge is
+    /// visible only when the two sides belong to different `facet_id`s.
+    pub edge_visible: Option<Vec<Vec<bool>>>,
 }

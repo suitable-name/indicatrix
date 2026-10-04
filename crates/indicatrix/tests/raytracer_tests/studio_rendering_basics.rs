@@ -1,4 +1,4 @@
-//! Smoke tests for studio-lit spectral rendering: background/environment colour,
+//! Smoke tests for studio-lit spectral rendering: background/environment color,
 //! basic diamond/colored-gem traces, custom material creation, and moving the
 //! light source.
 

@@ -198,6 +198,7 @@ fn update_diagram_metadata_touches_only_its_own_fields_and_nothing_else() {
             angle: "0".to_string(),
             index: "-".to_string(),
             notes: String::new(),
+            ..Default::default()
         }],
         attached_files: vec![crate::model::file::AttachedFile {
             name: "utopia.asc".to_string(),
@@ -224,6 +225,8 @@ fn update_diagram_metadata_touches_only_its_own_fields_and_nothing_else() {
         pdf_file: Some("2002SSCMasters.pdf".to_string()),
         gem_file: Some("utopia.gem".to_string()),
         shape_category: Some("5".to_string()),
+        concave_tiers: 0,
+        concave_facets: 0,
     };
     db.save_diagram_detail(&original, entry_id)
         .expect("save original detail");

@@ -138,6 +138,17 @@ fn solved(design: &Design) -> Option<Vec<SolvedTier>> {
     design.solve().ok()
 }
 
+/// Drops the concave-tier fields (`EditorTierItem::kind`/`tool_line`,
+/// `AngleItem::second_line`) from a `Debug` dump while they hold their flat default,
+/// so the dump of a planar design is byte-identical to the one recorded before the
+/// concave work. A flat row that ever carried a concave value keeps the field in the
+/// dump and fails the pin. (The leading space keeps `constraint_kind` out of it.)
+fn without_flat_defaults(dump: &str) -> String {
+    dump.replace(" kind: 0, ", " ")
+        .replace("tool_line: \"\", ", "")
+        .replace("second_line: \"\", ", "")
+}
+
 fn row_dump(design: &Design, customs: &[GemMaterial]) -> String {
     let n_d = design.effective_refractive_index_with(customs);
     let mut out = String::new();
@@ -186,7 +197,7 @@ fn row_dump(design: &Design, customs: &[GemMaterial]) -> String {
             gear_remap_preview(design, design.meta.gear_teeth, 80, rounding)
         );
     }
-    out
+    without_flat_defaults(&out)
 }
 
 #[test]
@@ -400,7 +411,7 @@ fn preform_and_material_dump() -> String {
         name: Some("My Garnet".to_string()),
         specific_gravity_override: Some(3.1),
         refractive_index_override: Some(1.8),
-        body_colour_override: None,
+        body_color_override: None,
     };
     for (girdle, sg) in [("6.5", ""), ("", "3.2"), ("-1", ""), ("x", ""), ("", "0")] {
         let _ = writeln!(out, "{:?}", parse_yield_form(girdle, 3, sg, &current));
@@ -425,7 +436,7 @@ fn preform_and_material_dump() -> String {
                     name: name.map(str::to_string),
                     specific_gravity_override: None,
                     refractive_index_override: None,
-                    body_colour_override: None,
+                    body_color_override: None,
                 },
                 &customs
             )
@@ -654,19 +665,19 @@ fn retarget_output_is_pinned() {
             name: Some("Sapphire".to_string()),
             specific_gravity_override: None,
             refractive_index_override: None,
-            body_colour_override: None,
+            body_color_override: None,
         },
         MaterialSelection {
             name: Some("My Garnet".to_string()),
             specific_gravity_override: None,
             refractive_index_override: None,
-            body_colour_override: None,
+            body_color_override: None,
         },
         MaterialSelection {
             name: None,
             specific_gravity_override: None,
             refractive_index_override: Some(2.0),
-            body_colour_override: None,
+            body_color_override: None,
         },
     ];
     let crowns = [

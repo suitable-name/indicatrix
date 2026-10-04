@@ -11,7 +11,7 @@
 use super::{
     request::RedrawRequest,
     state::{DiagramMemory, WorkerMemory, dim_style, resolve_request_state},
-    types::{CameraPose, FrameGeometry, PickBuffer},
+    types::{CameraPose, FrameGeometry, PickBuffer, StoneGeometryBuf},
 };
 use crate::{
     diagram2d::{self, DiagramConfig, DiagramFrame},
@@ -19,7 +19,6 @@ use crate::{
     mesh_cache::{CachedMesh, MeshCache},
     raster::SolidRasterizer,
 };
-use glam::Vec3;
 use indicatrix::{
     geometry::{meet_solver::SolvedTier, stone_metrics::SolidMesh},
     optics::raytracer::{Camera, DEFAULT_FOV_DEG},
@@ -37,7 +36,7 @@ pub const DEFAULT_MESH_BOUNDING_RADIUS: f64 = 1.5;
 /// pixels the caller's rasterizers now hold.
 pub struct RenderedFrame {
     /// Whether the solid image shows a real (possibly held-over, dimmed) solid;
-    /// `false` means a background-coloured frame.
+    /// `false` means a background-colored frame.
     pub has_solid: bool,
     /// A short reason when `!has_solid`, or the "Preview cannot be solved: ..." /
     /// "Unbounded: ..." banner for a held-over frame; empty otherwise.
@@ -58,8 +57,10 @@ pub struct RenderedFrame {
     pub diagram_hover_text: Option<Vec<String>>,
     /// Facet id -> owning tier for a Diagram-mode frame (`None` in other modes).
     pub diagram_facet_tier: Option<Vec<Option<usize>>>,
-    /// The plane arrangement this frame was rendered from.
-    pub planes: Vec<(Vec3, f32)>,
+    /// The stone (planes plus concave tools) this frame was rendered from. Named
+    /// `stone` rather than `geometry` because [`Self::geometry`] is the mesh-derived
+    /// [`FrameGeometry`] the manipulation handles use.
+    pub stone: StoneGeometryBuf,
     /// Facet id -> hover text, valid in every view mode.
     pub hover_text: Vec<String>,
     /// Facet id -> owning tier, valid in every view mode.
@@ -91,11 +92,11 @@ fn frame_geometry(cached: &CachedMesh, camera: CameraPose, size: (u32, u32)) -> 
 /// view mode.
 fn build_diagram(
     mesh_cache: &mut MeshCache,
-    planes: &[(Vec3, f32)],
+    stone: &StoneGeometryBuf,
     size: (u32, u32),
     last_diagram: &DiagramMemory,
 ) -> Option<DiagramFrame> {
-    mesh_cache.get_or_build(planes).map(|cached| {
+    mesh_cache.get_or_build_geometry(stone).map(|cached| {
         let config = DiagramConfig {
             width: size.0,
             height: size.1,
@@ -128,7 +129,7 @@ fn build_diagram(
 /// `None`, so orbiting never wipes a caller's `last_solved` cache.
 ///
 /// Afterwards `rasterizer.color` holds the solid image (always sized to the
-/// request, background-coloured when nothing ever closed) and, when
+/// request, background-colored when nothing ever closed) and, when
 /// [`RenderedFrame::has_edges`], `edges_rasterizer.color` the "Both" layer.
 ///
 /// Returns `None` if an `UpdateFacetOverlay` arrives before the first real frame.
@@ -139,7 +140,7 @@ pub fn render_request(
     memory: &mut WorkerMemory,
     request: RedrawRequest,
 ) -> Option<RenderedFrame> {
-    let (planes, camera_pose, size, view_mode, style, solved, stale, unsolvable_status, generation) =
+    let (stone, camera_pose, size, view_mode, style, solved, stale, unsolvable_status, generation) =
         resolve_request_state(memory, mesh_cache, request)?;
     // The app-owned outlines (slice tier, drag followers) are read NOW, not taken from
     // the request: a `Planned` request rebuilds the style without them and the gate
@@ -153,7 +154,7 @@ pub fn render_request(
         camera_pose.distance,
         DEFAULT_FOV_DEG,
     );
-    let (has_solid, status) = if let Some(cached) = mesh_cache.get_or_build(&planes) {
+    let (has_solid, status) = if let Some(cached) = mesh_cache.get_or_build_geometry(&stone) {
         rasterizer.render_prepared(cached, &camera, &style);
         (true, String::new())
     } else if let Some(cached) = mesh_cache.last_closed() {
@@ -181,15 +182,17 @@ pub fn render_request(
     // "Both" mode: the transparent-fill/opaque-edges layer, composited by the
     // caller over the path-traced image -- only built when asked for.
     let has_edges = view_mode == 2
-        && mesh_cache.get_or_build(&planes).is_some_and(|cached| {
-            edges_rasterizer.resize(size.0, size.1);
-            render_edges_layer(edges_rasterizer, cached, &camera, &style);
-            true
-        });
+        && mesh_cache
+            .get_or_build_geometry(&stone)
+            .is_some_and(|cached| {
+                edges_rasterizer.resize(size.0, size.1);
+                render_edges_layer(edges_rasterizer, cached, &camera, &style);
+                true
+            });
 
     let (diagram, diagram_hover_text, diagram_facet_tier) = if view_mode == 3 {
         (
-            build_diagram(mesh_cache, &planes, size, &memory.diagram),
+            build_diagram(mesh_cache, &stone, size, &memory.diagram),
             Some(memory.diagram.hover_text.clone()),
             Some(memory.diagram.facet_tier.clone()),
         )
@@ -207,7 +210,7 @@ pub fn render_request(
     // describe the SAME solid the viewport is showing. Each `.map(..)` turns the
     // borrow into an owned value before `last_closed` reborrows the cache.
     let geometry = mesh_cache
-        .get_or_build(&planes)
+        .get_or_build_geometry(&stone)
         .map(|cached| frame_geometry(cached, camera_pose, size))
         .or_else(|| {
             mesh_cache
@@ -228,7 +231,7 @@ pub fn render_request(
         diagram,
         diagram_hover_text,
         diagram_facet_tier,
-        planes,
+        stone,
         hover_text,
         facet_tier,
         generation,

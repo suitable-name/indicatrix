@@ -4,8 +4,10 @@
 
 use glam::DVec3;
 
+use crate::geometry::tool::ToolPrimitive;
+
 use super::{
-    EPS_FACE,
+    EPS_FACE, concave,
     measure::max_abs_offset,
     pow2_scale_norm,
     types::{SolidMesh, SolidStatus},
@@ -192,4 +194,81 @@ pub(super) fn face_area(normal: DVec3, offset: f64, verts: &[SolidVertex]) -> f6
         cross_sum += a.cross(b);
     }
     0.5 * normal.dot(cross_sum).abs()
+}
+
+/// Segments around a tool's axis in [`tessellate_tool`]'s polygon.
+///
+/// Halved on `wasm32` to bound the web build's mesh size; the equal-area radius
+/// keeps the removed volume of a cylinder exact at either count.
+pub const TOOL_SEGMENTS: usize = if cfg!(target_arch = "wasm32") { 24 } else { 48 };
+
+/// Subdivision level of the icosphere that tessellates a ball tool (320 faces).
+pub const TOOL_ICOSPHERE_LEVEL: u32 = 2;
+
+/// Like [`build_solid_mesh`], but for a stone that is the plane arrangement
+/// minus a union of convex `tools` (concave and fantasy facets).
+///
+/// With no tools this **is** [`build_solid_mesh`], so every plane-only caller is
+/// bit-identical. Otherwise each tool is tessellated into a convex polytope
+/// ([`tessellate_tool`]), the facets of the planar mesh are cut into the convex
+/// pieces that lie outside every tool, and the tool surfaces inside the stone
+/// are added with their winding reversed, giving a closed, consistently
+/// oriented mesh of `P \ (T1 u T2 u ..)`. `piece_normals` and `edge_visible` are
+/// filled. Tool `k` has facet id `planes.len() + k`.
+///
+/// Anything other than a closed planar solid is returned unchanged. If the tools
+/// remove the whole stone the result is [`SolidStatus::Degenerate`].
+#[must_use]
+pub fn build_solid_mesh_geom(planes: &[(DVec3, f64)], tools: &[ToolPrimitive]) -> SolidStatus {
+    let status = build_solid_mesh(planes);
+    if tools.is_empty() {
+        return status;
+    }
+    match status {
+        SolidStatus::Closed(mesh) => concave::build(planes, tools, &mesh),
+        other => other,
+    }
+}
+
+/// Convex polytope approximating one tool, as outward half-spaces
+/// `n . x <= m` with unit `n`.
+///
+/// Cylinders, frusta and bicones use `segments` planes around the axis at the
+/// **equal-area** radius `r * sqrt(2 pi / (N sin(2 pi / N)))`, so a
+/// cross-section keeps its area and a through-cut removes exactly the right
+/// volume; balls use an icosphere of level [`TOOL_ICOSPHERE_LEVEL`] scaled to
+/// the volume of the true sphere. Sweeps are the Minkowski sum with the stroke.
+/// Empty for an invalid tool.
+#[must_use]
+pub fn tessellate_tool(tool: &ToolPrimitive, segments: usize) -> Vec<(DVec3, f64)> {
+    concave::polytope(tool, segments).map_or_else(Vec::new, |p| p.planes)
+}
+
+/// Signed volume of the solid `mesh` bounds by the divergence formula over
+/// `rings`: each ring contributes `p0 . A / 3` with `A` its vector area.
+///
+/// Valid for any closed, consistently oriented surface, so it covers concave
+/// meshes whose facets are several rings. T-junctions between pieces cost
+/// nothing because only the polygon geometry enters. Coordinates are taken
+/// relative to the first ring vertex to keep cancellation small far from the
+/// origin; a closed surface's volume does not depend on that choice.
+#[must_use]
+pub fn mesh_volume(mesh: &SolidMesh) -> f64 {
+    let Some(origin) = mesh
+        .rings
+        .iter()
+        .find_map(|(_, ring)| ring.first().copied())
+    else {
+        return 0.0;
+    };
+    let mut acc = 0.0;
+    for (_, ring) in &mesh.rings {
+        let Some(&p0) = ring.first() else { continue };
+        let mut area = DVec3::ZERO;
+        for w in ring[1..].windows(2) {
+            area += (w[0] - p0).cross(w[1] - p0);
+        }
+        acc += (p0 - origin).dot(area);
+    }
+    acc / 6.0
 }

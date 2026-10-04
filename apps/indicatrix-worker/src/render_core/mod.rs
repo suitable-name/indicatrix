@@ -48,7 +48,7 @@
 use glam::Vec3;
 use indicatrix::optics::raytracer::{
     Camera, DEFAULT_FOV_DEG, EnvironmentSource, FacetFinish, add_finite_sample, build_plane_soa,
-    pixel_rotations, sample_draws, trace_spectral_ray_with_finish_soa,
+    pixel_rotations, sample_draws, trace_spectral_ray_with_finish_soa_geom,
 };
 use indicatrix_dispatch::SampleRange;
 use indicatrix_net::SceneState;
@@ -61,9 +61,45 @@ use std::{
     time::Duration,
 };
 
-use indicatrix::renderer::gpu_backend::{GpuAccumulate, GpuBackend, GpuSceneRef};
+use indicatrix::{
+    geometry::StoneGeometry,
+    renderer::gpu_backend::{GpuAccumulate, GpuBackend, GpuSceneRef, scene_routes_to_gpu},
+};
 
 pub(crate) mod hybrid;
+
+/// The stone `scene` describes: its planes with its concave tools subtracted.
+///
+/// A borrow, so every tracer entry point below builds it for free per call.
+#[must_use]
+pub(crate) fn stone_geometry(scene: &SceneState) -> StoneGeometry<'_> {
+    StoneGeometry {
+        planes: &scene.planes,
+        tools: &scene.tools,
+    }
+}
+
+/// Whether `scene` may be offered to the GPU at all (`scene_routes_to_gpu`): the material
+/// must be GPU-supported, the stone convex, the material not fluorescent and the lighting
+/// not a UV lamp.
+///
+/// The WGSL kernels know nothing about tools or fluorescence (`docs/gpu.md`), so such a
+/// scene is traced entirely on the CPU -- by the plain CPU path, never by a hybrid split,
+/// which would otherwise hand part of the samples to a GPU that cannot trace them. An
+/// HDR panorama has no lamp, so the preset only counts for the analytic rig.
+#[must_use]
+pub(crate) fn scene_uses_gpu(scene: &SceneState) -> bool {
+    let lighting = match scene.environment {
+        indicatrix_net::scene::SceneEnvironment::Studio => scene.lighting_preset,
+        indicatrix_net::scene::SceneEnvironment::Hdr(_) => Default::default(),
+    };
+    scene_routes_to_gpu(
+        &scene.material,
+        stone_geometry(scene),
+        &scene.fluorescence,
+        lighting,
+    )
+}
 
 /// Resolves the per-facet finish `scene.girdle_frosted` implies.
 ///
@@ -312,6 +348,9 @@ pub fn trace_samples_with_gpu_cancellable(
     // resolve_facet_finishes). The CPU fallback below resolves identical finishes from
     // the same field, so a GPU decline mid-trace can't silently switch polish state.
     let facet_finishes = resolve_facet_finishes(scene);
+    // A concave scene never reaches the GPU: skip straight to the CPU tracer below,
+    // which reads `scene.tools`. (An unsupported material declines on its own inside
+    // `try_accumulate_cancellable`; tools are the case it cannot see.)
     let gpu_scene = GpuSceneRef {
         camera: &camera,
         width,
@@ -322,7 +361,12 @@ pub fn trace_samples_with_gpu_cancellable(
         max_bounces: scene.max_bounces,
         environment,
     };
-    match gpu.try_accumulate_cancellable(&gpu_scene, first_sample, samples, &mut buffer, cancel) {
+    let outcome = if scene_uses_gpu(scene) {
+        gpu.try_accumulate_cancellable(&gpu_scene, first_sample, samples, &mut buffer, cancel)
+    } else {
+        GpuAccumulate::Declined
+    };
+    match outcome {
         GpuAccumulate::Done => return Some(buffer),
         GpuAccumulate::Cancelled => return None,
         GpuAccumulate::Declined => {}
@@ -400,7 +444,8 @@ fn trace_into(
     };
     let _permits = PermitGuard(num_threads);
 
-    let planes = &scene.planes;
+    let geom = stone_geometry(scene);
+    let planes = geom.planes;
     let material = &scene.material;
     let max_bounces = scene.max_bounces;
     // Frosted girdle -- see `resolve_facet_finishes`'s doc comment.
@@ -466,12 +511,13 @@ fn trace_into(
                                 draws.jitter_y,
                             );
 
-                            let sample = trace_spectral_ray_with_finish_soa(
+                            let sample = trace_spectral_ray_with_finish_soa_geom(
                                 ray,
-                                planes,
+                                geom,
                                 plane_soa,
                                 facet_finishes,
                                 material,
+                                &scene.fluorescence,
                                 max_bounces,
                                 environment,
                                 draws.seed,
@@ -525,6 +571,8 @@ mod tests {
             backdrop: 0.0,
             environment: indicatrix_net::scene::SceneEnvironment::Studio,
             surface_glare: 1.0,
+            tools: Vec::new(),
+            fluorescence: Default::default(),
         }
     }
 

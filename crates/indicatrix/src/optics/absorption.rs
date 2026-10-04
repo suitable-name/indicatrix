@@ -12,8 +12,7 @@
 ///
 /// Defaults to [`Self::GaussianWavelength`] -- every existing built-in material keeps
 /// its historical wavelength-domain shape bit-identically (see [`AbsorptionBand::new`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum BandShape {
     /// Gaussian in wavelength (nm): `peak * exp(-0.5 * ((lambda_nm - center_nm) /
     /// width_nm)^2)`. The historical/default shape; `width_nm` is a standard deviation
@@ -37,8 +36,7 @@ pub enum BandShape {
 /// (Or, see [`BandShape::GaussianEnergy`], as a function of photon energy instead.) The
 /// form spectroscopic literature publishes gem chromophore data in (peak wavelength,
 /// width, peak intensity); cheap to evaluate per-channel in the ray loop.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AbsorptionBand {
     /// Band centre wavelength, nanometers.
     pub center_nm: f32,
@@ -276,7 +274,7 @@ mod band_shape_tests {
 /// A gem material's absorption spectrum, expressed as a sum of Gaussian
 /// [`AbsorptionBand`]s, one set per birefringent eigenmode (ordinary / extraordinary).
 ///
-/// Real gem colour comes from specific, narrow electronic transitions of
+/// Real gem color comes from specific, narrow electronic transitions of
 /// transition-metal-ion chromophores (Cr3+, Fe2+/Ti4+, etc.); three wide, fixed-position
 /// lobes on the sRGB primaries cannot represent a transmission window between two
 /// absorption peaks (e.g. ruby's narrow red window plus a smaller blue one) no matter
@@ -292,8 +290,7 @@ mod band_shape_tests {
 /// (the default for `isotropic`/`uniaxial`, and every material except Alexandrite).
 /// Naming convention: `o_ray` -> `n_alpha`, `beta_ray` -> `n_beta`, `e_ray` -> `n_gamma`
 /// -- see `birefringence::AbsorptionTensor3::biaxial` for which world axis each lands on.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AbsorptionTensor {
     /// Absorption bands for the ordinary ray (uniaxial) / the `n_alpha` principal
     /// direction (biaxial, when `beta_ray` is `Some`).
@@ -313,7 +310,7 @@ impl AbsorptionTensor {
     /// A non-pleochroic material: the same band set applies to both eigenmodes (also
     /// used for isotropic/cubic materials, which have no o-ray/e-ray distinction).
     ///
-    /// An empty `Vec` (the three colourless built-ins: Diamond, Moissanite, Cubic
+    /// An empty `Vec` (the three colorless built-ins: Diamond, Moissanite, Cubic
     /// Zirconia) means zero absorption at every wavelength.
     #[must_use]
     pub fn isotropic(bands: Vec<AbsorptionBand>) -> Self {
@@ -370,7 +367,7 @@ impl AbsorptionTensor {
 /// Not numerically identical to the old normalized-blend model: this sums the three
 /// bands as independent contributions (consistent with how real absorption spectra
 /// combine), so overlapping bands compound rather than blend. Only the three
-/// colourless built-ins (empty `Vec`) render bit-identically to before.
+/// colorless built-ins (empty `Vec`) render bit-identically to before.
 #[must_use]
 pub fn legacy_rgb_bands(rgb: [f32; 3]) -> Vec<AbsorptionBand> {
     vec![

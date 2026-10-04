@@ -25,7 +25,10 @@ use super::{
     environment::EnvironmentSource,
     intersect::build_plane_soa,
 };
-use crate::{geometry::plane::GpuFacetPlane, optics::materials::GemMaterial};
+use crate::{
+    geometry::{plane::GpuFacetPlane, tool::StoneGeometry},
+    optics::{fluorescence::Fluorescence, materials::GemMaterial},
+};
 use glam::Vec3;
 
 mod bounce;
@@ -57,7 +60,9 @@ pub fn wrapped_hero_wavelengths<const N: usize>(hero_rand: f32) -> [f32; N] {
     })
 }
 
-/// Why a traced path's bounce loop stopped, for the `bounce_cost` benchmark harness
+/// Why a traced path's bounce loop stopped.
+///
+/// For the `bounce_cost` benchmark harness
 /// (`examples/bounce_cost.rs`). Maps 1:1 onto
 /// [`trace_spectral_ray_inner`](inner::trace_spectral_ray_inner)'s break/fall-through
 /// sites:
@@ -218,6 +223,95 @@ pub fn trace_spectral_ray_with_finish_soa(
         plane_soa,
         facet_finishes,
         material,
+        max_bounces,
+        environment,
+        rng_seed,
+        hero_rand,
+        primary_hit_out,
+        true,
+        true,
+        matches!(environment, EnvironmentSource::HdrMap(_)),
+        None,
+    )
+}
+
+/// [`trace_spectral_ray`] for a stone with tools.
+///
+/// `geom.tools` are subtracted from the polyhedron `geom.planes` define. With no tools
+/// and an empty `fluorescence` it is [`trace_spectral_ray`], bit for bit; the plane-only
+/// entry points stay as they are so no caller has to change.
+///
+/// Builds the `PlanesSoA32` arena fresh, like [`trace_spectral_ray`]; a batch caller
+/// should use [`trace_spectral_ray_with_finish_soa_geom`].
+#[expect(
+    clippy::too_many_arguments,
+    reason = "see trace_spectral_ray's own reason"
+)]
+#[must_use]
+pub fn trace_spectral_ray_geom(
+    initial_ray: Ray,
+    geom: StoneGeometry<'_>,
+    material: &GemMaterial,
+    fluorescence: &Fluorescence,
+    max_bounces: u32,
+    environment: EnvironmentSource<'_>,
+    rng_seed: u32,
+    hero_rand: f32,
+    primary_hit_out: Option<&mut Option<HitRecord>>,
+) -> Vec3 {
+    let plane_soa = build_plane_soa(geom.planes);
+    trace_spectral_ray_with_finish_soa_geom(
+        initial_ray,
+        geom,
+        &plane_soa,
+        &[],
+        material,
+        fluorescence,
+        max_bounces,
+        environment,
+        rng_seed,
+        hero_rand,
+        primary_hit_out,
+    )
+}
+
+/// [`trace_spectral_ray_with_finish_soa`] for a stone with tools.
+///
+/// `plane_soa` is built
+/// from `geom.planes` alone (tools have no arena: the kernel scans them directly), and a
+/// tool facet `k` has finish index `planes.len() + k`, which `facet_finishes` leaves
+/// polished unless it says otherwise.
+///
+/// `fluorescence` rides beside `material` the way the tools ride beside the planes: an
+/// empty one (see [`Fluorescence::none`]) is this function's old behaviour bit for bit,
+/// with no extra RNG draw; a non-empty one traces single-wavelength paths with the
+/// in-medium fluorescence vertex (see `inner`'s module doc and `optics::fluorescence`).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "see trace_spectral_ray_with_finish_soa's own reason"
+)]
+#[must_use]
+pub fn trace_spectral_ray_with_finish_soa_geom(
+    initial_ray: Ray,
+    geom: StoneGeometry<'_>,
+    plane_soa: &crate::simd::PlanesSoA32,
+    facet_finishes: &[FacetFinish],
+    material: &GemMaterial,
+    fluorescence: &Fluorescence,
+    max_bounces: u32,
+    environment: EnvironmentSource<'_>,
+    rng_seed: u32,
+    hero_rand: f32,
+    primary_hit_out: Option<&mut Option<HitRecord>>,
+) -> Vec3 {
+    inner::trace_spectral_ray_inner_geom(
+        initial_ray,
+        geom.planes,
+        geom.tools,
+        plane_soa,
+        facet_finishes,
+        material,
+        fluorescence,
         max_bounces,
         environment,
         rng_seed,

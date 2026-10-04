@@ -1,0 +1,27 @@
+# sample: peridot Fo90Fa10
+# host: forsterite-fayalite (Pbnm); alpha || b, gamma || a
+# composition: FeO ~9.25 wt%
+# units: lambda_nm; alpha in cm^-1, Napierian (T = exp(-alpha*L), L in cm)
+# path_cm: 0.50
+# source: research-2026-10-polarized-spectra.md section 4 "Napierian alpha" table (user-delivered, secondary, unverified; sparse 19-point grid)
+# lab: alpha_par_b | D65 | 0.5 | 78.5 | -18.4 | 42.1
+lambda_nm,alpha_par_b,gamma_par_a
+350,18.50,14.20
+370,10.40,7.90
+400,4.10,3.10
+425,2.10,1.60
+450,1.75,1.25
+475,1.15,0.85
+500,0.75,0.55
+520,0.58,0.42
+545,0.65,0.45
+585,0.92,0.62
+605,1.18,0.78
+635,1.60,1.05
+660,2.10,1.40
+683.5,2.65,1.80
+740,3.80,2.60
+800,5.60,3.90
+850,7.90,5.40
+950,11.20,7.60
+1050,13.80,9.20

@@ -64,7 +64,12 @@ pub fn render_cut_diagram(
         symmetry_order: design.meta.symmetry_order,
         mirror: design.meta.mirror,
     };
-    let frame = diagram2d::render_diagram(&mesh, &config, &DiagramStyle::default());
+    let mut style = DiagramStyle::default();
+    let facet_map = indicatrix_solid::facet_map::FacetMap::from_design(design, solved);
+    style.facet_labels = (0..facet_map.facet_count())
+        .map(|id| facet_map.facet_label(id))
+        .collect();
+    let frame = diagram2d::render_diagram(&mesh, &config, &style);
     let png_bytes = encode_png(frame.width, frame.height, &frame.color).ok()?;
     Some(DiagramImage {
         width: frame.width,
