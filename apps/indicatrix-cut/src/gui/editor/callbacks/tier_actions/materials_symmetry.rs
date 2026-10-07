@@ -9,6 +9,7 @@ use std::{
 };
 
 use indicatrix_cut_core::Edit;
+use indicatrix_editor::loading::eval_number;
 use slint::{ComponentHandle, Model, SharedString};
 
 use crate::{
@@ -16,11 +17,8 @@ use crate::{
     bridge::render_thread::RenderContext,
     gui::{
         editor::{
-            guide,
-            state::{
-                EditorState, body_color_from_index, parse_design_material_form,
-                tiers_incomplete_under_proposed_symmetry,
-            },
+            body_color_combo, guide,
+            state::{EditorState, tiers_incomplete_under_proposed_symmetry},
             view::{SolidLastSolved, refresh_editor_panel_stale, submit_preview_replan},
         },
         show_toast,
@@ -33,13 +31,28 @@ use crate::{
 // `super::tests` exercises.
 pub(super) use indicatrix_editor::loading::ri_override_for_material_pick;
 
+/// The Symmetry Order field: a positive whole number, or arithmetic that works out to one
+/// (`4*2`). `None` for anything else (text that is no number, a fraction, zero, a negative
+/// number). A plain whole number reads exactly as it always did.
+fn symmetry_order_from_text(text: &str) -> Option<u32> {
+    let trimmed = text.trim();
+    if let Ok(order) = trimmed.parse::<u32>() {
+        return (order >= 1).then_some(order);
+    }
+    let value = eval_number(trimmed, None).ok()?;
+    let whole = value.round();
+    ((value - whole).abs() < 1e-9 && (1.0..=f64::from(u32::MAX)).contains(&whole))
+        .then_some(whole as u32)
+}
+
 /// The design settings panel's material combo + RI override field + color combo --
-/// applies [`Edit::SetMaterial`] via [`parse_design_material_form`], reading the combo's
+/// applies [`Edit::SetMaterial`] via [`body_color_combo::material_for_apply`] (the
+/// material parse of `parse_design_material_form`), reading the combo's
 /// current option list from `editor_material_combo_options` (pushed fresh every
 /// refresh, so this always parses against the SAME list the user actually saw). The
 /// color combo is authoritative: its index becomes the selection's
-/// `body_color_override` through [`body_color_from_index`] (`0` = the material's
-/// own color).
+/// `body_color_override` (`0` = the material's own color; the trailing "Custom" entry,
+/// present only for a triple that matches no preset, keeps the design's own triple).
 pub(in crate::gui::editor) fn setup_apply_design_material_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -64,15 +77,14 @@ pub(in crate::gui::editor) fn setup_apply_design_material_callback(
                 .map(|s| s.to_string())
                 .collect();
             let mut st = state.borrow_mut();
-            match parse_design_material_form(
+            match body_color_combo::material_for_apply(
                 combo_index,
                 &ri_override_text,
                 &options,
                 &st.design.material,
+                body_color_index,
             ) {
-                Ok(material) => {
-                    let mut material =
-                        material.with_body_color(body_color_from_index(body_color_index));
+                Ok(mut material) => {
                     // A plain material
                     // pick (no typed RI override -- that path is left alone, it
                     // is an explicit choice) must not silently change what the
@@ -214,16 +226,13 @@ pub(in crate::gui::editor) fn setup_apply_symmetry_callback(
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            let symmetry_order: u32 = match symmetry_order_text.trim().parse() {
-                Ok(v) if v >= 1 => v,
-                _ => {
-                    show_toast(
-                        &ui,
-                        "Symmetry order must be a positive whole number.",
-                        "error",
-                    );
-                    return;
-                }
+            let Some(symmetry_order) = symmetry_order_from_text(&symmetry_order_text) else {
+                show_toast(
+                    &ui,
+                    "Symmetry order must be a positive whole number.",
+                    "error",
+                );
+                return;
             };
             let mut st = state.borrow_mut();
             let gear_teeth = st.design.meta.gear_teeth;
@@ -267,16 +276,11 @@ pub(in crate::gui::editor) fn setup_apply_symmetry_callback(
             // An unparsable/zero symmetry order can never be applied (see the
             // real `on_apply_symmetry` handler's own validation above) -- no
             // preview to show rather than a stale or misleading one.
-            let Ok(symmetry_order) = symmetry_order_text.trim().parse::<u32>() else {
+            let Some(symmetry_order) = symmetry_order_from_text(&symmetry_order_text) else {
                 ui.global::<EditorModel>()
                     .set_symmetry_preview_text(String::new().into());
                 return;
             };
-            if symmetry_order == 0 {
-                ui.global::<EditorModel>()
-                    .set_symmetry_preview_text(String::new().into());
-                return;
-            }
             let st = state_preview.borrow();
             let incomplete =
                 tiers_incomplete_under_proposed_symmetry(&st.design, symmetry_order, mirror);
@@ -290,4 +294,30 @@ pub(in crate::gui::editor) fn setup_apply_symmetry_callback(
                 .set_symmetry_preview_text(text.into());
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::symmetry_order_from_text;
+
+    #[test]
+    fn a_plain_whole_number_reads_as_before() {
+        assert_eq!(symmetry_order_from_text("8"), Some(8));
+        assert_eq!(symmetry_order_from_text("  4 "), Some(4));
+        assert_eq!(symmetry_order_from_text("1"), Some(1));
+    }
+
+    #[test]
+    fn arithmetic_that_works_out_to_a_whole_number_is_accepted() {
+        assert_eq!(symmetry_order_from_text("4*2"), Some(8));
+        assert_eq!(symmetry_order_from_text("(3 + 1) * 2"), Some(8));
+        assert_eq!(symmetry_order_from_text("24 / 4"), Some(6));
+    }
+
+    #[test]
+    fn zero_fractions_negatives_and_text_are_refused() {
+        for text in ["0", "-4", "4.5", "9 / 2", "0 * 5", "abc", "", "4 +", "1e12"] {
+            assert_eq!(symmetry_order_from_text(text), None, "{text:?}");
+        }
+    }
 }

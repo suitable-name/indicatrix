@@ -182,16 +182,21 @@ pub use tilt::{
 ///     (`indicatrix::optics::fluorescence::Fluorescence`, the material's emitters; always
 ///     present on the wire, an empty `Vec` of emitters for a non-fluorescent material).
 ///     A scene with fluorescence or a UV lamp is traced on the CPU only.
-pub const PROTOCOL_VERSION: u16 = 20;
+/// 21: `SceneState::head_shadow_deg` appended (`f32`, the viewer's head-shadow radius of
+///     the lit lighting presets; `0.0` off, default `16.0`).
+/// 22: lighting wave. `LightingPreset::{DaylightSun, Aset, ShopLights, WindowDaylight,
+///     WhiteTray, IlluminantA}` appended (enum indices 9 to 14; `SceneState` carries the
+///     enum), and `LightingModel::{Aset, DaylightSun}` (GPU model ids 4 and 5) added.
+pub const PROTOCOL_VERSION: u16 = 22;
 
 #[cfg(test)]
 mod tests {
     #[test]
     /// Pins the constant so a bump is always a deliberate, reviewed edit.
     ///
-    /// 20: fluorescence and UV lamps -- `SceneState::fluorescence` and the two appended
-    /// `LightingPreset` variants (see the constant's history).
+    /// 21: `SceneState::head_shadow_deg` (see the constant's history).
+    /// 22: lighting wave (new `LightingPreset` and `LightingModel` variants).
     fn protocol_version_matches_constant() {
-        assert_eq!(super::PROTOCOL_VERSION, 20);
+        assert_eq!(super::PROTOCOL_VERSION, 22);
     }
 }

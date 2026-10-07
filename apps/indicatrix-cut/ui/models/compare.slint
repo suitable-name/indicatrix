@@ -13,6 +13,21 @@
 //   comparison pane embedded in the Retarget dialog (`CompareView`) -- the same
 //   image/label/status/switch properties and view callbacks as the window's
 //   instance, plus `embedded_open` and the two embedded-session callbacks.
+
+// One row of the optical-figures strip in the pop-out window: a figure for the
+// "before" and the "after" stone and the change between them. `tone` is 0 for
+// "about the same", 1 for a change for the better, 2 for a change for the worse (what
+// counts as better depends on the figure: less windowing is better, more
+// brilliance is better).
+export struct CompareMetricRow {
+    label: string,
+    before: string,
+    after: string,
+    change: string,
+    verdict: string,
+    tone: int,
+}
+
 export global CompareModel {
     // Mirrors whether this instance's surface is showing a live session -- set by
     // Rust (the window's instance: the pop-out window; the main window's: the
@@ -45,6 +60,25 @@ export global CompareModel {
     in-out property <length> image_width: 0px;
     in-out property <length> image_height: 0px;
 
+    // The optical-figures strip (pop-out window only; see `compare_metrics_strip.slint`).
+    // Empty `metric_rows` while the sides are still solving or when a side has no figures
+    // (`metric_note` says why).
+    in property <[CompareMetricRow]> metric_rows;
+    // The sentences about what changed, one per line.
+    in property <string> metric_summary;
+    // A dimmed line: why there are no figures, or why the tilt average failed.
+    in property <string> metric_note;
+    // The "Tilt average" button works (both sides have figures, no run is going).
+    in property <bool> tilt_available: false;
+    // A tilt average is being computed; `tilt_progress` runs from 0 to 1.
+    in property <bool> tilt_running: false;
+    in property <float> tilt_progress: 0.0;
+    // The tilt averages are in the table.
+    in property <bool> tilt_done: false;
+    // Starts / cancels the tilt average (a few seconds of work on a worker thread).
+    callback tilt_requested();
+    callback tilt_cancelled();
+
     // Drag in logical pixels (orbits the ONE camera both sides share).
     callback orbit(float, float);
     // Wheel delta in logical pixels.
@@ -61,6 +95,13 @@ export global CompareModel {
     callback discard();
     // Closes; a pending proposal/result stays pending.
     callback close();
+    // "Compare against" picker (pop-out window, Optimize comparison only): 0 = the
+    // current design, 1 = the original held before the last Retarget. Offered only
+    // while `reference_available` (a before-retarget snapshot exists).
+    in-out property <int> reference_index: 0;
+    in property <[string]> reference_options: ["Current design"];
+    in property <bool> reference_available: false;
+    callback reference_changed(int);
     callback mode_changed(int);
     callback renderer_changed(int);
     // Debounced (~100 ms) after the image slot's size settles.

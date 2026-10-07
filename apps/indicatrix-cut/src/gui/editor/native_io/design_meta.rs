@@ -15,7 +15,7 @@
 
 use crate::{
     bridge::export_thread::filename_template::civil_from_unix_seconds,
-    gui::editor::state::DesignFileExtras,
+    gui::editor::state::{DesignFileExtras, fresh_design_uuid},
 };
 use indicatrix_cut_core::native::{
     AttachmentBlob, AttachmentRole, DesignMetadata, LEGACY_NATIVE_EXTENSION_SUFFIX,
@@ -29,10 +29,7 @@ use indicatrix_vault::{
 };
 use std::{
     collections::BTreeMap,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -63,45 +60,14 @@ pub(super) fn iso8601_utc(unix_seconds: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
-/// A random version-4 UUID as 8-4-4-4-12 lowercase hexadecimal.
+/// A random version-4 UUID as 8-4-4-4-12 lowercase hexadecimal -- the id a Save gives a
+/// design that somehow reaches it without one.
 ///
-/// The workspace carries no UUID or random-number crate, so the 122 random bits come from
-/// the standard library's per-process random hasher keys, mixed with the clock, the
-/// process id and a counter so two ids made in one nanosecond still differ. The id only
-/// has to be unique, not unguessable.
+/// Every design opened or created in the editor already has its UUID by then (see
+/// `state::design_identity`), so this only fires for a state built without going through
+/// those paths.
 pub(super) fn new_design_id() -> String {
-    use std::{
-        fmt::Write as _,
-        hash::{BuildHasher, Hasher, RandomState},
-    };
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as u64);
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mut bytes = [0u8; 16];
-    for (half, chunk) in bytes.chunks_mut(8).enumerate() {
-        let mut hasher = RandomState::new().build_hasher();
-        hasher.write_u64(nanos);
-        hasher.write_u32(std::process::id());
-        hasher.write_u64(counter);
-        hasher.write_usize(half);
-        chunk.copy_from_slice(&hasher.finish().to_be_bytes());
-    }
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex = bytes.iter().fold(String::new(), |mut acc, b| {
-        let _ = write!(acc, "{b:02x}");
-        acc
-    });
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[0..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..32]
-    )
+    fresh_design_uuid()
 }
 
 /// Overlays what the row says onto `meta`: the fields the library edits (title,

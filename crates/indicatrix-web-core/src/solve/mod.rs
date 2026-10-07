@@ -51,6 +51,7 @@ use serde::{Deserialize, Serialize};
 use crate::scene::{PlaneData, planes_to_data};
 
 mod analysis;
+mod body_color;
 mod optical;
 #[cfg(test)]
 mod tests;
@@ -60,6 +61,7 @@ pub use analysis::{
     ProgressReport, RetargetModeData, RetargetParams, RetargetResultData, RetargetRowData,
     RiskData, SolveHooks, run_optimize, run_retarget,
 };
+pub use body_color::{BodyColorParams, BodyColorResultData, run_body_color};
 pub use optical::{
     MetricsParams, MetricsResultData, ScoredUnder, TiltAxisData, TiltParams, TiltResultData,
     run_metrics, run_metrics_with_map, run_tilt, sweep_fraction, sweep_status, tilt_lighting_note,
@@ -104,6 +106,13 @@ pub enum SolveRequest {
     Tilt {
         /// The stone, material and light.
         params: TiltParams,
+    },
+    /// The path-aware L*C*h body-colour solve of the Design settings colour editor (no design
+    /// needed: the message's `design_toml` is ignored; the answer is
+    /// [`SolveResponse::BodyColor`]).
+    BodyColor {
+        /// The typed colour and the reference path.
+        params: BodyColorParams,
     },
 }
 
@@ -267,6 +276,8 @@ pub enum SolveResponse {
     Metrics(MetricsResultData),
     /// A finished [`SolveRequest::Tilt`] sweep (a stopped one is [`Self::Cancelled`]).
     TiltCurves(TiltResultData),
+    /// A finished [`SolveRequest::BodyColor`] solve (a superseded one is [`Self::Cancelled`]).
+    BodyColor(BodyColorResultData),
 }
 
 /// Encodes `design` for [`handle_solve`]: the self-contained native file, as the
@@ -321,9 +332,10 @@ pub fn handle_solve_with(
         Err(message) => SolveResponse::InvalidDesign { message },
     };
     match request {
-        // These two carry their own inputs and never look at the design.
+        // These three carry their own inputs and never look at the design.
         SolveRequest::Metrics { params } => run_metrics(&mut None, params),
         SolveRequest::Tilt { params } => run_tilt(params, hooks),
+        SolveRequest::BodyColor { params } => run_body_color(params, hooks.cancel),
         SolveRequest::Solve => with_design(&|design| solve_design(design, hooks.cancel)),
         SolveRequest::Optimize {
             params,

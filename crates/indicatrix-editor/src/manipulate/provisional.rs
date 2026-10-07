@@ -24,7 +24,9 @@ use indicatrix::{
     geometry::meet_solver::{MeetConstraint, SolveStrategy, SolvedTier},
     optics::raytracer::Camera,
 };
-use indicatrix_cut_core::{ConstraintTier, Design, Edit, expected_orbit, rotate_indices};
+use indicatrix_cut_core::{
+    ConstraintTier, Design, Edit, design::TierRef, expected_orbit, rotate_indices,
+};
 use indicatrix_solid::{facet_map::FacetMap, preview::FrameGeometry};
 use std::{collections::BTreeSet, rc::Rc, sync::Arc};
 
@@ -93,11 +95,34 @@ pub fn surviving_facets(
     })
 }
 
-/// Whether the Cut slider (`cutoff`, `-1` for the whole design) shows fewer tiers than
-/// reach `tier_index`, so the mesh on screen does not contain that tier at all.
+/// The Cut slider's value for the rough, before any tier is cut: `-1` is the whole design,
+/// `n >= 0` the stone after the steps up to `n`.
+pub const CUT_ROUGH: i32 = -2;
+
+/// Whether the Cut slider shows fewer steps than reach the cutting step `step`.
+///
+/// `cutoff` is `-1` for the whole design and [`CUT_ROUGH`] for the rough alone. A step it
+/// stops short of is not in the mesh on screen at all; at the rough every step is hidden.
+///
+/// `step` is a position in the cutting order ([`tier_step`]), the thing the slider counts,
+/// NOT a tier's stored index: once concave tiers exist the cutting order interleaves them
+/// with the flat tiers, so a flat tier's step is later than its stored index.
 #[must_use]
-pub fn cut_hides_tier(cutoff: i32, tier_index: usize) -> bool {
-    usize::try_from(cutoff).is_ok_and(|through| through < tier_index)
+pub fn cut_hides_tier(cutoff: i32, step: usize) -> bool {
+    cutoff == CUT_ROUGH || usize::try_from(cutoff).is_ok_and(|through| through < step)
+}
+
+/// The cutting step that cuts the flat tier `tier_index` of `design`.
+///
+/// Its position in [`Design::preview_steps`], the order the Cut slider walks. For a design
+/// without concave tiers that is the stored index itself. `None` when the design has no such
+/// tier.
+#[must_use]
+pub fn tier_step(design: &Design, tier_index: usize) -> Option<usize> {
+    design
+        .preview_steps()
+        .iter()
+        .position(|step| *step == TierRef::Flat(tier_index))
 }
 
 /// Whether Keep may commit a provisional tier with `surviving` facets on the stone: a
@@ -567,7 +592,9 @@ pub fn resting_hint(
     symmetric: bool,
 ) -> String {
     provisional
-        .filter(|p| cut_hides_tier(cutoff, p.tier_index))
+        .filter(|p| {
+            tier_step(&p.design, p.tier_index).is_some_and(|step| cut_hides_tier(cutoff, step))
+        })
         .map(|_| text::SLICE_CUT_SLIDER_HINT.to_string())
         .or_else(|| provisional.map(ProvisionalSlice::hint))
         .or_else(|| slice_mode.then(|| text::slice_mode_hint(symmetric)))

@@ -53,8 +53,31 @@ only under WAL -- `synchronous = NORMAL`. Tables:
 | `diagram_solid_hull` | Cached finished-solid convex hull (packed little-endian `f32` vertex triples, BLOB last) for the Rough Planner, keyed by `entry_id`, with a `hull_version`; cascade-deleted with the entry |
 | `saved_rough_plans` | Saved Rough Planner plans: `name`, `created_at`/`updated_at`, and a versioned text `payload`; not tied to any entry |
 | `diagram_planner_exclusions` | The designs the Rough Planner leaves out of its candidate set: one row per excluded `entry_id`, so the mark is the row's presence, cascade-deleted with the entry. Written by `set_planner_excluded` without touching `diagram_entries.updated_at`, and read back with `planner_excluded_ids` and `planner_excluded_among`; independent of the library's `ignored` flag |
+| `design_variants` | Saved variants of a design: `name`, optional `parent_variant_id` (`ON DELETE SET NULL`, so deleting a variant detaches its children), `created_at`, `note`, the design as its `.indicatrix` text, and an optional PNG preview (BLOB last). Keyed by `design_uuid`, indexed on it, with **no** foreign key to `diagram_entries` — see "Per-design side data" below. Written by `save_variant`, read with `list_variants` (no text, no preview), `load_variant` and `variant_thumbnail`, edited with `rename_variant`/`set_variant_note`/`delete_variant` |
+| `design_cut_progress` | The cutting steps a cutter marked done: `(design_uuid, step_key)` is the primary key, `step_signature` fingerprints the step's cutting values when it was marked (so a screen can show a stale mark), `done_at` is Unix seconds. `mark_step_done`, `unmark_step`, `cut_progress`, `clear_cut_progress` |
+| `design_lighting` | At most one row per design: `preset_name`, an opaque `settings_json` text the application writes (this crate does not know the lighting model) and `updated_at`. `set_design_lighting`, `design_lighting`, `clear_design_lighting` |
 | `tags` / `diagram_tag_links` | A flat, case-insensitive tag set and its many-to-many join table |
 | `library_mirror_state` | Pull-mirror sync bookkeeping, keyed by `url`, including the `deleted_locally` tombstone — see "Mirror-state semantics" below |
+
+### Per-design side data
+
+`design_variants`, `design_cut_progress` and `design_lighting` hold data about a design
+that the design file itself deliberately does not carry. They are keyed by the design's
+**UUID** (`[meta].id` of the `.indicatrix` file), not by `entry_id`: a design opened from
+disk that was never catalogued has no entry, but every design has a UUID, and the UUID is
+the same on every machine and across Save As. A copy of a design therefore keeps its side
+data. There is no foreign key to `diagram_entries`: deleting an entry does not delete the
+side data of a design that lives on as a file, and none of these writes touches
+`diagram_entries.updated_at` (the revision stamp the caches key on).
+
+`model::design_key` is the single place the key is defined: `normalize_design_uuid` (trim,
+lowercase, require `8-4-4-4-12` hexadecimal) is applied by every function that takes a
+UUID, which refuses anything else, and `catalogue_design_uuid(url)` derives a stable
+version-5 UUID (RFC 4122, URL namespace, so `uuid5(NAMESPACE_URL, url)` in any tool) for a
+design that exists only as a catalogue entry. Once such a design is saved to a file, the
+UUID is written to the file's `[meta].id` and the file's own id wins from then on.
+
+All of it is local to the computer holding the database file.
 
 ### Blob columns last
 
@@ -88,7 +111,8 @@ open — `create_tables_if_not_exist`, then (in order) `migrate_numeric_columns`
 `migrate_diagram_entries_provenance`, `migrate_diagram_previews_table`,
 `migrate_diagram_tilt_curves_table`, `migrate_diagram_solid_extents_table`,
 `migrate_diagram_solid_hull_table`, `migrate_saved_rough_plans_table`,
-`migrate_planner_exclusion_table`,
+`migrate_planner_exclusion_table`, `migrate_design_variants_table`,
+`migrate_design_cut_progress_table`, `migrate_design_lighting_table`,
 `migrate_mirror_state_tombstone_column`, `migrate_prune_tilt_curve_aggregate_columns`,
 `migrate_concave_columns` (the four concave columns above, each gated on its own `column_exists`, one transaction; it must precede the rebuild, which names `diagram_details`' columns),
 `migrate_blob_columns_last`, `migrate_tag_tables`, and finally
@@ -116,7 +140,8 @@ Which migrations are transactional:
   provenance).
 - Idempotent but not wrapped in a transaction: the `CREATE TABLE IF NOT EXISTS`
   migrations for the side tables (previews, tilt curves, solid extents, solid hull,
-  saved plans, planner exclusions, tags), `migrate_search_indexes` and
+  saved plans, planner exclusions, the per-design variants/progress/lighting tables, tags),
+  `migrate_search_indexes` and
   `migrate_drop_unused_designer_index` (`CREATE/DROP INDEX IF EXISTS`), and
   `migrate_shape_vocabulary` (`CREATE TABLE IF NOT EXISTS` + `INSERT OR IGNORE`) — see
   "Shape vocabulary" below.

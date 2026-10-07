@@ -2,6 +2,7 @@ import { Theme } from "../../theme.slint";
 import { ScrollView, LineEdit } from "std-widgets.slint";
 import { RoughPlanModel, SavedRoughPlanRow } from "../../models/rough_plan.slint";
 import { RoughPill, BackChevron } from "fields.slint";
+import { TipBox } from "../tip_box.slint";
 
 // One saved plan row in the saved plans list
 component SavedPlanCard inherits Rectangle {
@@ -36,6 +37,7 @@ component SavedPlanCard inherits Rectangle {
                 color: Theme.text-primary;
                 vertical-alignment: center;
                 overflow: elide;
+                accessible-role: AccessibleRole.text;
             }
 
             Text {
@@ -51,25 +53,31 @@ component SavedPlanCard inherits Rectangle {
             spacing: 6px;
             alignment: center;
 
-            LineEdit {
+            TipBox {
                 horizontal-stretch: 1;
-                min-width: 0px;
-                text <=> root.new_name;
-                init => {
-                    self.focus();
-                    self.select-all();
+                hint: "The new name of the plan. Enter keeps it.";
+                LineEdit {
+                    min-width: 0px;
+                    text <=> root.new_name;
+                    accessible-label: "New name of " + root.plan.name;
+                    init => {
+                        self.focus();
+                        self.select-all();
+                    }
+                    accepted => { RoughPlanModel.rename_saved(root.plan.id, root.new_name); }
                 }
-                accepted => { RoughPlanModel.rename_saved(root.plan.id, root.new_name); }
             }
 
             RoughPill {
                 text: "Save";
+                hint: "Keep the new name. Enter does the same.";
                 active: true;
                 clicked => { RoughPlanModel.rename_saved(root.plan.id, root.new_name); }
             }
 
             RoughPill {
                 text: "Cancel";
+                hint: "Keep the old name.";
                 clicked => {
                     root.new_name = root.plan.name;
                     root.renaming = false;
@@ -93,6 +101,8 @@ component SavedPlanCard inherits Rectangle {
             // Opening replaces the model and the results, which a running plan is using.
             if !root.confirming_delete: RoughPill {
                 text: "Open";
+                hint: RoughPlanModel.running ? "Not while a plan is running. Wait for it to finish, or cancel it."
+                    : "Open this plan: its rough, cuts, settings and layouts replace the ones in the window.";
                 active: true;
                 enabled: !RoughPlanModel.running;
                 clicked => { RoughPlanModel.open_saved(root.plan.id); }
@@ -100,6 +110,7 @@ component SavedPlanCard inherits Rectangle {
 
             if !root.confirming_delete && !root.renaming: RoughPill {
                 text: "Rename";
+                hint: "Give this plan another name.";
                 clicked => {
                     root.new_name = root.plan.name;
                     root.renaming = true;
@@ -108,11 +119,13 @@ component SavedPlanCard inherits Rectangle {
 
             if !root.confirming_delete: RoughPill {
                 text: "Export";
+                hint: "Save this plan as a file you can keep, send or import again later.";
                 clicked => { RoughPlanModel.export_saved(root.plan.id); }
             }
 
             if !root.confirming_delete: RoughPill {
                 text: "Delete";
+                hint: "Delete this saved plan. You are asked to confirm first.";
                 clicked => { root.confirming_delete = true; }
             }
 
@@ -125,6 +138,7 @@ component SavedPlanCard inherits Rectangle {
 
             if root.confirming_delete: RoughPill {
                 text: "Yes, delete";
+                hint: "Delete this saved plan for good.";
                 clicked => {
                     RoughPlanModel.delete_saved(root.plan.id);
                     root.confirming_delete = false;
@@ -133,6 +147,7 @@ component SavedPlanCard inherits Rectangle {
 
             if root.confirming_delete: RoughPill {
                 text: "Cancel";
+                hint: "Keep this plan.";
                 clicked => { root.confirming_delete = false; }
             }
         }
@@ -154,12 +169,15 @@ export component SavedList inherits VerticalLayout {
             height: 20px;
             border-radius: 10px;
             border-width: back_focus.has-focus ? 2px : 1px;
-            border-color: back_focus.has-focus ? Theme.accent-cyan : Theme.border-control;
+            border-color: back_focus.has-focus ? Theme.accent-cyan-hover : Theme.border-control;
             background: back_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
 
-            accessible-role: button;
+            accessible-role: AccessibleRole.button;
             accessible-label: "Back to the results";
+            accessible-description: "Close the saved plans and show the results again.";
             accessible-action-default => { RoughPlanModel.saved_open = false; }
+
+            Tooltip { text: @markdown("Close the saved plans and show the results again."); }
 
             back_focus := FocusScope {
                 key-pressed(event) => {
@@ -207,6 +225,8 @@ export component SavedList inherits VerticalLayout {
 
         RoughPill {
             text: "Import\u{2026}";
+            hint: RoughPlanModel.running ? "Not while a plan is running. Wait for it to finish, or cancel it."
+                : "Load a plan from a file that Export wrote, and add it to this list.";
             enabled: !RoughPlanModel.running;
             clicked => { RoughPlanModel.import_saved(); }
         }

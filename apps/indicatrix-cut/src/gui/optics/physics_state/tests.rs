@@ -117,7 +117,11 @@ fn a_slider_drag_is_one_undo_step_committed_on_release() {
     );
     // Undoing again goes back before the add, not into the middle of the drag.
     assert!(s.undo());
-    assert!(s.recipe().unwrap().entries.is_empty());
+    assert_eq!(
+        s.recipe().unwrap().entries.len(),
+        0,
+        "back before the first add"
+    );
 }
 
 #[test]
@@ -174,7 +178,7 @@ fn switching_to_physics_solves_the_current_fantasy_color() {
     assert_eq!(s.solving_kind, Some(SolveKind::InitialFromFantasy));
     assert_eq!(
         job.target_lab,
-        colorMode::fantasy(fantasy).fantasy_target_lab()
+        ColorMode::fantasy(fantasy).fantasy_target_lab()
     );
     assert_eq!(job.host, s.host_id);
     assert!(s.solving);
@@ -191,8 +195,8 @@ fn saving_in_fantasy_mode_keeps_the_recipe() {
     s.add_item(&id, cat());
     s.set_mode(false, Some([0.1, 0.2, 0.3]), cat());
     let json = s.mode_json();
-    let mode = colorMode::from_json(&json).expect("both payloads are saved");
-    assert_eq!(mode.active, Activecolor::Fantasy);
+    let mode = ColorMode::from_json(&json).expect("both payloads are saved");
+    assert_eq!(mode.active, ActiveColor::Fantasy);
     assert_eq!(mode.fantasy_rgb, [0.1, 0.2, 0.3]);
     assert!(
         mode.last_recipe
@@ -354,12 +358,12 @@ fn the_reference_path_defaults_to_one_and_a_half_girdles() {
 fn swatches_come_from_the_stored_resolved_bands() {
     // A recipe whose entries say "nothing" but whose stored bands are a ruby's: rendering uses
     // the stored bands, never a silent re-resolve.
-    let mut ruby = colorRecipe::new("corundum", cat().data_version);
+    let mut ruby = ColorRecipe::new("corundum", cat().data_version);
     ruby.set_amount("Cr", 0.3);
     refresh(&mut ruby, cat());
-    let mut stored = colorRecipe::new("corundum", cat().data_version);
+    let mut stored = ColorRecipe::new("corundum", cat().data_version);
     stored.resolved_bands = ruby.resolved_bands.clone();
-    let json = colorMode::physics(stored, [0.0; 3]).to_json();
+    let json = ColorMode::physics(stored, [0.0; 3]).to_json();
     let s = PhysicsState::open(&json, [0.0; 3], "x", 0.0, cat(), 0);
     let swatch = s.view(cat()).d65.expect("swatches").unpol;
     let tensor = ruby.resolved_bands.to_tensor();
@@ -376,12 +380,12 @@ fn swatches_come_from_the_stored_resolved_bands() {
 
 #[test]
 fn an_older_data_version_shows_the_badge_and_updating_is_explicit() {
-    let mut recipe = colorRecipe::new("corundum", cat().data_version.saturating_sub(1));
+    let mut recipe = ColorRecipe::new("corundum", cat().data_version.saturating_sub(1));
     recipe.set_amount("Cr", 0.3);
     refresh(&mut recipe, cat());
     recipe.data_version = cat().data_version.saturating_sub(1);
     let before = recipe.resolved_bands.clone();
-    let json = colorMode::physics(recipe, [0.0; 3]).to_json();
+    let json = ColorMode::physics(recipe, [0.0; 3]).to_json();
     let mut s = PhysicsState::open(&json, [0.0; 3], "x", 0.0, cat(), 0);
     let view = s.view(cat());
     assert!(view.data_updated);
@@ -422,9 +426,159 @@ fn rows_carry_confidence_and_sources() {
     s.add_item(&id, cat());
     let view = s.view(cat());
     let row = &view.rows[0];
-    assert!(!row.sources.is_empty());
-    assert!(!row.confidence.is_empty());
+    assert_ne!(row.sources.len(), 0, "the row names its sources");
+    assert_ne!(row.confidence.len(), 0, "the row states its confidence");
     assert!(row.amount_text.contains(&row.unit));
+}
+
+/// A stored physics material: a ruby recipe with its stored bands and a fantasy color of its own.
+fn stored_physics_mode(fantasy_rgb: [f32; 3]) -> ColorMode {
+    let mut recipe = ColorRecipe::new("corundum", cat().data_version);
+    recipe.set_amount("Cr", 0.3);
+    refresh(&mut recipe, cat());
+    ColorMode::physics(recipe, fantasy_rgb)
+}
+
+#[test]
+fn the_color_area_view_follows_the_feature_and_the_mode() {
+    // (feature on, physics mode) -> view, plus what each view shows.
+    let fantasy = color_section_view(true, false);
+    let physics = color_section_view(true, true);
+    let fantasy_only = color_section_view(false, false);
+    let over_recipe = color_section_view(false, true);
+    assert_eq!(fantasy, ColorSectionView::Fantasy);
+    assert_eq!(physics, ColorSectionView::Physics);
+    assert_eq!(fantasy_only, ColorSectionView::FantasyOnly);
+    assert_eq!(over_recipe, ColorSectionView::FantasyOverRecipe);
+
+    // With the feature on: the toggle is there and exactly one of the two sections is.
+    assert!(fantasy.shows_mode_toggle() && fantasy.shows_fantasy_section());
+    assert!(!fantasy.shows_physics_section() && !fantasy.shows_recipe_note());
+    assert!(physics.shows_mode_toggle() && physics.shows_physics_section());
+    assert!(!physics.shows_fantasy_section() && !physics.shows_recipe_note());
+    // With the feature off: never the toggle or the recipe section, always the Fantasy
+    // controls (otherwise a physics material would have nothing editable).
+    for view in [fantasy_only, over_recipe] {
+        assert!(!view.shows_mode_toggle() && !view.shows_physics_section());
+        assert!(view.shows_fantasy_section());
+    }
+    // The note appears only over a physics recipe.
+    assert!(over_recipe.shows_recipe_note() && !fantasy_only.shows_recipe_note());
+}
+
+#[test]
+fn this_build_decides_the_view_with_its_own_feature_flag() {
+    assert_eq!(PHYSICS_COLOR_UI, cfg!(feature = "physical-color"));
+    assert_eq!(
+        color_section_view(PHYSICS_COLOR_UI, false).shows_mode_toggle(),
+        PHYSICS_COLOR_UI
+    );
+}
+
+#[test]
+fn opening_a_physics_material_and_saving_without_a_color_change_keeps_the_json() {
+    for fantasy_rgb in [[0.1, 0.2, 0.3], [0.0; 3]] {
+        let json = stored_physics_mode(fantasy_rgb).to_json();
+        let s = PhysicsState::open(&json, fantasy_rgb, "Ruby", 0.0, cat(), 0);
+        assert!(s.is_physics(), "the stored mode is kept as it is");
+        assert!(!s.is_dirty(), "opening is no change");
+        assert_eq!(
+            s.mode_json(),
+            json,
+            "what Save hands over is what was stored"
+        );
+        let view = s.view(cat());
+        assert!(view.active);
+        assert_eq!(view.mode_json, json);
+        // Hidden editor: the Fantasy controls plus the note, over the untouched recipe.
+        assert_eq!(
+            color_section_view(false, view.active),
+            ColorSectionView::FantasyOverRecipe
+        );
+    }
+}
+
+#[test]
+fn an_untouched_open_hands_back_the_stored_text_verbatim() {
+    // Awkward 16-17 digit amounts in a text that is not what `to_json` writes: neither may
+    // change while nothing was touched (a re-serialisation could move the last digit).
+    for i in 1..=200_u32 {
+        let mut recipe = ColorRecipe::new("corundum", cat().data_version);
+        recipe.set_amount("Cr", f64::from(i).sqrt() / 7.0);
+        let stored = ColorMode::physics(recipe, [0.1, 0.2, 0.3]);
+        let text = serde_json::to_string_pretty(&stored).expect("serialises");
+        let mut s = PhysicsState::open(&text, [0.1, 0.2, 0.3], "Ruby", 0.0, cat(), 0);
+        assert_eq!(s.mode_json(), text, "amount #{i}");
+        assert_eq!(s.view(cat()).mode_json, text);
+        if i == 1 {
+            // A real change is re-serialised; undoing it returns to the stored text.
+            s.set_strength(2.0, cat());
+            s.release();
+            assert_ne!(s.mode_json(), text);
+            assert_eq!(s.mode_json(), s.mode.to_json());
+            assert!(s.undo());
+            assert_eq!(s.mode_json(), text, "back at the opened state");
+        }
+    }
+}
+
+#[test]
+fn choosing_a_fixed_color_over_a_recipe_switches_to_fantasy_and_keeps_the_recipe() {
+    let stored = stored_physics_mode([0.1, 0.2, 0.3]);
+    let json = stored.to_json();
+    // "Clear" (all zero) is an explicit pick: it is never re-seeded from the recipe.
+    for pick in [[0.0; 3], [0.4, 0.5, 0.6]] {
+        let mut s = PhysicsState::open(&json, [0.1, 0.2, 0.3], "Ruby", 0.0, cat(), 0);
+        s.choose_fixed_color(Some(pick));
+        assert!(!s.is_physics());
+        assert!(s.is_dirty(), "a pick is a change");
+        assert_eq!(s.mode.fantasy_rgb, pick);
+        let saved = ColorMode::from_json(&s.mode_json()).expect("both payloads are saved");
+        assert_eq!(saved.active, ActiveColor::Fantasy);
+        assert_eq!(saved.fantasy_rgb, pick);
+        assert_eq!(
+            saved.last_recipe, stored.last_recipe,
+            "the recipe stays saved"
+        );
+        // The note is gone once the color is fixed.
+        assert_eq!(
+            color_section_view(false, s.view(cat()).active),
+            ColorSectionView::FantasyOnly
+        );
+    }
+}
+
+#[test]
+fn choosing_keep_over_a_recipe_seeds_a_fixed_color_from_it() {
+    let stored = stored_physics_mode([0.0; 3]);
+    let mut s = PhysicsState::open(&stored.to_json(), [0.0; 3], "Ruby", 0.0, cat(), 0);
+    s.choose_fixed_color(None);
+    assert!(!s.is_physics());
+    assert_ne!(
+        s.mode.fantasy_rgb, [0.0; 3],
+        "a payload that never had a color takes the recipe's nearest legacy color"
+    );
+    assert_eq!(s.mode.last_recipe, stored.last_recipe);
+}
+
+#[test]
+fn a_free_pick_over_a_recipe_switches_to_fantasy_and_keeps_the_recipe() {
+    let stored = stored_physics_mode([0.1, 0.2, 0.3]);
+    let mut s = PhysicsState::open(&stored.to_json(), [0.1, 0.2, 0.3], "Ruby", 0.0, cat(), 0);
+    s.set_fantasy_pick([0.2, 1.0, 2.0]);
+    let saved = ColorMode::from_json(&s.mode_json()).expect("the pick is saved");
+    assert_eq!(saved.active, ActiveColor::Fantasy);
+    assert_eq!(saved.fantasy_rgb, [0.2, 1.0, 2.0]);
+    assert_eq!(saved.last_recipe, stored.last_recipe);
+}
+
+#[test]
+fn the_data_confidence_banner_carries_no_symbol_glyph() {
+    // The warning sign is an icon drawn by the banner: the UI font has no glyph for it.
+    for text in cat().hosts.iter().filter_map(host_banner) {
+        assert!(!text.contains('\u{26a0}'), "{text}");
+        assert!(text.starts_with("Strengths uncalibrated"), "{text}");
+    }
 }
 
 #[test]
@@ -434,8 +588,8 @@ fn a_free_fantasy_pick_is_saved_even_without_a_recipe() {
     assert!(!s.is_dirty());
     s.set_fantasy_pick([0.2, 1.0, 2.0]);
     assert!(s.is_dirty());
-    let mode = colorMode::from_json(&s.mode_json()).expect("the pick is saved");
+    let mode = ColorMode::from_json(&s.mode_json()).expect("the pick is saved");
     assert_eq!(mode.fantasy_rgb, [0.2, 1.0, 2.0]);
     assert!(mode.last_recipe.is_none());
-    assert_eq!(mode.active, Activecolor::Fantasy);
+    assert_eq!(mode.active, ActiveColor::Fantasy);
 }

@@ -2,9 +2,11 @@
 //! the selected material, and everything else migrated into persistent storage.
 
 use super::{
+    head_shadow::{DEFAULT_HEAD_SHADOW_DEG, default_head_shadow_deg, deserialize_head_shadow_deg},
     local_compute::LocalComputeTarget,
     remote_endpoint::{LegacyWorkerMigration, RemoteEndpoint, migrate_legacy_workers},
     surface_glare::{DEFAULT_SURFACE_GLARE, default_surface_glare, deserialize_surface_glare},
+    ui_preferences::{UiMode, deserialize_ui_scale_percent, normalize_ui_scale_percent},
     worker::{LiveComputeTarget, LocalPreviewScale, WorkerSettings},
 };
 use crate::bridge::export_thread::DEFAULT_TEMPLATE as DEFAULT_EXPORT_FILENAME_TEMPLATE;
@@ -83,8 +85,12 @@ pub fn clamp_remote_batch_lanes(lanes: u32) -> u32 {
 }
 /// Default light yaw deg for new settings.
 pub const DEFAULT_LIGHT_YAW_DEG: f32 = 48.0;
-/// Default light pitch deg for new settings.
-pub const DEFAULT_LIGHT_PITCH_DEG: f32 = 54.0;
+/// Default light pitch deg for new settings: a near-overhead key, so the light tent's
+/// 20-40 deg key cone covers the zenith and the table reads as a soft patch.
+///
+/// The rig's fill sits at `0.65 x` the key pitch clamped to `0.15..=1.2` rad, so the
+/// fill is capped at 69 deg no matter how high the key goes.
+pub const DEFAULT_LIGHT_PITCH_DEG: f32 = 72.0;
 /// The light tent: the lit model whose ambient sits at middle grey with black cards for
 /// facet contrast, so an undialled-in render already reads like a photograph.
 pub const DEFAULT_LIGHTING_RIG: &str = "Light tent + black cards";
@@ -151,10 +157,14 @@ impl Backdrop {
         }
     }
 }
-/// Default camera yaw for new settings: the raytracer's shared default pose.
-pub const DEFAULT_CAMERA_YAW: f32 = DEFAULT_POSE.yaw;
-/// Default camera pitch for new settings: the raytracer's shared default pose.
-pub const DEFAULT_CAMERA_PITCH: f32 = DEFAULT_POSE.pitch;
+/// Default Live Render camera yaw for new settings. Deliberately NOT the raytracer's
+/// shared `DEFAULT_POSE` (catalogue previews and pin tests keep that one).
+pub const DEFAULT_CAMERA_YAW: f32 = 0.35;
+/// Default Live Render camera pitch for new settings: about 66 deg, near face-up with the
+/// table and the crown pattern both visible (a pure 90 deg view hides the crown).
+pub const DEFAULT_LIVE_CAMERA_PITCH: f32 = 1.15;
+/// Default camera pitch for new settings; see [`DEFAULT_LIVE_CAMERA_PITCH`].
+pub const DEFAULT_CAMERA_PITCH: f32 = DEFAULT_LIVE_CAMERA_PITCH;
 /// Default camera distance for new settings: the raytracer's shared default pose.
 pub const DEFAULT_CAMERA_DISTANCE: f32 = DEFAULT_POSE.distance;
 /// Default material for new settings.
@@ -280,6 +290,15 @@ pub struct AppSettings {
         deserialize_with = "deserialize_surface_glare"
     )]
     pub surface_glare: f32,
+    /// Angular radius in degrees of the viewer's head shadow on the lit lighting presets,
+    /// `0.0..=30.0` (`0.0` is off, `16.0` the default: a head at arm's length). Live view
+    /// and every export; the product-photography presets and an HDR map ignore it.
+    /// Limited when loaded (see [`super::clamp_head_shadow_deg`]).
+    #[serde(
+        default = "default_head_shadow_deg",
+        deserialize_with = "deserialize_head_shadow_deg"
+    )]
+    pub head_shadow_deg: f32,
     /// Inclusion/subsurface scattering amount: the Henyey-Greenstein `sigma_s`
     /// applied via `GemMaterial::with_scattering_amount` -- see `scattering_sigma_s`
     /// in `crates/indicatrix/src/optics/materials/mod.rs` for the `0.05`-`3.0` useful
@@ -340,6 +359,11 @@ pub struct AppSettings {
         deserialize_with = "deserialize_remote_batch_lanes"
     )]
     pub remote_batch_lanes: u32,
+    /// The Rough planner's "Scan plan time limit" in seconds: a plan of a mesh rough (a
+    /// scan) stops at this limit and shows the layouts found so far. `0` is no limit. See
+    /// `crate::plan_limit`; a file without the key loads the default.
+    #[serde(default = "default_plan_time_limit_secs")]
+    pub plan_time_limit_secs: u32,
     /// The remembered answer to the question asked after an import about generating
     /// catalogue previews (`ask` shows the question every time).
     #[serde(default)]
@@ -450,6 +474,77 @@ pub struct AppSettings {
     /// silences any other prompt or vice versa.
     #[serde(default)]
     pub suppressed_confirmations: BTreeSet<String>,
+    /// Which controls the interface shows: Simple or Advanced (one global switch, the
+    /// header pill and the Preferences dialog). A file without the key is an existing
+    /// install and loads [`UiMode::Advanced`] -- the interface exactly as it was; only a
+    /// brand-new install ([`Self::default`]) starts in Simple. An unfamiliar word loads as
+    /// Advanced too.
+    #[serde(default, deserialize_with = "UiMode::deserialize_lenient")]
+    pub ui_mode: UiMode,
+    /// Whether the welcome tour has been shown (or skipped). A file without the key is an
+    /// existing install and loads `true`: nobody who already uses the app gets a tour
+    /// they did not ask for. A brand-new install starts `false`.
+    #[serde(default = "default_first_run_tour_done")]
+    pub first_run_tour_done: bool,
+    /// The ids of the tutorials that have been finished (a `BTreeSet`, house rule: no
+    /// hash-map iteration in a decision path). "Reset tutorial progress" empties it.
+    #[serde(default)]
+    pub tutorials_completed: BTreeSet<String>,
+    /// The user-chosen interface scale in percent: `0` follows the operating system
+    /// (Automatic), otherwise one of `UI_SCALE_CHOICES`. Applied once at start-up, before
+    /// the first window exists, so a change needs a restart. A hand-edited value that is
+    /// not offered loads as `0`.
+    #[serde(default, deserialize_with = "deserialize_ui_scale_percent")]
+    pub ui_scale_percent: u16,
+    /// The high-contrast palette (`Theme.high-contrast`): near-black surfaces, white text
+    /// and bright accents.
+    #[serde(default)]
+    pub high_contrast: bool,
+    /// Larger drag handles and hit areas on the Solid viewport, for touch screens and pens.
+    #[serde(default)]
+    pub large_handles: bool,
+    /// The Solid viewport's Snap pill, remembered: `true` turns angle and depth snapping
+    /// of the drag handles off.
+    #[serde(default)]
+    pub manipulate_snap_off: bool,
+    /// The Slice tool's Symmetric pill, remembered: whether a new facet gets the whole
+    /// symmetric orbit of its index. The Slice tool itself (`slice_mode`) is deliberately
+    /// not remembered: it changes what a left-drag does.
+    #[serde(default = "default_slice_symmetric")]
+    pub slice_symmetric: bool,
+    /// The Live Render toolbar's colour choice for a view that does not show the linked
+    /// open design (a library design, or the render material unlinked): the absorption
+    /// triple `GemMaterial::with_body_color` takes, `None` for "Material default". A view
+    /// setting only -- never written to a design or a catalogue entry. A value that is
+    /// not three finite numbers loads as `None`; each channel is limited to zero up to
+    /// [`MAX_RENDER_BODY_COLOR_CHANNEL`].
+    #[serde(default, deserialize_with = "deserialize_render_body_color")]
+    pub render_body_color_override: Option<[f32; 3]>,
+}
+
+/// The largest absorption value one channel of
+/// [`AppSettings::render_body_color_override`] may hold (the built-in presets stay under 3).
+pub const MAX_RENDER_BODY_COLOR_CHANNEL: f32 = 10.0;
+
+/// Reads [`AppSettings::render_body_color_override`] leniently: anything but three finite
+/// numbers loads as `None` (so a hand-edited file cannot fail the whole settings load) and
+/// each channel is limited to zero up to [`MAX_RENDER_BODY_COLOR_CHANNEL`].
+fn deserialize_render_body_color<'de, D>(deserializer: D) -> Result<Option<[f32; 3]>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Lenient {
+        Triple([f32; 3]),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Option::<Lenient>::deserialize(deserializer)? {
+        Some(Lenient::Triple(rgb)) if rgb.iter().all(|c| c.is_finite()) => {
+            Some(rgb.map(|c| c.clamp(0.0, MAX_RENDER_BODY_COLOR_CHANNEL)))
+        }
+        _ => None,
+    })
 }
 
 /// [`AppSettings::recent_native_files`]'s cap: up to ten recent files.
@@ -467,8 +562,23 @@ const fn default_denoise_enabled() -> bool {
     true
 }
 
+/// What a settings file WITHOUT the `first_run_tour_done` key loads: `true`, because such
+/// a file belongs to an existing install. [`AppSettings::default`] (a brand-new install)
+/// says `false`.
+const fn default_first_run_tour_done() -> bool {
+    true
+}
+
+const fn default_slice_symmetric() -> bool {
+    true
+}
+
 const fn default_contribute_to_final_picture() -> bool {
     DEFAULT_CONTRIBUTE_TO_FINAL_PICTURE
+}
+
+const fn default_plan_time_limit_secs() -> u32 {
+    crate::plan_limit::DEFAULT_LIMIT_SECS
 }
 
 const fn default_remote_batch_lanes() -> u32 {
@@ -530,6 +640,7 @@ impl Default for AppSettings {
             denoise_enabled: true,
             backdrop: Backdrop::default(),
             surface_glare: DEFAULT_SURFACE_GLARE,
+            head_shadow_deg: DEFAULT_HEAD_SHADOW_DEG,
             inclusion_sigma_s: DEFAULT_INCLUSION_SIGMA_S,
             c_axis_override_enabled: DEFAULT_C_AXIS_OVERRIDE_ENABLED,
             c_axis_tilt_deg: DEFAULT_C_AXIS_TILT_DEG,
@@ -542,6 +653,7 @@ impl Default for AppSettings {
             local_compute_target: DEFAULT_LOCAL_COMPUTE_TARGET,
             contribute_to_final_picture: DEFAULT_CONTRIBUTE_TO_FINAL_PICTURE,
             remote_batch_lanes: DEFAULT_REMOTE_BATCH_LANES,
+            plan_time_limit_secs: crate::plan_limit::DEFAULT_LIMIT_SECS,
             import_preview_choice: super::ImportPreviewChoice::Ask,
             payload_encoding: indicatrix_net::messages::adaptive::PayloadChoice::Auto,
             env_map_path: String::new(),
@@ -562,6 +674,18 @@ impl Default for AppSettings {
             editor_layout_touched: false,
             recent_native_files: Vec::new(),
             suppressed_confirmations: BTreeSet::new(),
+            // A brand-new install: the simple interface, with the welcome tour still to
+            // come. A settings file that merely lacks these keys is an EXISTING install
+            // and loads the field defaults above instead (Advanced, tour done).
+            ui_mode: UiMode::Simple,
+            first_run_tour_done: false,
+            tutorials_completed: BTreeSet::new(),
+            ui_scale_percent: 0,
+            high_contrast: false,
+            large_handles: false,
+            manipulate_snap_off: false,
+            slice_symmetric: true,
+            render_body_color_override: None,
         }
     }
 }
@@ -615,140 +739,33 @@ impl AppSettings {
     pub fn suppress_confirm(&mut self, key: impl Into<String>) {
         self.suppressed_confirmations.insert(key.into());
     }
+
+    /// Turns a brand-new-install default into an existing install's: the full (Advanced)
+    /// interface and no welcome tour. Used when a settings file existed but could not be
+    /// read -- its owner is not a newcomer, and must not lose their controls to a reset.
+    pub const fn treat_as_existing_install(&mut self) {
+        self.ui_mode = UiMode::Advanced;
+        self.first_run_tour_done = true;
+    }
+
+    /// Sets [`Self::ui_scale_percent`] through the one rule for it: `0` or an offered
+    /// percentage is kept, anything else becomes `0` (Automatic).
+    pub fn set_ui_scale_percent(&mut self, percent: i32) {
+        self.ui_scale_percent = normalize_ui_scale_percent(i64::from(percent));
+    }
+
+    /// "Reset tutorial progress": forgets every finished tutorial. The welcome tour has
+    /// its own switch ([`Self::show_tour_again`]) and is left alone.
+    pub fn reset_tutorials(&mut self) {
+        self.tutorials_completed.clear();
+    }
+
+    /// "Show the welcome tour again": the next start-up (or the preferences action that
+    /// asked for it) runs the tour once more.
+    pub const fn show_tour_again(&mut self) {
+        self.first_run_tour_done = false;
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn record_recent_native_file_inserts_at_the_front() {
-        let mut settings = AppSettings::default();
-        settings.record_recent_native_file("a.indicatrix.toml".to_string());
-        settings.record_recent_native_file("b.indicatrix.toml".to_string());
-        assert_eq!(
-            settings.recent_native_files,
-            vec![
-                "b.indicatrix.toml".to_string(),
-                "a.indicatrix.toml".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn record_recent_native_file_moves_an_existing_entry_to_the_front_without_duplicating() {
-        let mut settings = AppSettings::default();
-        settings.record_recent_native_file("a.indicatrix.toml".to_string());
-        settings.record_recent_native_file("b.indicatrix.toml".to_string());
-        settings.record_recent_native_file("a.indicatrix.toml".to_string());
-        assert_eq!(
-            settings.recent_native_files,
-            vec![
-                "a.indicatrix.toml".to_string(),
-                "b.indicatrix.toml".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn recording_a_design_file_replaces_the_older_sidecar_entry_of_the_same_design() {
-        let mut settings = AppSettings::default();
-        settings.record_recent_native_file("d/round.indicatrix.toml".to_string());
-        settings.record_recent_native_file("d/other.gemcut.toml".to_string());
-        settings.record_recent_native_file("d/round.indicatrix".to_string());
-        assert_eq!(
-            settings.recent_native_files,
-            vec![
-                "d/round.indicatrix".to_string(),
-                "d/other.gemcut.toml".to_string()
-            ],
-            "both kinds are accepted; the older entry of the saved design is gone"
-        );
-        // Opening an older sidecar again afterwards is still recorded.
-        settings.record_recent_native_file("d/legacy.indicatrix.toml".to_string());
-        assert_eq!(settings.recent_native_files[0], "d/legacy.indicatrix.toml");
-        assert_eq!(settings.recent_native_files.len(), 3);
-    }
-
-    #[test]
-    fn record_recent_native_file_caps_at_max_recent_native_files() {
-        let mut settings = AppSettings::default();
-        for i in 0..(MAX_RECENT_NATIVE_FILES + 3) {
-            settings.record_recent_native_file(format!("design-{i}.indicatrix.toml"));
-        }
-        assert_eq!(settings.recent_native_files.len(), MAX_RECENT_NATIVE_FILES);
-        // Most recent first: the last one recorded is still at the front, and the
-        // oldest entries fell off the back rather than the front.
-        assert_eq!(
-            settings.recent_native_files[0],
-            format!("design-{}.indicatrix.toml", MAX_RECENT_NATIVE_FILES + 2)
-        );
-    }
-
-    // --- Suppressed confirmations: AppSettings::suppressed_confirmations ---
-
-    #[test]
-    fn a_fresh_settings_file_suppresses_nothing() {
-        let settings = AppSettings::default();
-        assert!(!settings.is_confirm_suppressed("write_confirm.not_closed_solid"));
-    }
-
-    #[test]
-    fn suppress_confirm_is_reflected_immediately() {
-        let mut settings = AppSettings::default();
-        settings.suppress_confirm("write_confirm.not_closed_solid");
-        assert!(settings.is_confirm_suppressed("write_confirm.not_closed_solid"));
-    }
-
-    #[test]
-    fn suppressing_one_key_does_not_suppress_a_different_one() {
-        let mut settings = AppSettings::default();
-        settings.suppress_confirm("write_confirm.not_closed_solid");
-        assert!(!settings.is_confirm_suppressed("write_confirm.overwrite_unrelated"));
-    }
-
-    #[test]
-    fn suppress_confirm_is_idempotent() {
-        let mut settings = AppSettings::default();
-        settings.suppress_confirm("write_confirm.not_closed_solid");
-        settings.suppress_confirm("write_confirm.not_closed_solid");
-        assert_eq!(settings.suppressed_confirmations.len(), 1);
-    }
-
-    /// A round trip through TOML -- the actual persistence mechanism
-    /// (`settings::store`) -- so a regression that drops `#[serde(default)]` or
-    /// breaks `BTreeSet<String>` serialisation is caught here rather than only in
-    /// a live app.
-    #[test]
-    fn suppressed_confirmations_round_trips_through_toml() {
-        let mut settings = AppSettings::default();
-        settings.suppress_confirm("write_confirm.not_closed_solid");
-        settings.suppress_confirm("write_confirm.overwrite_unrelated");
-        let toml_text = toml::to_string(&settings).expect("settings must serialize");
-        let restored: AppSettings = toml::from_str(&toml_text).expect("settings must parse");
-        assert_eq!(
-            restored.suppressed_confirmations,
-            settings.suppressed_confirmations
-        );
-    }
-
-    /// A settings file saved BEFORE this field existed (no `suppressed_confirmations`
-    /// key at all) must still load, with nothing suppressed -- the idempotent
-    /// migration this field's own `#[serde(default)]` provides.
-    #[test]
-    fn a_settings_file_predating_this_field_loads_with_nothing_suppressed() {
-        let settings = AppSettings::default();
-        let mut toml_text = toml::to_string(&settings).expect("settings must serialize");
-        // Strip the field this test is specifically about, simulating an
-        // old-format file that never had it.
-        let filtered: String = toml_text
-            .lines()
-            .filter(|line| !line.contains("suppressed_confirmations"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        toml_text = filtered;
-        let restored: AppSettings = toml::from_str(&toml_text)
-            .expect("a settings file missing this field must still parse");
-        assert!(restored.suppressed_confirmations.is_empty());
-    }
-}
+mod tests;

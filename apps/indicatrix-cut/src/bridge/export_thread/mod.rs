@@ -78,7 +78,22 @@ use std::{
     },
     thread,
 };
-use worker::run_export;
+pub use worker::run_export;
+
+/// The serializable scene a render job freezes: the remote wire's `SceneState` for
+/// `snapshot` at `width x height`, posed at the snapshot's own camera.
+///
+/// This is the one conversion the remote dispatch uses too, so a job stores exactly what
+/// a worker would have been sent. The HDR map is named by hash only; the caller records
+/// its file path separately (`gui::render_jobs::convert`).
+#[must_use]
+pub fn scene_state_for_job(
+    snapshot: &SceneSnapshot,
+    width: u32,
+    height: u32,
+) -> indicatrix_net::SceneState {
+    remote::scene_state_from_snapshot(snapshot, width, height, snapshot.yaw, snapshot.pitch)
+}
 
 /// How an export ended.
 #[derive(Debug)]

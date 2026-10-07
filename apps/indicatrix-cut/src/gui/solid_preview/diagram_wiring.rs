@@ -16,8 +16,16 @@
 //! lets this module live under `solid_preview/` and be wired from `gui::mod`
 //! directly, with no dependency on `gui::editor`'s `EditorState`.
 
-use super::preview_state::{FacetOverlay, PickBuffer, SolidPreviewState};
-use crate::{EditorModel, MainWindow, SolidPreviewModel};
+use super::{
+    facet_selection::{
+        clear_clicked_facet, clicked_tier_row, select_clicked_facet, set_hovered_facet,
+    },
+    preview_state::{FacetOwners, PickBuffer, SolidPreviewState},
+};
+use crate::{
+    EditorModel, MainWindow, ManipulateModel, SolidPreviewModel, gui::tutorial_events::raise,
+};
+use indicatrix_editor::guide::viewing_events as events;
 use indicatrix_solid::preview::{panel_kind_from_index, view::toggle_enlarged_panel};
 use slint::ComponentHandle;
 use std::{
@@ -51,8 +59,8 @@ thread_local! {
 pub type DiagramPick = Arc<Mutex<Option<PickBuffer>>>;
 /// Facet id -> hover tooltip text, from `PreviewFrame::diagram_hover_text`.
 pub type DiagramHoverText = Arc<Mutex<Option<Vec<String>>>>;
-/// Facet id -> owning tier index, from `PreviewFrame::diagram_facet_tier`.
-pub type DiagramFacetTier = Arc<Mutex<Option<Vec<Option<usize>>>>>;
+/// Facet id -> owning flat and concave tier, from `PreviewFrame::diagram_facet_owners`.
+pub type DiagramFacetOwners = Arc<Mutex<Option<FacetOwners>>>;
 
 /// Looks up the index-wheel tooth (if any) at physical pixel `(px, py)` in
 /// `tooth_pick` -- shared by both the hover and click callbacks in
@@ -71,10 +79,13 @@ fn tooth_at(tooth_pick: &DiagramPick, px: u32, py: u32) -> Option<u32> {
 ///
 /// `preview_state` drives the facet-id-keyed highlight overlay: every id
 /// below already comes from a pick buffer, so no `Design`/`FacetMap` access is
-/// needed to call [`SolidPreviewState::request_facet_overlay`] -- see that
-/// function's own doc comment. A hover clears back to [`FacetOverlay::default`]
-/// (nothing highlighted) exactly when it clears `diagram_hover_text`, so the
-/// highlight and the tooltip always agree.
+/// needed. The writes go through `super::facet_selection`, which MERGES them into the
+/// overlay the Solid view shares: a hover sets only the hovered facet (and clears only
+/// it when the pointer leaves), a click sets the clicked facet -- the same
+/// `facet_selection::selected_facet_id` the Solid view's click sets, so the
+/// manipulation handles have an anchor facet -- and neither wipes the other's outline,
+/// the multi-select or the drag followers. The hover highlight clears exactly when
+/// `diagram_hover_text` does, so the highlight and the tooltip always agree.
 ///
 /// `x`/`y` are multiplied by `ui.window().scale_factor()` before indexing `pick`:
 /// `render::camera_lighting::resubmit_at_current_pose` sizes a Diagram-mode
@@ -89,7 +100,7 @@ pub fn setup_diagram_hover_and_click_callbacks(
     pick: &DiagramPick,
     tooth_pick: &DiagramPick,
     hover_text: &DiagramHoverText,
-    facet_tier: &DiagramFacetTier,
+    facet_owners: &DiagramFacetOwners,
     preview_state: &Arc<SolidPreviewState>,
 ) {
     {
@@ -131,7 +142,9 @@ pub fn setup_diagram_hover_and_click_callbacks(
                     );
                     ui.global::<SolidPreviewModel>()
                         .set_diagram_hover_text(text.into());
-                    preview_state.request_facet_overlay(FacetOverlay::default());
+                    // Only the hover goes: the clicked facet's outline, the
+                    // multi-select and the drag followers stay lit.
+                    set_hovered_facet(&preview_state, None);
                     return;
                 };
                 let text = hover_text
@@ -143,17 +156,14 @@ pub fn setup_diagram_hover_and_click_callbacks(
                     .unwrap_or_default();
                 ui.global::<SolidPreviewModel>()
                     .set_diagram_hover_text(text.into());
-                preview_state.request_facet_overlay(FacetOverlay {
-                    hovered: Some(facet_id),
-                    ..FacetOverlay::default()
-                });
+                set_hovered_facet(&preview_state, Some(facet_id));
             });
     }
 
     {
         let pick = Arc::clone(pick);
         let tooth_pick = Arc::clone(tooth_pick);
-        let facet_tier = Arc::clone(facet_tier);
+        let facet_owners = Arc::clone(facet_owners);
         let hover_text = Arc::clone(hover_text);
         let preview_state = Arc::clone(preview_state);
         let ui_weak = ui.as_weak();
@@ -169,7 +179,7 @@ pub fn setup_diagram_hover_and_click_callbacks(
                     DiagramPickBuffers {
                         pick: &pick,
                         tooth_pick: &tooth_pick,
-                        facet_tier: &facet_tier,
+                        facet_owners: &facet_owners,
                         hover_text: &hover_text,
                     },
                     &preview_state,
@@ -221,7 +231,7 @@ pub fn setup_diagram_double_click_callback(ui: &MainWindow, panel_pick: &Diagram
 struct DiagramPickBuffers<'a> {
     pick: &'a DiagramPick,
     tooth_pick: &'a DiagramPick,
-    facet_tier: &'a DiagramFacetTier,
+    facet_owners: &'a DiagramFacetOwners,
     hover_text: &'a DiagramHoverText,
 }
 
@@ -237,7 +247,7 @@ fn handle_diagram_facet_click(
     let DiagramPickBuffers {
         pick,
         tooth_pick,
-        facet_tier,
+        facet_owners,
         hover_text,
     } = buffers;
     let scale = ui.window().scale_factor();
@@ -283,7 +293,7 @@ fn handle_diagram_facet_click(
         // `selected_tier_changed`, which re-seeds/clears the inspector
         // form on the Rust side (see
         // `setup_solid_selected_tier_changed_callback`).
-        preview_state.request_facet_overlay(FacetOverlay::default());
+        clear_clicked_facet(preview_state);
         ui.global::<EditorModel>().set_selected_tier_index(-1);
         // Same direct-invocation reasoning as the tooth-hit branch above,
         // for the opposite edge: this also resets `diagram_clicked_tooth`
@@ -304,19 +314,27 @@ fn handle_diagram_facet_click(
             .set_diagram_hover_text("".into());
         return;
     };
-    let tier_index = facet_tier
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .as_ref()
-        .and_then(|table| table.get(facet_id as usize).copied())
-        .flatten();
-    preview_state.request_facet_overlay(FacetOverlay {
-        selected_facet: Some(facet_id),
-        ..FacetOverlay::default()
-    });
-    if let Some(tier_index) = tier_index {
+    // While the Slice tool holds a provisional tier the frame may name a tier the editor
+    // does not have (one past the flat tiers, which is where the first concave row sits),
+    // so a click selects no row until Keep or Discard -- the Solid view's own rule.
+    let tier_row = if ui.global::<ManipulateModel>().get_provisional_active() {
+        None
+    } else {
+        facet_owners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .and_then(|owners| clicked_tier_row(ui, owners, facet_id))
+    };
+    // The same selected facet the Solid view's click sets, so the manipulation handles
+    // have an anchor facet whichever view the click was made in; merged into the
+    // overlay, so the hover and the multi-select survive it.
+    select_clicked_facet(preview_state, facet_id);
+    if let Some(tier_row) = tier_row {
         ui.global::<EditorModel>()
-            .set_selected_tier_index(tier_index as i32);
+            .set_selected_tier_index(tier_row as i32);
+        // A tutorial step may wait for a facet of a tier to be picked.
+        raise(ui, events::FACET_PICKED);
     }
     // Identifies the clicked facet itself, not just its owning tier --
     // reusing the SAME per-facet label the hover callback shows

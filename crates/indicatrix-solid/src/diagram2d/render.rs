@@ -3,7 +3,7 @@
 //! comment for the panel conventions this implements.
 
 use super::{
-    DiagramConfig, DiagramFrame, DiagramStyle, PanelKind,
+    DiagramConfig, DiagramFrame, DiagramLayout, DiagramStyle, PanelKind,
     fill::{bounds, draw_edge, draw_meet_marker, fill_polygon, meet_marker_points, shade},
     labels::{draw_panel_labels, draw_text, text_size},
     layout::{
@@ -40,6 +40,12 @@ pub fn render_diagram(
         symmetry_order: config.symmetry_order,
         mirror: config.mirror,
     };
+    frame.layout = DiagramLayout {
+        panels: layouts.to_vec(),
+        enlarged: false,
+        gear_teeth: wheel.gear_teeth,
+        gear_reference_angle: wheel.gear_reference_angle,
+    };
     // Resolved once, panel-agnostic -- `render_panel` below only needs to
     // filter by which side of the girdle a point falls on, not recompute it.
     let marker_points =
@@ -53,6 +59,7 @@ pub fn render_diagram(
             &mut frame,
             mesh,
             layout,
+            layout.kind.caption(),
             &facet_normal,
             wheel,
             style,
@@ -80,6 +87,64 @@ pub fn render_diagram_single_panel(
     style: &DiagramStyle,
     panel: PanelKind,
 ) -> DiagramFrame {
+    render_single(mesh, config, style, panel, panel.caption())
+}
+
+/// The stone's end view as a single panel filling the frame: the profile panel drawn for
+/// `mesh` turned a quarter turn about the stone's axis (world `+Y`).
+///
+/// The profile panel ([`render_diagram_single_panel`] with [`PanelKind::Profile`]) looks from
+/// world `+Z` towards `-Z`. This view looks from world `-X` towards `+X`, so the two side
+/// views of a printed sheet show the stone from two directions a quarter turn apart. The
+/// frame carries the caption `END`. Facet ids are unchanged, so picking and labels agree
+/// with the other panels.
+///
+/// Additive: [`PanelKind`] gains no variant, so nothing that matches on it changes.
+#[must_use]
+pub fn render_diagram_end_view(
+    mesh: &SolidMesh,
+    config: &DiagramConfig,
+    style: &DiagramStyle,
+) -> DiagramFrame {
+    render_single(
+        &turned_quarter(mesh),
+        config,
+        style,
+        PanelKind::Profile,
+        "END",
+    )
+}
+
+/// `mesh` rotated a quarter turn about world `+Y`, so that world `-X` becomes `+Z`
+/// (`(x, y, z)` becomes `(z, y, -x)`, a proper rotation).
+fn turned_quarter(mesh: &SolidMesh) -> SolidMesh {
+    let turn = |p: DVec3| DVec3::new(p.z, p.y, -p.x);
+    SolidMesh {
+        positions: mesh.positions.iter().map(|&p| turn(p)).collect(),
+        normals: mesh.normals.iter().map(|&n| turn(n)).collect(),
+        facet_id: mesh.facet_id.clone(),
+        indices: mesh.indices.clone(),
+        rings: mesh
+            .rings
+            .iter()
+            .map(|(id, ring)| (*id, ring.iter().map(|&p| turn(p)).collect()))
+            .collect(),
+        piece_normals: mesh
+            .piece_normals
+            .as_ref()
+            .map(|pieces| pieces.iter().map(|&n| turn(n)).collect()),
+        edge_visible: mesh.edge_visible.clone(),
+    }
+}
+
+/// The body of [`render_diagram_single_panel`] with the caption passed in.
+fn render_single(
+    mesh: &SolidMesh,
+    config: &DiagramConfig,
+    style: &DiagramStyle,
+    panel: PanelKind,
+    caption: &str,
+) -> DiagramFrame {
     let mut frame = DiagramFrame::blank(config.width, config.height, style.background);
     if config.width == 0 || config.height == 0 {
         return frame;
@@ -92,6 +157,12 @@ pub fn render_diagram_single_panel(
         symmetry_order: config.symmetry_order,
         mirror: config.mirror,
     };
+    frame.layout = DiagramLayout {
+        panels: vec![layout],
+        enlarged: true,
+        gear_teeth: wheel.gear_teeth,
+        gear_reference_angle: wheel.gear_reference_angle,
+    };
     let marker_points =
         meet_marker_points(mesh, &style.meet_marker_pairs, mesh_diagonal(mesh) * 1e-4);
 
@@ -101,6 +172,7 @@ pub fn render_diagram_single_panel(
         &mut frame,
         mesh,
         &layout,
+        caption,
         &facet_normal,
         wheel,
         style,
@@ -155,6 +227,7 @@ fn render_panel(
     frame: &mut DiagramFrame,
     mesh: &SolidMesh,
     layout: &PanelLayout,
+    caption: &str,
     facet_normal: &[Option<DVec3>],
     wheel: WheelConfig,
     style: &DiagramStyle,
@@ -162,12 +235,12 @@ fn render_panel(
     ring_scratch: &mut Vec<DVec3>,
     marker_points: &[DVec3],
 ) {
-    let (cap_w, _) = text_size(layout.kind.caption(), 1);
+    let (cap_w, _) = text_size(caption, 1);
     draw_text(
         frame,
         layout.center_x - cap_w as f32 / 2.0,
         2.0,
-        layout.kind.caption(),
+        caption,
         1,
         style.wheel_color,
         None,
@@ -374,6 +447,9 @@ enum EdgePass {
     Hovered,
     /// A facet listed in `style.multi_selected`, not otherwise highlighted.
     MultiSelected,
+    /// A facet listed in `style.moved` (its tier's mast moved during a drag), not
+    /// selected or pending -- a selection or pending highlight still wins its edges.
+    Moved,
     /// `selected` (a whole tier) and not otherwise highlighted.
     Selected,
     /// The one facet named in `style.selected_facet`.
@@ -403,11 +479,13 @@ fn draw_panel_edges(
     let is_hovered = |facet_id: usize| style.hovered == Some(facet_id as u32);
     let is_selected_facet = |facet_id: usize| style.selected_facet == Some(facet_id as u32);
     let is_multi_selected = |facet_id: usize| style.multi_selected.contains(&(facet_id as u32));
+    let is_moved = |facet_id: usize| style.moved.contains(&(facet_id as u32));
 
     for pass in [
         EdgePass::Ordinary,
         EdgePass::Hovered,
         EdgePass::MultiSelected,
+        EdgePass::Moved,
         EdgePass::Selected,
         EdgePass::SelectedFacet,
         EdgePass::Pending,
@@ -418,13 +496,19 @@ fn draw_panel_edges(
             let hovered = is_hovered(facet_id);
             let selected_facet = is_selected_facet(facet_id);
             let multi_selected = is_multi_selected(facet_id);
-            let highlighted = selected || pending || hovered || selected_facet;
+            let moved = is_moved(facet_id);
+            let highlighted = selected || pending || hovered || selected_facet || moved;
             let (draw_this_pass, color, width) = match pass {
                 EdgePass::Ordinary => (!highlighted && !multi_selected, style.edge_color, 1),
                 EdgePass::Hovered => (hovered && !pending && !selected_facet, style.hover_color, 2),
                 EdgePass::MultiSelected => (
                     multi_selected && !selected && !pending && !selected_facet,
                     style.multi_selected_color,
+                    2,
+                ),
+                EdgePass::Moved => (
+                    moved && !selected && !pending && !selected_facet,
+                    style.moved_color,
                     2,
                 ),
                 EdgePass::Selected => (

@@ -34,6 +34,7 @@
 use crate::{
     MainWindow, TiltModel,
     bridge::render_thread::{RenderContext, resolve_material_with_override},
+    gui::editor::FinishedStoneJob,
 };
 use glam::Vec3;
 use indicatrix::{
@@ -250,6 +251,12 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
             let render_ctx = render_ctx.clone();
             let ui_weak_bg = ui.as_weak();
             let axis_index = axis_index as usize;
+            // The preview belongs to the tilt curves, which describe the FINISHED gem
+            // whatever the Cut slider says (`gui::editor::finished_stone`). The job is
+            // made here, on the UI thread, because it reads the editor's state (a design
+            // copy and the solve cache, cheap); finishing it may need a full solve, which
+            // happens on the worker below, after the debounce, never on the UI thread.
+            let finished_job = crate::gui::editor::finished_stone_job(&ui, &render_ctx);
 
             std::thread::spawn(move || {
                 std::thread::sleep(HOVER_DEBOUNCE);
@@ -257,6 +264,21 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
                     // Superseded before the debounce window even closed -- the cursor kept
                     // moving, so there is no point rendering a pose nobody is looking at
                     // anymore.
+                    return;
+                }
+                // At most one hover solves a cold design at a time (the others wait here and
+                // then find its masts in the cache): see `FinishedStoneJob::resolve`.
+                let finished = match finished_job.map(FinishedStoneJob::resolve) {
+                    None => None,
+                    Some(Ok(stone)) => Some(stone),
+                    // The design does not solve, or the editor moved on while the stone was
+                    // being prepared: there is no honest thumbnail of the finished stone, so
+                    // the last one stays rather than a half-cut stone appearing beside curves
+                    // that describe the finished one.
+                    Some(Err(_)) => return,
+                };
+                if generation.load(Ordering::SeqCst) != my_generation {
+                    // The cursor moved on while this request waited for the solve.
                     return;
                 }
 
@@ -282,7 +304,8 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
                         ctx.active_tools.clone(),
                         ctx.active_fluorescence(),
                         ctx.material_name.clone(),
-                        ctx.material_override.clone(),
+                        // Includes the Live Render toolbar's view-only colour.
+                        ctx.tinted_material_override(),
                         ctx.custom_materials.clone(),
                         ctx.distance,
                         ctx.lighting_preset,
@@ -292,6 +315,9 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
                         ctx.max_bounces,
                     )
                 };
+                let (planes, tools) = finished.map_or((planes, tools), |stone| {
+                    (Arc::new(stone.planes), Arc::new(stone.tools))
+                });
                 // Same override preference as the sweep itself -- see
                 // `tilt_profile`'s own comment. Refuses (see `resolve_material`'s own
                 // doc comment) rather than rendering the hover preview as Diamond or
@@ -311,7 +337,9 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
                 let buffer = render_hover_preview(&HoverPreviewScene {
                     planes: &planes,
                     tools: &tools,
-                    fluorescence: fluorescence.as_deref().unwrap_or(Fluorescence::none()),
+                    fluorescence: fluorescence
+                        .as_deref()
+                        .unwrap_or_else(|| Fluorescence::none()),
                     material: &material,
                     cam_yaw,
                     cam_pitch,

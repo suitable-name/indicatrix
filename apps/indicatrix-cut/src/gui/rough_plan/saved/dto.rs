@@ -9,13 +9,17 @@ use serde::{Deserialize, Serialize};
 /// The expected format identifier in the header of a plan file.
 pub const ROUGH_PLAN_FORMAT: &str = "indicatrix-rough-plan";
 
-/// The newest schema version this build reads. A plan with a non-convex mesh rough is
-/// written with this version; every other plan is written with [`BASE_SCHEMA_VERSION`], so
-/// the plans of convex roughs are byte for byte what they always were.
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+/// The newest schema version this build reads. A plan with inclusions is written with this
+/// version, a plan with a non-convex mesh rough and no inclusions with
+/// [`MESH_SCHEMA_VERSION`], and every other plan with [`BASE_SCHEMA_VERSION`], so the plans of
+/// convex roughs and of meshes without inclusions are byte for byte what they always were.
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 /// The schema version that introduced the `rough.mesh` table.
 pub const MESH_SCHEMA_VERSION: u32 = 2;
+
+/// The schema version that introduced the `rough.inclusions` tables.
+pub const INCLUSION_SCHEMA_VERSION: u32 = 3;
 
 /// The schema version of a plan without a mesh rough (version 1; also the oldest this
 /// build reads).
@@ -117,6 +121,16 @@ pub struct RoughDto {
     /// hull is derived from it, so `hull` is empty then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mesh: Option<MeshDto>,
+    /// The inclusions of a mesh rough (schema version 3), each a closed solid wound outward
+    /// with its margin already applied, in the frame of `mesh`. `mesh` is then the rough's
+    /// own mesh without them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inclusions: Vec<MeshDto>,
+    /// How the coordinates of the file the rough was imported from map into the frame of
+    /// `mesh` (schema version 3, written with inclusions only), so that more inclusions can
+    /// still be added in that file's coordinates after the plan is opened again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_frame: Option<SourceFrameDto>,
     /// Material name (e.g. "Quartz").
     pub material: String,
     /// Material specific gravity.
@@ -136,6 +150,15 @@ pub struct MeshDto {
     pub vertices: Vec<[f64; 3]>,
     /// Triangles as indices into `vertices`.
     pub triangles: Vec<[u32; 3]>,
+}
+
+/// The map from a rough's file coordinates into its frame: `p * scale + offset_mm`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SourceFrameDto {
+    /// The factor the rough was scaled by since the import.
+    pub scale: f64,
+    /// The translation after the scaling, in mm.
+    pub offset_mm: [f64; 3],
 }
 
 /// Serialized planar cut.

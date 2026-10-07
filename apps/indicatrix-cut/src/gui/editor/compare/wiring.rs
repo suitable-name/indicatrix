@@ -16,20 +16,24 @@
 
 use super::{
     host::{self, NewLive, POPPED_OUT_STATUS, Surface, SurfaceHandle, TRACED_DEBOUNCE},
-    origins::{self, KeepGuard, OpenRequest},
+    metrics::SessionMetrics,
+    origins::{self, KeepGuard, OpenRequest, VariantSide},
     render,
     session::{self, CompareOrigin, CompareSession, Renderer},
 };
 use crate::{
-    CompareModel, CompareWindow, EditorModel, MainWindow, RetargetModel,
+    CompareModel, CompareWindow, EditorModel, HelpModel, MainWindow, RetargetModel, ViewportModel,
     bridge::render_thread::RenderContext,
     gui::{
         editor::{callbacks, state::EditorState, view::SolidLastSolved},
         show_toast,
         solid_preview::preview_state::{CameraPose, SolidPreviewState},
+        tutorial_events::raise,
     },
 };
-use slint::{ComponentHandle, Image, Weak};
+use indicatrix::optics::LightingPreset;
+use indicatrix_editor::guide::solving_events::COMPARE_WINDOW_OPENED;
+use slint::{ComponentHandle, Image, ModelRc, SharedString, VecModel, Weak};
 use std::{
     cell::RefCell,
     rc::Rc,
@@ -51,6 +55,15 @@ pub(super) struct CompareDeps {
     pub(super) preview_state: Arc<SolidPreviewState>,
     /// The shared solve cache, for Retarget's Discard revert.
     pub(super) solid_last_solved: SolidLastSolved,
+}
+
+thread_local! {
+    /// The entry handles, kept for the places that open a comparison without a
+    /// `CompareModel` callback of their own (the Variants view). UI-thread-only.
+    static ENTRY_DEPS: RefCell<Option<CompareDeps>> = const { RefCell::new(None) };
+    /// The "Compare against" picker index the frames on screen were built for, so a refused
+    /// picker change can put the ComboBox back. UI-thread-only.
+    static SHOWN_REFERENCE_INDEX: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
 }
 
 /// Closes the compare window and the embedded pane if they are open -- called
@@ -111,7 +124,7 @@ fn on_keep(deps: &CompareDeps) {
     match guard {
         KeepGuard::Retarget(_) => ui.global::<RetargetModel>().invoke_apply(),
         KeepGuard::Optimize { .. } => ui.global::<EditorModel>().invoke_optimize_apply(),
-        KeepGuard::Snapshot => {}
+        KeepGuard::Snapshot | KeepGuard::Variants => {}
     }
 }
 
@@ -146,7 +159,7 @@ fn on_discard(deps: &CompareDeps) {
             ui.global::<EditorModel>()
                 .invoke_optimize_preview_toggled(false);
         }
-        Some(CompareOrigin::Snapshot) | None => {}
+        Some(CompareOrigin::Snapshot | CompareOrigin::Variants) | None => {}
     }
 }
 
@@ -165,9 +178,15 @@ fn register_view_callbacks(model: &CompareModel<'_>, surface: Surface) {
     });
     model.on_drag_begin(move || host::set_drag(surface, true));
     model.on_drag_end(move || host::set_drag(surface, false));
-    // The slot size changes with the layout; `size_changed` follows on its own.
+    // The slot size changes with the layout; `size_changed` follows on its own. The
+    // selected renderer is re-read from the UI (its one source of truth) so the layout
+    // switch keeps rendering -- and, when traced, tracing -- in the highlighted mode.
     model.on_mode_changed(move |_| {
-        if host::is_live_on(surface) {
+        let Some(handle) = host::handle(surface) else {
+            return;
+        };
+        let renderer = Renderer::from_index(handle.with_model(|model| model.get_renderer_index()));
+        if host::layout_switched(surface, renderer) {
             host::request_frames(TRACED_DEBOUNCE);
         }
     });
@@ -197,6 +216,44 @@ fn register_window_callbacks(window: &CompareWindow, deps: &CompareDeps) {
     model.on_discard(move || on_discard(&discard_deps));
     let close_deps = deps.clone();
     model.on_close(move || close_window_and_restore(&close_deps, true));
+    // "Compare against": re-opens the Optimize comparison on the same surface; the refresh
+    // path keeps the frames and carries the camera (`open_session`'s pose hand-over).
+    let reference_deps = deps.clone();
+    let reference_window = window.as_weak();
+    model.on_reference_changed(move |index| {
+        if host::live_kind() != Some((Surface::Window, CompareOrigin::Optimize)) {
+            return;
+        }
+        let reference = origins::Reference::from_index(index);
+        let refused = std::cell::Cell::new(false);
+        // `open_from` already toasts the reason for a refused request.
+        open_from(&reference_deps, Surface::Window, |_, st, render_ctx| {
+            let request = origins::optimize_request(st, render_ctx, reference);
+            refused.set(request.is_err());
+            request
+        });
+        // The frames did not change, so the picker goes back to the entry they belong to.
+        if refused.get()
+            && let Some(window) = reference_window.upgrade()
+        {
+            let shown = SHOWN_REFERENCE_INDEX.with(std::cell::Cell::get);
+            window.global::<CompareModel>().set_reference_index(shown);
+        }
+    });
+    // The metrics strip's tilt average (the Retarget dialog's pane has no strip).
+    model.on_tilt_requested(|| host::start_tilt(Surface::Window));
+    model.on_tilt_cancelled(|| host::cancel_tilt(Surface::Window));
+    // The window's "?" button: its own `HelpModel` instance hands the topic to the main window,
+    // which owns the help window.
+    let help_ui = deps.ui.clone();
+    window.global::<HelpModel>().on_open_topic(move |topic| {
+        let Some(ui) = help_ui.upgrade() else {
+            return;
+        };
+        if let Err(message) = crate::gui::help::open_topic(&ui, topic.as_str()) {
+            show_toast(&ui, &message, "error");
+        }
+    });
     // The titlebar X is "Close": the proposal stays pending, nothing is reverted.
     let x_deps = deps.clone();
     window.window().on_close_requested(move || {
@@ -217,6 +274,8 @@ fn ensure_window(deps: &CompareDeps) -> Option<CompareWindow> {
             return None;
         }
     };
+    // Starts in the current palette (high contrast) and follows later changes.
+    crate::gui::preferences::bind_compare_window_theme(&window);
     register_window_callbacks(&window, deps);
     host::store_window(&window);
     Some(window)
@@ -278,8 +337,14 @@ fn target_handle(deps: &CompareDeps, surface: Surface) -> Option<SurfaceHandle> 
 /// "Solving…" status, and solves both sides on a background thread -- a real
 /// design can take seconds to solve, which must never freeze the UI. Replaces the
 /// live session wherever it was; a session continuing on the same or another
-/// surface keeps its camera.
-fn open_session(deps: &CompareDeps, surface: Surface, request: OpenRequest) {
+/// surface keeps its camera. The optical figures are measured under `lighting`, the
+/// viewport's lighting preset at the time of the request.
+fn open_session(
+    deps: &CompareDeps,
+    surface: Surface,
+    request: OpenRequest,
+    lighting: LightingPreset,
+) {
     let Some(target) = target_handle(deps, surface) else {
         return;
     };
@@ -289,6 +354,7 @@ fn open_session(deps: &CompareDeps, surface: Surface, request: OpenRequest) {
         carry_view_settings(&target);
     }
     let OpenRequest {
+        reference,
         origin,
         guard,
         before,
@@ -305,7 +371,17 @@ fn open_session(deps: &CompareDeps, surface: Surface, request: OpenRequest) {
             model.set_before_image(Image::default());
             model.set_after_image(Image::default());
             model.set_overlay_image(Image::default());
+            host::clear_strip(&model);
         }
+        model.set_reference_available(reference.original_label.is_some());
+        model.set_reference_options(ModelRc::new(VecModel::from(
+            origins::reference_options(&reference)
+                .into_iter()
+                .map(SharedString::from)
+                .collect::<Vec<_>>(),
+        )));
+        model.set_reference_index(reference.selected.index());
+        SHOWN_REFERENCE_INDEX.with(|cell| cell.set(reference.selected.index()));
         model.set_can_keep(false);
         model.set_show_keep_discard(origin.offers_keep());
         model.set_split_fraction(session::clamp_split_fraction(model.get_split_fraction()));
@@ -324,7 +400,9 @@ fn open_session(deps: &CompareDeps, surface: Surface, request: OpenRequest) {
     let pose = old
         .as_ref()
         .and_then(host::LiveSession::pose)
+        .or_else(host::take_retained_pose)
         .unwrap_or_else(|| viewport_pose(deps));
+    host::seed_pose(id, pose);
     retire_previous_surface(old.as_ref().map(host::LiveSession::surface), surface);
     // The replaced session (workers, timer) is dropped with the cell released.
     drop(old);
@@ -340,11 +418,19 @@ fn open_session(deps: &CompareDeps, surface: Surface, request: OpenRequest) {
         host::close_window(false);
         return;
     }
+    if matches!(target, SurfaceHandle::Window(_))
+        && let Some(ui) = deps.ui.upgrade()
+    {
+        raise(&ui, COMPARE_WINDOW_OPENED);
+    }
     let spawned = std::thread::Builder::new()
         .name("compare-solve".to_string())
         .spawn(move || {
             let session = CompareSession::build(before, after, origin, pose);
-            let _ = slint::invoke_from_event_loop(move || host::on_session_built(id, session));
+            let metrics = SessionMetrics::measure(&session, lighting);
+            let _ = slint::invoke_from_event_loop(move || {
+                host::on_session_built(id, session, metrics);
+            });
         });
     if let Err(error) = spawned {
         warn!("Could not start the compare solve thread: {error}");
@@ -373,8 +459,10 @@ fn open_from(
         };
         build(&ui, &st, &deps.render_ctx)
     };
+    let lighting =
+        LightingPreset::from_index(ui.global::<ViewportModel>().get_selected_lighting_index());
     match request {
-        Ok(request) => open_session(deps, surface, request),
+        Ok(request) => open_session(deps, surface, request, lighting),
         Err(reason) if surface == Surface::Embedded => host::drop_embedded(&reason),
         Err(reason) => show_toast(&ui, &reason, "info"),
     }
@@ -391,12 +479,31 @@ fn open_retarget_embedded(deps: &CompareDeps) {
     open_from(deps, surface, origins::retarget_request);
 }
 
+/// Opens the pop-out window on two designs from the Variants view.
+///
+/// `first` goes on the before side and `second` on the after side. View only (no Keep or
+/// Discard). Does nothing before [`setup_entry_callbacks`] has run.
+pub(in crate::gui::editor) fn open_variants_compare(
+    ui: &MainWindow,
+    first: VariantSide,
+    second: VariantSide,
+) {
+    let Some(deps) = ENTRY_DEPS.with(|cell| cell.borrow().clone()) else {
+        return;
+    };
+    let lighting =
+        LightingPreset::from_index(ui.global::<ViewportModel>().get_selected_lighting_index());
+    let request = origins::variants_request(&deps.render_ctx, first, second);
+    open_session(&deps, Surface::Window, request, lighting);
+}
+
 /// Wires `MainWindow`'s own `CompareModel` instance: the three pop-out entry points
 /// (the Retarget dialog's and the Optimize tab's "Compare…" buttons and the snapshot
 /// table's "Compare visually…"), and the embedded pane's view callbacks and
 /// open/close handlers.
 pub(super) fn setup_entry_callbacks(ui: &MainWindow, deps: &CompareDeps) {
     host::set_main_window(ui);
+    ENTRY_DEPS.with(|cell| *cell.borrow_mut() = Some(deps.clone()));
     let model = ui.global::<CompareModel>();
     let retarget_deps = deps.clone();
     model.on_open_retarget(move || {
@@ -405,7 +512,7 @@ pub(super) fn setup_entry_callbacks(ui: &MainWindow, deps: &CompareDeps) {
     let optimize_deps = deps.clone();
     model.on_open_optimize(move || {
         open_from(&optimize_deps, Surface::Window, |_, st, render_ctx| {
-            origins::optimize_request(st, render_ctx)
+            origins::optimize_request(st, render_ctx, origins::Reference::Current)
         });
     });
     let snapshot_deps = deps.clone();

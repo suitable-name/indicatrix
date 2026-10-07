@@ -48,17 +48,105 @@ pub struct CustomMaterialSnapshot {
     /// `f32` component's shortest round-trip decimal -- see [`Self::with_body_color`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub absorption_rgb: Option<[f64; 3]>,
+    /// The N-band body color (path-aware L*C*h editor): `absorption_bands_per_mm =
+    /// [[centre_nm, width_nm, amplitude_per_mm], ...]`, written NEXT TO the fitted
+    /// [`Self::absorption_rgb`] triple (the nearest three-band colour, so a build that does
+    /// not know this key still shows a close colour and writes the key back unchanged).
+    /// When present and non-empty the bands win on load. `#[serde(default)]`: older files
+    /// load with `None`; omitted when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub absorption_bands_per_mm: Option<Vec<[f64; 3]>>,
     /// Optional physically based color recipe and fallback tracking.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color_recipe: Option<colorRecipeDto>,
+    pub color_recipe: Option<ColorRecipeDto>,
+    /// The material's dispersion curve as coefficients (`[material.custom.dispersion_model]`),
+    /// when the author typed Sellmeier or Cauchy coefficients instead of a refractive index
+    /// and an `n_F - n_C` figure.
+    ///
+    /// `None` is the plain path: the material is the Cauchy fit
+    /// `GemMaterial::new_custom` builds from [`Self::mean_ri`] and
+    /// [`Self::dispersion_delta`], which is what every file written before this field
+    /// existed describes (`#[serde(default)]` loads them with `None`, and nothing is written
+    /// while it is `None`, so those files keep their bytes). With a model present, `mean_ri`
+    /// and `dispersion_delta` still hold the model's `n_d` and `n_F - n_C`, so a build that
+    /// does not know the table (it keeps it in [`Self::unknown`] and writes it back
+    /// unchanged) restores a close Cauchy stand-in rather than nothing. A table this build
+    /// cannot read (a model kind from a newer build, or a malformed one) loads as `None` and
+    /// the material takes the plain path.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_dispersion_model"
+    )]
+    pub dispersion_model: Option<DispersionModelDto>,
     /// See [`PreformTable::unknown`]'s doc comment.
     #[serde(flatten, default)]
     pub unknown: toml::Table,
 }
 
+/// A custom material's dispersion curve in the native file, as plain numbers.
+///
+/// The same three closed forms as `indicatrix::optics::dispersion::DispersionModel` (this
+/// crate has no dependency on `indicatrix`; `indicatrix-cut-core` converts both ways).
+///
+/// Wavelengths in the formulas are in micrometers: Sellmeier `n^2 = 1 + sum(B_i * l^2 /
+/// (l^2 - C_i))` with `C` in square micrometers, Cauchy `n = a + b / l^2 + c / l^4`. Written
+/// as a table with a `kind` key, for example:
+///
+/// ```toml
+/// [material.custom.dispersion_model]
+/// kind = "cauchy"
+/// a = 1.7
+/// b = 0.006
+/// c = 0.0
+/// ```
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DispersionModelDto {
+    /// One Sellmeier term.
+    Sellmeier1 {
+        /// The term's weight (dimensionless).
+        b1: f64,
+        /// The term's resonance, in square micrometers.
+        c1: f64,
+    },
+    /// Three Sellmeier terms.
+    Sellmeier3 {
+        /// The three weights (dimensionless).
+        b: [f64; 3],
+        /// The three resonances, in square micrometers.
+        c: [f64; 3],
+    },
+    /// A Cauchy fit.
+    Cauchy {
+        /// The constant term.
+        a: f64,
+        /// The `1 / l^2` coefficient, in square micrometers.
+        b: f64,
+        /// The `1 / l^4` coefficient, in micrometers to the fourth.
+        c: f64,
+    },
+}
+
+/// Reads [`CustomMaterialSnapshot::dispersion_model`], turning a table this build cannot
+/// parse into `None` instead of failing the whole file.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "serde's `deserialize_with` requires this exact `Result` signature"
+)]
+fn lenient_dispersion_model<'de, D>(deserializer: D) -> Result<Option<DispersionModelDto>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+    Ok(Option::<DispersionModelDto>::deserialize(deserializer)
+        .ok()
+        .flatten())
+}
+
 /// Serialized DTO for a physically based color recipe in the native format.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct colorRecipeDto {
+pub struct ColorRecipeDto {
     /// Raw recipe JSON string containing recipe data, `resolved_bands`, and `data_version`.
     pub recipe_json: String,
     /// The fallback absorption RGB triple written alongside the recipe.
@@ -87,14 +175,23 @@ impl CustomMaterialSnapshot {
             crystal_system: crystal_system.into(),
             optical_character: optical_character.into(),
             absorption_rgb: None,
+            absorption_bands_per_mm: None,
             color_recipe: None,
+            dispersion_model: None,
             unknown: toml::Table::new(),
         }
     }
 
+    /// Attaches [`Self::dispersion_model`].
+    #[must_use]
+    pub const fn with_dispersion_model(mut self, model: Option<DispersionModelDto>) -> Self {
+        self.dispersion_model = model;
+        self
+    }
+
     /// Attaches [`Self::color_recipe`].
     #[must_use]
-    pub fn with_color_recipe(mut self, recipe: Option<colorRecipeDto>) -> Self {
+    pub fn with_color_recipe(mut self, recipe: Option<ColorRecipeDto>) -> Self {
         self.color_recipe = recipe;
         self
     }
@@ -104,6 +201,34 @@ impl CustomMaterialSnapshot {
     pub const fn with_absorption_rgb(mut self, rgb: Option<[f64; 3]>) -> Self {
         self.absorption_rgb = rgb;
         self
+    }
+
+    /// Attaches [`Self::absorption_bands_per_mm`] from `f32` rows
+    /// (`[centre_nm, width_nm, amplitude_per_mm]`), each component through its shortest
+    /// round-trip decimal (see [`Self::with_body_color`]). An empty list stores `None`.
+    #[must_use]
+    pub fn with_absorption_bands(mut self, rows: &[[f32; 3]]) -> Self {
+        self.absorption_bands_per_mm = (!rows.is_empty()).then(|| {
+            rows.iter()
+                .map(|r| {
+                    r.map(|v| {
+                        v.to_string()
+                            .parse::<f64>()
+                            .unwrap_or_else(|_| f64::from(v))
+                    })
+                })
+                .collect()
+        });
+        self
+    }
+
+    /// The N-band body color as `f32` rows (`None` when absent or empty).
+    #[must_use]
+    pub fn absorption_bands(&self) -> Option<Vec<[f32; 3]>> {
+        self.absorption_bands_per_mm
+            .as_ref()
+            .filter(|b| !b.is_empty())
+            .map(|rows| rows.iter().map(|r| r.map(|v| v as f32)).collect())
     }
 
     /// Attaches the body color from an editor's `f32` absorption triple.

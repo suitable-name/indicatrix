@@ -9,22 +9,32 @@ use std::{
 };
 
 use indicatrix::geometry::meet_solver::MeetConstraint;
-use indicatrix_cut_core::{Edit, TierTarget};
+use indicatrix_cut_core::TierTarget;
 // The error-field classification and the non-integral-index warning moved to
 // `indicatrix_editor::loading` (shared with the web inspector) -- see
 // `report_tier_form_error`'s doc comment for what the field strings mean. Re-exported at
 // their old path (`super::tests` exercises the classification directly).
-use indicatrix_editor::loading::non_integral_index_warning;
 pub(super) use indicatrix_editor::loading::tier_form_error_field;
-use slint::{ComponentHandle, SharedString};
+use indicatrix_editor::{
+    loading::{non_integral_index_warning, parse_tier_form_with_relation},
+    slider_ranges::{
+        AnglePreset, AngleSide, SliderSpecData, angle_presets_for, angle_spec_data,
+        format_angle_text, margin_preview_text, stepped_angle_text,
+    },
+};
+use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use super::{nudge::tier_nudge_label, tier_generation::next_free_block_name};
 use crate::{
-    EditorModel, MainWindow,
+    EditorModel, MainWindow, SliderModel, SliderPreset, SliderSpec,
     bridge::render_thread::RenderContext,
     gui::{
         editor::{
             guide, loading,
+            relation_ui::{
+                is_relation_text, plan_tier_save, relation_placeholder_angle_deg,
+                save_error_text_and_field, with_followers,
+            },
             state::{EditorState, first_unresolved_meet_name},
             view::{SolidLastSolved, refresh_editor_panel_stale, submit_preview_replan},
         },
@@ -94,27 +104,12 @@ fn parse_tier_target_reporting(
     })
 }
 
-/// [`tier_save_edit`], extended for depth/girdle-thickness/table-width targets:
-/// wraps its edit in an
-/// [`Edit::Batch`] with [`Edit::SetTierTarget`] whenever `target` is `Some`,
-/// or whenever the tier CURRENTLY at `index` already carries one -- which
-/// must then be explicitly cleared (`Edit::SetTierTarget { target: None }`)
-/// the moment the cutter saves with a plain Meets kind (0/1/2), or it would
-/// silently keep resolving against a target the form no longer shows. A
-/// brand-new tier (`index < 0`) never has one to clear. Split out of
-/// [`setup_save_tier_callback`] purely to keep that function under clippy's
-/// `too_many_lines` lint.
-fn tier_save_edit_with_target(
-    ui: &MainWindow,
-    st: &EditorState,
-    index: i32,
-    tier: indicatrix_cut_core::ConstraintTier,
-    target: Option<TierTarget>,
-) -> (usize, Edit) {
-    let selected = usize::try_from(ui.global::<EditorModel>().get_selected_tier_index()).ok();
-    indicatrix_editor::tier_save::tier_save_edit_with_target(
-        &st.design, index, tier, target, selected,
-    )
+/// The table row currently selected -- a new tier is inserted right after it. The edit
+/// itself (including the depth/girdle-thickness/table-width target and, when the Angle
+/// field holds a relation, the relation) is built by `relation_ui::plan_tier_save` from
+/// `indicatrix_editor::tier_save::tier_save_edit_with_target`.
+fn selected_row(ui: &MainWindow) -> Option<usize> {
+    usize::try_from(ui.global::<EditorModel>().get_selected_tier_index()).ok()
 }
 
 /// [`setup_save_tier_callback`]'s preamble: the current row's carried-through
@@ -162,6 +157,9 @@ struct TierSaveOutcome {
     index: i32,
     /// The saved tier's actual index in `st.design.tiers` after the edit applied.
     dirty_index: usize,
+    /// Every row the save changed: the saved tier and the tiers that follow it through
+    /// a relation (`relation_ui::with_followers`).
+    dirty: BTreeSet<usize>,
     /// [`non_integral_index_warning`]'s verdict for the saved indices, if any.
     non_integral_warning: Option<String>,
 }
@@ -186,6 +184,7 @@ fn apply_tier_save_success(
     let TierSaveOutcome {
         index,
         dirty_index,
+        dirty,
         non_integral_warning,
     } = outcome;
     // A successful save means the form is valid again, so this clears whatever the
@@ -193,9 +192,9 @@ fn apply_tier_save_success(
     clear_tier_form_error(ui);
     // `AddTier` changes the tier count, so the alignment
     // check falls back to a full solve regardless of
-    // `dirty`; for `ModifyTier` this one index is exactly
-    // what changed.
-    refresh_editor_panel_stale(ui, render_ctx, &st, &BTreeSet::from([dirty_index]));
+    // `dirty`; for `ModifyTier` the saved tier and the tiers following it through a
+    // relation are exactly what changed.
+    refresh_editor_panel_stale(ui, render_ctx, &st, &dirty);
     // The guide's tier steps complete on the saved tier itself (name, angle,
     // indices) -- checked here explicitly as well as inside the stale refresh.
     guide::check_progress(ui, &st);
@@ -205,7 +204,7 @@ fn apply_tier_save_success(
         preview_state,
         solid_last_solved,
         &st,
-        BTreeSet::from([dirty_index]),
+        dirty,
         false,
     );
     // Selects and reveals the row just added -- an `AddTier`-only branch, since a
@@ -249,9 +248,253 @@ fn preserve_saved_tier_side_and_detached(
     }
 }
 
-/// The Tier form's Save action: parses the form via [`loading::parse_tier_form`],
-/// applies the resulting [`Edit`] through [`EditorState::apply`], and refreshes the
-/// preview and panel on success.
+/// Settles the side of the tier a Tier form save describes
+/// ([`preserve_saved_tier_side_and_detached`]) and THEN names a new tier that was left
+/// unnamed.
+///
+/// A brand-new tier saved with a blank Name field would otherwise stay unnamed and
+/// un-meetable (`ConstraintTier::names()` returns nothing for an empty name), so it is
+/// named here: `G<n>` at 90 degrees, else `P<n>` or `C<n>` by the sign of its angle,
+/// matching what Duplicate does for its copies. The name is read off the side the tier
+/// ends up on, never off the angle the form carried in: a tier saved with a relation to a
+/// pavilion tier (`=P1-2`) is a pavilion tier and is named `P<n>`, and a tier typed as a
+/// crown angle is `C<n>`, whichever way the form arrived at the number. Only for a fresh
+/// `AddTier` (`index < 0`): an existing tier's name was either already set or the cutter
+/// just deliberately blanked it, neither of which this should override.
+fn settle_saved_tier(
+    tier: &mut indicatrix_cut_core::ConstraintTier,
+    design: &indicatrix_cut_core::Design,
+    index: i32,
+    other_tier_names: &[String],
+) {
+    preserve_saved_tier_side_and_detached(tier, design, index);
+    if index < 0 && tier.name.is_empty() {
+        tier.name = next_free_block_name(tier.angle_deg, other_tier_names);
+    }
+}
+
+/// The handles [`save_tier_now`] needs besides the form itself.
+struct SaveServices<'a> {
+    state: &'a Rc<RefCell<EditorState>>,
+    render_ctx: &'a Arc<Mutex<RenderContext>>,
+    preview_state: &'a Arc<SolidPreviewState>,
+    solid_last_solved: &'a SolidLastSolved,
+}
+
+/// The six fields `EditorModel.save_tier` hands over, as the Save action received them.
+struct TierFormInput<'a> {
+    /// The tier's table row, or negative for a new tier.
+    index: i32,
+    /// The Angle field: a number, arithmetic (`41.5+0.3`) or a relation (`=C1-4`).
+    angle: &'a str,
+    constraint_kind: i32,
+    constraint_text: &'a str,
+    name: &'a str,
+    indices: &'a str,
+}
+
+/// Parses the form into its tier and, when the Angle field holds a relation (`=...`), the
+/// relation text after the `=`. Any other Angle text goes through
+/// [`loading::parse_tier_form`] exactly as before. `Err` is the message to show.
+fn parse_save_form(
+    st: &Rc<RefCell<EditorState>>,
+    form: &TierFormInput<'_>,
+    context: SaveTierFormContext,
+) -> Result<(indicatrix_cut_core::ConstraintTier, Option<String>), String> {
+    let SaveTierFormContext {
+        imported_meet,
+        original_notes,
+        gear_teeth_abs,
+        other_tier_names,
+    } = context;
+    let fields = loading::TierFormFields {
+        angle: form.angle,
+        constraint_kind: form.constraint_kind,
+        constraint_text: form.constraint_text,
+        name: form.name,
+        indices: form.indices,
+        gear_teeth_abs,
+        imported_meet,
+        original_notes,
+        other_tier_names,
+    };
+    if is_relation_text(form.angle) {
+        // The relation, not the form, decides the angle: the tier carries its current
+        // angle (a new tier: the one its relation would give) until the session applies it.
+        let placeholder =
+            relation_placeholder_angle_deg(&st.borrow().design, form.index, form.angle, form.name);
+        parse_tier_form_with_relation(fields, placeholder)
+    } else {
+        loading::parse_tier_form(fields).map(|tier| (tier, None))
+    }
+}
+
+/// The Tier form's Save action once its six fields are in: parses them
+/// ([`parse_save_form`]), applies the resulting edit through the session and refreshes the
+/// preview and panel on success. A refusal -- a bad field, a relation that cannot hold, a
+/// direct angle edit of a tier that follows a relation -- is shown under the field it
+/// belongs to ([`report_tier_form_error`]) and changes nothing.
+fn save_tier_now(ui: &MainWindow, services: &SaveServices<'_>, form: &TierFormInput<'_>) {
+    let SaveServices {
+        state,
+        render_ctx,
+        preview_state,
+        solid_last_solved,
+    } = services;
+    let index = form.index;
+    let context = save_tier_form_context(state, index);
+    let other_tier_names = context.other_tier_names.clone();
+    let (mut tier, relation_text) = match parse_save_form(state, form, context) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            report_tier_form_error(ui, &e, tier_form_error_field(&e));
+            return;
+        }
+    };
+    // The form's Meets combo also carries three target kinds that
+    // `loading::parse_tier_form` above only turns into a `ScaleReference(0.0)`
+    // placeholder -- see `parse_tier_target_reporting`'s own doc comment.
+    let Ok(target) = parse_tier_target_reporting(ui, form.constraint_kind, form.constraint_text)
+    else {
+        return;
+    };
+    // Captured before `tier` is moved into the edit below -- see
+    // `non_integral_index_warning`'s own doc comment for why this warns rather than
+    // rejects.
+    let non_integral_warning = non_integral_index_warning(&tier.indices);
+    let mut st = state.borrow_mut();
+    // The tier's side first, then (for a new tier left unnamed) its name -- see
+    // `settle_saved_tier`.
+    settle_saved_tier(&mut tier, &st.design, index, &other_tier_names);
+    // A `MeetNamed` token that resolves to nothing today would
+    // otherwise degrade silently inside the solver (`meet_solver`'s
+    // own doc comment: "an unresolved token is dropped") -- caught
+    // here, before it is ever applied, with the offending name named.
+    if let MeetConstraint::MeetNamed(names) = &tier.constraint
+        && let Some(bad_name) = first_unresolved_meet_name(&st.design, names)
+    {
+        report_tier_form_error(
+            ui,
+            &format!("No facet named '{bad_name}' -- check the Meets field."),
+            "constraint",
+        );
+        return;
+    }
+    // Blanking the name of a tier other tiers meet by name would leave
+    // their references dangling: refuse, at the Name field.
+    if let Some(message) =
+        indicatrix_editor::tier_save::unnaming_blocked_message(&st.design, index, form.name)
+    {
+        report_tier_form_error(ui, &message, "name");
+        return;
+    }
+    // The edit: the tier as the form describes it and, for `=...`, its relation in the same
+    // undo step. The session then keeps every relation true and refuses what cannot be.
+    let applied = plan_tier_save(
+        &st.design,
+        index,
+        tier,
+        relation_text.as_deref(),
+        target,
+        selected_row(ui),
+    )
+    .and_then(|(dirty_index, edit)| st.try_apply(edit).map(|_| dirty_index));
+    match applied {
+        Ok(dirty_index) => {
+            // Followers (tiers whose angle follows the saved one) moved with it.
+            let dirty = with_followers(&st.design, [dirty_index]);
+            apply_tier_save_success(
+                ui,
+                render_ctx,
+                preview_state,
+                solid_last_solved,
+                st,
+                TierSaveOutcome {
+                    index,
+                    dirty_index,
+                    dirty,
+                    non_integral_warning,
+                },
+            );
+        }
+        Err(error) => {
+            let (message, field) = save_error_text_and_field(&error);
+            report_tier_form_error(ui, &message, field);
+        }
+    }
+}
+
+/// The UI's [`SliderSpec`] for the plain data `indicatrix_editor::slider_ranges` worked out:
+/// numbers become `f32`, a missing band becomes an empty one (`band_to <= band_from`).
+/// `pub(super)` since the Preform tab's sliders map their data the same way.
+pub(super) fn slider_spec_from(data: SliderSpecData) -> SliderSpec {
+    let (band_from, band_to) = data.band.unwrap_or((0.0, 0.0));
+    SliderSpec {
+        visible: data.visible,
+        usable: data.usable,
+        side: data.side.into(),
+        value: data.value as f32,
+        minimum: data.range.min as f32,
+        maximum: data.range.max as f32,
+        step: data.range.step as f32,
+        fine_step: data.range.fine_step as f32,
+        mark: data.range.mark as f32,
+        band_from: band_from as f32,
+        band_to: band_to as f32,
+        note: data.note.into(),
+        value_text: data.value_text.into(),
+    }
+}
+
+/// The "Typical" menu's rows for the UI.
+fn preset_rows(presets: Vec<AnglePreset>) -> ModelRc<SliderPreset> {
+    let rows: Vec<SliderPreset> = presets
+        .into_iter()
+        .map(|preset| SliderPreset {
+            label: preset.label.into(),
+            value: preset.value_deg as f32,
+            value_text: preset.value_text.into(),
+            reason: preset.reason.into(),
+        })
+        .collect();
+    ModelRc::new(VecModel::from(rows))
+}
+
+/// Answers the Tier form's slider (`SliderModel`'s angle callbacks). All four are pure
+/// functions of their arguments -- the design's refractive index arrives as text, so the
+/// answers follow a change of material without this code touching the editor state -- and
+/// the work is done in `indicatrix_editor::slider_ranges`:
+///
+/// - `angle_spec`: whether the form has a slider, its range, steps, marked band and value;
+/// - `angle_presets`: the "Typical" menu;
+/// - `angle_text`: the number the slider writes into the Angle field;
+/// - `stepped_angle_text`: the field's text after an Up or Down key press (empty when the
+///   field holds a calculation or a relation, which the key leaves alone);
+/// - `margin_preview_text`: the Angle text as the live margin bar should read it.
+///
+/// The slider only fills the Angle field in; the tier is saved by "Save Tier" as ever.
+fn setup_angle_slider_callbacks(ui: &MainWindow) {
+    let model = ui.global::<SliderModel>();
+    model.on_angle_spec(|kind, text, name, ri_text| {
+        slider_spec_from(angle_spec_data(&kind, &text, &name, &ri_text))
+    });
+    model.on_angle_presets(|side, ri_text, material| {
+        preset_rows(angle_presets_for(&side, &ri_text, &material))
+    });
+    model.on_angle_text(|value, current| format_angle_text(f64::from(value), &current).into());
+    model.on_stepped_angle_text(|current, delta| {
+        stepped_angle_text(&current, f64::from(delta))
+            .unwrap_or_default()
+            .into()
+    });
+    model.on_margin_preview_text(|side, text| {
+        margin_preview_text(AngleSide::from_name(&side), &text).into()
+    });
+}
+
+/// The Tier form's Save action: hands the form to [`save_tier_now`], which parses it,
+/// applies the resulting edit through the session and refreshes the preview and panel on
+/// success.
 pub(in crate::gui::editor) fn setup_save_tier_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -268,6 +511,8 @@ pub(in crate::gui::editor) fn setup_save_tier_callback(
         preview_state,
         solid_last_solved,
     );
+    // So are the Angle field's slider callbacks (they need no state at all).
+    setup_angle_slider_callbacks(ui);
     let state = Rc::clone(state);
     let render_ctx = Arc::clone(render_ctx);
     let preview_state = Arc::clone(preview_state);
@@ -283,97 +528,23 @@ pub(in crate::gui::editor) fn setup_save_tier_callback(
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            let SaveTierFormContext {
-                imported_meet,
-                original_notes,
-                gear_teeth_abs,
-                other_tier_names,
-            } = save_tier_form_context(&state, index);
-            match loading::parse_tier_form(loading::TierFormFields {
-                angle: &angle,
-                constraint_kind,
-                constraint_text: &constraint_text,
-                name: &name,
-                indices: &indices,
-                gear_teeth_abs,
-                imported_meet,
-                original_notes,
-                other_tier_names: other_tier_names.clone(),
-            }) {
-                Ok(mut tier) => {
-                    // The form's Meets combo also carries three target kinds that
-                    // `loading::parse_tier_form` above only turns into a `ScaleReference(0.0)`
-                    // placeholder -- see `parse_tier_target_reporting`'s own doc comment.
-                    let Ok(target) =
-                        parse_tier_target_reporting(&ui, constraint_kind, &constraint_text)
-                    else {
-                        return;
-                    };
-                    // A brand-new tier saved with a blank Name
-                    // field would otherwise stay unnamed and un-meetable (
-                    // `ConstraintTier::names()` returns nothing for an empty name) --
-                    // auto-name it here (`G<n>` at 90 degrees, else `P<n>`/`C<n>`
-                    // by the angle's sign), matching what Duplicate already does for
-                    // its own copies. Only for a fresh `AddTier` (`index < 0`): an
-                    // existing tier's name was either already set or the cutter just
-                    // deliberately blanked it, neither of which this should override.
-                    if index < 0 && tier.name.is_empty() {
-                        tier.name = next_free_block_name(tier.angle_deg, &other_tier_names);
-                    }
-                    // Captured before `tier` is moved into
-                    // `tier_save_edit` below -- see `non_integral_index_warning`'s
-                    // own doc comment for why this warns rather than rejects.
-                    let non_integral_warning = non_integral_index_warning(&tier.indices);
-                    let mut st = state.borrow_mut();
-                    preserve_saved_tier_side_and_detached(&mut tier, &st.design, index);
-                    // A `MeetNamed` token that resolves to nothing today would
-                    // otherwise degrade silently inside the solver (`meet_solver`'s
-                    // own doc comment: "an unresolved token is dropped") -- caught
-                    // here, before it is ever applied, with the offending name named.
-                    if let MeetConstraint::MeetNamed(names) = &tier.constraint
-                        && let Some(bad_name) = first_unresolved_meet_name(&st.design, names)
-                    {
-                        report_tier_form_error(
-                            &ui,
-                            &format!("No facet named '{bad_name}' -- check the Meets field."),
-                            "constraint",
-                        );
-                        return;
-                    }
-                    // Blanking the name of a tier other tiers meet by name would leave
-                    // their references dangling: refuse, at the Name field.
-                    if let Some(message) = indicatrix_editor::tier_save::unnaming_blocked_message(
-                        &st.design, index, &name,
-                    ) {
-                        report_tier_form_error(&ui, &message, "name");
-                        return;
-                    }
-                    let (dirty_index, edit) =
-                        tier_save_edit_with_target(&ui, &st, index, tier, target);
-                    match st.apply(edit) {
-                        Ok(()) => {
-                            apply_tier_save_success(
-                                &ui,
-                                &render_ctx,
-                                &preview_state,
-                                &solid_last_solved,
-                                st,
-                                TierSaveOutcome {
-                                    index,
-                                    dirty_index,
-                                    non_integral_warning,
-                                },
-                            );
-                        }
-                        Err(e) => {
-                            let message = e.to_string();
-                            let field = tier_form_error_field(&message);
-                            report_tier_form_error(&ui, &message, field);
-                        }
-                    }
-                }
-                Err(e) => report_tier_form_error(&ui, &e, tier_form_error_field(&e)),
-            }
+            save_tier_now(
+                &ui,
+                &SaveServices {
+                    state: &state,
+                    render_ctx: &render_ctx,
+                    preview_state: &preview_state,
+                    solid_last_solved: &solid_last_solved,
+                },
+                &TierFormInput {
+                    index,
+                    angle: &angle,
+                    constraint_kind,
+                    constraint_text: &constraint_text,
+                    name: &name,
+                    indices: &indices,
+                },
+            );
         },
     );
 }
@@ -404,3 +575,8 @@ pub(super) fn report_tier_form_error(ui: &MainWindow, message: &str, field: &str
     model.set_tier_form_error_field(field.into());
     show_toast(ui, message, "error");
 }
+
+#[cfg(test)]
+mod side_tests;
+#[cfg(test)]
+mod slider_tests;

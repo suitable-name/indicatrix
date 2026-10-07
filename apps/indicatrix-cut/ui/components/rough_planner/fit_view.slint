@@ -5,6 +5,8 @@ import { RoughPill } from "fields.slint";
 // Toggle button with a small checkbox indicator
 component ViewToggle inherits Rectangle {
     in property <string> label;
+    // One plain sentence: what the toggle shows or hides. The tooltip and the screen-reader text.
+    in property <string> hint;
     in-out property <bool> checked;
     callback toggled();
 
@@ -20,10 +22,14 @@ component ViewToggle inherits Rectangle {
     border-color: toggle_focus.has-focus ? Theme.accent-cyan-hover
         : (root.checked ? Theme.accent-cyan : Theme.border-control);
 
-    accessible-role: checkbox;
+    accessible-role: AccessibleRole.checkbox;
     accessible-label: root.label;
+    accessible-description: root.hint;
+    accessible-checkable: true;
     accessible-checked: root.checked;
     accessible-action-default => { root.toggle(); }
+
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
 
     // Space and Enter toggle it while it has the keyboard focus.
     toggle_focus := FocusScope {
@@ -83,22 +89,26 @@ component ViewToggles inherits HorizontalLayout {
 
     if RoughPlanModel.view_mode == 0: ViewToggle {
         label: "Cut faces";
+        hint: "Show the flat faces your cuts make on the rough, in the 3D view.";
         checked <=> RoughPlanModel.show_cut_faces;
         toggled => { RoughPlanModel.view_toggles_changed(); }
     }
     // The layers of a result only exist in the result view.
     if RoughPlanModel.view_mode == 1: ViewToggle {
         label: "Rough";
+        hint: "Show the outline of the whole rough around the stones.";
         checked <=> RoughPlanModel.show_rough;
         toggled => { RoughPlanModel.view_toggles_changed(); }
     }
     if RoughPlanModel.view_mode == 1: ViewToggle {
         label: "Saw";
+        hint: "Show where the saw would cut the rough apart between stones.";
         checked <=> RoughPlanModel.show_saw;
         toggled => { RoughPlanModel.view_toggles_changed(); }
     }
     if RoughPlanModel.view_mode == 1: ViewToggle {
         label: "Stones";
+        hint: "Show the stones placed in the rough.";
         checked <=> RoughPlanModel.show_stones;
         toggled => { RoughPlanModel.view_toggles_changed(); }
     }
@@ -159,6 +169,7 @@ export component FitView inherits VerticalLayout {
                 // result card) or the selected result (the one shown last, or the first).
                 RoughPill {
                     text: "Rough";
+                    hint: "Show the rough you are modelling, with its cuts. This puts the result cards aside.";
                     active: RoughPlanModel.view_mode == 0;
                     clicked => {
                         if RoughPlanModel.selected_result >= 0 {
@@ -169,6 +180,9 @@ export component FitView inherits VerticalLayout {
                 }
                 RoughPill {
                     text: "Result";
+                    hint: RoughPlanModel.results.length > 0
+                        ? "Show the selected result: the stones placed in the rough."
+                        : "There is no result yet. Press Plan first.";
                     active: RoughPlanModel.view_mode == 1;
                     enabled: RoughPlanModel.results.length > 0;
                     clicked => {
@@ -183,18 +197,22 @@ export component FitView inherits VerticalLayout {
                 // Camera presets
                 RoughPill {
                     text: "Front";
+                    hint: "Look at the rough from the front.";
                     clicked => { RoughPlanModel.view_preset(0); }
                 }
                 RoughPill {
                     text: "Top";
+                    hint: "Look at the rough from above.";
                     clicked => { RoughPlanModel.view_preset(1); }
                 }
                 RoughPill {
                     text: "Side";
+                    hint: "Look at the rough from the side.";
                     clicked => { RoughPlanModel.view_preset(2); }
                 }
                 RoughPill {
                     text: "Reset";
+                    hint: "Go back to the starting view. Home does the same while the view has the keyboard.";
                     clicked => { RoughPlanModel.view_preset(3); }
                 }
 
@@ -240,6 +258,51 @@ export component FitView inherits VerticalLayout {
             width: parent.width;
             height: parent.height;
             source: RoughPlanModel.view_image;
+        }
+
+        // Tab brings the keyboard to the view: the arrows turn it, plus and minus zoom, Home
+        // goes back to the starting view. The mouse does the same with drag and wheel.
+        view_focus := FocusScope {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+            accessible-role: AccessibleRole.image;
+            accessible-label: RoughPlanModel.view_mode == 0 ? "The rough with its cuts, in 3D" : "The selected layout, in 3D";
+            accessible-description: "Left, right, up and down turn the view. Plus and minus zoom. Home resets the view.";
+            key-pressed(event) => {
+                if event.text == Key.LeftArrow {
+                    RoughPlanModel.view_drag_begin();
+                    RoughPlanModel.view_orbit(-20px, 0px);
+                    RoughPlanModel.view_drag_end();
+                    return accept;
+                } else if event.text == Key.RightArrow {
+                    RoughPlanModel.view_drag_begin();
+                    RoughPlanModel.view_orbit(20px, 0px);
+                    RoughPlanModel.view_drag_end();
+                    return accept;
+                } else if event.text == Key.UpArrow {
+                    RoughPlanModel.view_drag_begin();
+                    RoughPlanModel.view_orbit(0px, -20px);
+                    RoughPlanModel.view_drag_end();
+                    return accept;
+                } else if event.text == Key.DownArrow {
+                    RoughPlanModel.view_drag_begin();
+                    RoughPlanModel.view_orbit(0px, 20px);
+                    RoughPlanModel.view_drag_end();
+                    return accept;
+                } else if event.text == "+" || event.text == "=" {
+                    RoughPlanModel.view_zoom(60);
+                    return accept;
+                } else if event.text == "-" {
+                    RoughPlanModel.view_zoom(-60);
+                    return accept;
+                } else if event.text == Key.Home {
+                    RoughPlanModel.view_preset(3);
+                    return accept;
+                }
+                return reject;
+            }
         }
 
         TouchArea {
@@ -296,6 +359,7 @@ export component FitView inherits VerticalLayout {
             }
 
             clicked => {
+                view_focus.focus();
                 if !root.moved_far {
                     RoughPlanModel.view_click(self.mouse-x, self.mouse-y);
                 }
@@ -306,6 +370,16 @@ export component FitView inherits VerticalLayout {
                     RoughPlanModel.view_double_click(self.mouse-x, self.mouse-y);
                 }
             }
+        }
+
+        // The ring that shows the view has the keyboard.
+        if view_focus.has-focus: Rectangle {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+            border-width: 2px;
+            border-color: Theme.accent-cyan-hover;
         }
     }
 

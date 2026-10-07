@@ -22,6 +22,45 @@ struct Traced {
     deferred_at: Option<u32>,
 }
 
+/// A lane reports its first deferral at a frontier and then every this many.
+const DEFERRAL_LOG_EVERY: u32 = 50;
+
+/// Consecutive deferrals of one lane at the same frontier, with no chunk merged in
+/// between, after which the lane fails the chunk instead of waiting again. Each wait
+/// lasts at least one poll interval (25 ms), so this is roughly half a minute of a
+/// frontier that is not advancing.
+const MAX_DEFERRALS: u32 = 1200;
+
+/// A lane's run of consecutive deferrals at one frontier.
+#[derive(Debug, Default)]
+struct DeferralRun {
+    frontier: u32,
+    count: u32,
+}
+
+impl DeferralRun {
+    /// Records a deferral at `frontier` and returns the run length, this one included;
+    /// a different frontier starts a new run.
+    const fn note(&mut self, frontier: u32) -> u32 {
+        if self.count == 0 || self.frontier != frontier {
+            self.frontier = frontier;
+            self.count = 0;
+        }
+        self.count = self.count.saturating_add(1);
+        self.count
+    }
+
+    /// Ends the run (a chunk merged, or the lane gave up).
+    const fn reset(&mut self) {
+        self.count = 0;
+    }
+}
+
+/// Whether the `count`th deferral of a run is one to report.
+const fn report_deferral(count: u32) -> bool {
+    count == 1 || count.is_multiple_of(DEFERRAL_LOG_EVERY)
+}
+
 /// What a lane does after a failed chunk.
 enum AfterFailure {
     Retry,
@@ -52,6 +91,7 @@ pub(super) fn run_lane(
     let mut failures = 0u32;
     let mut chunks = 0u32;
     let mut samples = 0u32;
+    let mut deferrals = DeferralRun::default();
     loop {
         if removed(epoch, index, lane) {
             return true;
@@ -61,10 +101,11 @@ pub(super) fn run_lane(
             break;
         };
         let range = claim.range();
-        let traced = trace_chunk(epoch, index, lane, range);
+        let mut traced = trace_chunk(epoch, index, lane, range);
         if traced.done > 0 {
             chunks += 1;
             samples += traced.done;
+            deferrals.reset();
         }
         // A short chunk's wall time is dominated by however it failed (a liveness
         // timeout, a refused connection), so only a complete chunk -- or the lane's
@@ -83,9 +124,28 @@ pub(super) fn run_lane(
         }
         if let Some(seen) = traced.deferred_at {
             // A full parked budget is back-pressure from a slow frontier chunk, not a
-            // lane fault: wait for the frontier to move, then trace the chunk again.
-            epoch.wait_for_frontier(seen);
-            continue;
+            // lane fault: wait for the frontier to move, then trace the chunk again --
+            // unless the frontier has not moved for `MAX_DEFERRALS` waits, when the
+            // chunk fails like any other and the lane's failure count decides.
+            let count = deferrals.note(seen);
+            if count < MAX_DEFERRALS {
+                if report_deferral(count) {
+                    epoch.emit(PoolEvent::ChunkDeferred {
+                        lane: index,
+                        range,
+                        frontier: seen,
+                        total_done: epoch.merger.total(),
+                        deferrals: count,
+                    });
+                }
+                epoch.wait_for_frontier(seen);
+                continue;
+            }
+            deferrals.reset();
+            traced.deferred_at = None;
+            traced.error = Some(format!(
+                "gave up after {count} consecutive deferrals at frontier {seen}: the merge frontier is not advancing"
+            ));
         }
         if epoch.cancel.is_cancelled() {
             break;
@@ -232,5 +292,42 @@ fn after_failure(
         AfterFailure::Retry
     } else {
         AfterFailure::Stop
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_run_counts_at_one_frontier_and_restarts_on_another() {
+        let mut run = DeferralRun::default();
+        assert_eq!(run.note(7), 1);
+        assert_eq!(run.note(7), 2);
+        assert_eq!(run.note(9), 1, "a moved frontier starts a new run");
+        run.reset();
+        assert_eq!(run.note(9), 1, "a reset starts a new run");
+    }
+
+    #[test]
+    fn a_run_reaches_the_cap_only_without_progress() {
+        let mut run = DeferralRun::default();
+        let reached = (1..=MAX_DEFERRALS).map(|_| run.note(3)).last();
+        assert_eq!(reached, Some(MAX_DEFERRALS));
+        let mut moving = DeferralRun::default();
+        assert!(
+            (0..MAX_DEFERRALS * 2).all(|n| moving.note(n) < MAX_DEFERRALS),
+            "a frontier that keeps moving never hits the cap"
+        );
+    }
+
+    #[test]
+    fn deferrals_are_reported_first_and_then_periodically() {
+        assert!(report_deferral(1));
+        assert!(!report_deferral(2));
+        assert!(!report_deferral(DEFERRAL_LOG_EVERY - 1));
+        assert!(report_deferral(DEFERRAL_LOG_EVERY));
+        assert!(!report_deferral(DEFERRAL_LOG_EVERY + 1));
+        assert!(report_deferral(DEFERRAL_LOG_EVERY * 2));
     }
 }

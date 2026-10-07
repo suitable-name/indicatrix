@@ -33,16 +33,16 @@ pub(in crate::gui::editor) use crate::gui::solid_preview::preview_state::SolidLa
 
 pub(in crate::gui::editor) use inspector::{push_selected_tier_chips, sync_viewport_material_link};
 pub(in crate::gui::editor) use optimize_apply::{
-    build_optimize_preview_design, optimize_result_rows, optimize_status_text,
-    parse_optimize_weights, submit_design_ghost_preview,
+    build_optimize_preview_design, optimize_result_rows, result_row, submit_design_ghost_preview,
 };
+// Only the identity pins read these two at their old path now.
+#[cfg(test)]
+pub(in crate::gui::editor) use optimize_apply::{optimize_status_text, parse_optimize_weights};
 pub(in crate::gui::editor) use panel::{
     girdle_and_ratio_texts_from_solved, preform_mm_texts_from_solved,
     proportions_texts_from_solved, push_proportion_verdicts_from_solved, refresh_editor_panel,
 };
-pub(in crate::gui::editor) use panel_stale::{
-    configured_optimize_max_evaluations, refresh_editor_panel_stale,
-};
+pub(in crate::gui::editor) use panel_stale::refresh_editor_panel_stale;
 pub(in crate::gui::editor) use solve_results::{
     deep_solve_tier_rows, facet_count_from_solved, format_deep_solve_report, optimize_change_rows,
 };
@@ -54,4 +54,4 @@ pub(in crate::gui::editor) use viewport::{
 // `push_solved_preview` is the one push function `editor::apply_matching_preview_frame`
 // (this group's other public entry point) also needs -- `push_stale_content` stays
 // `pub(super)` in `panel_stale`, reachable only from within `view` itself.
-pub(in crate::gui::editor) use viewport::push_solved_preview;
+pub(in crate::gui::editor) use viewport::{push_late_findings, push_solved_preview};

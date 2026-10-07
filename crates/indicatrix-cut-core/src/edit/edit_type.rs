@@ -3,8 +3,12 @@
 //! fail. See the parent module's doc comment for the command/inverse model
 //! this whole crate's undo/redo rests on.
 
+use super::schedule_state::ScheduleState;
 use crate::{
-    design::{ConcaveTier, ConstraintTier, Design, TierId, TierTarget},
+    design::{
+        ConcaveTier, ConstraintTier, Design, TierId, TierRelation, TierTarget, compute_tier_labels,
+        is_legacy_123_abc,
+    },
     material::MaterialSelection,
     preform::PreformSpec,
 };
@@ -130,6 +134,23 @@ pub enum Edit {
         index: usize,
         target: Option<TierTarget>,
     },
+    /// Sets (or, when `relation` is `None`, clears) the [`TierRelation`] driving the
+    /// angle of the tier currently at `index` -- see
+    /// [`crate::design::Design::tier_relations`]. Keyed by [`TierId`] under the
+    /// hood, like `SetTierTarget`. Inverse: the same variant holding the previous
+    /// relation.
+    ///
+    /// This edit changes ONLY the relation. It does not move the angle: the tier
+    /// keeps whatever angle it has until the relations are evaluated, which an
+    /// `indicatrix_editor::session::EditorSession` does in the SAME undo step by
+    /// batching this edit with an [`Edit::RetargetAngles`]. A bare `Design` that
+    /// applies it alone can call [`crate::design::Design::evaluate_relations`]
+    /// itself. [`crate::resolve::resolve_after_edit`] treats it like an angle edit
+    /// of the driven tier.
+    SetTierRelation {
+        index: usize,
+        relation: Option<TierRelation>,
+    },
     /// Never constructed by a caller directly -- an internal bookkeeping step
     /// [`Design::apply_edit`]'s own [`Edit::RemoveTier`] inverse uses to restore
     /// the exact [`crate::design::TierId`] the removed tier held, since a plain
@@ -153,7 +174,10 @@ pub enum Edit {
     /// with an [`EditError`] (without modifying `self`) rather than accepting
     /// them: either makes every tier's index-wheel position meaningless and
     /// produces a `.asc` `g`/`y` line [`indicatrix_formats::asc::parse_asc`]
-    /// refuses to read back at all.
+    /// refuses to read back at all. It also rejects a SMALLER gear when a concave
+    /// tier holds an index past the new wheel (the error names that concave tier):
+    /// run the [`Edit::RemapIndices`] first, or put both in one [`Edit::Batch`]
+    /// (only the batch's end state is checked), as the editor's gear change does.
     SetSchedule {
         gear_teeth: i32,
         symmetry_order: u32,
@@ -220,11 +244,24 @@ pub enum Edit {
     /// material" (an angle retarget plus the material change it implies) -- so
     /// undoing it takes one press, not two.
     Batch(Vec<Self>),
+    /// Swaps the design's whole flat tier list and schedule metadata for the held
+    /// [`ScheduleState`] in one step -- what applying edited `.asc` text uses, where
+    /// any number of tiers may have been added, removed, renamed or changed at once.
+    /// The preform, girdle size, material and concave tiers are not touched.
+    /// Inverse: the same variant holding the state this edit replaced.
+    ///
+    /// Rejected, without changing the design, when the state is not usable (see
+    /// [`Design::apply_edit`]'s `ReplaceSchedule` arm and `ScheduleState`), and when the
+    /// state's gear is smaller than the design's and a concave tier holds an index past
+    /// the smaller wheel (the same rule as [`Edit::SetSchedule`]; a [`Edit::Batch`] is
+    /// checked once, on its end state, so a replacement that comes with a remap of the
+    /// concave indices applies).
+    ReplaceSchedule(Box<ScheduleState>),
 }
 
 impl Edit {
     /// A short, cutter-facing summary of what this [`Edit`] does -- e.g. "Set P1 angle
-    /// to -41.0 degrees", "Remap gear 96 to 80", "Remove tier C1", "Optimize 12
+    /// to 41.0 degrees", "Remap gear 96 to 80", "Remove tier C1", "Optimize 12
     /// tiers" -- rather than a debug dump of the variant's fields. What the editor
     /// feeds [`super::History::peek_undo`]/[`super::History::peek_redo`] through to
     /// label the undo/redo hover hints and Edit menu items, so a cutter can tell what
@@ -288,6 +325,9 @@ impl Edit {
                     |t| format!("Set target for {label} to {}", describe_tier_target(t)),
                 )
             }
+            Self::SetTierRelation { index, relation } => {
+                describe_tier_relation(*index, relation.as_ref(), design)
+            }
             // Internal bookkeeping only -- see this variant's own doc comment.
             // `describe_batch` filters it out of a `RemoveTier` undo's own
             // description before this arm is ever reached in practice; this text
@@ -335,6 +375,7 @@ impl Edit {
                 )
             }
             Self::Batch(edits) => describe_batch(edits, design),
+            Self::ReplaceSchedule(_) => "Edit instructions as text".to_string(),
         }
     }
 }
@@ -351,7 +392,25 @@ fn tier_display_name(name: &str) -> String {
 
 /// [`Edit::describe`]'s tier-name lookup for the variants that only carry a
 /// positional `index` -- see that method's own doc comment.
+///
+/// What the tier table shows: the tier's own name, or its standard code (`P1`, `C2`, `T`)
+/// when the name is empty or old-style (`1`, `A`). A rename is the one sentence that must
+/// say the raw names ([`raw_tier_name_at`]), because the name is what changes.
 fn tier_label_at(design: &Design, index: usize) -> String {
+    let Some(tier) = design.tiers.get(index) else {
+        return format!("tier {}", index + 1);
+    };
+    if (tier.name.trim().is_empty() || is_legacy_123_abc(&tier.name))
+        && let Some(info) = compute_tier_labels(&design.tiers).get(index)
+    {
+        return info.code.clone();
+    }
+    tier_display_name(&tier.name)
+}
+
+/// The tier's name exactly as stored (a placeholder for an unnamed one): what a rename
+/// sentence reads, since there the name itself is the thing that changes.
+fn raw_tier_name_at(design: &Design, index: usize) -> String {
     design.tiers.get(index).map_or_else(
         || format!("tier {}", index + 1),
         |tier| tier_display_name(&tier.name),
@@ -390,6 +449,34 @@ fn describe_tier_target(target: TierTarget) -> String {
     }
 }
 
+/// [`Edit::describe`]'s [`Edit::SetTierRelation`] arm: "Set P2 = P1 - 2" (tiers by
+/// name) or "Clear relation for P2".
+fn describe_tier_relation(
+    index: usize,
+    relation: Option<&TierRelation>,
+    design: &Design,
+) -> String {
+    let label = tier_label_at(design, index);
+    relation.map_or_else(
+        || format!("Clear relation for {label}"),
+        |relation| format!("Set {label} = {}", relation.to_display(design)),
+    )
+}
+
+/// [`describe_tier_relation`]'s wording as the second half of a longer label ("Rename P2 to
+/// P3 and set P3 = P1 - 2"): the same sentence, for a tier already called `label`, with its
+/// first letter in lower case.
+fn describe_relation_clause(
+    label: &str,
+    relation: Option<&TierRelation>,
+    design: &Design,
+) -> String {
+    relation.map_or_else(
+        || format!("clear relation for {label}"),
+        |relation| format!("set {label} = {}", relation.to_display(design)),
+    )
+}
+
 /// [`Edit::describe`]'s label for a [`MaterialSelection`] -- its name when set, else a
 /// placeholder (an RI-override-only selection has no catalogue name to show), with a
 /// body-color override appended in brackets (`Sapphire (Yellow)`, or
@@ -407,16 +494,20 @@ fn material_display_name(material: &MaterialSelection) -> String {
 }
 
 /// [`Edit::describe`]'s [`Edit::RetargetAngles`] arm: a single-tier retarget names
-/// that tier and its new angle (the "Set P1 angle to -41.0 degrees" example); several
+/// that tier and its new angle (the "Set P1 angle to 41.0 degrees" example); several
 /// at once is always an Optimize/batch result in practice, so it reads as "Optimize N
 /// tiers" instead of an unreadable per-tier list.
+///
+/// The angle is a magnitude: a pavilion tier stored at -41 reads `41.0`, because the side
+/// of the girdle is the tier's, never a sign a person has to read.
 fn describe_retarget_angles(changes: &[(usize, f64, f64)], design: &Design) -> String {
     match changes {
         [] => "Retarget angles".to_string(),
         [(index, _, new_deg)] => {
             format!(
-                "Set {} angle to {new_deg:.1} degrees",
-                tier_label_at(design, *index)
+                "Set {} angle to {:.1} degrees",
+                tier_label_at(design, *index),
+                new_deg.abs()
             )
         }
         many => format!("Optimize {} tiers", many.len()),
@@ -433,6 +524,12 @@ fn describe_batch(edits: &[Edit], design: &Design) -> String {
     | [Edit::SetMaterial { material }, Edit::RetargetAngles { .. }] = edits
     {
         return format!("Retarget for {}", material_display_name(material));
+    }
+    if let Some(label) = describe_anchored_retarget(edits) {
+        return label;
+    }
+    if let Some(label) = describe_relation_batch(edits, design) {
+        return label;
     }
     // `RestoreTierId` is `Design::apply_edit`'s own invisible bookkeeping step
     // (see that variant's doc comment) -- a `RemoveTier` undo that otherwise
@@ -451,6 +548,198 @@ fn describe_batch(edits: &[Edit], design: &Design) -> String {
         [] => "No-op".to_string(),
         [only] => only.describe(design),
         many => format!("{} combined edits", many.len()),
+    }
+}
+
+/// [`describe_batch`]'s label for a retarget that also re-anchors masts: angle changes
+/// plus the [`Edit::SetConstraint`]s that keep each facet's girdle edge in place, and the
+/// material change when there is one. `None` for a batch with no constraint change
+/// (those keep their older labels) or with any other kind of edit in it.
+fn describe_anchored_retarget(edits: &[Edit]) -> Option<String> {
+    let mut has_angles = false;
+    let mut has_constraint = false;
+    let mut material: Option<&MaterialSelection> = None;
+    for edit in edits {
+        match edit {
+            Edit::RetargetAngles { .. } => has_angles = true,
+            Edit::SetConstraint { .. } => has_constraint = true,
+            Edit::SetMaterial {
+                material: selection,
+            } => material = Some(selection),
+            _ => return None,
+        }
+    }
+    if !(has_angles && has_constraint) {
+        return None;
+    }
+    Some(material.map_or_else(
+        || "Retarget angles".to_string(),
+        |selection| format!("Retarget for {}", material_display_name(selection)),
+    ))
+}
+
+/// [`describe_batch`]'s label for the batches an editor session builds when tier
+/// relations are in play: an edit plus the [`Edit::RetargetAngles`] that moves the
+/// tiers following it, in either order (an undo entry holds the pair reversed).
+///
+/// - a [`Edit::SetTierRelation`] with its angle update reads as that relation edit;
+/// - a [`Edit::ModifyTier`] with its angle update reads as that modification;
+/// - angle changes only (a nudge or drag plus the tiers that follow) read as "Set X
+///   angle to ..." for one tier and "Change angles of N tiers" for several;
+/// - any other first edit followed only by angle updates and relation clears (a tier
+///   removal that also frees the relations reading it) reads as that first edit;
+/// - a tier form save that also set the tier's relation reads as both ("Rename P2 to P3 and
+///   set P3 = P1 - 2"), see [`describe_tier_save_with_relation`].
+///
+/// `None` for any other batch, which keeps the generic label.
+fn describe_relation_batch(edits: &[Edit], design: &Design) -> Option<String> {
+    if let Some(label) = describe_tier_save_with_relation(edits, design) {
+        return Some(label);
+    }
+    let follows = |edit: &Edit| {
+        matches!(
+            edit,
+            Edit::RetargetAngles { .. } | Edit::SetTierRelation { relation: None, .. }
+        )
+    };
+    if let [first, rest @ ..] = edits
+        && !rest.is_empty()
+        && !matches!(first, Edit::RetargetAngles { .. })
+        && rest.iter().all(follows)
+    {
+        return Some(first.describe(design));
+    }
+    let [first, second] = edits else {
+        return all_angle_changes_label(edits, design);
+    };
+    match (first, second) {
+        (Edit::SetTierRelation { .. }, Edit::RetargetAngles { .. })
+        | (Edit::RetargetAngles { .. }, Edit::SetTierRelation { .. })
+        | (Edit::ModifyTier { .. }, Edit::RetargetAngles { .. })
+        | (Edit::RetargetAngles { .. }, Edit::ModifyTier { .. }) => {
+            let edit = if matches!(first, Edit::RetargetAngles { .. }) {
+                second
+            } else {
+                first
+            };
+            Some(edit.describe(design))
+        }
+        _ => all_angle_changes_label(edits, design),
+    }
+}
+
+/// Every edit of `edits` with the nested batches opened up, in order. A tier form save is a
+/// batch inside the batch an editor session folds the following angles into.
+fn flattened<'a>(edits: &'a [Edit], into: &mut Vec<&'a Edit>) {
+    for edit in edits {
+        match edit {
+            Edit::Batch(inner) => flattened(inner, into),
+            other => into.push(other),
+        }
+    }
+}
+
+/// [`describe_relation_batch`]'s label for a tier form save that also sets the tier's relation,
+/// or for the undo of one: the tier part followed by the relation part, "Rename P2 to P3 and
+/// set P3 = P1 - 2", "Modify tier P2 and set P2 = P1 - 2", "Add tier P5 and set P5 = P1 - 2".
+///
+/// The batch (nested batches opened up) holds exactly one [`Edit::AddTier`] or
+/// [`Edit::ModifyTier`] and a [`Edit::SetTierRelation`] for that same tier, and nothing but the
+/// edits that ride along with a tier save: the meet-name rewrites a rename brings
+/// ([`Edit::SetConstraint`]), a depth target ([`Edit::SetTierTarget`]) and the angles that
+/// follow ([`Edit::RetargetAngles`]). A change of name reads as a rename, and the relation
+/// part names the tier by its name after the edit. The undo of such a save holds the same
+/// edits the other way round and reads the same way ("Rename P3 to P2 and clear relation for
+/// P2").
+///
+/// A [`Edit::RemoveTier`] with nothing but relation clears (the undo of adding a tier with a
+/// relation, or a removal that frees the relations reading it) reads as the removal.
+///
+/// `None` for any other batch.
+fn describe_tier_save_with_relation(edits: &[Edit], design: &Design) -> Option<String> {
+    let mut flat = Vec::new();
+    flattened(edits, &mut flat);
+    let mut tier_part: Option<&Edit> = None;
+    let mut relations: Vec<(usize, Option<&TierRelation>)> = Vec::new();
+    for edit in flat {
+        match edit {
+            Edit::AddTier { .. } | Edit::ModifyTier { .. } | Edit::RemoveTier { .. } => {
+                if tier_part.replace(edit).is_some() {
+                    return None;
+                }
+            }
+            Edit::SetTierRelation { index, relation } => {
+                relations.push((*index, relation.as_ref()));
+            }
+            Edit::SetConstraint { .. }
+            | Edit::SetTierTarget { .. }
+            | Edit::RetargetAngles { .. }
+            | Edit::RestoreTierId { .. } => {}
+            _ => return None,
+        }
+    }
+    match tier_part? {
+        remove @ Edit::RemoveTier { .. } => (!relations.is_empty()
+            && relations.iter().all(|(_, relation)| relation.is_none()))
+        .then(|| remove.describe(design)),
+        Edit::AddTier { index, tier } => {
+            let (_, relation) = relations.iter().find(|(at, _)| at == index)?;
+            let name = tier_display_name(&tier.name);
+            Some(format!(
+                "Add tier {name} and {}",
+                describe_relation_clause(&name, *relation, design)
+            ))
+        }
+        Edit::ModifyTier { index, tier } => {
+            let (_, relation) = relations.iter().find(|(at, _)| at == index)?;
+            let new = tier_display_name(&tier.name);
+            let renamed = design
+                .tiers
+                .get(*index)
+                .is_some_and(|current| current.name != tier.name);
+            // A rename says the names as they are; any other change says what the table shows.
+            let old = if renamed {
+                raw_tier_name_at(design, *index)
+            } else {
+                tier_label_at(design, *index)
+            };
+            let first = if renamed {
+                format!("Rename {old} to {new}")
+            } else {
+                format!("Modify tier {old}")
+            };
+            Some(format!(
+                "{first} and {}",
+                describe_relation_clause(&new, *relation, design)
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// The label of a batch made only of [`Edit::RetargetAngles`] (at least two of them),
+/// or `None` for anything else.
+fn all_angle_changes_label(edits: &[Edit], design: &Design) -> Option<String> {
+    if edits.len() < 2 {
+        return None;
+    }
+    let mut tiers = Vec::new();
+    for edit in edits {
+        let Edit::RetargetAngles { changes } = edit else {
+            return None;
+        };
+        tiers.extend(changes.iter().map(|&(index, _, new_deg)| (index, new_deg)));
+    }
+    let mut distinct: Vec<usize> = tiers.iter().map(|&(index, _)| index).collect();
+    distinct.sort_unstable();
+    distinct.dedup();
+    match (distinct.as_slice(), tiers.last()) {
+        ([index], Some(&(_, new_deg))) => Some(format!(
+            "Set {} angle to {:.1} degrees",
+            tier_label_at(design, *index),
+            new_deg.abs()
+        )),
+        (many, _) => Some(format!("Change angles of {} tiers", many.len())),
     }
 }
 

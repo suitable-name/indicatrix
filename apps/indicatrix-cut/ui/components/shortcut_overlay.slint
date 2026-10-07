@@ -1,6 +1,10 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { ShortcutsModel } from "../models/shortcuts.slint";
+import { HelpTopics } from "../models/help.slint";
+import { HelpButton } from "help_button.slint";
+import { IconButton } from "icon_button.slint";
+import { CompactButton } from "compact_controls.slint";
 
 // The in-app "Keyboard
 // Shortcuts" overlay -- opened from Help > Keyboard Shortcuts and from `?`
@@ -8,7 +12,9 @@ import { ShortcutsModel } from "../models/shortcuts.slint";
 // letter shortcut is: only while no text field has focus). Renders
 // `ShortcutsModel.shortcuts`, the exact same `gui::editor::shortcuts::SHORTCUTS`
 // table `docs/manual/appendix-b-keyboard-shortcuts.md`'s generated blocks come
-// from -- see that module's own doc comment.
+// from -- see that module's own doc comment. Rows of one group are adjacent in the
+// model, and a heading is drawn wherever the group changes, so a new group in the
+// table needs no change here.
 export component ShortcutOverlay inherits Rectangle {
     background: Theme.overlay-backdrop;
 
@@ -34,6 +40,7 @@ export component ShortcutOverlay inherits Rectangle {
             spacing: 8px;
 
             HorizontalLayout {
+                spacing: 6px;
                 Text {
                     horizontal-stretch: 1;
                     text: "Keyboard Shortcuts";
@@ -41,28 +48,25 @@ export component ShortcutOverlay inherits Rectangle {
                     font-weight: 700;
                     color: Theme.text-primary;
                 }
-                Rectangle {
-                    width: copy_md_lbl.preferred-width + 12px;
-                    height: 20px;
-                    border-radius: 3px;
-                    background: copy_md_touch.has-hover ? Theme.bg-card-hover : Theme.bg-input;
-                    copy_md_lbl := Text {
+                VerticalLayout {
+                    alignment: center;
+                    CompactButton {
+                        width: 110px;
                         text: "Copy as Markdown";
-                        font-size: 9px;
-                        color: Theme.text-secondary;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                        hint: "Copy the full shortcut table (every section) to the clipboard as Markdown tables.";
+                        ink: Theme.text-secondary;
+                        clicked => { ShortcutsModel.copy_markdown(); }
                     }
-                    copy_md_touch := TouchArea { clicked => { ShortcutsModel.copy_markdown(); } }
-                    Tooltip { text: @markdown("Copies the full shortcut table (both sections) to the clipboard as a Markdown table."); }
                 }
-                Rectangle {
-                    width: 20px;
-                    height: 20px;
-                    border-radius: 3px;
-                    background: close_touch.has-hover ? Theme.bg-card-hover : transparent;
-                    Text { text: "\u{2715}"; font-size: 12px; color: Theme.text-muted; horizontal-alignment: center; vertical-alignment: center; }
-                    close_touch := TouchArea { clicked => { ShortcutsModel.close(); } }
+                VerticalLayout {
+                    alignment: center;
+                    HelpButton { topic: HelpTopics.shortcuts; hint: "Open the manual page on the keyboard shortcuts"; }
+                }
+                IconButton {
+                    icon: @image-url("../icons/close.svg");
+                    hint: "Close the keyboard shortcuts";
+                    tint: Theme.text-muted;
+                    clicked => { ShortcutsModel.close(); }
                 }
             }
 
@@ -71,40 +75,24 @@ export component ShortcutOverlay inherits Rectangle {
                 VerticalLayout {
                     spacing: 10px;
 
-                    Text { text: "Global"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
-                    for item in ShortcutsModel.shortcuts: Rectangle {
-                        if item.context == "Global": HorizontalLayout {
-                            spacing: 8px;
-                            Rectangle {
-                                width: 150px;
-                                background: Theme.bg-input;
-                                border-radius: Theme.radius-sm;
-                                Text {
-                                    text: item.keys;
-                                    font-size: 10px;
-                                    font-weight: 600;
-                                    color: Theme.accent-amber;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                    wrap: word-wrap;
-                                }
-                            }
+                    for item[i] in ShortcutsModel.shortcuts: VerticalLayout {
+                        spacing: 10px;
+
+                        // A new group starts here: a divider (except above the first group)
+                        // and the group's heading.
+                        if i == 0 || ShortcutsModel.shortcuts[i - 1].context != item.context: VerticalLayout {
+                            spacing: 10px;
+                            if i > 0: Rectangle { height: 1px; background: Theme.border-subtle; }
                             Text {
-                                horizontal-stretch: 1;
-                                text: item.action;
-                                font-size: 10px;
-                                color: Theme.text-secondary;
-                                wrap: word-wrap;
-                                vertical-alignment: center;
+                                text: item.context_note == "" ? item.context : item.context + " (" + item.context_note + ")";
+                                font-size: 11px;
+                                font-weight: 700;
+                                color: Theme.accent-cyan;
+                                accessible-role: AccessibleRole.text;
                             }
                         }
-                    }
 
-                    Rectangle { height: 1px; background: Theme.border-subtle; }
-
-                    Text { text: "The tier list (click into it first)"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
-                    for item in ShortcutsModel.shortcuts: Rectangle {
-                        if item.context == "The tier list": HorizontalLayout {
+                        HorizontalLayout {
                             spacing: 8px;
                             Rectangle {
                                 width: 150px;
@@ -127,6 +115,7 @@ export component ShortcutOverlay inherits Rectangle {
                                 color: Theme.text-secondary;
                                 wrap: word-wrap;
                                 vertical-alignment: center;
+                                accessible-label: item.keys + ": " + item.action;
                             }
                         }
                     }

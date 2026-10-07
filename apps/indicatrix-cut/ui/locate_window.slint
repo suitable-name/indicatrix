@@ -1,0 +1,470 @@
+import { Theme } from "theme.slint";
+import { ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { RoughPill, RoughField, ElidedText } from "components/rough_planner/fields.slint";
+import { TipBox } from "components/tip_box.slint";
+import { PhotoCanvas, CanvasMarker, CanvasPath, PhotoSlot, ReportRow } from "components/locate/photo_canvas.slint";
+
+// A heading of one step of the window's left column.
+component StepTitle inherits Rectangle {
+    in property <string> text;
+    height: 18px;
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.text;
+        font-size: 11px;
+        font-weight: 700;
+        color: Theme.text-muted;
+        vertical-alignment: center;
+    }
+}
+
+// A small note under a control.
+component Note inherits Rectangle {
+    in property <string> text;
+    in property <color> text_color: Theme.text-muted;
+    preferred-height: note_text.preferred-height;
+    note_text := Text {
+        width: parent.width;
+        text: root.text;
+        font-size: 10px;
+        color: root.text_color;
+        wrap: word-wrap;
+    }
+}
+
+// The lines of a report.
+component Rows inherits VerticalLayout {
+    in property <[ReportRow]> rows;
+    spacing: 2px;
+    for row in root.rows: Text {
+        text: row.text;
+        font-size: 10px;
+        color: row.warn ? Theme.accent-amber : Theme.text-secondary;
+        wrap: word-wrap;
+    }
+}
+
+// "Locate inclusion from photos...": the Rough planner's second window. Photos of a mesh rough
+// taken on a fixed rig, an alignment of the mesh to the rig, marks on the inclusion in each
+// photo, and a solve with its checks. Everything it shows is pushed from Rust
+// (`gui::rough_plan::locate`); it holds no state of its own beyond what is being typed.
+export component LocateWindow inherits Window {
+    title: "Locate Inclusion from Photos \u{2014} Indicatrix Cut";
+    // See `MainWindow`'s `icon` (app.slint) for why every window sets it.
+    icon: @image-url("../assets/icon.png");
+    preferred-width: 1260px;
+    preferred-height: 820px;
+    min-width: 960px;
+    min-height: 560px;
+    background: Theme.bg-darkest;
+    default-font-family: "Segoe UI";
+
+    // The rig.
+    in property <[string]> rig_names;
+    in-out property <int> rig_index: -1;
+    // The views' photo slots.
+    in property <[PhotoSlot]> slots;
+    // The view on the canvas.
+    in property <string> view_title;
+    in property <image> photo;
+    in property <int> image_w: 1;
+    in property <int> image_h: 1;
+    in property <bool> has_photo: false;
+    in property <[CanvasMarker]> markers;
+    in property <[CanvasPath]> paths;
+    in-out property <int> mode_index: 0;
+    in-out property <int> zoom: 1;
+    // The alignment.
+    in property <[string]> axis_names;
+    in-out property <int> axis_z_index: 4;
+    in-out property <int> axis_x_index: 0;
+    in property <[string]> nudge_labels;
+    in property <[string]> nudge_texts;
+    in property <string> align_text;
+    in property <[ReportRow]> align_rows;
+    // The solution.
+    in property <string> solve_text;
+    in property <[ReportRow]> solve_rows;
+    in-out property <string> radius_text: "0.5";
+    in-out property <string> margin_text: "0.3";
+    in property <bool> can_accept: false;
+    in property <string> accept_hint;
+    in property <[string]> records;
+    // State of the window.
+    in property <bool> busy: false;
+    in property <string> busy_text;
+    in property <string> error_text;
+    in property <string> status_text;
+
+    callback rig_selected(int);
+    callback edit_rigs();
+    callback load_photo(int);
+    callback select_view(int);
+    callback canvas_clicked(float, float);
+    callback mode_changed(int);
+    callback undo_click();
+    callback clear_view();
+    callback nudge_edited(int, string);
+    callback axes_changed();
+    callback align();
+    callback solve();
+    callback accept_inclusion();
+    callback reopen_record(int);
+
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+
+        VerticalLayout {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+            padding: 10px;
+            spacing: 8px;
+
+            // The rig and the window's messages.
+            HorizontalLayout {
+                height: 28px;
+                spacing: 8px;
+
+                Text {
+                    text: "Rig:";
+                    font-size: 12px;
+                    color: Theme.text-secondary;
+                    vertical-alignment: center;
+                }
+
+                TipBox {
+                    width: 220px;
+                    hint: "The camera rig the photos were taken on: the views, the stone's refractive index and the calibration. Edit rigs... creates and changes them.";
+                    ComboBox {
+                        min-width: 0px;
+                        model: root.rig_names;
+                        current-index <=> root.rig_index;
+                        enabled: !root.busy && root.rig_names.length > 0;
+                        accessible-label: "Camera rig";
+                        selected(value) => { root.rig_selected(root.rig_index); }
+                    }
+                }
+
+                RoughPill {
+                    text: "Edit rigs...";
+                    hint: "Create, edit or calibrate the camera rigs.";
+                    clicked => { root.edit_rigs(); }
+                }
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.busy ? root.busy_text : (root.error_text != "" ? root.error_text : root.status_text);
+                    font-size: 11px;
+                    color: root.busy ? Theme.text-secondary : (root.error_text != "" ? Theme.danger : Theme.text-secondary);
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            HorizontalLayout {
+                vertical-stretch: 1;
+                spacing: 10px;
+
+                // The steps.
+                Rectangle {
+                    width: 340px;
+                    background: Theme.bg-dark;
+                    border-radius: Theme.radius-md;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    clip: true;
+
+                    ScrollView {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: parent.height;
+
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 6px;
+                            alignment: start;
+
+                            StepTitle { text: "1. PHOTOS"; }
+                            Note { text: "Load one photo per view. Photos are read from where they are and are never copied. Click a row to show its photo."; }
+                            for slot[i] in root.slots: Rectangle {
+                                height: 38px;
+                                border-radius: Theme.radius-sm;
+                                background: slot.active ? Theme.surface-selected : (slot_touch.has-hover ? Theme.bg-card-hover : Theme.bg-card);
+                                slot_touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.select_view(i); }
+                                }
+                                HorizontalLayout {
+                                    padding: 4px;
+                                    spacing: 6px;
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        alignment: center;
+                                        ElidedText {
+                                            text: slot.name;
+                                            font_size: 11px;
+                                            font_weight: 700;
+                                            text_color: slot.active ? Theme.accent-cyan : Theme.text-primary;
+                                        }
+                                        ElidedText {
+                                            text: slot.file == "" ? "no photo" : (slot.status == "" ? slot.file : slot.file + " \u{2014} " + slot.status);
+                                            font_size: 10px;
+                                            text_color: Theme.text-muted;
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        RoughPill {
+                                            text: slot.loaded ? "Replace..." : "Load...";
+                                            hint: "Pick the photo of this view (PNG or JPEG).";
+                                            enabled: !root.busy;
+                                            clicked => { root.load_photo(i); }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle { height: 6px; }
+                            StepTitle { text: "2. ALIGN THE MESH TO THE RIG"; }
+                            Note { text: "Say how the scan sits on the rig, then outline the stone in each photo (the Outline tool) and align."; }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text {
+                                    text: "Mesh axis up:";
+                                    font-size: 10px;
+                                    color: Theme.text-muted;
+                                    vertical-alignment: center;
+                                }
+                                TipBox {
+                                    hint: "Which axis of the scan points up in the rig (along rig +Z).";
+                                    ComboBox {
+                                        min-width: 0px;
+                                        model: root.axis_names;
+                                        current-index <=> root.axis_z_index;
+                                        enabled: !root.busy;
+                                        accessible-label: "Mesh axis along rig Z";
+                                        selected(value) => { root.axes_changed(); }
+                                    }
+                                }
+                                Text {
+                                    text: "to the right:";
+                                    font-size: 10px;
+                                    color: Theme.text-muted;
+                                    vertical-alignment: center;
+                                }
+                                TipBox {
+                                    hint: "Which axis of the scan points along rig +X. It must not lie along the up axis.";
+                                    ComboBox {
+                                        min-width: 0px;
+                                        model: root.axis_names;
+                                        current-index <=> root.axis_x_index;
+                                        enabled: !root.busy;
+                                        accessible-label: "Mesh axis along rig X";
+                                        selected(value) => { root.axes_changed(); }
+                                    }
+                                }
+                            }
+                            for label[i] in root.nudge_labels: HorizontalLayout {
+                                spacing: 6px;
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: label;
+                                    font-size: 10px;
+                                    color: Theme.text-muted;
+                                    vertical-alignment: center;
+                                }
+                                TipBox {
+                                    width: 80px;
+                                    hint: "A fine adjustment of the starting position. The alignment refines it. Empty means 0.";
+                                    LineEdit {
+                                        min-width: 0px;
+                                        text: root.nudge_texts[i];
+                                        enabled: !root.busy;
+                                        accessible-label: label;
+                                        edited(t) => { root.nudge_edited(i, t); }
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                alignment: start;
+                                RoughPill {
+                                    text: "Align mesh to rig";
+                                    hint: "Fit the scan to the outlines drawn in the photos. Needs outlines in at least two views.";
+                                    active: true;
+                                    enabled: !root.busy;
+                                    clicked => { root.align(); }
+                                }
+                            }
+                            if root.align_text != "": Note { text: root.align_text; text_color: Theme.text-secondary; }
+                            Rows { rows: root.align_rows; }
+
+                            Rectangle { height: 6px; }
+                            StepTitle { text: "3. MARK THE INCLUSION"; }
+                            Note { text: "Choose Point, Line or Polygon above the photo and click the inclusion in each view where it is visible: at least two views, all of them is better. A line or polygon needs the same vertices in the same order in every view."; }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                alignment: start;
+                                RoughPill {
+                                    text: "Solve";
+                                    hint: "Trace every mark through the surface into the stone and find the point they agree on.";
+                                    active: true;
+                                    enabled: !root.busy;
+                                    clicked => { root.solve(); }
+                                }
+                            }
+                            if root.solve_text != "": Note { text: root.solve_text; text_color: Theme.text-secondary; }
+                            Rows { rows: root.solve_rows; }
+
+                            Rectangle { height: 6px; }
+                            StepTitle { text: "4. ADD IT TO THE ROUGH"; }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                RoughField {
+                                    label: "Radius (mm)";
+                                    hint: "The size of the shell that stands for the inclusion, as a radius in millimetres. The photos give a position, so set the radius to the size of the blob you saw.";
+                                    editable: !root.busy;
+                                    value <=> root.radius_text;
+                                }
+                                RoughField {
+                                    label: "Margin (mm)";
+                                    hint: "How far stones keep away from the inclusion. It starts at the larger of 0.3 mm and twice the uncertainty of the solution.";
+                                    editable: !root.busy;
+                                    value <=> root.margin_text;
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                alignment: start;
+                                RoughPill {
+                                    text: "Accept";
+                                    hint: root.accept_hint;
+                                    active: true;
+                                    enabled: root.can_accept && !root.busy;
+                                    clicked => { root.accept_inclusion(); }
+                                }
+                            }
+                            Note { text: "Adding is one undo step in the Rough Planner. The marks are kept with the rig for this session so you can solve again."; }
+                            if root.records.length > 0: StepTitle { text: "LOCATED THIS SESSION"; }
+                            for record[i] in root.records: HorizontalLayout {
+                                spacing: 6px;
+                                ElidedText {
+                                    text: record;
+                                    font_size: 10px;
+                                    text_color: Theme.text-secondary;
+                                }
+                                RoughPill {
+                                    text: "Re-open";
+                                    hint: "Bring this inclusion's marks and rig back to solve them again.";
+                                    enabled: !root.busy;
+                                    clicked => { root.reopen_record(i); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // The photo.
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 6px;
+
+                    HorizontalLayout {
+                        height: 22px;
+                        spacing: 6px;
+
+                        ElidedText {
+                            text: root.view_title;
+                            font_size: 12px;
+                            font_weight: 700;
+                        }
+                        RoughPill {
+                            text: "Point";
+                            hint: "Click once per view where the inclusion shows.";
+                            active: root.mode_index == 0;
+                            clicked => { root.mode_index = 0; root.mode_changed(0); }
+                        }
+                        RoughPill {
+                            text: "Line";
+                            hint: "Click along a feather or silk bundle seen edge-on: the same vertices in the same order in every view.";
+                            active: root.mode_index == 1;
+                            clicked => { root.mode_index = 1; root.mode_changed(1); }
+                        }
+                        RoughPill {
+                            text: "Polygon";
+                            hint: "Click around a flat inclusion: the same corners in the same order in every view.";
+                            active: root.mode_index == 2;
+                            clicked => { root.mode_index = 2; root.mode_changed(2); }
+                        }
+                        RoughPill {
+                            text: "Outline";
+                            hint: "Click around the outline of the stone in this photo. The alignment fits the scan to these outlines.";
+                            active: root.mode_index == 3;
+                            clicked => { root.mode_index = 3; root.mode_changed(3); }
+                        }
+                        RoughPill {
+                            text: "Undo click";
+                            hint: "Take back the last click of the chosen tool in this view.";
+                            clicked => { root.undo_click(); }
+                        }
+                        RoughPill {
+                            text: "Clear";
+                            hint: "Remove everything the chosen tool marked in this view.";
+                            clicked => { root.clear_view(); }
+                        }
+                        RoughPill {
+                            text: "1x";
+                            hint: "Show the whole photo.";
+                            active: root.zoom == 1;
+                            clicked => { root.zoom = 1; }
+                        }
+                        RoughPill {
+                            text: "2x";
+                            hint: "Zoom in twice. Scroll to move around.";
+                            active: root.zoom == 2;
+                            clicked => { root.zoom = 2; }
+                        }
+                        RoughPill {
+                            text: "4x";
+                            hint: "Zoom in four times. Scroll to move around.";
+                            active: root.zoom == 4;
+                            clicked => { root.zoom = 4; }
+                        }
+                        RoughPill {
+                            text: "8x";
+                            hint: "Zoom in eight times. Scroll to move around.";
+                            active: root.zoom == 8;
+                            clicked => { root.zoom = 8; }
+                        }
+                    }
+
+                    PhotoCanvas {
+                        vertical-stretch: 1;
+                        photo: root.photo;
+                        image_w: root.image_w;
+                        image_h: root.image_h;
+                        has_photo: root.has_photo;
+                        markers: root.markers;
+                        paths: root.paths;
+                        zoom: root.zoom;
+                        clicked(fx, fy) => { root.canvas_clicked(fx, fy); }
+                    }
+
+                    Text {
+                        text: "Cyan: your marks. Hollow green: where the solution appears in this photo, with its distance from your mark. Hollow amber: where a reflected copy of the point would appear.";
+                        font-size: 10px;
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+    }
+}

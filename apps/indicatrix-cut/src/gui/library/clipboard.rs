@@ -253,7 +253,8 @@ pub(in crate::gui) fn setup_copy_callbacks(ui: &MainWindow) {
                         text,
                         "{}\t{}\t{}\t{}\t{}",
                         row.order_idx + 1,
-                        row.facet,
+                        // The label the table shows: the standard code.
+                        row.code,
                         row.angle,
                         row.index_val,
                         row.notes
@@ -281,7 +282,7 @@ pub(in crate::gui) fn setup_copy_callbacks(ui: &MainWindow) {
                 if let Some(row) = angles_model.row_data(idx as usize) {
                     let mut text = format!(
                         "Facet: {}, Angle: {}, Index: {}, Notes: {}",
-                        row.facet, row.angle, row.index_val, row.notes
+                        row.code, row.angle, row.index_val, row.notes
                     );
                     if !row.second_line.is_empty() {
                         let _ = write!(text, "\nTool: {}", row.second_line);

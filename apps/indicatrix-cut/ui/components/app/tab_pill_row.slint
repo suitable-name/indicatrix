@@ -99,8 +99,9 @@ export component TabViewPillRow inherits HorizontalLayout {
             opacity: GuideModel.allows_view_tabs() ? 1.0 : 0.4;
             background: root.render_view_tab == 0 ? Theme.primary : (live_render_tab_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
             border-radius: Theme.radius-sm;
-            border-width: 1px;
-            border-color: root.render_view_tab == 0 ? Theme.accent-cyan : Theme.border-subtle;
+            // The open tutorial step may outline this pill (a cyan, 2px border).
+            border-width: GuideModel.highlight_target == "live_render_tab" ? 2px : 1px;
+            border-color: root.render_view_tab == 0 || GuideModel.highlight_target == "live_render_tab" ? Theme.accent-cyan : Theme.border-subtle;
             live_render_tab_touch := TouchArea {
                 enabled: GuideModel.allows_view_tabs();
                 clicked => { root.render_view_tab = 0; root.render_view_tab_changed(0); }

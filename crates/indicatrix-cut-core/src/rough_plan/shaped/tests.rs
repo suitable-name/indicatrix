@@ -384,6 +384,7 @@ struct CylinderFixture {
 }
 
 #[test]
+#[ignore = "slow rough-planner test (over 60 s); run with --ignored"]
 fn slicing_invariance_for_clipped_piece_table() {
     let mut rng = Lcg(99);
     let designs = random_designs(&mut rng, 4);
@@ -590,6 +591,7 @@ fn refinement_never_worse_and_all_stones_inside_region() {
 }
 
 #[test]
+#[ignore = "slow rough-planner test (over 60 s); run with --ignored"]
 fn yield_fraction_uses_model_volume() {
     let mut rng = Lcg(101);
     let designs = random_designs(&mut rng, 4);

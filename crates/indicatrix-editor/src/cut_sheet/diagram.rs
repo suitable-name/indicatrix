@@ -7,7 +7,7 @@ use indicatrix::geometry::{
     stone_metrics::{SolidStatus, build_solid_mesh},
 };
 use indicatrix_cut_core::Design;
-use indicatrix_solid::diagram2d::{self, DiagramConfig, DiagramStyle};
+use indicatrix_solid::diagram2d::{self, DiagramConfig, DiagramFrame, DiagramStyle, PanelKind};
 
 /// A rendered 2D faceting diagram, already PNG-encoded.
 ///
@@ -53,7 +53,76 @@ pub fn render_cut_diagram(
     let SolidStatus::Closed(mesh) = build_solid_mesh(&planes) else {
         return None;
     };
-    let config = DiagramConfig {
+    let config = diagram_config(design, width, height);
+    let style = diagram_style(design, solved);
+    let frame = diagram2d::render_diagram(&mesh, &config, &style);
+    frame_image(&frame)
+}
+
+/// The four views a printed cutting sheet shows, each a single-panel diagram.
+///
+/// The labels are the cutting-instructions template's, and they name the side the stone is
+/// seen from. The template's axes are the stone's own (`Z` along the stone's axis); the
+/// code's world axes have the stone's axis on `Y`, so the template's `(X, Y, Z)` are the
+/// world's `(Z, X, Y)`:
+///
+/// | Label | Field | Seen from (world) | Panel |
+/// |---|---|---|---|
+/// | `down +Z` | [`Self::top`] | `+Y`, above | crown |
+/// | `down +X` | [`Self::side`] | `+Z` | profile |
+/// | `down -Y` | [`Self::end`] | `-X` | end view |
+/// | `down -Z` | [`Self::bottom`] | `-Y`, below | pavilion |
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CutViews {
+    /// `down +Z`: the crown, seen from above.
+    pub top: DiagramImage,
+    /// `down +X`: the side, the profile panel.
+    pub side: DiagramImage,
+    /// `down -Y`: the end, the side view a quarter turn from `side`.
+    pub end: DiagramImage,
+    /// `down -Z`: the pavilion, seen from below.
+    pub bottom: DiagramImage,
+}
+
+/// Builds `design`'s four sheet views, each `width` x `height` pixels, PNG-encoded.
+///
+/// `None` under the same condition as [`render_cut_diagram`]: the design's planes do not
+/// close to a solid. Facet labels are the same canonical tier codes the three-panel diagram
+/// prints.
+///
+/// # Panics
+///
+/// Same alignment contract as [`Design::planes_from_solved`]: `solved` must have one entry
+/// per tier `design` currently has, in the same order.
+#[must_use]
+pub fn render_cut_views(
+    design: &Design,
+    solved: &[SolvedTier],
+    width: u32,
+    height: u32,
+) -> Option<CutViews> {
+    let planes = design.planes_from_solved(solved);
+    let SolidStatus::Closed(mesh) = build_solid_mesh(&planes) else {
+        return None;
+    };
+    let config = diagram_config(design, width, height);
+    let style = diagram_style(design, solved);
+    let single = |panel| {
+        frame_image(&diagram2d::render_diagram_single_panel(
+            &mesh, &config, &style, panel,
+        ))
+    };
+    Some(CutViews {
+        top: single(PanelKind::Crown)?,
+        side: single(PanelKind::Profile)?,
+        end: frame_image(&diagram2d::render_diagram_end_view(&mesh, &config, &style))?,
+        bottom: single(PanelKind::Pavilion)?,
+    })
+}
+
+/// The diagram's frame size and index wheel for `design`.
+const fn diagram_config(design: &Design, width: u32, height: u32) -> DiagramConfig {
+    DiagramConfig {
         width,
         height,
         gear_teeth: design.meta.gear_teeth_abs(),
@@ -63,13 +132,21 @@ pub fn render_cut_diagram(
         gear_reference_angle: design.meta.gear_reference_angle as f32,
         symmetry_order: design.meta.symmetry_order,
         mirror: design.meta.mirror,
-    };
+    }
+}
+
+/// The diagram's style for `design`: the default look with every facet labelled by its tier.
+fn diagram_style(design: &Design, solved: &[SolvedTier]) -> DiagramStyle {
     let mut style = DiagramStyle::default();
     let facet_map = indicatrix_solid::facet_map::FacetMap::from_design(design, solved);
     style.facet_labels = (0..facet_map.facet_count())
         .map(|id| facet_map.facet_label(id))
         .collect();
-    let frame = diagram2d::render_diagram(&mesh, &config, &style);
+    style
+}
+
+/// `frame` PNG-encoded, `None` when the encoder refuses it.
+fn frame_image(frame: &DiagramFrame) -> Option<DiagramImage> {
     let png_bytes = encode_png(frame.width, frame.height, &frame.color).ok()?;
     Some(DiagramImage {
         width: frame.width,

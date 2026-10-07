@@ -197,6 +197,8 @@ fn support_row(
 /// Reusable buffer workspace for evaluating support values and solving scaling LPs.
 pub struct SupportWorkspace {
     scale_rows: Vec<ScaleRow>,
+    /// `scale_rows` with the offsets shifted to the frame of the current centre.
+    shifted: Vec<ScaleRow>,
     lp_scratch: LpScratch,
     /// The stone's planes in the rough frame, rebuilt per mesh check.
     world: Vec<(DVec3, f64)>,
@@ -209,6 +211,7 @@ impl SupportWorkspace {
     pub(crate) fn new(plane_capacity: usize) -> Self {
         Self {
             scale_rows: Vec::with_capacity(plane_capacity),
+            shifted: Vec::new(),
             lp_scratch: LpScratch::new(),
             world: Vec::new(),
             blockers: Vec::new(),
@@ -282,6 +285,11 @@ impl SupportWorkspace {
                 self.world.push((n, k.mul_add(d, n.dot(centre))));
             }
             mesh.polytope_blockers(&self.world, inset, &mut self.blockers);
+            let violation = |n: DVec3, d: f64| {
+                let row = support_row(axes, vertices, n, d - inset);
+                k.mul_add(row.support, n.dot(centre)) - row.offset
+            };
+            mesh.drop_cleared(&mut self.blockers, violation);
             if self.blockers.is_empty() {
                 let inside = guard.inside;
                 let probe =
@@ -291,10 +299,12 @@ impl SupportWorkspace {
             if round == MESH_ROUNDS {
                 return None;
             }
-            let added = mesh.blocker_rows(&self.blockers, &known, |n, d| {
-                let row = support_row(axes, vertices, n, d - inset);
-                k.mul_add(row.support, n.dot(centre)) - row.offset
-            });
+            let added = mesh.blocker_rows(
+                &self.blockers,
+                &known,
+                |n, d| n.dot(centre) <= d - inset,
+                violation,
+            );
             if added.is_empty() {
                 return None;
             }
@@ -303,9 +313,32 @@ impl SupportWorkspace {
                 self.scale_rows
                     .push(support_row(axes, vertices, n, d - inset));
             }
-            solution = self.solve()?;
+            solution = self.solve_about(centre)?;
         }
         None
+    }
+
+    /// [`Self::solve`] in the frame of `centre`: every offset of a copy of the rows becomes
+    /// `offset - n . centre`, and the centre is added back to the pose.
+    ///
+    /// Every row the centre satisfies gets a non-negative offset, so phase 1 of the simplex
+    /// needs no artificial variable for it. The post-check in `lp.rs` accepts
+    /// `1e-9 (1 + |offset|)` per row; the shifted offsets are smaller, so it is a little
+    /// stricter, never looser.
+    fn solve_about(&mut self, centre: DVec3) -> Option<(f64, [f64; 3])> {
+        let c = [centre.x, centre.y, centre.z];
+        self.shifted.clear();
+        self.shifted.extend(self.scale_rows.iter().map(|row| {
+            let shift =
+                row.normal[2].mul_add(c[2], row.normal[1].mul_add(c[1], row.normal[0] * c[0]));
+            ScaleRow {
+                normal: row.normal,
+                support: row.support,
+                offset: row.offset - shift,
+            }
+        }));
+        let (k, t) = max_scale_with_scratch(&self.shifted, &mut self.lp_scratch)?;
+        Some((k, [t[0] + c[0], t[1] + c[1], t[2] + c[2]]))
     }
 
     /// Upper bound on the scale [`Self::solve`] can return for the rows of the last

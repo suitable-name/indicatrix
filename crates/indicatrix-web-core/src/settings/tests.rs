@@ -65,7 +65,7 @@ fn empty_partial_and_out_of_range_payloads_are_repaired() {
     assert!(SessionPayload::from_json("not json").is_err());
     let wild = SessionPayload::from_json(
         r#"{"render":{"exposure":99.0,"max_bounces":1,"target_spp":100000,"lighting":"nope",
-            "backdrop_index":9,"inclusion_sigma_s":-1.0,"edge_rounding_radius":1.0,
+            "backdrop_index":9,"head_shadow_deg":80.0,"inclusion_sigma_s":-1.0,"edge_rounding_radius":1.0,
             "stone_width_mm":50.0,"c_axis_tilt_deg":400.0,"view_tab":7,
             "export":{"long_edge":99999,"spp":1,"color_space":5}}}"#,
     )
@@ -75,8 +75,9 @@ fn empty_partial_and_out_of_range_payloads_are_repaired() {
     assert_eq!(wild.exposure, EXPOSURE_RANGE.1);
     assert_eq!(wild.max_bounces, BOUNCE_RANGE.0);
     assert_eq!(wild.target_spp, LIVE_SPP_RANGE.1);
-    assert_eq!(wild.lighting_preset(), LightingPreset::Daylight);
+    assert_eq!(wild.lighting_preset(), LightingPreset::LightTent);
     assert_eq!(wild.backdrop_index, Backdrop::from_index(9).index());
+    assert_eq!(wild.head_shadow_deg, HEAD_SHADOW_RANGE.1);
     assert_eq!(wild.inclusion_sigma_s, 0.0);
     assert_eq!(wild.edge_rounding_radius, EDGE_ROUNDING_RANGE.1);
     assert_eq!(wild.stone_width_mm, STONE_WIDTH_RANGE.1);
@@ -92,6 +93,16 @@ fn empty_partial_and_out_of_range_payloads_are_repaired() {
     }
     .sanitized();
     assert_eq!(nan.exposure, 1.0);
+    let nan_shadow = RenderSettings {
+        head_shadow_deg: f32::NAN,
+        ..RenderSettings::default()
+    }
+    .sanitized();
+    assert_eq!(nan_shadow.head_shadow_deg, DEFAULT_HEAD_SHADOW_DEG);
+    assert_eq!(
+        RenderSettings::default().lighting_spec().head_shadow_deg,
+        16.0
+    );
     assert_eq!(nan.camera_distance, 2.4, "non-finite takes the default");
 }
 
@@ -199,7 +210,7 @@ fn a_linked_scene_matches_the_desktop_render_context() {
     assert_eq!(spec.max_bounces, 9);
     assert_eq!(
         (spec.camera.yaw, spec.camera.pitch, spec.camera.distance),
-        (0.60, 0.45, 2.4)
+        (0.35, 1.15, 2.4)
     );
     let overrides = MaterialOverrides {
         inclusion_sigma_s: 0.4,
@@ -278,5 +289,15 @@ fn the_option_lists_match_the_desktop() {
         material_options(&[custom]).last().map(String::as_str),
         Some("Zz custom")
     );
-    assert_eq!(lighting_options()[5], LightingPreset::LightTent.label());
+    assert_eq!(lighting_options()[0], LightingPreset::LightTent.label());
+    assert_eq!(lighting_options()[1], LightingPreset::IsoHemisphere.label());
+    assert_eq!(lighting_options()[2], LightingPreset::WhiteTray.label());
+    assert_eq!(lighting_options()[5], LightingPreset::DaylightDome.label());
+    assert_eq!(lighting_options().len(), 13, "no UV lamp is offered");
+    let uv = RenderSettings {
+        lighting: LightingPreset::UvLamp365.label().to_string(),
+        ..RenderSettings::default()
+    };
+    assert_eq!(uv.lighting_preset(), LightingPreset::default());
+    assert_eq!(uv.sanitized().lighting, LightingPreset::default().label());
 }

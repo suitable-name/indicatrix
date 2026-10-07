@@ -127,7 +127,26 @@ fn install_panic_logger() {
     }));
 }
 
+/// Hands the saved UI scale (Edit > Preferences...) to the windowing layer as
+/// `SLINT_SCALE_FACTOR`, which it reads when it creates the first window -- so a changed
+/// scale takes effect on the next start. Does nothing for the Automatic setting, and
+/// leaves a `SLINT_SCALE_FACTOR` the user set themselves alone.
+///
+/// Every picking and raster path in the app reads the window's real scale factor, so one
+/// value set here keeps them all consistent.
+fn apply_saved_ui_scale() {
+    if let Some(factor) = indicatrix_cut::gui::preferences::saved_ui_scale_factor() {
+        // SAFETY: this is the first thing `main` does, before the tracing subscriber, the
+        // panic hook, the window or any worker thread exists, so nothing else can be
+        // reading or writing the process environment while it changes.
+        unsafe { std::env::set_var("SLINT_SCALE_FACTOR", factor) };
+    }
+}
+
 fn main() -> anyhow::Result<()> {
+    // Before ANY thread or Slint call: the environment is only safe to change while the
+    // process is still single-threaded.
+    apply_saved_ui_scale();
     install_tracing_subscriber();
     install_panic_logger();
     // `indicatrix-cut <file>` (what an OS "open with" or double-click association

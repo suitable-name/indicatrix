@@ -3,6 +3,11 @@ import { DiagramItem, PreviewThumbnails } from "../types.slint";
 import { Theme } from "../theme.slint";
 import { LibraryModel } from "../models/library.slint";
 import { RemoteWorkerModel } from "../models/remote_worker.slint";
+import { BuildDesignModel } from "../models/build_design.slint";
+import { HelpTopics } from "../models/help.slint";
+import { HelpButton } from "help_button.slint";
+// The hand-drawn buttons of the list are buttons for the keyboard and a screen reader too.
+import { TouchButton } from "touch_button.slint";
 
 export component CollapsedLibraryRail inherits Rectangle {
     width: 40px;
@@ -33,13 +38,9 @@ export component CollapsedLibraryRail inherits Rectangle {
                 width: 28px;
                 height: 28px;
                 border-radius: Theme.radius-sm;
-                background: expand_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                background: expand_touch.has_hover ? Theme.bg-elevated : Theme.bg-input;
                 border-width: 1px;
                 border-color: Theme.border-medium;
-
-                expand_touch := TouchArea {
-                    clicked => { root.expand_requested(); }
-                }
 
                 Image {
                     source: @image-url("../icons/folder.svg");
@@ -48,6 +49,12 @@ export component CollapsedLibraryRail inherits Rectangle {
                     height: 13px;
                     horizontal-alignment: center;
                     vertical-alignment: center;
+                }
+
+                expand_touch := TouchButton {
+                    label: "Show the library list";
+                    hint: "Show the library list again.";
+                    clicked => { root.expand_requested(); }
                 }
             }
         }
@@ -111,16 +118,19 @@ export component DiagramListView inherits Rectangle {
                     color: Theme.accent-amber;
                 }
 
+                // The manual page on the library list and its search row.
+                HelpButton {
+                    topic: HelpTopics.library;
+                    hint: "Open the manual page on searching and filtering the library";
+                }
+
                 // Collapses the panel down to a thin rail -- see
                 // `collapse_requested`'s own doc comment above.
                 Rectangle {
                     width: 20px;
                     height: 20px;
                     border-radius: Theme.radius-sm;
-                    background: collapse_touch.has-hover ? Theme.bg-elevated : transparent;
-                    collapse_touch := TouchArea {
-                        clicked => { root.collapse_requested(); }
-                    }
+                    background: collapse_touch.has_hover ? Theme.bg-elevated : transparent;
                     Image {
                         source: @image-url("../icons/close.svg");
                         colorize: Theme.text-secondary;
@@ -128,6 +138,11 @@ export component DiagramListView inherits Rectangle {
                         height: 10px;
                         horizontal-alignment: center;
                         vertical-alignment: center;
+                    }
+                    collapse_touch := TouchButton {
+                        label: "Hide the library list";
+                        hint: "Shrink the library list to a thin strip to give the viewport more room. Click the strip to bring it back.";
+                        clicked => { root.collapse_requested(); }
                     }
                 }
             }
@@ -160,14 +175,20 @@ export component DiagramListView inherits Rectangle {
                     color: Theme.accent-cyan;
                     vertical-alignment: center;
                 }
-                Text {
-                    text: "Clear";
-                    font-size: 10px;
-                    font-weight: 700;
-                    color: Theme.accent-cyan;
-                    vertical-alignment: center;
-                    TouchArea {
+                Rectangle {
+                    width: clear_txt.preferred-width + 12px;
+                    clear_txt := Text {
+                        text: "Clear";
+                        font-size: 10px;
+                        font-weight: 700;
+                        color: clear_touch.has_hover ? Theme.accent-cyan-hover : Theme.accent-cyan;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    clear_touch := TouchButton {
                         enabled: !RemoteWorkerModel.library_is_remote;
+                        label: "Clear the filter";
+                        hint: "Stop showing only the designs you just imported and show the whole library again.";
                         clicked => {
                             LibraryModel.recent_import_filter = [];
                             LibraryModel.id_filter_label = "";
@@ -223,7 +244,7 @@ export component DiagramListView inherits Rectangle {
                         ? 0
                         : root.keyboard_focus_index - 1;
                     return accept;
-                } else if event.text == Key.Return {
+                } else if event.text == Key.Return || event.text == Key.Space {
                     if root.keyboard_focus_index >= 0 && root.keyboard_focus_index < LibraryModel.diagram_list.length {
                         LibraryModel.select_diagram(LibraryModel.diagram_list[root.keyboard_focus_index].id);
                     }
@@ -255,6 +276,24 @@ export component DiagramListView inherits Rectangle {
                         background: LibraryModel.selected_entry_id == item.id ? Theme.surface-selected : (item_touch.has-hover ? Theme.bg-card-hover : Theme.bg-input);
                         opacity: item.ignored ? 0.55 : 1.0;
                         border-radius: Theme.radius-sm;
+                        // One row of the library list for a screen reader: the design, who
+                        // designed it, its gear and facet count, and whether it is the one
+                        // selected. Up and Down move the ring, Enter or Space selects (the
+                        // list's own FocusScope, above); the right-click actions are in the
+                        // Library menu, under "Selected Design".
+                        accessible-role: AccessibleRole.list-item;
+                        accessible-label: item.title
+                            + (item.designer != "" ? ", by " + item.designer : "")
+                            + (item.gear != "" ? ", gear " + item.gear : "")
+                            + (item.facets != "" ? ", " + item.facets + " facets" : "")
+                            + (item.ignored ? ", ignored" : "")
+                            + (item.is_local ? ", your own design" : "");
+                        accessible-description: "Select this design to see it in the detail view.";
+                        accessible-item-selectable: true;
+                        accessible-item-selected: LibraryModel.selected_entry_id == item.id;
+                        accessible-item-index: idx;
+                        accessible-item-count: LibraryModel.diagram_list.length;
+                        accessible-action-default => { LibraryModel.select_diagram(item.id); }
                         // Keyboard focus ring: takes priority over the plain-hover border
                         // so Up/Down is visibly trackable even with the mouse sitting
                         // still elsewhere; selection (blue background above) and ignored
@@ -321,6 +360,13 @@ export component DiagramListView inherits Rectangle {
                                     }
                                 }
                                 MenuItem {
+                                    title: "Build this design";
+                                    enabled: !BuildDesignModel.busy;
+                                    activated => {
+                                        BuildDesignModel.start(item.id);
+                                    }
+                                }
+                                MenuItem {
                                     title: "Add tag...";
                                     activated => {
                                         card.tag_draft = "";
@@ -330,7 +376,7 @@ export component DiagramListView inherits Rectangle {
                             }
                         }
 
-                        // The "⋮" is a real button: clicking it opens the same
+                        // The three-dots icon is a real button: clicking it opens the same
                         // actions in a small floating menu, since Slint's
                         // `ContextMenuArea`/`Menu` (used by the right-click path above)
                         // has no API in this version to open programmatically from a
@@ -342,19 +388,24 @@ export component DiagramListView inherits Rectangle {
                             width: 20px;
                             height: 20px;
                             border-radius: 3px;
-                            background: kebab_touch.has-hover || card.kebab_open ? Theme.bg-card-hover : transparent;
-                            Text {
-                                text: "⋮";
-                                font-size: 16px;
-                                font-weight: 700;
-                                color: Theme.text-muted;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
+                            background: kebab_touch.has_hover || card.kebab_open ? Theme.bg-card-hover : transparent;
+                            Image {
+                                source: @image-url("../icons/more.svg");
+                                colorize: Theme.text-muted;
+                                width: 14px;
+                                height: 14px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                image-fit: contain;
                             }
-                            kebab_touch := TouchArea {
+                            kebab_touch := TouchButton {
+                                label: "More actions for " + item.title;
+                                hint: "More actions for this design: previews, tilt curves, ignore, planner, build it as a lesson, tags. Also on right-click and in the Library menu under Selected Design.";
+                                expandable: true;
+                                expanded: card.kebab_open;
+                                ring_radius: 3px;
                                 clicked => { card.kebab_open = !card.kebab_open; }
                             }
-                            Tooltip { text: @markdown("More actions (also available via right-click)."); }
                         }
                         if card.kebab_open: Rectangle {
                             // Backdrop -- dismisses the menu on an outside click.
@@ -381,41 +432,66 @@ export component DiagramListView inherits Rectangle {
                             kebab_menu_col := VerticalLayout {
                                 Rectangle {
                                     height: 24px;
-                                    background: kebab_item1.has-hover ? Theme.bg-card-hover : transparent;
+                                    background: kebab_item1.has_hover ? Theme.bg-card-hover : transparent;
                                     Text { text: "Generate Previews"; font-size: 9px; color: Theme.text-primary; x: 8px; vertical-alignment: center; }
-                                    kebab_item1 := TouchArea {
+                                    kebab_item1 := TouchButton {
+                                        label: "Generate Previews";
+                                        hint: "Draw this design's front and top pictures for the list.";
                                         clicked => { card.kebab_open = false; LibraryModel.generate_previews_for_entry(item.id); }
                                     }
                                 }
                                 Rectangle {
                                     height: 24px;
-                                    background: kebab_item2.has-hover ? Theme.bg-card-hover : transparent;
+                                    background: kebab_item2.has_hover ? Theme.bg-card-hover : transparent;
                                     Text { text: "Compute Tilt Curves"; font-size: 9px; color: Theme.text-primary; x: 8px; vertical-alignment: center; }
-                                    kebab_item2 := TouchArea {
+                                    kebab_item2 := TouchButton {
+                                        label: "Compute Tilt Curves";
+                                        hint: "Work out how bright or dark this design looks as it is tilted, ahead of time. See the glossary.";
                                         clicked => { card.kebab_open = false; LibraryModel.compute_tilt_curves_for_entry(item.id); }
                                     }
                                 }
                                 Rectangle {
                                     height: 24px;
-                                    background: kebab_item3.has-hover ? Theme.bg-card-hover : transparent;
+                                    background: kebab_item3.has_hover ? Theme.bg-card-hover : transparent;
                                     Text { text: item.ignored ? "Un-ignore" : "Ignore"; font-size: 9px; color: Theme.text-primary; x: 8px; vertical-alignment: center; }
-                                    kebab_item3 := TouchArea {
+                                    kebab_item3 := TouchButton {
+                                        label: item.ignored ? "Un-ignore" : "Ignore";
+                                        hint: item.ignored
+                                            ? "Show this design in the list again."
+                                            : "Hide this design from the list. You can still show it with Show ignored designs in the filters.";
                                         clicked => { card.kebab_open = false; LibraryModel.toggle_ignored(item.id); }
                                     }
                                 }
                                 Rectangle {
                                     height: 24px;
-                                    background: kebab_item_planner.has-hover ? Theme.bg-card-hover : transparent;
+                                    background: kebab_item_planner.has_hover ? Theme.bg-card-hover : transparent;
                                     Text { text: item.planner_excluded ? "Include in planner" : "Exclude from planner"; font-size: 9px; color: Theme.text-primary; x: 8px; vertical-alignment: center; }
-                                    kebab_item_planner := TouchArea {
+                                    kebab_item_planner := TouchButton {
+                                        label: item.planner_excluded ? "Include in planner" : "Exclude from planner";
+                                        hint: item.planner_excluded
+                                            ? "Let the Rough Planner use this design again."
+                                            : "Keep this design out of the Rough Planner's candidates. It stays in the list.";
                                         clicked => { card.kebab_open = false; LibraryModel.toggle_planner_excluded(item.id); }
                                     }
                                 }
                                 Rectangle {
                                     height: 24px;
-                                    background: kebab_item4.has-hover ? Theme.bg-card-hover : transparent;
+                                    background: kebab_item_build.has_hover ? Theme.bg-card-hover : transparent;
+                                    Text { text: "Build this design"; font-size: 9px; color: BuildDesignModel.busy ? Theme.text-muted : Theme.text-primary; x: 8px; vertical-alignment: center; }
+                                    kebab_item_build := TouchButton {
+                                        enabled: !BuildDesignModel.busy;
+                                        label: "Build this design";
+                                        hint: "Turn this design into a step-by-step lesson that rebuilds it from an empty design.";
+                                        clicked => { card.kebab_open = false; BuildDesignModel.start(item.id); }
+                                    }
+                                }
+                                Rectangle {
+                                    height: 24px;
+                                    background: kebab_item4.has_hover ? Theme.bg-card-hover : transparent;
                                     Text { text: "Add tag..."; font-size: 9px; color: Theme.text-primary; x: 8px; vertical-alignment: center; }
-                                    kebab_item4 := TouchArea {
+                                    kebab_item4 := TouchButton {
+                                        label: "Add tag";
+                                        hint: "Type a tag to put on this design, for example the stone you cut it in.";
                                         clicked => {
                                             card.kebab_open = false;
                                             card.tag_draft = "";
@@ -547,7 +623,7 @@ export component DiagramListView inherits Rectangle {
                                 }
 
                                 if item.ignored: Rectangle {
-                                    background: #78350f;
+                                    background: Theme.badge-amber-bg;
                                     border-radius: 3px;
                                     height: 18px;
                                     HorizontalLayout {
@@ -568,7 +644,7 @@ export component DiagramListView inherits Rectangle {
                                 // the same way the shape/Ignored badges above already
                                 // flag their own conditions.
                                 if item.is_local: Rectangle {
-                                    background: #065f46;
+                                    background: Theme.badge-emerald-bg;
                                     border-radius: 3px;
                                     height: 18px;
                                     HorizontalLayout {
@@ -596,7 +672,7 @@ export component DiagramListView inherits Rectangle {
                                 spacing: 4px;
                                 alignment: start;
                                 for tag_name in item.tags: Rectangle {
-                                    background: #4c1d95;
+                                    background: Theme.badge-purple-bg;
                                     border-radius: 3px;
                                     height: 16px;
                                     HorizontalLayout {
@@ -618,7 +694,9 @@ export component DiagramListView inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                     }
-                                    TouchArea {
+                                    TouchButton {
+                                        label: "Remove tag " + tag_name;
+                                        hint: "Remove the tag " + tag_name + " from this design.";
                                         clicked => {
                                             LibraryModel.remove_tag_from_entry(item.id, tag_name);
                                         }
@@ -628,6 +706,8 @@ export component DiagramListView inherits Rectangle {
                                     width: 90px;
                                     height: 16px;
                                     font-size: 9px;
+                                    accessible-label: "New tag";
+                                    accessible-description: "Type a tag and press Enter.";
                                     text <=> card.tag_draft;
                                     accepted => {
                                         if card.tag_draft != "" {

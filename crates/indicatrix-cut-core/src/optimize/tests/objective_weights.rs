@@ -12,6 +12,7 @@ fn score_is_the_normalized_weighted_sum_with_tilt_brilliance_flipped_to_a_loss()
         extinction: 1.0,
         tilt_brilliance: 1.0,
         yield_weight: 0.0,
+        ..ObjectiveWeights::default()
     };
     let components = ObjectiveComponents {
         windowing_pct: 10.0,
@@ -29,6 +30,7 @@ fn score_falls_back_to_equal_weights_when_all_weights_are_non_positive() {
         extinction: 0.0,
         tilt_brilliance: 0.0,
         yield_weight: 0.0,
+        ..ObjectiveWeights::default()
     };
     let components = ObjectiveComponents {
         windowing_pct: 30.0,
@@ -51,12 +53,14 @@ fn score_only_depends_on_weight_ratios_not_absolute_scale() {
         extinction: 2.0,
         tilt_brilliance: 3.0,
         yield_weight: 0.0,
+        ..ObjectiveWeights::default()
     };
     let b = ObjectiveWeights {
         windowing: 10.0,
         extinction: 20.0,
         tilt_brilliance: 30.0,
         yield_weight: 0.0,
+        ..ObjectiveWeights::default()
     };
     assert!((a.score(&components) - b.score(&components)).abs() < 1e-4);
 }
@@ -96,6 +100,7 @@ fn score_with_yield_prefers_lower_yield_loss_at_positive_weight() {
         extinction: 1.0,
         tilt_brilliance: 1.0,
         yield_weight: 1.0,
+        ..ObjectiveWeights::default()
     };
     let components = ObjectiveComponents {
         windowing_pct: 10.0,

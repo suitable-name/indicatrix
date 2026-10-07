@@ -1,0 +1,124 @@
+import { OptimizeToneSwatches } from "../types.slint";
+
+// The Inspector's Optimize tab: the objective preset, what may change, the angle ranges, the
+// run settings and the ranked candidate list. The tab's older state (the weight boxes, the
+// budget and seed, polish, "only selected tiers", the running/status/result rows, Apply and
+// the Preview toggle) stays on `EditorModel`, because the command bar's Optimize button and
+// the status strip read it too. The Rust side is `gui::editor::optimize_panel`; the pure
+// rules (defaults, clamping, row text) are in `indicatrix_editor::optimize_view`.
+
+// One tier of the "Angle ranges" table. `min_text` and `max_text` are what the two fields
+// start with; the tier's own angle is shown beside them. A tier that follows a relation is
+// listed with `driven` set and gets no fields.
+export struct OptimizeRangeRow {
+    tier_index: int,
+    tier_number: string,
+    name: string,
+    angle: string,
+    min_text: string,
+    max_text: string,
+    driven: bool,
+}
+
+// One row of the candidate list, every cell already formatted. The `*_dir` fields are 1
+// when the figure beats the starting stone's, -1 when it is worse and 0 when the same.
+export struct OptimizeCandidateRow {
+    rank: string,
+    score: string,
+    windowing: string,
+    brilliance: string,
+    extinction: string,
+    yield_loss: string,
+    changed: string,
+    score_dir: int,
+    windowing_dir: int,
+    brilliance_dir: int,
+    extinction_dir: int,
+    yield_dir: int,
+    // The face-up lightness ("L* 62.3", "-" when not measured), whether it beats the start
+    // (only the figure the run's goal pulls on is judged), and the predicted face-up colour
+    // as the screen shows it. `has_tone` is false when no colour was measured.
+    tone: string,
+    tone_dir: int,
+    tone_swatch: color,
+    has_tone: bool,
+}
+
+export global OptimizeModel {
+    // --- Objective ---
+    // The five presets, then "Custom".
+    in property <[string]> preset_labels: [];
+    // Position in `preset_labels`; the last entry shows the three weight boxes and the
+    // yield slider.
+    in-out property <int> preset_index: 0;
+    // One line saying what the chosen preset favours.
+    in property <string> preset_description: "";
+    // The size rule or the no-body-colour warning for the face-up colour objective; empty
+    // hides it. Shown only while `tone_active`.
+    in property <string> tone_note: "";
+    // A tone preset is chosen or the Custom Tone slider is away from zero.
+    in property <bool> tone_active: false;
+    // The presets the Simple interface lists: `preset_labels` without the last entry,
+    // "Custom" (which needs the weight boxes). Same order, so the same positions.
+    in property <[string]> simple_preset_labels: [];
+
+    // --- What may change ---
+    // Move tiers that are pinned to a scale value too, turning each about the edge it keeps
+    // on the girdle. Starts ticked for a design with nothing else free to move.
+    in-out property <bool> vary_anchored: false;
+    // What "Vary anchored tiers" would be without the cutter's own choice (on when nothing
+    // else can move), so the Simple interface can tell whether the hidden tick differs.
+    in property <bool> vary_default: false;
+    // Reject a candidate whose girdle is thinner than half the starting girdle.
+    in-out property <bool> keep_girdle: true;
+    // The angle ranges table is shown.
+    in-out property <bool> ranges_open: false;
+    // "3 tiers can change; 1 tier follows a relation and stays put."
+    in property <string> range_summary: "";
+    in property <[OptimizeRangeRow]> range_rows: [];
+    // The cutter typed an angle range that the search will use (not the default range).
+    in property <bool> ranges_customised: false;
+
+    // --- Run ---
+    // How many ranked candidates to keep, 1 to 5.
+    in-out property <int> candidates: 3;
+    // "Estimated time: about 40 seconds (...)."
+    in property <string> estimate_text: "";
+    // 0..1 while a run is going.
+    in property <float> progress: 0.0;
+
+    // --- Results ---
+    in property <bool> has_results: false;
+    // The design changed after the run; the candidates can no longer be applied.
+    in property <bool> results_stale: false;
+    in property <OptimizeCandidateRow> baseline_row;
+    in property <[OptimizeCandidateRow]> candidate_rows: [];
+    // The face-up colour of the starting stone and of the picked candidate.
+    in property <OptimizeToneSwatches> tone_swatches;
+    // The picked candidate, or -1 for none (the starting stone).
+    in-out property <int> selected_candidate: -1;
+    // How many starting arrangements the search tries, as typed (1 to 32).
+    in-out property <string> starts_text: "8";
+
+    // The combo box changed to this position.
+    callback preset_changed(int);
+    // "Vary anchored tiers" was ticked or unticked by the cutter.
+    callback vary_toggled(bool);
+    // The angle ranges table was opened or closed.
+    callback ranges_toggled(bool);
+    // A range field was edited: tier position, minimum text, maximum text.
+    callback range_edited(int, string, string);
+    // Back to the default ranges.
+    callback reset_ranges();
+    // A budget, candidates or polish setting changed, so the time estimate needs redoing.
+    callback settings_edited();
+    // A row of the candidate list was clicked; -1 is the starting stone.
+    callback select_candidate(int);
+
+    // Whether a setting the Simple interface hides is not at its default, so the tab can say
+    // "Some advanced settings are in use." Arguments, in order: "Vary anchored tiers" ticked,
+    // its default, "Keep the girdle" ticked, whether an angle range was typed, the budget text,
+    // the seed text, the number of candidates, polish ticked, "Only selected tiers" ticked and
+    // the starts text.
+    pure callback settings_in_use(bool, bool, bool, bool, string, string, int, bool, bool, string) -> bool;
+}

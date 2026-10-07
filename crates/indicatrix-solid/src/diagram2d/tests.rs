@@ -125,6 +125,38 @@ fn pick_buffer_round_trips_each_panels_center_to_the_right_facet() {
     assert_eq!(frame.panel_at(250, 60), Some(PanelKind::Profile));
 }
 
+/// The end view looks from world `-X`: the profile centre shows the `+Z` face (id 4), the end
+/// view's centre shows the `-X` face (id 1), and the picked facet ids are the box's own.
+#[test]
+fn the_end_view_looks_from_minus_x_and_keeps_the_facet_ids() {
+    let mesh = match build_solid_mesh(&[
+        (DVec3::X, 1.0),
+        (DVec3::NEG_X, 1.0),
+        (DVec3::Y, 0.6),
+        (DVec3::NEG_Y, 0.6),
+        (DVec3::Z, 1.0),
+        (DVec3::NEG_Z, 1.0),
+    ]) {
+        SolidStatus::Closed(mesh) => mesh,
+        other => panic!("box fixture must close: {other:?}"),
+    };
+    let config = DiagramConfig {
+        width: 200,
+        height: 120,
+        gear_teeth: 96,
+        gear_reference_angle: 0.0,
+        symmetry_order: 8,
+        mirror: true,
+    };
+    let style = DiagramStyle::default();
+    let profile = render_diagram_single_panel(&mesh, &config, &style, PanelKind::Profile);
+    assert_eq!(profile.pick_at(100, 60), Some(4), "profile: the +Z face");
+    let end = render_diagram_end_view(&mesh, &config, &style);
+    assert_eq!(end.pick_at(100, 60), Some(1), "end view: the -X face");
+    assert_eq!(end.panel_at(100, 60), Some(PanelKind::Profile));
+    assert!(end.layout.enlarged, "one panel fills the frame");
+}
+
 #[test]
 fn an_empty_or_zero_sized_config_never_panics() {
     let mesh = SolidMesh::default();
@@ -298,5 +330,193 @@ fn diagram_hides_undercut_tool_pieces_from_the_opposite_panel() {
         on_crown_block.pick_at(150, 60),
         None,
         "a crown tool's piece never shows on the pavilion panel"
+    );
+}
+
+/// The closed box the layout and outline tests draw: facet 0 is +X, 2 is +Y (crown),
+/// 3 is -Y (pavilion), 4 is +Z.
+fn box_mesh() -> SolidMesh {
+    match build_solid_mesh(&[
+        (DVec3::X, 1.0),
+        (DVec3::NEG_X, 1.0),
+        (DVec3::Y, 0.6),
+        (DVec3::NEG_Y, 0.6),
+        (DVec3::Z, 1.0),
+        (DVec3::NEG_Z, 1.0),
+    ]) {
+        SolidStatus::Closed(mesh) => mesh,
+        other => panic!("box fixture must close: {other:?}"),
+    }
+}
+
+fn box_config() -> DiagramConfig {
+    DiagramConfig {
+        width: 300,
+        height: 120,
+        gear_teeth: 96,
+        gear_reference_angle: 1.5,
+        symmetry_order: 8,
+        mirror: true,
+    }
+}
+
+/// How many pixels of `frame` are exactly `rgb` (alpha ignored).
+fn pixels_of_color(frame: &DiagramFrame, rgb: [u8; 3]) -> usize {
+    let (pixels, _remainder) = frame.color.as_chunks::<4>();
+    pixels.iter().filter(|px| px[..3] == rgb).count()
+}
+
+#[test]
+fn the_three_panel_frame_carries_its_layout() {
+    let config = box_config();
+    let frame = render_diagram(&box_mesh(), &config, &DiagramStyle::default());
+    let layout = &frame.layout;
+
+    assert!(!layout.enlarged);
+    assert_eq!(layout.gear_teeth, 96);
+    assert!((layout.gear_reference_angle - 1.5).abs() < 1e-6);
+    let kinds: Vec<PanelKind> = layout.panels.iter().map(|panel| panel.kind).collect();
+    assert_eq!(
+        kinds,
+        [PanelKind::Crown, PanelKind::Pavilion, PanelKind::Profile]
+    );
+    // Columns of 100 px: the centres are the column midpoints, and the clip rectangles
+    // tile the frame without a gap or an overlap.
+    for (index, panel) in layout.panels.iter().enumerate() {
+        assert!((panel.center_x - 100.0_f32.mul_add(index as f32, 50.0)).abs() < 1e-3);
+        assert!(panel.scale > 0.0 && panel.wheel_radius_px > 0.0);
+        assert_eq!(panel.clip.0, 100 * index as i32);
+        assert_eq!(panel.clip.2, 100 * (index as i32 + 1) - 1);
+    }
+    assert_eq!(layout.panel(PanelKind::Pavilion), Some(&layout.panels[1]));
+}
+
+#[test]
+fn panel_at_finds_the_column_a_pixel_is_in() {
+    let frame = render_diagram(&box_mesh(), &box_config(), &DiagramStyle::default());
+    let layout = &frame.layout;
+    let kind_at = |x: f32, y: f32| layout.panel_at(x, y).map(|panel| panel.kind);
+    assert_eq!(kind_at(0.0, 0.0), Some(PanelKind::Crown));
+    assert_eq!(kind_at(99.9, 119.9), Some(PanelKind::Crown));
+    assert_eq!(kind_at(100.0, 60.0), Some(PanelKind::Pavilion));
+    assert_eq!(kind_at(250.0, 60.0), Some(PanelKind::Profile));
+    assert_eq!(kind_at(299.9, 0.0), Some(PanelKind::Profile));
+    assert_eq!(kind_at(300.0, 60.0), None, "right of the frame");
+    assert_eq!(kind_at(-0.5, 60.0), None, "left of the frame");
+    assert_eq!(kind_at(50.0, 120.0), None, "below the frame");
+    assert_eq!(DiagramLayout::default().panel_at(10.0, 10.0), None);
+}
+
+#[test]
+fn an_enlarged_frame_carries_one_panel_spanning_the_frame() {
+    let frame = render_diagram_single_panel(
+        &box_mesh(),
+        &box_config(),
+        &DiagramStyle::default(),
+        PanelKind::Pavilion,
+    );
+    let layout = &frame.layout;
+    assert!(layout.enlarged);
+    assert_eq!(layout.panels.len(), 1);
+    assert!(layout.panel(PanelKind::Crown).is_none());
+    let panel = layout
+        .panel(PanelKind::Pavilion)
+        .expect("the enlarged panel");
+    assert!(
+        (panel.center_x - 150.0).abs() < 1e-3,
+        "the frame's own centre"
+    );
+    assert_eq!(panel.clip.0, 0);
+    assert_eq!(panel.clip.2, 299);
+    assert_eq!(layout.gear_teeth, 96);
+}
+
+#[test]
+fn an_empty_frame_has_no_panels() {
+    let config = DiagramConfig {
+        width: 0,
+        height: 0,
+        ..box_config()
+    };
+    let frame = render_diagram(&SolidMesh::default(), &config, &DiagramStyle::default());
+    assert_eq!(frame.layout.panels.len(), 0);
+}
+
+#[test]
+fn project_point_lands_on_the_pixels_the_panel_drew() {
+    let frame = render_diagram(&box_mesh(), &box_config(), &DiagramStyle::default());
+    let layout = &frame.layout;
+    let crown = layout.panel(PanelKind::Crown).expect("crown");
+    let pavilion = layout.panel(PanelKind::Pavilion).expect("pavilion");
+    let profile = layout.panel(PanelKind::Profile).expect("profile");
+
+    // The axis is the centre of the crown and pavilion panels.
+    let (x, y, _) = project_point(DVec3::ZERO, crown);
+    assert!((x - crown.center_x).abs() < 1e-4 && (y - crown.center_y).abs() < 1e-4);
+
+    // Crown looks down -Y with +X up the screen and +Z to the right; the pavilion
+    // mirrors the horizontal axis; the profile has +X to the right and +Y up.
+    let side = DVec3::new(0.5, 0.0, 0.25);
+    let (cx, cy, _) = project_point(side, crown);
+    assert!((cx - 0.25_f32.mul_add(crown.scale, crown.center_x)).abs() < 1e-3);
+    assert!((cy - 0.5_f32.mul_add(-crown.scale, crown.center_y)).abs() < 1e-3);
+    let (px, py, _) = project_point(side, pavilion);
+    assert!((px - 0.25_f32.mul_add(-pavilion.scale, pavilion.center_x)).abs() < 1e-3);
+    assert!((py - cy + (crown.center_y - pavilion.center_y)).abs() < 1e-3);
+    let (sx, sy, _) = project_point(DVec3::new(0.5, 0.3, 0.0), profile);
+    assert!((sx - 0.5_f32.mul_add(profile.scale, profile.center_x)).abs() < 1e-3);
+    assert!((sy - 0.3_f32.mul_add(-profile.scale, profile.center_y)).abs() < 1e-3);
+
+    // A point on the +Y face, projected on the crown panel, picks that facet back.
+    let (fx, fy, _) = project_point(DVec3::new(0.2, 0.6, 0.2), crown);
+    assert_eq!(frame.pick_at(fx as u32, fy as u32), Some(2));
+    let (bx, by, _) = project_point(DVec3::new(0.2, -0.6, 0.2), pavilion);
+    assert_eq!(frame.pick_at(bx as u32, by as u32), Some(3));
+}
+
+#[test]
+fn a_panel_kind_shows_the_facets_its_visibility_predicate_selects() {
+    assert!(PanelKind::Crown.shows(Vec3::Y));
+    assert!(!PanelKind::Crown.shows(Vec3::NEG_Y));
+    assert!(PanelKind::Pavilion.shows(Vec3::NEG_Y));
+    assert!(!PanelKind::Pavilion.shows(Vec3::Y));
+    assert!(PanelKind::Profile.shows(Vec3::X));
+    assert!(PanelKind::Profile.shows(Vec3::new(0.3, 0.9, 0.3).normalize()));
+    assert!(!PanelKind::Profile.shows(Vec3::Y));
+    // A girdle facet (no vertical component) is on neither wheel panel.
+    assert!(!PanelKind::Crown.shows(Vec3::X) && !PanelKind::Pavilion.shows(Vec3::X));
+}
+
+#[test]
+fn a_moved_facet_is_outlined_in_the_moved_color() {
+    let mesh = box_mesh();
+    let config = box_config();
+    let plain = DiagramStyle::default();
+    let moved_color = plain.moved_color;
+    assert_eq!(
+        pixels_of_color(&render_diagram(&mesh, &config, &plain), moved_color),
+        0,
+        "nothing is outlined before a drag moves a tier"
+    );
+
+    let moved = DiagramStyle {
+        moved: vec![2],
+        ..DiagramStyle::default()
+    };
+    assert!(
+        pixels_of_color(&render_diagram(&mesh, &config, &moved), moved_color) > 0,
+        "the crown facet in `moved` gets the moved outline"
+    );
+
+    // A selection keeps its own outline on a facet that is also in `moved`.
+    let selected_too = DiagramStyle {
+        moved: vec![2],
+        selected: vec![false, false, true, false, false, false],
+        ..DiagramStyle::default()
+    };
+    assert_eq!(
+        pixels_of_color(&render_diagram(&mesh, &config, &selected_too), moved_color),
+        0,
+        "the selected outline wins the facet's edges"
     );
 }

@@ -1,88 +1,146 @@
-import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
-import { TemplateGalleryModel } from "../models/templates.slint";
+import { EditorModel } from "../models/editor.slint";
+import { TemplateGalleryModel, TemplateCardData } from "../models/templates.slint";
 
-// The New Design dialog's template gallery -- a small grid of cards, one per
-// `TemplateGalleryModel.templates` entry, each showing its name/shape/one-line
-// description.
-//
-// No live-rendered thumbnails yet: a card shows a plain shape-glyph placeholder
-// instead. Wiring an actual background-thread render (reusing
-// `gui::batch::preview::engine`'s resolve/render pair, which is private to that
-// module) is not done: live thumbnail rendering would need that pair exposed.
-// The placeholder here stays until it is, rather than being swapped out once a
-// background render completes.
-//
-// Every card is selectable today (`TemplateCardData::ready` is always true --
-// see `gui/editor/templates.rs`'s own doc comment for the dispatch that makes
-// each template reachable from "Create").
-export component TemplateGallery inherits Rectangle {
-    in-out property <int> selected_index: 1;
-    callback selected();
+// One gallery card: a solid thumbnail of the template (drawn by a worker thread the
+// first time the dialog opens, then kept -- `gui::editor::templates`), its name and
+// its shape line. Until the thumbnail arrives the picture tile is simply empty: there
+// is no stand-in glyph. `with_picture: false` is the blank design's card, which has
+// nothing to draw and so is a plain text card.
+component TemplateCard inherits Rectangle {
+    in property <TemplateCardData> card;
+    in property <bool> selected;
+    in property <bool> with_picture: true;
+    callback picked();
 
-    height: 184px;
+    width: root.with_picture ? 106px : 218px;
+    height: root.with_picture ? 156px : 46px;
+    background: root.selected
+        ? Theme.primary-glow
+        : (card_touch.has-hover ? Theme.bg-card-hover : Theme.bg-input);
+    border-radius: Theme.radius-sm;
+    border-width: (card_focus.has-focus || root.selected) ? (card_focus.has-focus ? 2px : 1px) : 0px;
+    border-color: card_focus.has-focus ? Theme.accent-cyan-hover : Theme.accent-cyan;
+    // One card of a group where exactly one is chosen, so a radio button to a screen reader.
+    accessible-role: AccessibleRole.radio-button;
+    accessible-label: root.card.shape == "" ? root.card.name : root.card.name + ", " + root.card.shape;
+    accessible-description: root.card.description;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+    accessible-enabled: root.card.ready;
+    accessible-action-default => {
+        if root.card.ready {
+            root.picked();
+        }
+    }
 
-    content := ScrollView {
-        width: 100%;
-        height: 100%;
-        VerticalLayout {
-            spacing: 4px;
-            for card[idx] in TemplateGalleryModel.templates: Rectangle {
-                height: 40px;
-                background: idx == root.selected_index
-                    ? Theme.primary-glow
-                    : (card_touch.has-hover ? Theme.bg-card-hover : Theme.bg-input);
-                border-radius: Theme.radius-sm;
-                border-width: idx == root.selected_index ? 1px : 0px;
-                border-color: Theme.accent-cyan;
-
-                card_touch := TouchArea {
-                    clicked => {
-                        root.selected_index = idx;
-                        root.selected();
-                    }
-                }
-                Tooltip { text: @markdown("\{card.description}"); }
-
-                HorizontalLayout {
-                    padding-left: 8px;
-                    padding-right: 8px;
-                    spacing: 8px;
-                    // Shape-glyph placeholder -- see this component's own top
-                    // doc comment for why there is no rendered thumbnail yet.
-                    Rectangle {
-                        width: 28px;
-                        height: 28px;
-                        border-radius: Theme.radius-sm;
-                        background: Theme.bg-darkest;
-                        y: (parent.height - self.height) / 2;
-                        Text {
-                            text: "\u{25C8}";
-                            font-size: 14px;
-                            color: Theme.accent-cyan;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
-                    VerticalLayout {
-                        horizontal-stretch: 1;
-                        alignment: center;
-                        Text {
-                            text: card.name;
-                            font-size: 10px;
-                            font-weight: 700;
-                            color: Theme.text-primary;
-                            overflow: elide;
-                        }
-                        Text {
-                            text: card.shape;
-                            font-size: 9px;
-                            color: Theme.text-muted;
-                            overflow: elide;
-                        }
-                    }
-                }
+    // Tab reaches each card; Space or Enter picks it.
+    card_focus := FocusScope {
+        enabled: root.card.ready;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.picked();
+                return accept;
             }
+            return reject;
+        }
+    }
+
+    card_touch := TouchArea {
+        enabled: root.card.ready;
+        mouse-cursor: root.card.ready ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.picked(); }
+    }
+    Tooltip { text: @markdown("\{root.card.description}"); }
+
+    VerticalLayout {
+        padding: 6px;
+        spacing: 4px;
+        if root.with_picture: Rectangle {
+            height: 94px;
+            background: Theme.bg-darkest;
+            border-radius: Theme.radius-sm;
+            clip: true;
+            if root.card.has_thumbnail: Image {
+                source: root.card.thumbnail;
+                width: 100%;
+                height: 100%;
+                image-fit: contain;
+            }
+        }
+        Text {
+            text: root.card.name;
+            height: root.with_picture ? 26px : 16px;
+            font-size: 10px;
+            font-weight: 700;
+            color: Theme.text-primary;
+            horizontal-alignment: root.with_picture ? TextHorizontalAlignment.center : TextHorizontalAlignment.left;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+        Text {
+            text: root.card.shape;
+            height: 12px;
+            font-size: 9px;
+            color: Theme.text-muted;
+            horizontal-alignment: root.with_picture ? TextHorizontalAlignment.center : TextHorizontalAlignment.left;
+            overflow: elide;
+        }
+    }
+}
+
+// A titled row of cards.
+component TemplateSection inherits VerticalLayout {
+    in property <string> title;
+    in property <[TemplateCardData]> cards;
+    in property <bool> with_picture: true;
+    spacing: 4px;
+
+    Text {
+        text: root.title;
+        font-size: 10px;
+        font-weight: 700;
+        color: Theme.text-secondary;
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        alignment: start;
+        for entry in root.cards: TemplateCard {
+            card: entry;
+            with_picture: root.with_picture;
+            selected: EditorModel.new_template_index == entry.template_index;
+            picked => {
+                EditorModel.new_template_index = entry.template_index;
+                TemplateGalleryModel.template_chosen(entry.template_index);
+            }
+        }
+    }
+}
+
+// The New Design dialog's template gallery: "Shapes" (the five everyday outlines),
+// "Round variants and teaching designs", and the blank design. The cards come from
+// `TemplateGalleryModel` (filled by `gui::editor::templates::setup_template_gallery`);
+// picking one writes `EditorModel.new_template_index` -- the number the dialog's Create
+// and the guides read -- and tells Rust, which refreshes the dialog's options.
+//
+// Every card is selectable (`TemplateCardData.ready` is always true today).
+export component TemplateGallery inherits Rectangle {
+    height: sections.preferred-height;
+
+    sections := VerticalLayout {
+        spacing: 10px;
+        TemplateSection {
+            title: "Shapes";
+            cards: TemplateGalleryModel.shapes;
+        }
+        TemplateSection {
+            title: "Round variants and teaching designs";
+            cards: TemplateGalleryModel.variants;
+        }
+        TemplateSection {
+            title: "Blank";
+            cards: TemplateGalleryModel.blank;
+            with_picture: false;
         }
     }
 }

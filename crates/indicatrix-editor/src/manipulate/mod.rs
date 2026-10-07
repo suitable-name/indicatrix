@@ -37,11 +37,16 @@
 //!   throttled pointer value asks for, the live feedback and the closing toast.
 //! - [`provisional`]: the Slice tool's provisional tier, edited in place until Keep or
 //!   Discard.
+//! - [`diagram2d`]: the same three handles on the 2D Diagram view's orthographic panels
+//!   -- which panel offers which handle, where the tips go, and the index handle's turn
+//!   about the panel centre. Its [`PanelHandles`] carries the ordinary [`HandleLayout`], so
+//!   [`drag_value`], snapping and the edit path are shared unchanged.
 //!
 //! The pointer <-> pick-frame mapping for a view that letterboxes its raster lives in
 //! `indicatrix_solid::preview::view::ContainFit`.
 
 pub mod dependents;
+pub mod diagram2d;
 pub mod drag;
 pub mod frame;
 pub mod gesture;
@@ -53,6 +58,8 @@ pub mod target;
 pub mod text;
 
 #[cfg(test)]
+mod diagram2d_tests;
+#[cfg(test)]
 mod frame_tests;
 #[cfg(test)]
 mod gesture_tests;
@@ -60,6 +67,10 @@ mod gesture_tests;
 mod tests;
 
 pub use dependents::{moved_tiers, tiers_meeting};
+pub use diagram2d::{
+    HandleAvailability, IndexRotation, PanelHandles, candidate_facets, facet_frame, panel_handles,
+    place_handles, zoomed_hit_radius,
+};
 pub use drag::{DragStart, DragValue, SnapMode, drag_coalesce_key, drag_value, snap_to_step};
 pub use frame::FacetFrame;
 pub use gesture::{ActiveDrag, AppliedEdit, DragProgress, GestureInputs, Step, drain_value};

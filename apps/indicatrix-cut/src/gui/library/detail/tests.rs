@@ -3,7 +3,7 @@
 
 use super::{
     planes::planes_gear_and_reference_angle,
-    shared::{count_angles_for_mode, parse_catalogue_angle_deg, sides_from_rows},
+    shared::{count_angles_for_mode, parse_catalogue_angle_deg, sides_from_rows, standard_codes},
 };
 use crate::AngleItem;
 use indicatrix::geometry::plane::GpuFacetPlane;
@@ -273,6 +273,7 @@ fn falls_back_to_the_placeholder_reconstruction_with_no_real_design() {
         order_idx: 0,
         side: -1,
         facet: "P1".into(),
+        code: "P1".into(),
         angle: "-41.0".into(),
         index_val: "0, 24, 48, 72".into(),
         notes: "".into(),
@@ -305,6 +306,98 @@ fn prefers_the_real_designs_own_planes_and_reference_angle_when_resolved() {
     assert_eq!(reference_angle, 2.5);
 }
 
+// --- standard_codes ---
+
+/// The codes the Cutting Instructions tab shows for `rows`, classified the way the load
+/// paths classify them (sides from the labels, then the codes from the sides).
+fn codes_of(rows: &[(&str, &str, &str)]) -> Vec<String> {
+    let sides = sides_from_rows(rows.iter().copied());
+    let labels: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|&(facet, _, index)| (facet, index))
+        .collect();
+    standard_codes(&labels, &sides)
+}
+
+/// The old 123/ABC labels read as the standard codes: digits on the pavilion side, a girdle
+/// row `G`, letters on the crown side, `T` for the table, each numbered in the listed order.
+#[test]
+fn old_style_labels_become_standard_codes_numbered_per_block() {
+    let rows = [
+        row("1", "50.00\u{b0}", "12"),
+        row("2", "90.00\u{b0}", "8"),
+        row("3", "45.00\u{b0}", "16"),
+        row("A", "35.00\u{b0}", "12"),
+        row("B", "30.00\u{b0}", "8"),
+        row("T", "0.00\u{b0}", "Table"),
+    ];
+    assert_eq!(codes_of(&rows), ["P1", "G1", "P2", "C1", "C2", "T"]);
+}
+
+/// Real catalogue detail 16 (`G 1 2 A B C T`): the girdle is listed first and the table last.
+#[test]
+fn real_detail_16_reads_as_standard_codes() {
+    let rows = [
+        row("G", "90.00\u{b0}", "04-12-20"),
+        row("1", "47.00\u{b0}", "04-12-20"),
+        row("2", "43.00\u{b0}", "08-24-40"),
+        row("A", "50.00\u{b0}", "04-12-20"),
+        row("B", "35.00\u{b0}", "96-16-32"),
+        row("C", "15.00\u{b0}", "08-24-40"),
+        row("T", "0.00\u{b0}", "Table"),
+    ];
+    assert_eq!(
+        codes_of(&rows),
+        ["G1", "P1", "P2", "C1", "C2", "C3", "T"],
+        "the original labels stay on the rows themselves; only the shown code changes"
+    );
+}
+
+/// A label that already follows the standard (`P1`, `C1`, `G1`, `PF1`, `Table`) is kept
+/// exactly as the catalogue wrote it.
+#[test]
+fn standard_labels_stay_as_they_are() {
+    let rows = [
+        row("P1", "40.00\u{b0}", ""),
+        row("P2", "41.00\u{b0}", ""),
+        row("G1", "90.00\u{b0}", ""),
+        row("C1", "34.00\u{b0}", ""),
+        row("Table", "0.00\u{b0}", "Table"),
+    ];
+    assert_eq!(codes_of(&rows), ["P1", "P2", "G1", "C1", "Table"]);
+}
+
+/// A standard row takes its place in the numbering: the old-style row after `P1` is `P2`,
+/// as `compute_tier_labels` would number the tiers. A preform (`PF`) facet has its own
+/// numbering and does not take a `P` number.
+#[test]
+fn an_old_style_row_is_numbered_after_the_standard_rows_of_its_block() {
+    let mixed = [row("P1", "40.00\u{b0}", ""), row("2", "42.00\u{b0}", "")];
+    assert_eq!(codes_of(&mixed), ["P1", "P2"]);
+    let preform = [row("PF1", "60.00\u{b0}", ""), row("1", "41.00\u{b0}", "")];
+    assert_eq!(codes_of(&preform), ["PF1", "P1"]);
+}
+
+/// A girdle-adjacent `1G` is a girdle row, a lower-case `t` is the table, and a digit row
+/// at exactly 90 degrees is the girdle too.
+#[test]
+fn girdle_adjacent_labels_and_a_lower_case_table_read_correctly() {
+    let rows = [
+        row("1G", "47.00\u{b0}", ""),
+        row("5", "90.00\u{b0}", ""),
+        row("t", "0.00\u{b0}", ""),
+    ];
+    assert_eq!(codes_of(&rows), ["G1", "G2", "T"]);
+}
+
+/// A row with no label gets the code of its block when the side is known, and nothing when
+/// it is not (a row no block can be told for is never guessed at).
+#[test]
+fn an_unlabelled_row_gets_a_code_only_when_its_side_is_known() {
+    let rows: [(&str, &str); 3] = [("", ""), ("", ""), ("", "")];
+    assert_eq!(standard_codes(&rows, &[-1, 1, 0]), ["P1", "C1", ""]);
+}
+
 // --- count_angles_for_mode ---
 
 fn angle_item(side: i32) -> AngleItem {
@@ -312,6 +405,7 @@ fn angle_item(side: i32) -> AngleItem {
         order_idx: 0,
         side,
         facet: "P1".into(),
+        code: "P1".into(),
         angle: "0.0".into(),
         index_val: "".into(),
         notes: "".into(),

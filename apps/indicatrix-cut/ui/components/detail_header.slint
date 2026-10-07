@@ -1,28 +1,44 @@
-import { Button, LineEdit, ComboBox } from "std-widgets.slint";
+import { LineEdit, ComboBox } from "std-widgets.slint";
 import { DiagramDetailData } from "../types.slint";
 import { Theme } from "../theme.slint";
 import { LibraryModel } from "../models/library.slint";
 import { EditorModel } from "../models/editor.slint";
+import { BuildDesignModel } from "../models/build_design.slint";
+import { GuideModel } from "../models/guide.slint";
+import { HelpTopics } from "../models/help.slint";
+import { HelpButton } from "help_button.slint";
+import { TouchButton } from "touch_button.slint";
 
-// A single "label: value" metric chip -- 18px tall, 11px font, compact enough
+// Keyboard and screen reader notes for this header: every icon is a button that Tab reaches
+// (focus ring from the theme), Space or Enter presses, and a screen reader hears its name and
+// what it does. Each chip is one text item ("Gear: 60-index") rather than two. The Simple
+// interface leaves out the Gem Cut Studio export; Advanced shows it.
+
+// A single "label: value" metric chip -- 20px tall, 11px font, compact enough
 // to fit the header's single-row layout. Shared by both `DesignChipsRow`
 // instances below (inline and wrapped) so the
 // eight simple chips (everything except Shape, which carries its own edit-pencil/combo
-// flow) are defined once.
+// flow) are defined once. `hint` says in plain words what the figure is.
 component MetricChip inherits Rectangle {
     in property <string> label;
     in property <string> value;
+    in property <string> hint;
     in property <color> value_color: Theme.text-primary;
-    height: 18px;
+    height: 20px;
     background: Theme.bg-input;
     border-radius: Theme.radius-sm;
     border-width: 1px;
     border-color: Theme.border-subtle;
+    // One text item for a screen reader, not a label and a value.
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.label + " " + root.value;
+    accessible-description: root.hint;
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
     HorizontalLayout {
         padding-left: 6px;
         padding-right: 6px;
         spacing: 3px;
-        Text { text: root.label; font-size: 11px; color: Theme.text-muted; vertical-alignment: center; }
+        Text { text: root.label; font-size: 11px; color: Theme.text-muted; vertical-alignment: center; accessible-role: AccessibleRole.none; }
         Text {
             text: root.value;
             font-size: 11px;
@@ -30,7 +46,210 @@ component MetricChip inherits Rectangle {
             color: root.value_color;
             vertical-alignment: center;
             overflow: elide;
+            accessible-role: AccessibleRole.none;
         }
+    }
+}
+
+// The smaller chip of the one-line (compact) header.
+component CompactChip inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <string> hint;
+    in property <color> value_color: Theme.text-primary;
+    in property <bool> italic: false;
+    background: Theme.bg-input;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.label + " " + root.value;
+    accessible-description: root.hint;
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
+    HorizontalLayout {
+        padding-left: 6px; padding-right: 6px; padding-top: 3px; padding-bottom: 3px; spacing: 3px;
+        Text { text: root.label; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; accessible-role: AccessibleRole.none; }
+        Text {
+            text: root.value;
+            font-size: 10px;
+            font-italic: root.italic;
+            font-weight: 600;
+            color: root.value_color;
+            vertical-alignment: center;
+            overflow: elide;
+            accessible-role: AccessibleRole.none;
+        }
+    }
+}
+
+// One icon (or short word) button of the header. Square by default; `button_width` widens it
+// for a word ("Yes", "No"). `flat` drops the fill and the border (the chevron and the pencils).
+// Never smaller than 20 px each way.
+component HeaderAction inherits Rectangle {
+    in property <image> icon;
+    // A short word shown instead of the icon ("gcs", "Yes", "No").
+    in property <string> word;
+    // What a screen reader calls it.
+    in property <string> label;
+    // One plain sentence: what pressing it does. Tooltip and screen-reader description.
+    in property <string> hint;
+    in property <bool> enabled: true;
+    in property <bool> flat: false;
+    in property <length> size: 28px;
+    in property <length> button_width: root.size;
+    in property <length> glyph: 12px;
+    in property <color> ink: Theme.text-secondary;
+    in property <color> edge: Theme.border-subtle;
+    // The panel this button opens or closes (the header's collapse chevron).
+    in property <bool> expandable: false;
+    in property <bool> expanded: false;
+    callback clicked();
+
+    width: root.button_width;
+    height: root.size;
+    border-radius: root.flat ? 4px : Theme.radius-sm;
+    opacity: root.enabled ? 1.0 : 0.5;
+    background: root.flat
+        ? (act_touch.has_hover && root.enabled ? Theme.bg-elevated : transparent)
+        : (act_touch.has_hover && root.enabled ? Theme.bg-elevated : Theme.bg-input);
+    border-width: root.flat ? 0px : 1px;
+    border-color: root.edge;
+
+    if root.word == "": Image {
+        source: root.icon;
+        colorize: root.ink;
+        width: root.glyph;
+        height: root.glyph;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        image-fit: contain;
+    }
+    if root.word != "": Text {
+        text: root.word;
+        font-size: root.word == "gcs" ? 9px : 10px;
+        font-weight: root.word == "gcs" ? 700 : 600;
+        color: root.ink;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        accessible-role: AccessibleRole.none;
+    }
+
+    act_touch := TouchButton {
+        label: root.label;
+        hint: root.hint;
+        enabled: root.enabled;
+        expandable: root.expandable;
+        expanded: root.expanded;
+        ring_radius: root.flat ? 4px : Theme.radius-sm;
+        clicked => { root.clicked(); }
+    }
+}
+
+// The icon actions of the selected design. Instantiated TWICE by `DetailHeaderView` (the
+// one-line header and the full header) so the buttons are defined once. `with_metadata` adds
+// the metadata editor (the full header only).
+//
+// Delete asks first: the trash icon turns into "Delete? Yes No". Pressing it from the keyboard
+// leaves Yes and No one Tab away.
+component DetailActions inherits HorizontalLayout {
+    in property <DiagramDetailData> detail;
+    in property <bool> with_metadata: false;
+    in-out property <bool> confirming_delete: false;
+    callback open_url(string);
+    callback copy_url(string);
+    callback export_asc();
+    callback export_gcs();
+    callback edit_metadata();
+    callback delete_diagram();
+
+    spacing: 4px;
+    alignment: end;
+
+    if root.detail.url != "" && !root.detail.is_local: HeaderAction {
+        icon: @image-url("../icons/globe.svg");
+        label: "Open on the web";
+        hint: "Open this design's page on the web, in your browser.";
+        clicked => { root.open_url(root.detail.url); }
+    }
+
+    if root.detail.url != "" && !root.detail.is_local: HeaderAction {
+        icon: @image-url("../icons/clipboard.svg");
+        label: "Copy link";
+        hint: "Copy the web address of this design to the clipboard.";
+        clicked => { root.copy_url(root.detail.url); }
+    }
+
+    // This exports the ORIGINAL file stored in the catalogue (not the user's in-editor
+    // changes) -- `editor_view.slint`'s "Export Edited .asc" is the other, unrelated ".asc"
+    // export. The hint below is the disambiguator between the two.
+    HeaderAction {
+        icon: @image-url("../icons/save.svg");
+        label: "Export .asc";
+        hint: "Save the original .asc file stored in the catalogue. Your own edits are not in it.";
+        clicked => { root.export_asc(); }
+    }
+
+    // The catalogue's cutting instructions as a Gem Cut Studio file
+    // (`gui::library::local::export`); experimental, see the hint. Advanced only.
+    if GuideModel.shows_advanced(): HeaderAction {
+        word: "gcs";
+        label: "Export as Gem Cut Studio file";
+        hint: "Save the cutting instructions as a Gem Cut Studio (.gcs) file. Experimental: it follows the published Gem Cut Studio 1.1 file description, and chiral designs are untested.";
+        clicked => { root.export_gcs(); }
+    }
+
+    // "Build this design": turns this design into a step-by-step lesson that rebuilds it from
+    // an empty design, one tier at a time, and finishes by comparing the rebuild with the
+    // original (`BuildDesignModel`, Rust: `gui::editor::guide::build_design`). Works for local
+    // and remote designs.
+    HeaderAction {
+        icon: @image-url("../icons/steps.svg");
+        label: "Build this design";
+        hint: "A step-by-step lesson that rebuilds this design from an empty design, one tier at a time.";
+        enabled: !BuildDesignModel.busy;
+        clicked => { BuildDesignModel.start_selected(); }
+    }
+
+    // Metadata editor: title, designer, shape, refractive index, index gear, facet count,
+    // symmetry order, mirror symmetry, and the proportion ratios -- everything the inline
+    // title/shape pencils don't already cover. Local designs only (see
+    // `gui::detail::setup_save_metadata_callback`'s doc comment for why editing is
+    // local-only).
+    if root.with_metadata && root.detail.is_local: HeaderAction {
+        icon: @image-url("../icons/info.svg");
+        label: "Edit metadata";
+        hint: "Edit the title, designer, shape, refractive index, gear, facet count and proportions.";
+        clicked => { root.edit_metadata(); }
+    }
+
+    if !root.confirming_delete: HeaderAction {
+        icon: @image-url("../icons/trash.svg");
+        label: "Delete this design";
+        hint: "Delete this design. You are asked to confirm first.";
+        clicked => { root.confirming_delete = true; }
+    }
+    if root.confirming_delete: Text {
+        text: "Delete?";
+        font-size: 10px;
+        color: Theme.accent-amber;
+        vertical-alignment: center;
+        accessible-role: AccessibleRole.text;
+    }
+    if root.confirming_delete: HeaderAction {
+        word: "Yes";
+        button_width: 44px;
+        ink: Theme.accent-ruby;
+        edge: Theme.accent-ruby;
+        label: "Yes, delete this design";
+        hint: "Delete this design now.";
+        clicked => { root.confirming_delete = false; root.delete_diagram(); }
+    }
+    if root.confirming_delete: HeaderAction {
+        word: "No";
+        button_width: 44px;
+        label: "No, keep this design";
+        hint: "Do not delete. The design stays in the library.";
+        clicked => { root.confirming_delete = false; }
     }
 }
 
@@ -51,87 +270,137 @@ component DesignChipsRow inherits HorizontalLayout {
     spacing: 4px;
 
     if (root.detail.shape != "" || root.is_local) && !root.editing_shape: Rectangle {
-        height: 18px;
+        height: 20px;
         background: Theme.bg-input;
         border-radius: Theme.radius-sm;
         border-width: 1px;
         border-color: Theme.border-subtle;
         HorizontalLayout {
             padding-left: 6px;
-            padding-right: 6px;
+            padding-right: 2px;
             spacing: 3px;
-            Text { text: "Shape:"; font-size: 11px; color: Theme.text-muted; vertical-alignment: center; }
-            Text {
-                text: root.detail.shape != "" ? root.detail.shape : "Unset";
-                font-size: 11px;
-                font-weight: 600;
-                color: root.detail.shape != "" ? Theme.accent-cyan : Theme.text-muted;
-                vertical-alignment: center;
-                overflow: elide;
+            Rectangle {
+                accessible-role: AccessibleRole.text;
+                accessible-label: "Shape " + (root.detail.shape != "" ? root.detail.shape : "not set");
+                accessible-description: "The outline of the stone, for example Round or Oval.";
+                Tooltip { text: @markdown("The outline of the stone, for example Round or Oval."); }
+                HorizontalLayout {
+                    spacing: 3px;
+                    Text { text: "Shape:"; font-size: 11px; color: Theme.text-muted; vertical-alignment: center; accessible-role: AccessibleRole.none; }
+                    Text {
+                        text: root.detail.shape != "" ? root.detail.shape : "Unset";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: root.detail.shape != "" ? Theme.accent-cyan : Theme.text-muted;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        accessible-role: AccessibleRole.none;
+                    }
+                }
             }
             // Local designs only -- `import_asc` never classifies a shape it isn't
             // sure of (see `library::classify_shape`'s doc comment), so this is how
             // the user corrects or fills that in.
-            if root.is_local: Rectangle {
-                width: 12px;
-                height: 12px;
-                shape_pencil_touch := TouchArea {
-                    clicked => { root.edit_shape_requested(); }
-                }
-                Tooltip { text: @markdown("Correct the auto-detected shape classification."); }
-                Image {
-                    source: @image-url("../icons/pencil.svg");
-                    colorize: shape_pencil_touch.has-hover ? Theme.text-primary : Theme.text-secondary;
-                    width: 9px;
-                    height: 9px;
-                }
+            if root.is_local: HeaderAction {
+                flat: true;
+                size: 20px;
+                glyph: 10px;
+                icon: @image-url("../icons/pencil.svg");
+                label: "Correct the shape";
+                hint: "Correct the shape that was detected automatically, or fill it in.";
+                clicked => { root.edit_shape_requested(); }
             }
         }
     }
 
     if root.editing_shape: Rectangle {
-        height: 22px;
+        height: 24px;
         background: Theme.bg-input;
         border-radius: Theme.radius-sm;
         border-width: 1px;
         border-color: Theme.accent-cyan;
         HorizontalLayout {
             padding-left: 6px;
-            padding-right: 6px;
+            padding-right: 2px;
             spacing: 3px;
             Text { text: "Shape:"; font-size: 11px; color: Theme.text-muted; vertical-alignment: center; }
             ComboBox {
                 width: 110px;
                 model: root.shape_options;
                 current-index: root.shape_current_index;
+                accessible-label: "Shape";
+                accessible-description: "Pick the shape of this design.";
                 selected(val) => { root.shape_selected(val); }
             }
-            Rectangle {
-                width: 16px;
-                height: 16px;
-                shape_cancel_touch := TouchArea { clicked => { root.shape_edit_cancelled(); } }
-                Image { source: @image-url("../icons/close.svg"); colorize: Theme.text-secondary; width: 9px; height: 9px; }
+            HeaderAction {
+                flat: true;
+                size: 20px;
+                glyph: 9px;
+                icon: @image-url("../icons/close.svg");
+                label: "Cancel the shape change";
+                hint: "Leave the shape as it was.";
+                clicked => { root.shape_edit_cancelled(); }
             }
         }
     }
 
-    if root.detail.gear != "": MetricChip { label: "Gear:"; value: root.detail.gear; value_color: Theme.accent-cyan; }
-    if root.detail.facets != "": MetricChip { label: "Facets:"; value: root.detail.facets; value_color: Theme.accent-amber; }
-    if root.detail.lw_ratio != "": MetricChip { label: "L/W:"; value: root.detail.lw_ratio; }
+    if root.detail.gear != "": MetricChip {
+        label: "Gear:";
+        value: root.detail.gear;
+        hint: "The index gear the design is cut on. See the glossary.";
+        value_color: Theme.accent-cyan;
+    }
+    if root.detail.facets != "": MetricChip {
+        label: "Facets:";
+        value: root.detail.facets;
+        hint: "How many facets the finished stone has.";
+        value_color: Theme.accent-amber;
+    }
+    if root.detail.lw_ratio != "": MetricChip {
+        label: "L/W:";
+        value: root.detail.lw_ratio;
+        hint: "Length divided by width. 1.0 is round or square.";
+    }
     // H/W, C/W, P/W: derived alongside L/W and Volume (see
     // `gui::library::apply_measured_metadata`). Same "hide the chip when unknown"
     // convention as every other optional
     // field here, and same 3-decimal display formatting as L/W/Volume
     // (`gui::detail::format_proportion`) -- the stored value itself is never rounded,
     // only what's shown here.
-    if root.detail.hw_ratio != "": MetricChip { label: "H/W:"; value: root.detail.hw_ratio; }
-    if root.detail.cw_ratio != "": MetricChip { label: "C/W:"; value: root.detail.cw_ratio; }
-    if root.detail.pw_ratio != "": MetricChip { label: "P/W:"; value: root.detail.pw_ratio; }
-    if root.detail.volume != "": MetricChip { label: "Vol/W³:"; value: root.detail.volume; }
-    if root.detail.ri != "": MetricChip { label: "R.I.:"; value: root.detail.ri; value_color: Theme.accent-emerald; }
+    if root.detail.hw_ratio != "": MetricChip {
+        label: "H/W:";
+        value: root.detail.hw_ratio;
+        hint: "Total height divided by width.";
+    }
+    if root.detail.cw_ratio != "": MetricChip {
+        label: "C/W:";
+        value: root.detail.cw_ratio;
+        hint: "Crown height divided by width.";
+    }
+    if root.detail.pw_ratio != "": MetricChip {
+        label: "P/W:";
+        value: root.detail.pw_ratio;
+        hint: "Pavilion depth divided by width.";
+    }
+    if root.detail.volume != "": MetricChip {
+        label: "Vol/W³:";
+        value: root.detail.volume;
+        hint: "Volume divided by width cubed: how much stone there is for its width.";
+    }
+    if root.detail.ri != "": MetricChip {
+        label: "R.I.:";
+        value: root.detail.ri;
+        hint: "Refractive index: how strongly the material bends light. See the glossary.";
+        value_color: Theme.accent-emerald;
+    }
     // A guess, not a fact -- see `DiagramDetailData.material_guess`'s own doc
     // comment.
-    if root.detail.material_guess != "": MetricChip { label: "Material:"; value: root.detail.material_guess; value_color: Theme.accent-amber; }
+    if root.detail.material_guess != "": MetricChip {
+        label: "Material:";
+        value: root.detail.material_guess;
+        hint: "A guess made from the design's data, not a recorded fact.";
+        value_color: Theme.accent-amber;
+    }
 }
 
 export component DetailHeaderView inherits Rectangle {
@@ -210,7 +479,7 @@ export component DetailHeaderView inherits Rectangle {
     // `app.slint`'s root -- see that file for why it isn't hosted here: this
     // component's own `Rectangle` is only as tall as its content, not the full
     // window, and a modal backdrop needs the latter). Local designs only -- see the
-    // "Edit Metadata" button below.
+    // "Edit Metadata" button in `DetailActions`.
     callback edit_metadata();
     edit_metadata => { LibraryModel.metadata_editor_open = true; }
 
@@ -231,6 +500,8 @@ export component DetailHeaderView inherits Rectangle {
     border-width: 1px;
     border-color: Theme.border-subtle;
     vertical-stretch: 0;
+    accessible-role: AccessibleRole.groupbox;
+    accessible-label: "Design details";
 
     // A layout parent for the two conditional branches: `if` children of a plain
     // `Rectangle` contribute nothing to its layout constraints (the compiler
@@ -253,16 +524,19 @@ export component DetailHeaderView inherits Rectangle {
             // USER's own choice (`!root.compact`): while Edit mode forces `compact`,
             // there is no expanded form to go back to from here (see `app.slint`'s own
             // `compact: root.render_view_tab == 1 && EditorModel.enabled` binding).
-            if !root.compact: Rectangle {
-                width: 18px;
-                height: 18px;
-                border-radius: 4px;
-                background: expand_touch.has-hover ? Theme.bg-elevated : transparent;
-                expand_touch := TouchArea {
+            if !root.compact: VerticalLayout {
+                alignment: center;
+                HeaderAction {
+                    flat: true;
+                    size: 20px;
+                    glyph: 10px;
+                    icon: @image-url("../icons/chevron-right.svg");
+                    label: "Design header";
+                    hint: "Show the full design header, with the designer and every figure.";
+                    expandable: true;
+                    expanded: false;
                     clicked => { root.user_collapsed = false; }
                 }
-                Tooltip { text: @markdown("Expand the design header."); }
-                Text { text: "▸"; font-size: 11px; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
             }
 
             if root.detail.title != "": Text {
@@ -295,150 +569,57 @@ export component DetailHeaderView inherits Rectangle {
             // Condensed metric chips -- same data as `DesignChipsRow` below, smaller
             // padding/font so the whole row fits in 40px, and fewer of them (5, not
             // all 9) since this branch has no wrap escape hatch for narrow windows.
-            if root.detail.shape != "": Rectangle {
-                background: Theme.bg-input;
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: Theme.border-subtle;
-                HorizontalLayout {
-                    padding-left: 6px; padding-right: 6px; padding-top: 3px; padding-bottom: 3px; spacing: 3px;
-                    Text { text: "Shape:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-                    Text { text: root.detail.shape; font-size: 10px; font-weight: 600; color: Theme.accent-cyan; vertical-alignment: center; overflow: elide; }
-                }
+            if root.detail.shape != "": CompactChip {
+                label: "Shape:";
+                value: root.detail.shape;
+                hint: "The outline of the stone, for example Round or Oval.";
+                value_color: Theme.accent-cyan;
             }
-            if root.detail.gear != "": Rectangle {
-                background: Theme.bg-input;
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: Theme.border-subtle;
-                HorizontalLayout {
-                    padding-left: 6px; padding-right: 6px; padding-top: 3px; padding-bottom: 3px; spacing: 3px;
-                    Text { text: "Gear:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-                    Text { text: root.detail.gear; font-size: 10px; font-weight: 600; color: Theme.accent-cyan; vertical-alignment: center; overflow: elide; }
-                }
+            if root.detail.gear != "": CompactChip {
+                label: "Gear:";
+                value: root.detail.gear;
+                hint: "The index gear the design is cut on. See the glossary.";
+                value_color: Theme.accent-cyan;
             }
-            if root.detail.facets != "": Rectangle {
-                background: Theme.bg-input;
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: Theme.border-subtle;
-                HorizontalLayout {
-                    padding-left: 6px; padding-right: 6px; padding-top: 3px; padding-bottom: 3px; spacing: 3px;
-                    Text { text: "Facets:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-                    Text { text: root.detail.facets; font-size: 10px; font-weight: 600; color: Theme.accent-amber; vertical-alignment: center; overflow: elide; }
-                }
+            if root.detail.facets != "": CompactChip {
+                label: "Facets:";
+                value: root.detail.facets;
+                hint: "How many facets the finished stone has.";
+                value_color: Theme.accent-amber;
             }
-            if root.detail.lw_ratio != "": Rectangle {
-                background: Theme.bg-input;
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: Theme.border-subtle;
-                HorizontalLayout {
-                    padding-left: 6px; padding-right: 6px; padding-top: 3px; padding-bottom: 3px; spacing: 3px;
-                    Text { text: "L/W:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-                    Text { text: root.detail.lw_ratio; font-size: 10px; font-weight: 600; color: Theme.text-primary; vertical-alignment: center; overflow: elide; }
-                }
+            if root.detail.lw_ratio != "": CompactChip {
+                label: "L/W:";
+                value: root.detail.lw_ratio;
+                hint: "Length divided by width. 1.0 is round or square.";
             }
-            if root.detail.ri != "": Rectangle {
-                background: Theme.bg-input;
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: Theme.border-subtle;
-                HorizontalLayout {
-                    padding-left: 6px; padding-right: 6px; padding-top: 3px; padding-bottom: 3px; spacing: 3px;
-                    Text { text: "R.I.:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-                    Text { text: root.detail.ri; font-size: 10px; font-weight: 600; color: Theme.accent-emerald; vertical-alignment: center; overflow: elide; }
-                }
+            if root.detail.ri != "": CompactChip {
+                label: "R.I.:";
+                value: root.detail.ri;
+                hint: "Refractive index: how strongly the material bends light. See the glossary.";
+                value_color: Theme.accent-emerald;
             }
             // A guess, not a fact -- see `DiagramDetailData.material_guess`'s own
             // doc comment.
-            if root.detail.material_guess != "": Rectangle {
-                background: Theme.bg-input;
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: Theme.border-subtle;
-                HorizontalLayout {
-                    padding-left: 6px; padding-right: 6px; padding-top: 3px; padding-bottom: 3px; spacing: 3px;
-                    Text { text: "Material:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-                    Text { text: root.detail.material_guess; font-size: 10px; font-italic: true; font-weight: 600; color: Theme.accent-amber; vertical-alignment: center; overflow: elide; }
-                }
+            if root.detail.material_guess != "": CompactChip {
+                label: "Material:";
+                value: root.detail.material_guess;
+                hint: "A guess made from the design's data, not a recorded fact.";
+                value_color: Theme.accent-amber;
+                italic: true;
             }
 
             Rectangle { horizontal-stretch: 1; }
 
             // The right-hand action cluster, compacted into the same row instead of
             // dropped -- see this component's own `compact` doc comment.
-            if root.detail.title != "": HorizontalLayout {
-                spacing: 4px;
-                if root.detail.url != "" && !root.detail.is_local: Rectangle {
-                    width: 28px; height: 28px;
-                    border-radius: Theme.radius-sm;
-                    background: c_web_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-                    c_web_touch := TouchArea { clicked => { root.open_url(root.detail.url); } }
-                    Tooltip { text: @markdown("Open on Web"); }
-                    Image { source: @image-url("../icons/globe.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; }
-                }
-                if root.detail.url != "" && !root.detail.is_local: Rectangle {
-                    width: 28px; height: 28px;
-                    border-radius: Theme.radius-sm;
-                    background: c_copy_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-                    c_copy_touch := TouchArea { clicked => { root.copy_url(root.detail.url); } }
-                    Tooltip { text: @markdown("Copy Link"); }
-                    Image { source: @image-url("../icons/clipboard.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; }
-                }
-                Rectangle {
-                    width: 28px; height: 28px;
-                    border-radius: Theme.radius-sm;
-                    background: c_export_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-                    c_export_touch := TouchArea { clicked => { root.export_asc(); } }
-                    Tooltip { text: @markdown("Save the original file stored in the catalogue, not your edits."); }
-                    Image { source: @image-url("../icons/save.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; }
-                }
-                Rectangle {
-                    width: 28px; height: 28px;
-                    border-radius: Theme.radius-sm;
-                    background: c_export_gcs_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-                    c_export_gcs_touch := TouchArea { clicked => { root.export_gcs(); } }
-                    Tooltip { text: @markdown("Export as Gem Cut Studio (.gcs)... -- Experimental: written from the published Gem Cut Studio 1.1 file description; chiral designs are untested."); }
-                    Text { text: "gcs"; font-size: 9px; font-weight: 700; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                }
-                if !root.confirming_delete: Rectangle {
-                    width: 28px; height: 28px;
-                    border-radius: Theme.radius-sm;
-                    background: c_delete_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-                    c_delete_touch := TouchArea { clicked => { root.confirming_delete = true; } }
-                    Tooltip { text: @markdown("Delete"); }
-                    Image { source: @image-url("../icons/trash.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; }
-                }
-                if root.confirming_delete: Text { text: "Delete?"; font-size: 10px; color: Theme.accent-amber; vertical-alignment: center; }
-                if root.confirming_delete: Rectangle {
-                    width: 44px; height: 28px;
-                    border-radius: Theme.radius-sm;
-                    background: c_confirm_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-                    border-width: 1px;
-                    border-color: Theme.accent-ruby;
-                    c_confirm_touch := TouchArea { clicked => { root.confirming_delete = false; root.delete_diagram(); } }
-                    Text { text: "Yes"; font-size: 10px; font-weight: 600; color: Theme.accent-ruby; horizontal-alignment: center; vertical-alignment: center; }
-                }
-                if root.confirming_delete: Rectangle {
-                    width: 44px; height: 28px;
-                    border-radius: Theme.radius-sm;
-                    background: c_cancel_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-                    c_cancel_touch := TouchArea { clicked => { root.confirming_delete = false; } }
-                    Text { text: "No"; font-size: 10px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                }
+            if root.detail.title != "": DetailActions {
+                detail: root.detail;
+                confirming_delete <=> root.confirming_delete;
+                open_url(url) => { root.open_url(url); }
+                copy_url(url) => { root.copy_url(url); }
+                export_asc => { root.export_asc(); }
+                export_gcs => { root.export_gcs(); }
+                delete_diagram => { root.delete_diagram(); }
             }
         }
 
@@ -466,16 +647,19 @@ export component DetailHeaderView inherits Rectangle {
                     // Collapse chevron -- the other half of the expand chevron in the
                     // `effective_compact` branch above; always shown here since this
                     // branch only renders at all when NOT already collapsed.
-                    Rectangle {
-                        width: 18px;
-                        height: 18px;
-                        border-radius: 4px;
-                        background: collapse_touch.has-hover ? Theme.bg-elevated : transparent;
-                        collapse_touch := TouchArea {
+                    VerticalLayout {
+                        alignment: center;
+                        HeaderAction {
+                            flat: true;
+                            size: 20px;
+                            glyph: 10px;
+                            icon: @image-url("../icons/chevron-down.svg");
+                            label: "Design header";
+                            hint: "Collapse the design header to one line.";
+                            expandable: true;
+                            expanded: true;
                             clicked => { root.user_collapsed = true; }
                         }
-                        Tooltip { text: @markdown("Collapse the design header to one line."); }
-                        Text { text: "▾"; font-size: 11px; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
                     }
 
                     if !root.renaming: Text {
@@ -494,52 +678,59 @@ export component DetailHeaderView inherits Rectangle {
                     if root.renaming: LineEdit {
                         width: 200px;
                         text <=> root.rename_draft;
+                        accessible-label: "Design title";
+                        accessible-description: "Type the new title, then press Enter to save it.";
                         accepted => {
                             root.rename_diagram(root.rename_draft);
                             root.renaming = false;
                         }
                     }
 
-                    if root.detail.title != "" && !root.renaming: Rectangle {
-                        width: 18px;
-                        height: 18px;
-                        border-radius: 4px;
-                        background: pencil_touch.has-hover ? Theme.bg-elevated : transparent;
-                        pencil_touch := TouchArea {
+                    if root.detail.title != "" && !root.renaming: VerticalLayout {
+                        alignment: center;
+                        HeaderAction {
+                            flat: true;
+                            size: 20px;
+                            glyph: 11px;
+                            icon: @image-url("../icons/pencil.svg");
+                            label: "Rename this design";
+                            hint: "Change the title of this design.";
                             clicked => {
                                 root.rename_draft = root.detail.title;
                                 root.renaming = true;
                             }
                         }
-                        Tooltip { text: @markdown("Rename this design."); }
-                        Image {
-                            source: @image-url("../icons/pencil.svg");
-                            colorize: Theme.text-secondary;
-                            width: 11px;
-                            height: 11px;
-                        }
                     }
 
                     if root.renaming: HorizontalLayout {
                         spacing: 4px;
-                        Rectangle {
-                            width: 18px; height: 18px;
-                            border-radius: 4px;
-                            background: save_touch.has-hover ? Theme.bg-elevated : transparent;
-                            save_touch := TouchArea {
+                        VerticalLayout {
+                            alignment: center;
+                            HeaderAction {
+                                flat: true;
+                                size: 20px;
+                                glyph: 11px;
+                                icon: @image-url("../icons/check.svg");
+                                ink: Theme.accent-emerald;
+                                label: "Save the new title";
+                                hint: "Save the new title.";
                                 clicked => {
                                     root.rename_diagram(root.rename_draft);
                                     root.renaming = false;
                                 }
                             }
-                            Image { source: @image-url("../icons/check.svg"); colorize: Theme.accent-emerald; width: 11px; height: 11px; }
                         }
-                        Rectangle {
-                            width: 18px; height: 18px;
-                            border-radius: 4px;
-                            background: cancel_touch.has-hover ? Theme.bg-elevated : transparent;
-                            cancel_touch := TouchArea { clicked => { root.renaming = false; } }
-                            Image { source: @image-url("../icons/close.svg"); colorize: Theme.text-secondary; width: 11px; height: 11px; }
+                        VerticalLayout {
+                            alignment: center;
+                            HeaderAction {
+                                flat: true;
+                                size: 20px;
+                                glyph: 11px;
+                                icon: @image-url("../icons/close.svg");
+                                label: "Cancel the rename";
+                                hint: "Keep the old title.";
+                                clicked => { root.renaming = false; }
+                            }
                         }
                     }
 
@@ -554,13 +745,17 @@ export component DetailHeaderView inherits Rectangle {
                     }
 
                     if root.detail.competition != "" && root.detail.competition != "0": Rectangle {
-                        background: #7c2d12;
+                        background: Theme.badge-orange-bg;
                         border-radius: 4px;
                         height: 18px;
+                        accessible-role: AccessibleRole.text;
+                        accessible-label: "Competition design";
+                        accessible-description: "The catalogue marks this design as a competition design.";
+                        Tooltip { text: @markdown("The catalogue marks this design as a competition design."); }
                         HorizontalLayout {
                             padding-left: 6px; padding-right: 6px; spacing: 4px;
-                            Image { source: @image-url("../icons/trophy.svg"); colorize: #fed7aa; width: 10px; height: 10px; vertical-alignment: center; }
-                            Text { text: "Competition Design"; font-size: 9px; font-weight: 700; color: #fed7aa; vertical-alignment: center; }
+                            Image { source: @image-url("../icons/trophy.svg"); colorize: Theme.badge-orange-text; width: 10px; height: 10px; vertical-alignment: center; }
+                            Text { text: "Competition Design"; font-size: 9px; font-weight: 700; color: Theme.badge-orange-text; vertical-alignment: center; accessible-role: AccessibleRole.none; }
                         }
                     }
 
@@ -579,109 +774,30 @@ export component DetailHeaderView inherits Rectangle {
                 // Right cluster: icon-first compact action buttons, 28px -- was a row
                 // of text `Button`s (each 32px+ with its own label); same actions,
                 // same reachability, just icon-only now that they share a row with
-                // everything else.
-                if root.detail.title != "": HorizontalLayout {
-                    spacing: 4px;
+                // everything else. The "?" at the end opens the manual page on the
+                // design details.
+                HorizontalLayout {
+                    spacing: 8px;
                     alignment: end;
 
-                    if root.detail.url != "" && !root.detail.is_local: Rectangle {
-                        width: 28px; height: 28px;
-                        border-radius: Theme.radius-sm;
-                        background: web_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-                        web_touch := TouchArea { clicked => { root.open_url(root.detail.url); } }
-                        Tooltip { text: @markdown("Open on Web"); }
-                        Image { source: @image-url("../icons/globe.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; }
+                    if root.detail.title != "": DetailActions {
+                        detail: root.detail;
+                        with_metadata: true;
+                        confirming_delete <=> root.confirming_delete;
+                        open_url(url) => { root.open_url(url); }
+                        copy_url(url) => { root.copy_url(url); }
+                        export_asc => { root.export_asc(); }
+                        export_gcs => { root.export_gcs(); }
+                        edit_metadata => { root.edit_metadata(); }
+                        delete_diagram => { root.delete_diagram(); }
                     }
 
-                    if root.detail.url != "" && !root.detail.is_local: Rectangle {
-                        width: 28px; height: 28px;
-                        border-radius: Theme.radius-sm;
-                        background: copy_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-                        copy_touch := TouchArea { clicked => { root.copy_url(root.detail.url); } }
-                        Tooltip { text: @markdown("Copy Link"); }
-                        Image { source: @image-url("../icons/clipboard.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; }
-                    }
-
-                    // This exports the ORIGINAL file stored in the catalogue (not
-                    // the user's in-editor changes) -- `editor_view.slint`'s
-                    // "Export Edited .asc" is the other, unrelated ".asc" export.
-                    // The tooltip below is the disambiguator between the two
-                    // labels (the editor one is named differently, since it's the
-                    // one a user is more likely to reach for repeatedly).
-                    Rectangle {
-                        width: 28px; height: 28px;
-                        border-radius: Theme.radius-sm;
-                        background: cexport_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-                        cexport_touch := TouchArea { clicked => { root.export_asc(); } }
-                        Tooltip { text: @markdown("Export .asc -- save the original file stored in the catalogue, not your edits."); }
-                        Image { source: @image-url("../icons/save.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; }
-                    }
-
-                    // The catalogue's cutting instructions as a Gem Cut Studio file
-                    // (`gui::library::local::export`); experimental, see the tooltip.
-                    Rectangle {
-                        width: 28px; height: 28px;
-                        border-radius: Theme.radius-sm;
-                        background: cexport_gcs_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-                        cexport_gcs_touch := TouchArea { clicked => { root.export_gcs(); } }
-                        Tooltip { text: @markdown("Export as Gem Cut Studio (.gcs)... -- Experimental: written from the published Gem Cut Studio 1.1 file description; chiral designs are untested."); }
-                        Text { text: "gcs"; font-size: 9px; font-weight: 700; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-
-                    // Metadata editor: title, designer, shape, refractive index, index
-                    // gear, facet count, symmetry order, mirror symmetry, and the
-                    // proportion ratios -- everything the inline title/shape pencils
-                    // don't already cover. Local designs only, same gate as those two
-                    // and as Delete below (see
-                    // `gui::detail::setup_save_metadata_callback`'s doc comment for
-                    // why editing is local-only).
-                    if root.detail.is_local: Rectangle {
-                        width: 28px; height: 28px;
-                        border-radius: Theme.radius-sm;
-                        background: edit_metadata_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-                        edit_metadata_touch := TouchArea { clicked => { root.edit_metadata(); } }
-                        Tooltip { text: @markdown("Edit Metadata -- title, designer, shape, R.I., gear, facets and proportions."); }
-                        Image { source: @image-url("../icons/info.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; }
-                    }
-
-                    if !root.confirming_delete: Rectangle {
-                        width: 28px; height: 28px;
-                        border-radius: Theme.radius-sm;
-                        background: cdelete_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-                        cdelete_touch := TouchArea { clicked => { root.confirming_delete = true; } }
-                        Tooltip { text: @markdown("Delete"); }
-                        Image { source: @image-url("../icons/trash.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; }
-                    }
-                    if root.confirming_delete: Text { text: "Delete?"; font-size: 10px; color: Theme.accent-amber; vertical-alignment: center; }
-                    if root.confirming_delete: Rectangle {
-                        width: 44px; height: 28px;
-                        border-radius: Theme.radius-sm;
-                        background: cconfirm_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-                        border-width: 1px;
-                        border-color: Theme.accent-ruby;
-                        cconfirm_touch := TouchArea { clicked => { root.confirming_delete = false; root.delete_diagram(); } }
-                        Text { text: "Yes"; font-size: 10px; font-weight: 600; color: Theme.accent-ruby; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-                    if root.confirming_delete: Rectangle {
-                        width: 44px; height: 28px;
-                        border-radius: Theme.radius-sm;
-                        background: ccancel_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-                        ccancel_touch := TouchArea { clicked => { root.confirming_delete = false; } }
-                        Text { text: "No"; font-size: 10px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    VerticalLayout {
+                        alignment: center;
+                        HelpButton {
+                            topic: HelpTopics.library-details;
+                            hint: "Open the manual page on selecting and inspecting a design";
+                        }
                     }
                 }
             }

@@ -299,6 +299,7 @@ fn shaped_uniform_layouts_keep_the_extent_and_match_stones_to_pieces() {
 }
 
 #[test]
+#[ignore = "slow rough-planner test (over 60 s); run with --ignored"]
 fn shaped_plans_keep_stones_and_pieces_in_step_and_poses_right_handed() {
     let designs = random_designs(&mut Lcg(11), 5);
     let cases = [

@@ -130,7 +130,8 @@ fn scene(environment: SceneEnvironment) -> SceneState {
         environment,
         surface_glare: 1.0,
         tools: Vec::new(),
-        fluorescence: Default::default(),
+        fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
+        head_shadow_deg: 16.0,
     }
 }
 
@@ -380,4 +381,31 @@ fn environment_source_carries_the_scenes_surface_glare() {
     studio.surface_glare = 0.0;
     let hdr = environment_source(&studio, Some(&map));
     assert_eq!(hdr.surface_glare().to_bits(), 1.0f32.to_bits());
+}
+
+/// The studio environment a worker builds carries the scene's head-shadow radius.
+#[test]
+fn environment_source_carries_the_scenes_head_shadow() {
+    let mut studio = scene(SceneEnvironment::Studio);
+    assert_eq!(studio.head_shadow_deg.to_bits(), 16.0f32.to_bits());
+    assert_eq!(
+        environment_source(&studio, None)
+            .head_shadow_deg()
+            .to_bits(),
+        16.0f32.to_bits()
+    );
+    studio.head_shadow_deg = 0.0;
+    assert_eq!(
+        environment_source(&studio, None)
+            .head_shadow_deg()
+            .to_bits(),
+        0.0f32.to_bits()
+    );
+    studio.head_shadow_deg = 24.0;
+    assert_eq!(
+        environment_source(&studio, None)
+            .head_shadow_deg()
+            .to_bits(),
+        24.0f32.to_bits()
+    );
 }

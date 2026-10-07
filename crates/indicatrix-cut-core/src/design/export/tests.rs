@@ -291,6 +291,8 @@ fn effective_refractive_index_with_prefers_the_override_over_a_custom_entry() {
         specific_gravity_override: None,
         refractive_index_override: Some(1.70),
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let custom = [custom_garnet(1.90)];
     assert_eq!(design.effective_refractive_index_with(&custom), 1.70);
@@ -308,6 +310,8 @@ fn effective_refractive_index_with_resolves_a_custom_material_by_name() {
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     // The built-ins-only version has no idea what "My Garnet" is and falls all
     // the way back to the legacy schedule RI.
@@ -330,6 +334,8 @@ fn effective_refractive_index_with_falls_back_to_a_built_in_when_no_custom_entry
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let custom: [GemMaterial; 0] = [];
     assert_eq!(
@@ -365,6 +371,8 @@ fn to_asc_schedule_with_resolves_a_custom_materials_own_refractive_index() {
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let custom = [custom_garnet(1.9)];
 
@@ -393,6 +401,8 @@ fn to_asc_schedule_from_solved_with_resolves_a_custom_materials_own_refractive_i
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let custom = [custom_garnet(1.9)];
     let solved = design
@@ -426,6 +436,8 @@ fn to_asc_schedule_with_matches_the_old_entry_point_byte_for_byte_on_a_built_in(
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     // A custom catalogue with an unrelated entry must not perturb a design named
     // after a built-in -- built-ins take precedence over nothing here, since
@@ -535,20 +547,35 @@ fn asc_export_omits_concave_tiers_and_appends_two_footnotes_per_tier() {
         schedule.footnotes,
         vec![
             "my own note".to_string(),
-            "Groove  -62.00  3 11.50 19  cut to depth".to_string(),
-            "CYL  +90.00°  X = 0.000, Y = 0.120, Z = 0.050  D/W = 0.250, reciprocating".to_string(),
-            "Pit  40.00  0".to_string(),
-            "CON  0.00°  X = 0.000, Y = 0.000, Z = 0.000  D/W = 0.500, angle = 60.00°, plunge"
+            "Groove  -62.00  3 11.50 19  cut to depth  [concave tier]".to_string(),
+            "CYL  +90.00 deg  X = 0.000, Y = 0.120, Z = 0.050  D/W = 0.250, reciprocating  \
+             [concave tier]"
+                .to_string(),
+            "Pit  40.00  0  [concave tier]".to_string(),
+            "CON  0.00 deg  X = 0.000, Y = 0.000, Z = 0.000  D/W = 0.500, angle = 60.00 deg, \
+             plunge  [concave tier]"
                 .to_string(),
         ]
     );
+    // Every generated line is ASCII (GemCad reads an `.asc` as single-byte text) and
+    // ends in the marker the load recognises them by; the user's own note has neither.
+    for line in &schedule.footnotes[1..] {
+        assert!(line.is_ascii(), "{line:?}");
+        assert!(
+            line.ends_with(crate::design::CONCAVE_FOOTNOTE_MARKER),
+            "{line:?}"
+        );
+    }
     // The writer accepts every line, and the plain schedule is untouched.
     indicatrix_formats::asc::to_asc_string(&schedule).expect("every footnote is one line");
     assert_eq!(
         design.to_asc_schedule_from_solved(&solved).footnotes,
         vec!["my own note".to_string()]
     );
-    assert!(planar.export_warnings().is_empty());
+    assert_eq!(
+        planar.export_warnings(),
+        [] as [crate::manufacturability::ManufacturabilityWarning; 0]
+    );
     assert_eq!(
         design.export_warnings(),
         vec![
@@ -557,6 +584,48 @@ fn asc_export_omits_concave_tiers_and_appends_two_footnotes_per_tier() {
             }
         ]
     );
+}
+
+/// A caller that holds a concave tier only as stored text gets the very lines the design's
+/// export writes, from the same functions, and a degree sign typed into the instructions is
+/// written as `deg` like the tool line's, so the whole line stays ASCII.
+#[test]
+fn the_footnote_builders_give_the_lines_the_design_export_writes() {
+    let mut design = round_brilliant_design();
+    concave_pair(&mut design);
+    design.concave_tiers[0].instructions = "tilt 45°".to_string();
+    let solved = design.solve().expect("solves");
+    let schedule = design.to_asc_schedule_for_export(&solved);
+
+    let [groove_facet, groove_tool, pit_facet, pit_tool] = schedule.footnotes.as_slice() else {
+        panic!("two footnotes per tier: {:?}", schedule.footnotes);
+    };
+    assert_eq!(
+        groove_facet,
+        "Groove  -62.00  3 11.50 19  tilt 45 deg  [concave tier]"
+    );
+    assert_eq!(
+        *groove_facet,
+        crate::design::concave_facet_footnote("Groove", "-62.00", "3 11.50 19", "tilt 45°")
+    );
+    assert_eq!(
+        *groove_tool,
+        crate::design::concave_tool_footnote(
+            "CYL  +90.00°  X = 0.000, Y = 0.120, Z = 0.050  D/W = 0.250, reciprocating"
+        )
+    );
+    // An empty instruction leaves no trailing spaces before the marker.
+    assert_eq!(
+        *pit_facet,
+        crate::design::concave_facet_footnote("Pit", "40.00", "0", "")
+    );
+    assert_eq!(
+        *pit_tool,
+        crate::design::concave_tool_footnote(
+            "CON  0.00°  X = 0.000, Y = 0.000, Z = 0.000  D/W = 0.500, angle = 60.00°, plunge"
+        )
+    );
+    assert!(schedule.footnotes.iter().all(|line| line.is_ascii()));
 }
 
 #[test]
@@ -609,10 +678,13 @@ fn an_edited_concave_tier_leaves_no_stale_footnotes_on_the_next_export() {
         second.footnotes,
         vec![
             "my own note".to_string(),
-            "Groove  -62.00  3 11.50 19  cut deeper".to_string(),
-            "CYL  +90.00°  X = 0.000, Y = 0.120, Z = 0.200  D/W = 0.250, reciprocating".to_string(),
-            "Pit  40.00  0".to_string(),
-            "CON  0.00°  X = 0.000, Y = 0.000, Z = 0.000  D/W = 0.450, angle = 60.00°, plunge"
+            "Groove  -62.00  3 11.50 19  cut deeper  [concave tier]".to_string(),
+            "CYL  +90.00 deg  X = 0.000, Y = 0.120, Z = 0.200  D/W = 0.250, reciprocating  \
+             [concave tier]"
+                .to_string(),
+            "Pit  40.00  0  [concave tier]".to_string(),
+            "CON  0.00 deg  X = 0.000, Y = 0.000, Z = 0.000  D/W = 0.450, angle = 60.00 deg, \
+             plunge  [concave tier]"
                 .to_string(),
         ]
     );
@@ -629,26 +701,126 @@ fn an_edited_concave_tier_leaves_no_stale_footnotes_on_the_next_export() {
     );
 }
 
+/// Only a line the export marked (or an unmarked line an earlier version wrote for a tier
+/// the design has now, byte for byte) is generated; everything else is the user's, however
+/// it looks.
 #[test]
-fn only_generated_shaped_footnotes_are_stripped() {
+fn only_marked_or_legacy_lines_of_current_tiers_are_stripped() {
+    let mut design = round_brilliant_design();
+    concave_pair(&mut design);
     let mut notes: Vec<String> = [
         "Cut slowly, 45.00 rpm",
+        // Marked: the lines of an export, for these tiers or an earlier shape of them.
+        "Groove  -62.00  3 11.50 19  cut to depth  [concave tier]",
+        "CYL  +90.00 deg  X = 0.000, Y = 0.500, Z = 0.050  D/W = 0.250, reciprocating  \
+         [concave tier]",
+        // Unmarked, written by an earlier version for the Groove tier as it is now.
         "Groove  -62.00  3 11.50 19  cut to depth",
         "CYL  +90.00°  X = 0.000, Y = 0.120, Z = 0.050  D/W = 0.250, reciprocating",
-        "SPH note: CYL  not a tool line",
-        "Pit  40.00  0",
+        // The user's: shaped like a tool line, but for a tool no tier has.
         "DSC  -3.50°  X = 1.000, Y = -0.500, Z = 0.000  D/W = 0.500, angle = 60.00°, plunge",
+        "Notch  12.00  5  by hand",
+        "SPH note: CYL  not a tool line",
+        // The marker must be a field of its own.
+        "tagged[concave tier]",
         "keep me",
     ]
     .map(String::from)
     .to_vec();
-    super::schedule::strip_generated_concave_footnotes(&mut notes);
+    super::schedule::strip_generated_concave_footnotes(&mut notes, &design.concave_tiers);
     assert_eq!(
         notes,
         vec![
             "Cut slowly, 45.00 rpm".to_string(),
+            "DSC  -3.50°  X = 1.000, Y = -0.500, Z = 0.000  D/W = 0.500, angle = 60.00°, plunge"
+                .to_string(),
+            "Notch  12.00  5  by hand".to_string(),
             "SPH note: CYL  not a tool line".to_string(),
+            "tagged[concave tier]".to_string(),
             "keep me".to_string(),
         ]
+    );
+}
+
+/// A note the user typed in the shape of a facet line and a tool line (copied from a
+/// sheet, say) is not the export's: it survives the paired load's strip and the next export,
+/// and the export's own lines still replace each other.
+#[test]
+fn a_users_own_tool_shaped_footnotes_survive_the_export_round_trip() {
+    let users_pair = [
+        "Notch  12.00  5  by hand".to_string(),
+        "CYL  +45.00°  X = 0.100, Y = 0.200, Z = 0.300  D/W = 0.300, plunge".to_string(),
+    ];
+    let mut design = round_brilliant_design();
+    design.meta.footnotes = users_pair.to_vec();
+    concave_pair(&mut design);
+    let solved = design.solve().expect("solves");
+    let first = design.to_asc_schedule_for_export(&solved);
+    assert_eq!(
+        first.footnotes[..2],
+        users_pair,
+        "the export keeps the user's lines first"
+    );
+    assert_eq!(first.footnotes.len(), 6);
+
+    // What a paired load does to the footnotes the `.asc` carries.
+    let text = indicatrix_formats::asc::to_asc_string(&first).expect("writes");
+    let parsed = indicatrix_formats::asc::parse_asc(&text).expect("parses");
+    let mut loaded = Design::from_asc_schedule(PreformSpec::block(2.0, 1.0, 2.0), &parsed);
+    concave_pair(&mut loaded);
+    super::schedule::strip_generated_concave_footnotes(
+        &mut loaded.meta.footnotes,
+        &loaded.concave_tiers,
+    );
+    assert_eq!(loaded.meta.footnotes, users_pair);
+
+    let solved = loaded.solve().expect("solves");
+    assert_eq!(
+        loaded.to_asc_schedule_for_export(&solved).footnotes,
+        first.footnotes
+    );
+}
+
+/// The two footnotes per tier that `concave_pair`'s tiers got in an `.asc` written before the
+/// export marked its lines, as a load reads them back (the `.asc` parser trims every
+/// footnote line, so the empty instructions of the second tier leave no trailing spaces).
+///
+/// Written out by hand from what that build produced (the facet line, then the tool line
+/// with `°`), NOT from the current formulas: a change to a formula must not quietly change
+/// what counts as an earlier file's line.
+const EARLIER_VERSION_FOOTNOTES: [&str; 4] = [
+    "Groove  -62.00  3 11.50 19  cut to depth",
+    "CYL  +90.00°  X = 0.000, Y = 0.120, Z = 0.050  D/W = 0.250, reciprocating",
+    "Pit  40.00  0",
+    "CON  0.00°  X = 0.000, Y = 0.000, Z = 0.000  D/W = 0.500, angle = 60.00°, plunge",
+];
+
+/// A file an earlier version exported carries unmarked lines with `°`; the paired load
+/// still recognises those of the tiers it restores, so the next export does not write each
+/// line twice.
+#[test]
+fn footnotes_an_earlier_version_wrote_are_replaced_not_duplicated() {
+    let mut design = round_brilliant_design();
+    design.meta.footnotes = vec!["my own note".to_string()];
+    concave_pair(&mut design);
+    assert!(
+        EARLIER_VERSION_FOOTNOTES
+            .iter()
+            .any(|line| line.contains('°'))
+    );
+    let mut loaded = design.clone();
+    loaded.meta.footnotes = std::iter::once("my own note".to_string())
+        .chain(EARLIER_VERSION_FOOTNOTES.map(String::from))
+        .collect();
+
+    super::schedule::strip_generated_concave_footnotes(
+        &mut loaded.meta.footnotes,
+        &loaded.concave_tiers,
+    );
+    assert_eq!(loaded.meta.footnotes, vec!["my own note".to_string()]);
+    let solved = loaded.solve().expect("solves");
+    assert_eq!(
+        loaded.to_asc_schedule_for_export(&solved).footnotes,
+        design.to_asc_schedule_for_export(&solved).footnotes
     );
 }

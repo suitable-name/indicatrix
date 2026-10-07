@@ -2,16 +2,19 @@
 //! [`super::build`]'s `Design` methods, and [`super::diff`]'s [`diff_tiers`].
 
 use super::{
-    ConcaveRowInfo, CutSheetRow, CuttingSheet, diff_concave_tiers, diff_tiers,
-    sheet::format_indices,
+    ConcaveRowInfo, ConcaveTierDelta, CutSheetRow, CuttingSheet, build::meet_instruction,
+    diff_concave_tiers, diff_tiers, format_sheet_index, format_sheet_indices,
 };
 use crate::{
-    design::{ConcaveTool, ConstraintTier, Design, ScheduleMeta, TierRef, ToolMotion},
+    design::{
+        ConcaveTool, ConstraintTier, Design, ScheduleMeta, TierRef, ToolMotion,
+        compute_tier_labels, cutting_order::meet_inputs,
+    },
     material::MaterialSelection,
     preform::PreformSpec,
 };
 use indicatrix::{
-    geometry::meet_solver::{MeetConstraint, SolvedTier},
+    geometry::meet_solver::{MeetConstraint, MeetNameResolver, SolvedTier},
     optics::materials::GemMaterial,
 };
 
@@ -46,6 +49,8 @@ fn cutting_sheet_with_resolves_a_custom_materials_own_refractive_index() {
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let custom = [custom_garnet(1.9)];
     let solved = design
@@ -71,24 +76,48 @@ fn cutting_sheet_with_resolves_a_custom_materials_own_refractive_index() {
     );
 }
 
-/// `cutting_sheet` must produce one row per tier, in tier order, with
-/// the solved mast carried through and a non-empty meet instruction for
-/// every row (this template's tiers are all `ScaleReference`).
+/// `cutting_sheet` must produce one row per tier, in cutting order (the pavilion section
+/// first, the table last -- the fixture is stored top-down), with the solved mast carried
+/// through, the tier's code in cutting order and a non-empty meet instruction for every row
+/// (this template's tiers are all `ScaleReference`).
 #[test]
-fn cutting_sheet_has_one_row_per_tier_in_order() {
+fn cutting_sheet_has_one_row_per_tier_in_cutting_order() {
     let design = round_brilliant_design();
     let solved = design
         .solve()
         .expect("every tier is pinned via ScaleReference");
     let sheet = design.cutting_sheet(&solved);
     assert_eq!(sheet.rows.len(), 8);
-    for (i, row) in sheet.rows.iter().enumerate() {
-        assert_eq!(row.sequence, i + 1);
+    let order = design.cutting_order();
+    assert_eq!(
+        order,
+        [
+            TierRef::Flat(4),
+            TierRef::Flat(5),
+            TierRef::Flat(6),
+            TierRef::Flat(7),
+            TierRef::Flat(1),
+            TierRef::Flat(2),
+            TierRef::Flat(3),
+            TierRef::Flat(0),
+        ]
+    );
+    for (position, (row, tier_ref)) in sheet.rows.iter().zip(&order).enumerate() {
+        let TierRef::Flat(i) = *tier_ref else {
+            panic!("a planar design has only flat tiers");
+        };
+        assert_eq!(row.sequence, position + 1);
         assert_eq!(row.name, design.tiers[i].name);
         assert_eq!(row.mast, solved[i].mast);
         assert_ne!(row.meet_instruction, "");
         assert_eq!(row.meets_tiers, Vec::<usize>::new()); // all ScaleReference here
     }
+    let codes: Vec<&str> = sheet.rows.iter().map(|row| row.code.as_str()).collect();
+    assert_eq!(
+        codes,
+        ["G1", "P1", "P2", "Culet", "C1", "C2", "C3", "T"],
+        "numbered per letter in cutting order, the table is T"
+    );
     assert!(sheet.header.iter().any(|l| l.starts_with("Index gear: 96")));
 }
 
@@ -99,26 +128,28 @@ fn cutting_sheet_has_one_row_per_tier_in_order() {
 #[test]
 fn cutting_sheet_carries_the_cheater_offset_into_its_own_row_and_text() {
     let mut design = round_brilliant_design();
+    // Tier 1 is the star, cut fifth (after the four pavilion-section tiers).
     design.cheater_offsets_deg.insert(1, -0.75);
     let solved = design
         .solve()
         .expect("every tier is pinned via ScaleReference");
     let sheet = design.cutting_sheet(&solved);
     assert_eq!(sheet.rows[0].cheater_offset_deg, None);
-    assert_eq!(sheet.rows[1].cheater_offset_deg, Some(-0.75));
+    assert_eq!(sheet.rows[4].name, "Star");
+    assert_eq!(sheet.rows[4].cheater_offset_deg, Some(-0.75));
 
     let text = sheet.to_text();
     let lines: Vec<&str> = text.lines().collect();
-    let row1_line = lines
+    let star_line = lines
         .iter()
-        .find(|l| l.trim_start().starts_with("2."))
-        .expect("row 2 must be printed");
-    assert!(row1_line.contains("cheater: -0.75 deg"), "{row1_line}");
-    let row0_line = lines
+        .find(|l| l.trim_start().starts_with("5."))
+        .expect("row 5 must be printed");
+    assert!(star_line.contains("cheater: -0.75 deg"), "{star_line}");
+    let first_line = lines
         .iter()
         .find(|l| l.trim_start().starts_with("1."))
         .expect("row 1 must be printed");
-    assert!(!row0_line.contains("cheater"), "{row0_line}");
+    assert!(!first_line.contains("cheater"), "{first_line}");
 }
 
 /// Every row's `angle_of_elevation_deg` is the unsigned magnitude of
@@ -152,8 +183,10 @@ fn depth_mm_is_populated_only_once_a_girdle_diameter_anchors_a_real_scale() {
         .yield_report(&solved)
         .mm_per_unit
         .expect("a closed design with a girdle diameter set must measure a scale");
-    for (row, solved_tier) in anchored.rows.iter().zip(&solved) {
-        let expected = solved_tier.mast * scale;
+    // The rows follow the cutting order, the masts the stored one: each row carries its own
+    // tier's mast (see `cutting_sheet_has_one_row_per_tier_in_cutting_order`).
+    for row in &anchored.rows {
+        let expected = row.mast * scale;
         assert!((row.depth_mm.expect("mm scale resolved") - expected).abs() < 1e-9);
     }
 }
@@ -180,6 +213,8 @@ fn header_carries_a_carat_weight_line_only_once_anchored() {
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let anchored = design.cutting_sheet(&solved);
     assert!(
@@ -227,8 +262,8 @@ fn facet_meets_resolves_named_references() {
     assert!(design.facet_meets(2).is_err());
 }
 
-/// `to_text` must render a header block followed by one line per row,
-/// containing the row's own name, angle and mast figures.
+/// `to_text` must render a header block followed by one line per row, in cutting order,
+/// each with the tier's code, its dash-separated indices and its instruction.
 #[test]
 fn to_text_renders_header_and_rows() {
     let design = round_brilliant_design();
@@ -237,20 +272,139 @@ fn to_text_renders_header_and_rows() {
         .expect("every tier is pinned via ScaleReference");
     let text = design.cutting_sheet(&solved).to_text();
     assert!(text.contains("Material: (unset)"));
-    assert!(text.contains("Table"));
-    assert!(text.contains("Girdle"));
     assert!(text.contains("mast"));
     // 3 header lines + 1 blank separator + 8 rows.
     assert_eq!(text.lines().count(), 3 + 1 + 8);
+
+    let lines: Vec<&str> = text.lines().collect();
+    // The girdle is the first tier cut: label G1, its own name in front of the instruction.
+    let girdle = lines[4];
+    assert!(girdle.starts_with("  1. G1 "), "{girdle}");
+    assert!(
+        girdle.contains("indices [00-06-12-18-24-30-36-42-48-54-60-66-72-78-84-90]"),
+        "{girdle}"
+    );
+    assert!(
+        girdle.ends_with("meet: Girdle: Set to mast depth 1.0000"),
+        "{girdle}"
+    );
+    // The culet is named like its code, so its instruction carries no name.
+    let culet = lines[7];
+    assert!(culet.starts_with("  4. Culet "), "{culet}");
+    assert!(culet.contains("indices [-]"), "{culet}");
+    assert!(culet.ends_with("meet: Set to mast depth 0.8800"), "{culet}");
+    // The table is cut last and its code is T.
+    let table = lines[11];
+    assert!(table.starts_with("  8. T "), "{table}");
+    assert!(
+        table.ends_with("meet: Table: Set to mast depth 0.3200"),
+        "{table}"
+    );
 }
 
-/// An index list is formatted as `"-"` when empty and with whole-tooth
-/// integers otherwise.
+/// The printed index lists are dash-separated, whole indices zero-padded to two digits,
+/// fractional positions keep two decimals with the whole part padded, and an empty list is
+/// a dash.
 #[test]
-fn format_indices_matches_whole_vs_fractional_convention() {
-    assert_eq!(format_indices(&[]), "-");
-    assert_eq!(format_indices(&[12.0, 24.0]), "12, 24");
-    assert_eq!(format_indices(&[11.5]), "11.50");
+fn sheet_indices_are_dashed_and_zero_padded() {
+    assert_eq!(format_sheet_indices(&[]), "-");
+    assert_eq!(format_sheet_indices(&[96.0, 8.0, 16.0]), "96-08-16");
+    assert_eq!(format_sheet_indices(&[12.0, 24.0]), "12-24");
+    assert_eq!(format_sheet_indices(&[0.0, 4.0]), "00-04");
+    assert_eq!(format_sheet_indices(&[3.5]), "03.50");
+    assert_eq!(format_sheet_indices(&[11.5, 2.0]), "11.50-02");
+    assert_eq!(
+        format_sheet_index(120.0),
+        "120",
+        "three digits stay as they are"
+    );
+    assert_eq!(
+        format_sheet_index(-0.0),
+        "00",
+        "a negative zero is a plain zero"
+    );
+    assert_eq!(
+        format_sheet_index(95.999_999_999_9),
+        "96",
+        "a position within rounding of a whole tooth is that tooth"
+    );
+}
+
+/// A name that is the tier's own descriptive name moves in front of the instruction; an
+/// empty name, an old-style one and one equal to the code do not.
+#[test]
+fn the_descriptive_name_leads_the_instruction_text() {
+    let row = |code: &str, name: &str| CutSheetRow {
+        code: code.to_string(),
+        name: name.to_string(),
+        meet_instruction: "Meet P1".to_string(),
+        ..flat_row(1)
+    };
+    let named = row("C2", "Crown Main");
+    assert_eq!(named.descriptive_name(), Some("Crown Main"));
+    assert_eq!(named.instruction(), "Crown Main: Meet P1");
+    assert_eq!(named.label(), "C2");
+
+    for (code, name) in [
+        ("C2", ""),
+        ("C2", "  "),
+        ("C2", "B"),
+        ("C2", "2"),
+        ("C2", "c2"),
+    ] {
+        let plain = row(code, name);
+        assert_eq!(plain.descriptive_name(), None, "name {name:?}");
+        assert_eq!(plain.instruction(), "Meet P1", "name {name:?}");
+    }
+    assert_eq!(row("Culet", "Culet").instruction(), "Meet P1");
+
+    // A row built by hand without a code labels itself by its name, then "(unnamed)".
+    assert_eq!(row("", "Hand made").label(), "Hand made");
+    assert_eq!(row("", "").label(), "(unnamed)");
+}
+
+/// `MeetNamed` targets print as their tiers' codes, even when the stored names are old-style
+/// (`1`, `A`), a compound vertex spec maps component by component, words that name no tier
+/// stay as written, and an imported note prints verbatim.
+#[test]
+fn meet_text_names_tiers_by_their_codes() {
+    let meets = |name: &str, angle_deg: f64, targets: &[&str]| {
+        named_tier(
+            name,
+            angle_deg,
+            MeetConstraint::MeetNamed(targets.iter().map(|t| (*t).to_string()).collect()),
+        )
+    };
+    let mut noted = named_tier("E", 15.0, MeetConstraint::ScaleReference(0.4));
+    noted.original_notes = Some("Meet 1, 2 and G at index 96".to_string());
+    let tiers = vec![
+        named_tier("1", -41.0, MeetConstraint::ScaleReference(0.5)),
+        meets("2", -42.0, &["1"]),
+        named_tier("G", 90.0, MeetConstraint::ScaleReference(1.0)),
+        named_tier("A", 35.0, MeetConstraint::ScaleReference(0.6)),
+        meets("B", 30.0, &["A", "G"]),
+        meets("C", 25.0, &["1-2-G"]),
+        meets("D", 20.0, &["PCP", "Nonexistent", "B"]),
+        noted,
+        named_tier("F", 10.0, MeetConstraint::MeetExisting),
+    ];
+    let codes = compute_tier_labels(&tiers);
+    let wanted_codes: Vec<&str> = codes.iter().map(|label| label.code.as_str()).collect();
+    assert_eq!(
+        wanted_codes,
+        ["P1", "P2", "G1", "C1", "C2", "C3", "C4", "C5", "C6"]
+    );
+
+    let inputs = meet_inputs(&tiers);
+    let resolver = MeetNameResolver::new(&inputs);
+    let text = |i: usize| meet_instruction(&tiers[i], &resolver, &codes);
+    assert_eq!(text(0), "Set to mast depth 0.5000");
+    assert_eq!(text(1), "Meet P1");
+    assert_eq!(text(4), "Meet C1, G1");
+    assert_eq!(text(5), "Meet P1-P2-G1");
+    assert_eq!(text(6), "Meet PCP, Nonexistent, C2");
+    assert_eq!(text(7), "Meet 1, 2 and G at index 96");
+    assert_eq!(text(8), "Meet at previously cut facets");
 }
 
 fn named_tier(name: &str, angle_deg: f64, constraint: MeetConstraint) -> ConstraintTier {
@@ -340,7 +494,8 @@ fn cutting_sheet_still_panics_on_a_mismatch() {
 fn flat_row(sequence: usize) -> CutSheetRow {
     CutSheetRow {
         sequence,
-        name: "Pav".to_string(),
+        code: "P1".to_string(),
+        name: "Pavilion Main".to_string(),
         angle_deg: -42.0,
         indices: vec![0.0, 4.0],
         mast: 0.6,
@@ -355,6 +510,8 @@ fn flat_row(sequence: usize) -> CutSheetRow {
 
 fn cylinder_row(sequence: usize) -> CutSheetRow {
     CutSheetRow {
+        code: "P2".to_string(),
+        name: "Groove".to_string(),
         mast: 0.0,
         meet_instruction: "cut to depth".to_string(),
         concave: Some(ConcaveRowInfo {
@@ -377,24 +534,27 @@ fn cutting_sheet_text_for_concave_fixture_matches_expected_string() {
         header: vec!["Material: Test".to_string()],
         rows: vec![flat_row(1), cylinder_row(2)],
     };
+    // The label column holds the code (16 wide), the instruction starts with the tier's
+    // descriptive name, the indices are dash-separated and zero-padded.
     let expected = "Material: Test\n\
 \n\
-\x20 1. Pav              angle  42.00 deg  indices [0, 4]  mast   0.6000  meet: Meet P1\n\
-\x20 2. Pav              angle  42.00 deg  indices [0, 4]  mast   0.0000  meet: cut to depth\n\
+\x20 1. P1               angle  42.00 deg  indices [00-04]  mast   0.6000  meet: Pavilion Main: Meet P1\n\
+\x20 2. P2               angle  42.00 deg  indices [00-04]  mast        -  meet: Groove: cut to depth\n\
 \x20    CYL                   +90.00°      X = 0.000, Y = 0.120, Z = 0.050     D/W = 0.250, reciprocating\n";
     assert_eq!(sheet.to_text(), expected);
 }
 
-/// A planar row prints with positive angle.
+/// A planar row prints with positive angle, its code in the label column and its own name in
+/// front of the instruction.
 #[test]
-fn cutting_sheet_text_for_planar_fixture_is_unchanged() {
+fn cutting_sheet_text_for_planar_fixture_prints_code_and_dashed_indices() {
     let sheet = CuttingSheet {
         header: Vec::new(),
         rows: vec![flat_row(1)],
     };
     assert_eq!(
         sheet.to_text(),
-        "  1. Pav              angle  42.00 deg  indices [0, 4]  mast   0.6000  meet: Meet P1\n"
+        "  1. P1               angle  42.00 deg  indices [00-04]  mast   0.6000  meet: Pavilion Main: Meet P1\n"
     );
 }
 
@@ -420,14 +580,12 @@ fn cutting_sheet_line_count_is_flat_rows_plus_two_per_concave_row() {
         assert_eq!(row.sequence, position + 1);
         match *tier_ref {
             TierRef::Flat(i) => {
-                if design.tiers[i].name.is_empty() {
-                    assert!(!row.name.is_empty());
-                } else {
-                    assert_eq!(row.name, design.tiers[i].name);
-                }
+                assert_eq!(row.name, design.tiers[i].name);
+                assert_eq!(row.code, design.tier_codes().flat[i].code);
             }
             TierRef::Concave(i) => {
                 assert_eq!(row.name, design.concave_tiers[i].name);
+                assert_eq!(row.code, design.tier_codes().concave[i].code);
                 let info = row
                     .concave
                     .as_ref()
@@ -444,11 +602,37 @@ fn cutting_sheet_line_count_is_flat_rows_plus_two_per_concave_row() {
     assert_eq!(order.last(), Some(&TierRef::Concave(1)));
 }
 
+/// A concave tier has no mast: its printed facet line shows a dash, never the `0.0000`
+/// placeholder that reads as a depth of zero -- and every flat line still shows its figure.
+#[test]
+fn a_concave_row_prints_a_dash_where_a_flat_row_prints_its_mast() {
+    let design = Design::concave_fixture();
+    let solved = design.solve().expect("the fixture's flat tiers solve");
+    let sheet = design.cutting_sheet(&solved);
+    let text = sheet.to_text();
+    let facet_lines: Vec<&str> = text
+        .lines()
+        .filter(|line| line.contains("  indices ["))
+        .collect();
+    assert_eq!(facet_lines.len(), sheet.rows.len());
+    assert!(sheet.rows.iter().any(|row| row.concave.is_some()));
+    for (line, row) in facet_lines.iter().zip(&sheet.rows) {
+        assert_eq!(
+            line.contains("mast        -"),
+            row.concave.is_some(),
+            "{line}"
+        );
+    }
+}
+
 #[test]
 fn diff_concave_tiers_reports_added_removed_and_changed_positions() {
     let tiers = Design::concave_fixture().concave_tiers;
     let (a, b) = (tiers[0].clone(), tiers[1].clone());
-    assert!(diff_concave_tiers(&tiers, &tiers).is_empty());
+    assert_eq!(
+        diff_concave_tiers(&tiers, &tiers),
+        [] as [ConcaveTierDelta; 0]
+    );
 
     let mut moved = a.clone();
     moved.tool_azimuth_deg = 15.0;

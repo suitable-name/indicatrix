@@ -94,6 +94,7 @@ fn trace_forced_extraordinary_slab(
             light_pitch: 0.85,
             backdrop: 0.0,
             surface_glare: 1.0,
+            head_shadow_deg: crate::optics::raytracer::DEFAULT_HEAD_SHADOW_DEG,
         },
         studio_rig: None,
         observer: Vec3::ZERO,

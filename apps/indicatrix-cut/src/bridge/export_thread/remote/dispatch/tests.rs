@@ -39,10 +39,11 @@ fn scene_state_from_snapshot_carries_the_snapshots_own_bounce_cap_not_a_viewport
         backdrop: 0.0,
         active_planes: StandardGemCuts::standard_round_brilliant(),
         tools: Vec::new(),
-        fluorescence: Default::default(),
+        fluorescence: std::sync::Arc::default(),
         facet_finishes: Vec::new(),
         env_map: None,
         surface_glare: 1.0,
+        head_shadow_deg: 16.0,
     };
 
     let state = scene_state_from_snapshot(&snapshot, 1920, 1080, snapshot.yaw, snapshot.pitch);
@@ -70,10 +71,11 @@ fn scene_state_from_snapshot_carries_the_snapshots_surface_glare() {
         backdrop: 0.0,
         active_planes: StandardGemCuts::standard_round_brilliant(),
         tools: Vec::new(),
-        fluorescence: Default::default(),
+        fluorescence: std::sync::Arc::default(),
         facet_finishes: Vec::new(),
         env_map: None,
         surface_glare: 0.25,
+        head_shadow_deg: 16.0,
     };
 
     let state = scene_state_from_snapshot(&snapshot, 64, 64, snapshot.yaw, snapshot.pitch);
@@ -102,10 +104,11 @@ fn scene_state_from_snapshot_uses_the_explicit_pose_override_not_the_snapshots_o
         backdrop: 0.0,
         active_planes: StandardGemCuts::standard_round_brilliant(),
         tools: Vec::new(),
-        fluorescence: Default::default(),
+        fluorescence: std::sync::Arc::default(),
         facet_finishes: Vec::new(),
         env_map: None,
         surface_glare: 1.0,
+        head_shadow_deg: 16.0,
     };
 
     let state = scene_state_from_snapshot(&snapshot, 1920, 1080, 1.23, -0.45);

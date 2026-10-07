@@ -3,8 +3,8 @@
 //! and the cheater/azimuth-offset rotation ([`apply_cheater_offsets`]) that
 //! keeps every production plane consumer agreeing with the cut sheet.
 
-use super::ConcaveResolveError;
-use crate::design::{Design, DesignSolveError, SolveMismatch};
+use super::{ConcaveResolveError, ToolPlacements};
+use crate::design::{Design, DesignSolveError, SolveMismatch, TierRef};
 use glam::DVec3;
 use indicatrix::geometry::{
     GpuFacetPlane,
@@ -14,6 +14,7 @@ use indicatrix::geometry::{
         SolidMetrics, SolidStatus, build_solid_mesh, build_solid_mesh_geom, measure_solid,
         mesh_volume,
     },
+    tool::ToolPrimitive,
 };
 use indicatrix_formats::asc::AscSchedule;
 
@@ -209,6 +210,130 @@ impl Design {
         Ok(planes)
     }
 
+    /// The tiers the Cut slider walks, in the order they are cut: [`Self::cutting_order`], the
+    /// order the printed cutting sheet, Cutting mode and "Build this design" follow, for a
+    /// planar design as well as one with concave tiers. Flat and concave tiers each count as
+    /// one step.
+    ///
+    /// A planar design's steps used to be its stored order, so the slider could show a
+    /// crown before the pavilion; the shown tiers of a step are now a stored prefix only by
+    /// accident, and [`Self::try_planes_after_steps`] builds them from the visible set.
+    #[must_use]
+    pub fn preview_steps(&self) -> Vec<TierRef> {
+        self.cutting_order()
+    }
+
+    /// How many steps [`Self::preview_steps`] has: every flat tier plus every concave
+    /// tier. The Cut slider's last position ("Finished") is this many steps.
+    #[must_use]
+    pub const fn preview_step_count(&self) -> usize {
+        self.tiers.len() + self.concave_tiers.len()
+    }
+
+    /// The preform's planes plus the facet planes of exactly the flat tiers `visible`
+    /// marks (indexed like [`Self::tiers`]; a missing entry counts as visible), in
+    /// tier order. Unlike [`Self::try_planes_through_tier`] the shown tiers need not
+    /// be a prefix, which a design with concave tiers needs: its cutting order
+    /// interleaves the stored one.
+    ///
+    /// Cheater offsets are resolved against the full schedule, as in
+    /// [`Self::try_planes_through_tier`], so a shown tier is rotated exactly as in the
+    /// finished stone.
+    ///
+    /// # Errors
+    ///
+    /// [`SolveMismatch`] when `solved.len() != self.tiers.len()`.
+    pub fn try_planes_for_visible_tiers(
+        &self,
+        solved: &[SolvedTier],
+        visible: &[bool],
+    ) -> Result<Vec<(DVec3, f64)>, SolveMismatch> {
+        let schedule = self.try_to_asc_schedule_from_solved(solved)?;
+        let facet_planes: Vec<(DVec3, f64)> = StandardGemCuts::from_asc_schedule(&schedule)
+            .into_iter()
+            .map(GpuFacetPlane::to_halfspace_f64)
+            .collect();
+        let rotated = apply_cheater_offsets(self, &schedule, facet_planes);
+        let boundaries = crate::manufacturability::facet_plane_boundaries(&schedule);
+        let mut planes = self.preform.planes_offset(self.preform_y_offset);
+        let mut start = 0usize;
+        for (tier, &end) in boundaries.iter().enumerate() {
+            let end = end.min(rotated.len()).max(start);
+            if visible.get(tier).copied().unwrap_or(true) {
+                planes.extend_from_slice(&rotated[start..end]);
+            }
+            start = end;
+        }
+        Ok(planes)
+    }
+
+    /// The plane arrangement of the stone after its first `steps`
+    /// [`Self::preview_steps`]: `0` is the preform alone (the rough), and a `steps` at
+    /// or past [`Self::preview_step_count`] is the finished stone, identical to
+    /// [`Self::planes_from_solved`]. A step that is a concave tier adds no flat plane
+    /// (its tool comes from [`Self::concave_tools_after_steps`]).
+    ///
+    /// The rough needs no masts, so `solved` is not checked for it.
+    ///
+    /// # Errors
+    ///
+    /// [`SolveMismatch`] when a non-empty stone is asked for and
+    /// `solved.len() != self.tiers.len()`.
+    pub fn try_planes_after_steps(
+        &self,
+        solved: &[SolvedTier],
+        steps: usize,
+    ) -> Result<Vec<(DVec3, f64)>, SolveMismatch> {
+        let order = self.preview_steps();
+        if steps >= order.len() {
+            return self.try_planes_through_tier(solved, usize::MAX);
+        }
+        let mut visible = vec![false; self.tiers.len()];
+        for step in &order[..steps] {
+            if let TierRef::Flat(index) = step
+                && let Some(slot) = visible.get_mut(*index)
+            {
+                *slot = true;
+            }
+        }
+        let leading = visible.iter().take_while(|&&shown| shown).count();
+        if !visible.contains(&true) {
+            return Ok(self.preform.planes_offset(self.preform_y_offset));
+        }
+        if visible[leading..].iter().all(|&shown| !shown) {
+            // The shown tiers are a stored prefix: the same truncation as
+            // `planes_through_tier`, so a planar design is unchanged by the new slider.
+            return self.try_planes_through_tier(solved, leading - 1);
+        }
+        self.try_planes_for_visible_tiers(solved, &visible)
+    }
+
+    /// The tools of the concave tiers among the first `steps`
+    /// [`Self::preview_steps`]: the concave half of [`Self::try_planes_after_steps`].
+    /// Empty for the rough and for a design without concave tiers.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::concave_tools_from_solved`].
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::concave_tools_from_solved`] when a tool is asked for: `solved` must
+    /// have one entry per flat tier.
+    pub fn concave_tools_after_steps(
+        &self,
+        solved: &[SolvedTier],
+        steps: usize,
+    ) -> Result<(Vec<ToolPrimitive>, ToolPlacements), ConcaveResolveError> {
+        if self.concave_tiers.is_empty() || steps == 0 {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        match self.cutting_order().get(steps) {
+            Some(&next) => self.concave_tools_through_tier(solved, next),
+            None => self.concave_tools_from_solved(solved),
+        }
+    }
+
     /// Which tier (index into [`Self::tiers`]) contributed the facet plane at
     /// `plane_index` of [`Self::planes_from_solved`]'s combined arrangement --
     /// e.g. one of the escaping indices named by
@@ -296,3 +421,7 @@ fn apply_cheater_offsets(
     }
     facet_planes
 }
+
+#[cfg(test)]
+#[path = "planes_steps_tests.rs"]
+mod steps_tests;

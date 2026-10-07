@@ -354,12 +354,13 @@ pub(in super::super) fn try_scatter_step(
     // tell "no competing technique" apart from "competing technique has zero density
     // here" (the latter would legitimately give the escape branch full weight too, but
     // via `balance_heuristic`'s own degenerate-input handling, not by skipping it).
-    let phase_pdf_for_mis = nee.enabled.then(|| {
-        (
-            henyey_greenstein_phase(new_dir.dot(old_dir), material.scattering_g),
-            new_dir,
-        )
-    });
+    let phase_pdf_for_mis =
+        (nee.enabled && matches!(nee.environment, EnvironmentSource::HdrMap(_))).then(|| {
+            (
+                henyey_greenstein_phase(new_dir.dot(old_dir), material.scattering_g),
+                new_dir,
+            )
+        });
     // `split_radiance` rides along on this same survival rescale, exactly like the
     // bounce loop's own trailing Russian-roulette call -- see `apply_russian_roulette`.
     if bounce > 4 && !apply_russian_roulette(bounce, rng_seed, stokes, split_radiance) {
@@ -437,7 +438,13 @@ pub(crate) fn nee_contribution_hg_scatter(
     absorption_path_scale: f32,
     facet_finishes: &[FacetFinish],
 ) {
-    if !nee.enabled {
+    // HDR maps only. The analytic sun's light sample is an EXTERIOR direction, but this
+    // estimator treats the sample as an INTERIOR direction and refracts it through the exit
+    // facet before the radiance lookup; for a disc 0.27 degrees wide that lookup would almost
+    // never land on the sun (a biased deposit). A proper sun estimator would have to invert
+    // the exit refraction, so a scattering medium under `DaylightSun` gets no NEE here and its
+    // phase-sampled continuation keeps full weight (see `phase_pdf_for_mis` below).
+    if !nee.enabled || !matches!(nee.environment, EnvironmentSource::HdrMap(_)) {
         return;
     }
     let u0 =

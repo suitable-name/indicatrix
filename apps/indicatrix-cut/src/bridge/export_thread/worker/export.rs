@@ -33,7 +33,7 @@ use std::{path::Path, sync::atomic::AtomicBool};
               them into a struct would just move the same count into field access, \
               not reduce it"
 )]
-pub(in crate::bridge::export_thread) fn run_export(
+pub fn run_export(
     scene: &SceneSnapshot,
     params: ExportParams,
     color_space: ColorSpace,

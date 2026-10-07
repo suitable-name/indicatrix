@@ -106,7 +106,7 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use indicatrix::{color::body_color::Bodycolor, optics::chromophore::colorRecipe};
+    use indicatrix::{color::body_color::BodyColor, optics::chromophore::ColorRecipe};
     use std::{
         sync::{Arc, Mutex, atomic::AtomicBool},
         time::Duration,
@@ -125,8 +125,8 @@ mod tests {
 
     fn fake_result(tag: &str) -> SolveResult {
         SolveResult {
-            recipe: colorRecipe::new(tag, 1),
-            achieved: Bodycolor {
+            recipe: ColorRecipe::new(tag, 1),
+            achieved: BodyColor {
                 xyz: [0.0; 3],
                 lab: [0.0; 3],
                 srgb: [0; 3],

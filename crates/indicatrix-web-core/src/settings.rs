@@ -16,8 +16,8 @@
 //! # Desktop defaults and conversions
 //!
 //! Defaults are the desktop's (`apps/indicatrix-cut/src/settings/model/app_settings.rs`):
-//! Diamond, "Light tent + black cards", exposure 1.0, light 48 deg / 54 deg, grey
-//! backdrop, 12 bounces, 256 live samples, camera 0.60 / 0.45 / 2.4, denoise on,
+//! Diamond, "Light tent + black cards", exposure 1.0, light 48 deg / 72 deg, grey
+//! backdrop, 12 bounces, 256 live samples, camera 0.35 / 1.15 / 2.4 (near face-up), denoise on,
 //! material linked to the design, every material override off. [`scene_spec`] applies
 //! the desktop's own conversions (`gui::startup_settings::apply_loaded_settings`, the
 //! light and material callbacks, `gui::editor::view::inspector::
@@ -57,6 +57,10 @@ pub const LIVE_SPP_RANGE: (u32, u32) = (LIVE_MIN_SPP, LIVE_MAX_SPP);
 pub const BOUNCE_RANGE: (u32, u32) = (4, 24);
 /// The desktop's exposure clamp (`apply_loaded_settings`: `0.2..=5.0`).
 pub const EXPOSURE_RANGE: (f32, f32) = (0.2, 5.0);
+/// The head-shadow slider range, degrees (`0.0..=30.0`; `0` is off).
+pub const HEAD_SHADOW_RANGE: (f32, f32) = (0.0, 30.0);
+/// Default head-shadow radius, degrees (mirrors the desktop's `DEFAULT_HEAD_SHADOW_DEG`).
+pub const DEFAULT_HEAD_SHADOW_DEG: f32 = 16.0;
 /// The desktop's inclusion-scattering clamp (`0.0..=3.0`).
 pub const INCLUSION_RANGE: (f32, f32) = (0.0, 3.0);
 /// The desktop's edge-rounding slider range (`0.0..=0.03`).
@@ -65,6 +69,15 @@ pub const EDGE_ROUNDING_RANGE: (f32, f32) = (0.0, 0.03);
 pub const STONE_WIDTH_RANGE: (f32, f32) = (0.0, 20.0);
 /// The desktop's light-pitch clamp in radians (`to_radians().clamp(0.15, 1.55)`).
 pub const LIGHT_PITCH_RADIANS: (f32, f32) = (0.15, 1.55);
+
+/// Default key-light pitch, degrees: near-overhead (mirrors the desktop's
+/// `DEFAULT_LIGHT_PITCH_DEG`).
+pub const DEFAULT_LIGHT_PITCH_DEG: f32 = 72.0;
+/// Default camera yaw, radians (mirrors the desktop's `DEFAULT_CAMERA_YAW`).
+pub const DEFAULT_CAMERA_YAW: f32 = 0.35;
+/// Default camera pitch, radians: about 66 deg, near face-up (mirrors the desktop's
+/// `DEFAULT_LIVE_CAMERA_PITCH`).
+pub const DEFAULT_CAMERA_PITCH: f32 = 1.15;
 
 /// The PNG export dialog's last choices.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,6 +121,8 @@ pub struct RenderSettings {
     pub light_pitch_deg: f32,
     /// `indicatrix::render_setup::Backdrop::index`.
     pub backdrop_index: i32,
+    /// Head-shadow radius of the lit presets, degrees (`0..=30`, `0` is off).
+    pub head_shadow_deg: f32,
     /// Maximum path bounces.
     pub max_bounces: u32,
     /// Live target samples per pixel.
@@ -153,12 +168,13 @@ impl Default for RenderSettings {
             lighting: LightingPreset::LightTent.label().to_string(),
             exposure: 1.0,
             light_yaw_deg: 48.0,
-            light_pitch_deg: 54.0,
+            light_pitch_deg: DEFAULT_LIGHT_PITCH_DEG,
             backdrop_index: Backdrop::Grey.index(),
+            head_shadow_deg: DEFAULT_HEAD_SHADOW_DEG,
             max_bounces: DEFAULT_MAX_BOUNCES,
             target_spp: DEFAULT_LIVE_SPP,
-            camera_yaw: DEFAULT_POSE.yaw,
-            camera_pitch: DEFAULT_POSE.pitch,
+            camera_yaw: DEFAULT_CAMERA_YAW,
+            camera_pitch: DEFAULT_CAMERA_PITCH,
             camera_distance: DEFAULT_POSE.distance,
             view_tab: 0,
             link_material: true,
@@ -201,9 +217,9 @@ impl RenderSettings {
         self.target_spp = self.target_spp.clamp(LIVE_SPP_RANGE.0, LIVE_SPP_RANGE.1);
         self.view_tab = self.view_tab.clamp(0, 2);
         self.backdrop_index = Backdrop::from_index(self.backdrop_index).index();
-        self.lighting = LightingPreset::from_label(&self.lighting)
-            .label()
-            .to_string();
+        self.head_shadow_deg = finite_or(self.head_shadow_deg, d.head_shadow_deg)
+            .clamp(HEAD_SHADOW_RANGE.0, HEAD_SHADOW_RANGE.1);
+        self.lighting = self.lighting_preset().label().to_string();
         self.c_axis_tilt_deg = finite_or(self.c_axis_tilt_deg, 0.0).clamp(0.0, 90.0);
         self.c_axis_azimuth_deg = finite_or(self.c_axis_azimuth_deg, 0.0).clamp(0.0, 360.0);
         self.inclusion_sigma_s =
@@ -221,7 +237,13 @@ impl RenderSettings {
     /// The lighting preset these settings name.
     #[must_use]
     pub fn lighting_preset(&self) -> LightingPreset {
-        LightingPreset::from_label(&self.lighting)
+        let preset = LightingPreset::from_label(&self.lighting);
+        // The web app does not offer the UV lamps; a stored one falls back to the default.
+        if preset.is_uv_lamp() {
+            LightingPreset::default()
+        } else {
+            preset
+        }
     }
 
     /// The backdrop.
@@ -237,6 +259,13 @@ impl RenderSettings {
         self.lighting_preset() != LightingPreset::IsoHemisphere
     }
 
+    /// Whether the lighting preset is one of the lit models, the only ones the head
+    /// shadow applies to (the product-photography rigs and the UV lamps ignore it).
+    #[must_use]
+    pub fn uses_head_shadow(&self) -> bool {
+        self.lighting_preset().model() != indicatrix::optics::raytracer::LightingModel::Studio
+    }
+
     /// The studio lighting with the desktop's conversions: yaw in radians, pitch in
     /// radians clamped to [`LIGHT_PITCH_RADIANS`].
     #[must_use]
@@ -249,6 +278,7 @@ impl RenderSettings {
                 .to_radians()
                 .clamp(LIGHT_PITCH_RADIANS.0, LIGHT_PITCH_RADIANS.1),
             self.backdrop(),
+            self.head_shadow_deg,
         )
     }
 
@@ -368,7 +398,7 @@ pub fn scene_spec(settings: &RenderSettings, inputs: &SceneInputs<'_>) -> SceneS
         material: MaterialSpec {
             name: inputs.material.name.clone(),
             custom_materials: inputs.custom_materials.to_vec(),
-            linked_design: inputs.material.linked_design,
+            linked_design: inputs.material.linked_design.clone(),
             overrides: settings.material_overrides(inputs.material.stone_width_mm),
         },
         camera: settings.camera_spec(),
@@ -473,11 +503,13 @@ pub fn material_options(custom: &[GemMaterial]) -> Vec<String> {
     names
 }
 
-/// The lighting combo's entries, in `LightingPreset::ALL` (index) order.
+/// The lighting combo's entries, in `LightingPreset::ALL` (index) order; the UV lamps (last in
+/// that order, so every index stays valid) are not offered by the web app.
 #[must_use]
 pub fn lighting_options() -> Vec<String> {
     LightingPreset::ALL
         .iter()
+        .filter(|preset| !preset.is_uv_lamp())
         .map(|preset| preset.label().to_string())
         .collect()
 }

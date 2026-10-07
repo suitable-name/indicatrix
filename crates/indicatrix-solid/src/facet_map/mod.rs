@@ -39,6 +39,7 @@ use glam::Vec3;
 use indicatrix::geometry::meet_solver::Block;
 
 mod build;
+mod cut;
 mod overlay;
 #[cfg(test)]
 mod tests;
@@ -76,9 +77,10 @@ pub struct FacetInfo {
     pub angle_deg: f64,
     /// Block classification of the owning tier, if any.
     pub block: Option<Block>,
-    /// This facet's tier's own `name` (empty for unnamed/preform). For a concave
-    /// facet, its on-diagram label (tier name, plus the placement's index when the
-    /// tier has several).
+    /// This facet's tier's code in cutting order (`P1`, `G1`, `C1`, `T`, `Culet`; see
+    /// `indicatrix_cut_core::compute_tier_labels`), the label the diagram draws and the cutting
+    /// sheet's label column prints; empty for a preform plane. For a concave facet, its
+    /// on-diagram label (tier name, plus the placement's index when the tier has several).
     pub name: String,
     /// Canonical display name for hover tooltips.
     pub display_name: String,

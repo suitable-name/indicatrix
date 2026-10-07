@@ -33,6 +33,10 @@ pub fn profile_visible(normal: Vec3) -> bool {
 /// One panel's fixed layout in pixel space, computed once per [`super::render_diagram`]
 /// call from the mesh's own extent so the drawing always fits regardless of the
 /// design's physical scale.
+///
+/// Public through [`super::DiagramLayout`], so an embedding app can place hit tests
+/// and drag handles on the very pixels the panel was drawn into.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PanelLayout {
     /// Which panel this layout describes.
     pub kind: PanelKind,
@@ -90,6 +94,17 @@ pub const fn profile_project(p: DVec3, layout: &PanelLayout) -> (f32, f32, f32) 
     let screen_x = layout.center_x + world_x * layout.scale;
     let screen_y = layout.center_y - world_y * layout.scale;
     (screen_x, screen_y, -world_z)
+}
+
+/// Projects a world point with the projection of `layout.kind`: `(screen_x,
+/// screen_y, depth)` in the frame's pixel space, exactly as the panel drew it.
+#[must_use]
+pub const fn project_point(p: DVec3, layout: &PanelLayout) -> (f32, f32, f32) {
+    match layout.kind {
+        PanelKind::Crown => crown_project(p, layout),
+        PanelKind::Pavilion => pavilion_project(p, layout),
+        PanelKind::Profile => profile_project(p, layout),
+    }
 }
 
 /// One flat normal per facet, indexed by `facet_id` -- identical in spirit to

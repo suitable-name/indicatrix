@@ -7,7 +7,8 @@ use glam::DVec3;
 use crate::geometry::tool::ToolPrimitive;
 
 use super::{
-    EPS_FACE, concave,
+    EPS_FACE,
+    concave::{self, ToolBounds},
     measure::max_abs_offset,
     pow2_scale_norm,
     types::{SolidMesh, SolidStatus},
@@ -242,6 +243,18 @@ pub fn build_solid_mesh_geom(planes: &[(DVec3, f64)], tools: &[ToolPrimitive]) -
 #[must_use]
 pub fn tessellate_tool(tool: &ToolPrimitive, segments: usize) -> Vec<(DVec3, f64)> {
     concave::polytope(tool, segments).map_or_else(Vec::new, |p| p.planes)
+}
+
+/// An oriented box that contains the polytope [`tessellate_tool`] builds for `tool` at
+/// the same `segments`, or `None` for an invalid tool.
+///
+/// For cheap exclusion tests ahead of a mesh build: tools whose boxes are separated
+/// cannot overlap, and a plane that the whole box lies inside cannot cut the tool. The
+/// box is never smaller than the polytope (the polygon around the axis reaches the
+/// equal-area circumradius, which is a little more than the tool's own radius).
+#[must_use]
+pub fn tool_bounds(tool: &ToolPrimitive, segments: usize) -> Option<ToolBounds> {
+    concave::bounds(tool, segments)
 }
 
 /// Signed volume of the solid `mesh` bounds by the divergence formula over

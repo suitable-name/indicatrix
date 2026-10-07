@@ -71,7 +71,7 @@ use crate::{
 };
 use glam::Vec3;
 use indicatrix::{
-    geometry::plane::GpuFacetPlane,
+    geometry::{plane::GpuFacetPlane, tool::ToolPrimitive},
     optics::{
         materials::GemMaterial,
         raytracer::{Camera, DEFAULT_FOV_DEG, DEFAULT_POSE, LightingPreset},
@@ -140,6 +140,13 @@ const PREVIEW_DISTANCE: f32 = DEFAULT_POSE.distance;
 pub const PREVIEW_LIGHT_YAW: f32 = 0.85;
 /// Fixed light pitch used for previews.
 pub const PREVIEW_LIGHT_PITCH: f32 = 0.95;
+/// The lighting preset every stored tilt-curve set is scored under, locally and (in the
+/// `SceneState` a remote worker receives) remotely, so both lanes describe the same
+/// lighting. The ISO hemisphere (uniform lit dome, the grading standard the optimizer's
+/// `CANONICAL_LIGHTING_PRESET` also uses), at the preview light pose. It was the ring
+/// lights before 2026-10-07. Its label is part of the tilt-curve cache fingerprint, so
+/// curves scored under another preset count as stale and are recomputed.
+pub const BATCH_TILT_LIGHTING_PRESET: LightingPreset = LightingPreset::IsoHemisphere;
 const PREVIEW_EXPOSURE: f32 = 1.0;
 /// The lighting rig every preview renders under -- `LightTent` is this app's own
 /// default lighting-preset label (`DEFAULT_LIGHTING_RIG`), matching `PREVIEW_YAW`'s own
@@ -235,7 +242,7 @@ pub fn render_view(job: &PreviewJob<'_>, view: PreviewView, gpu: &GpuBackend) ->
         active_planes: job.planes.to_vec(),
         // A catalogue row's stored design is planar.
         tools: Vec::new(),
-        fluorescence: Default::default(),
+        fluorescence: Arc::default(),
         // No frosted-girdle finish for a catalogue thumbnail -- matches the export's
         // own "empty means every facet Polished" convention
         // (`trace_spectral_ray_with_finish`'s doc comment) rather than reading a
@@ -249,6 +256,7 @@ pub fn render_view(job: &PreviewJob<'_>, view: PreviewView, gpu: &GpuBackend) ->
         // triggered the batch.
         env_map: None,
         surface_glare: 1.0,
+        head_shadow_deg: 16.0,
     };
     let camera = Camera::new(scene.yaw, scene.pitch, scene.distance, DEFAULT_FOV_DEG);
     let environment = scene
@@ -281,7 +289,8 @@ pub fn render_view(job: &PreviewJob<'_>, view: PreviewView, gpu: &GpuBackend) ->
     encode_png(job.size, job.size, &rgba)
 }
 
-/// Renders `planes` in `material` on the CPU at an arbitrary orbit pose and
+/// Renders `planes` minus the concave `tools` in `material` on the CPU at an arbitrary
+/// orbit pose and
 /// rectangular size, and returns the tone-mapped RGBA8 buffer (row-major, four bytes
 /// per pixel) instead of PNG bytes.
 ///
@@ -300,6 +309,7 @@ pub fn render_view(job: &PreviewJob<'_>, view: PreviewView, gpu: &GpuBackend) ->
 #[must_use]
 pub fn render_rgba_at_pose(
     planes: &[GpuFacetPlane],
+    tools: &[ToolPrimitive],
     material: &GemMaterial,
     camera_pose: (f32, f32, f32),
     size: (u32, u32),
@@ -324,14 +334,16 @@ pub fn render_rgba_at_pose(
         exposure: PREVIEW_EXPOSURE,
         backdrop: PREVIEW_BACKDROP,
         active_planes: planes.to_vec(),
-        // The compare window hands over planes alone (see `gui::editor::compare`).
-        tools: Vec::new(),
-        fluorescence: Default::default(),
+        // The compare window's concave tools (grooves, dimples), empty for a planar
+        // stone (see `gui::editor::compare`).
+        tools: tools.to_vec(),
+        fluorescence: Arc::default(),
         // Same "every facet Polished, analytic studio rig" reasoning as
         // `render_view`'s own snapshot.
         facet_finishes: Vec::new(),
         env_map: None,
         surface_glare: 1.0,
+        head_shadow_deg: 16.0,
     };
     let camera = Camera::new(yaw, pitch, distance, DEFAULT_FOV_DEG);
     let mut accum = vec![Vec3::ZERO; (width as usize) * (height as usize)];
@@ -430,7 +442,8 @@ fn dispatch_remote_view(
         environment: indicatrix_net::scene::SceneEnvironment::Studio,
         surface_glare: 1.0,
         tools: Vec::new(),
-        fluorescence: Default::default(),
+        fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
+        head_shadow_deg: 16.0,
     };
     let accumulator = Arc::new(Mutex::new(Accumulator::new(job.size, job.size)));
     let (tx, rx) = mpsc::channel::<RemoteUpdate>();

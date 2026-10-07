@@ -1,5 +1,44 @@
 import { Slider } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
+import { GuideModel } from "../../models/guide.slint";
+import { TipBox } from "../tip_box.slint";
+
+// One labelled slider: the caption with its plain-language tooltip on the left, the value on the
+// right, and the slider under them. `step` is what an arrow key moves the slider by, so a keyboard
+// user can set the number, not just a mouse user.
+component OpticsSlider inherits VerticalLayout {
+    in property <string> label;
+    in property <string> hint;
+    in property <string> value_text;
+    in property <color> value_color;
+    in property <float> minimum;
+    in property <float> maximum;
+    in property <float> step;
+    in-out property <float> value;
+
+    spacing: 4px;
+
+    HorizontalLayout {
+        alignment: space-between;
+        Rectangle {
+            height: caption.preferred-height;
+            Tooltip { text: @markdown("\{root.hint}"); }
+            caption := Text { text: root.label; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+        }
+        Text { text: root.value_text; font-size: 11px; font-weight: 700; color: root.value_color; }
+    }
+
+    TipBox {
+        hint: root.hint;
+        Slider {
+            minimum: root.minimum;
+            maximum: root.maximum;
+            step: root.step;
+            value <=> root.value;
+            accessible-label: root.label;
+        }
+    }
+}
 
 // The Refractive Index / Dispersion / Specific Gravity / Birefringence
 // sliders -- split out of `material_editor_dialog.slint` to keep that file
@@ -7,6 +46,9 @@ import { Theme } from "../../theme.slint";
 // `MaterialEditorDialog`'s own identically-named property (see that file's
 // own doc comments -- `sg_val`'s "0.0 = not recorded" convention in
 // particular).
+//
+// Simple mode hides the birefringence slider (`GuideModel.shows_advanced()`); its value stays and
+// still applies, and the dialog says so when it is not zero.
 export component MaterialOpticsSliders inherits VerticalLayout {
     spacing: 14px;
 
@@ -14,47 +56,33 @@ export component MaterialOpticsSliders inherits VerticalLayout {
     in-out property <float> disp_val: 0.0256;
     in-out property <float> sg_val: 0.0;
     in-out property <float> biref_val: 0.000;
+    // False while the Dispersion section types the refractive-index curve as Sellmeier or
+    // Cauchy coefficients (`material_editor/dispersion_coefficients.slint`): that curve fixes
+    // n_d and n_F - n_C, so the two sliders would only mislead. The values themselves stay.
+    in property <bool> show_dispersion_sliders: true;
 
     // 3. Refractive Index (RI) Slider
-    VerticalLayout {
-        spacing: 4px;
-
-        HorizontalLayout {
-            alignment: space-between;
-            Rectangle {
-                height: ri_lbl.preferred-height;
-                Tooltip { text: @markdown("Refractive index n_d, typically 1.4-2.7 for gems (up to 3.2 here for rare high-RI materials)."); }
-                ri_lbl := Text { text: "Refractive Index (nd):"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-            }
-            Text { text: Math.round(root.ri_val * 1000.0) / 1000.0; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
-        }
-
-        Slider {
-            minimum: 1.30;
-            maximum: 3.20;
-            value <=> root.ri_val;
-        }
+    if root.show_dispersion_sliders : OpticsSlider {
+        label: "Refractive Index (nd):";
+        hint: "Refractive index n_d: how strongly the stone bends light, measured for yellow light. Gems are typically 1.4 to 2.7; this editor allows up to 3.2 for rare high-index materials. See the glossary.";
+        value_text: "" + Math.round(root.ri_val * 1000.0) / 1000.0;
+        value_color: Theme.accent-cyan;
+        minimum: 1.30;
+        maximum: 3.20;
+        step: 0.001;
+        value <=> root.ri_val;
     }
 
     // 4. Dispersion (Fire Index) Slider
-    VerticalLayout {
-        spacing: 4px;
-
-        HorizontalLayout {
-            alignment: space-between;
-            Rectangle {
-                height: disp_lbl.preferred-height;
-                Tooltip { text: @markdown("Fire-producing dispersion, typically 0.005-0.03 (diamond 0.0256, moissanite 0.0635; rutile reaches 0.207)."); }
-                disp_lbl := Text { text: "Dispersion (Fire ΔnF-C):"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-            }
-            Text { text: Math.round(root.disp_val * 1000.0) / 1000.0; font-size: 11px; font-weight: 700; color: Theme.accent-purple; }
-        }
-
-        Slider {
-            minimum: 0.000;
-            maximum: 0.210;
-            value <=> root.disp_val;
-        }
+    if root.show_dispersion_sliders : OpticsSlider {
+        label: "Dispersion (Fire ΔnF-C):";
+        hint: "Dispersion: how much the stone spreads white light into colours, which is its fire. Typically 0.005 to 0.03 (diamond 0.0256, moissanite 0.0635; rutile reaches 0.207). See the glossary.";
+        value_text: "" + Math.round(root.disp_val * 1000.0) / 1000.0;
+        value_color: Theme.accent-purple;
+        minimum: 0.000;
+        maximum: 0.210;
+        step: 0.0005;
+        value <=> root.disp_val;
     }
 
     // Specific gravity -- without this, a custom
@@ -62,45 +90,26 @@ export component MaterialOpticsSliders inherits VerticalLayout {
     // types an SG override in the Yield panel for every design that uses it.
     // `0.0` reads as "not recorded" on the Rust side (see `MaterialEditorDialog.
     // sg_val`'s own doc comment) rather than a real zero-density material.
-    VerticalLayout {
-        spacing: 4px;
-
-        HorizontalLayout {
-            alignment: space-between;
-            Rectangle {
-                height: sg_lbl.preferred-height;
-                Tooltip { text: @markdown("Specific gravity (density relative to water) -- used to estimate carat weight. Leave at 0 to leave it unrecorded."); }
-                sg_lbl := Text { text: "Specific Gravity:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-            }
-            Text { text: root.sg_val <= 0.0001 ? "not recorded" : Math.round(root.sg_val * 100.0) / 100.0; font-size: 11px; font-weight: 700; color: Theme.accent-amber; }
-        }
-
-        Slider {
-            minimum: 0.0;
-            maximum: 7.0;
-            step: 0.01;
-            value <=> root.sg_val;
-        }
+    OpticsSlider {
+        label: "Specific Gravity:";
+        hint: "Specific gravity: the density of the material compared with water. It is used to estimate carat weight. Leave it at 0 to leave it unrecorded.";
+        value_text: root.sg_val <= 0.0001 ? "not recorded" : "" + Math.round(root.sg_val * 100.0) / 100.0;
+        value_color: Theme.accent-amber;
+        minimum: 0.0;
+        maximum: 7.0;
+        step: 0.01;
+        value <=> root.sg_val;
     }
 
-    // 5. Birefringence (Double Refraction) Slider
-    VerticalLayout {
-        spacing: 4px;
-
-        HorizontalLayout {
-            alignment: space-between;
-            Rectangle {
-                height: biref_lbl.preferred-height;
-                Tooltip { text: @markdown("Double refraction, 0 for isotropic gems, typically up to 0.05 for most birefringent species (higher for e.g. zircon, calcite)."); }
-                biref_lbl := Text { text: "Birefringence (Δn = ne - no):"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-            }
-            Text { text: Math.round(root.biref_val * 1000.0) / 1000.0; font-size: 11px; font-weight: 700; color: Theme.accent-emerald; }
-        }
-
-        Slider {
-            minimum: -0.050;
-            maximum: 0.100;
-            value <=> root.biref_val;
-        }
+    // 5. Birefringence (Double Refraction) Slider -- Advanced mode only.
+    if GuideModel.shows_advanced() : OpticsSlider {
+        label: "Birefringence (Δn = ne - no):";
+        hint: "Double refraction: the difference between the two refractive indices of a stone that splits light in two. 0 for isotropic gems, typically up to 0.05 for most species (higher for zircon or calcite). See the glossary.";
+        value_text: "" + Math.round(root.biref_val * 1000.0) / 1000.0;
+        value_color: Theme.accent-emerald;
+        minimum: -0.050;
+        maximum: 0.100;
+        step: 0.001;
+        value <=> root.biref_val;
     }
 }

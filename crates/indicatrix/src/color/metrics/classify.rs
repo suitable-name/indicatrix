@@ -50,7 +50,19 @@ pub(super) enum RayClassification {
     /// `(angle_deg, weight)` pair if the F-line/C-line companion traces also both
     /// exited upward through the same facet after the same number of bounces (the F/C
     /// bifurcation gate -- see the comment on the gate itself, below).
-    Returned(Option<(f32, f32)>),
+    Returned(ReturnedRay),
+}
+
+/// What a visibly returned ray hands to the caller's accumulators.
+///
+/// `fire` is the qualifying Fire `(angle_deg, weight)` pair (see [`RayClassification`]);
+/// `transmittance` and `path_len` are the d-line trace's Fresnel weight and total internal
+/// path (model units), the two numbers the face-up tone mixes Beer-Lambert terms from.
+#[derive(Clone, Copy)]
+pub(super) struct ReturnedRay {
+    pub(super) fire: Option<(f32, f32)>,
+    pub(super) transmittance: f32,
+    pub(super) path_len: f32,
 }
 
 /// Fires a single grid-cell aperture-sample ray at screen-space coordinates `(u, v)`
@@ -114,7 +126,7 @@ pub(super) fn classify_aperture_sample(
                 trace_wavelength(hit_point_entry, ray.dir, n_entry, cos_i, ctx.stone, ctx.n_f);
             let fate_c =
                 trace_wavelength(hit_point_entry, ray.dir, n_entry, cos_i, ctx.stone, ctx.n_c);
-            let Some(fire) = (match (fate_f, fate_c) {
+            let fire = match (fate_f, fate_c) {
                 (RayFate::ExitedUpward(exit_f), RayFate::ExitedUpward(exit_c)) => {
                     // F/C bifurcation gate: when the F-line and C-line traces exit
                     // through a different facet or bounce count, their critical angles
@@ -160,10 +172,12 @@ pub(super) fn classify_aperture_sample(
                     }
                 }
                 _ => None,
-            }) else {
-                return Some(RayClassification::Returned(None));
             };
-            Some(RayClassification::Returned(Some(fire)))
+            Some(RayClassification::Returned(ReturnedRay {
+                fire,
+                transmittance,
+                path_len: exit_d.path_len,
+            }))
         }
         RayFate::Absorbed => Some(RayClassification::Extinct),
     }

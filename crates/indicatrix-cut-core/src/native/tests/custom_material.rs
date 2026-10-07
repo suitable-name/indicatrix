@@ -253,6 +253,8 @@ fn save_paired_extended_resolves_a_custom_materials_own_refractive_index() {
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let custom = [custom_garnet(1.9)];
 
@@ -299,6 +301,8 @@ fn save_paired_extended_from_solved_resolves_a_custom_materials_own_refractive_i
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let custom = [custom_garnet(1.9)];
     let solved = design.solve().expect("fully_anchored_design always solves");
@@ -351,6 +355,8 @@ fn save_paired_extended_matches_byte_for_byte_on_a_built_in_regardless_of_catalo
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let custom = [custom_garnet(1.9)];
 
@@ -389,27 +395,27 @@ fn save_paired_extended_matches_byte_for_byte_on_a_built_in_regardless_of_catalo
 mod physics_color {
     use super::*;
     use crate::{
-        material::{Activecolor, color::fantasy_lab, colorMode},
+        material::{ActiveColor, ColorMode, color::fantasy_lab},
         native::{
-            Snapshotcolor, color_recipe_dto, gem_material_from_custom_snapshot_keeping_recipe,
+            SnapshotColor, color_recipe_dto, gem_material_from_custom_snapshot_keeping_recipe,
             snapshot_color,
         },
     };
     use indicatrix::{
         color::body_color::{Illuminant, body_colors, delta_e_2000},
-        optics::chromophore::{ChromophoreCatalogue, ResolvedBands, colorRecipe, resolve},
+        optics::chromophore::{ChromophoreCatalogue, ColorRecipe, ResolvedBands, resolve},
     };
 
-    fn ruby_mode() -> colorMode {
+    fn ruby_mode() -> ColorMode {
         let cat = ChromophoreCatalogue::global();
-        let mut recipe = colorRecipe::new("corundum", cat.data_version);
+        let mut recipe = ColorRecipe::new("corundum", cat.data_version);
         recipe.set_amount("Cr", 0.3);
         let (tensor, _) = resolve(&recipe, cat).expect("ruby resolves");
         recipe.resolved_bands = ResolvedBands::from_tensor(&tensor);
-        colorMode::physics(recipe, [0.0; 3])
+        ColorMode::physics(recipe, [0.0; 3])
     }
 
-    fn snapshot_for(mode: &colorMode) -> CustomMaterialSnapshot {
+    fn snapshot_for(mode: &ColorMode) -> CustomMaterialSnapshot {
         CustomMaterialSnapshot::new(1.768, 0.018, -0.008, None, "Trigonal", "UniaxialNegative")
             .with_body_color(Some(mode.fallback_rgb()))
             .with_color_recipe(Some(color_recipe_dto(mode)))
@@ -435,7 +441,7 @@ mod physics_color {
         let restored = loaded.restorable_custom_material.expect("restorable");
         assert!(matches!(
             snapshot_color(&restored),
-            Snapshotcolor::Physics(_)
+            SnapshotColor::Physics(_)
         ));
         let rebuilt = gem_material_from_custom_snapshot("Physics Ruby", &restored);
         assert_eq!(
@@ -449,7 +455,7 @@ mod physics_color {
     }
 
     /// An older build ignores the recipe and opens the fallback `absorption_rgb` only: its
-    /// color must be near the physics color (DeltaE00 <= 15).
+    /// color must be near the physics color (`DeltaE00` <= 15).
     #[test]
     fn an_older_build_opens_the_fallback_color_within_delta_e_15() {
         let mode = ruby_mode();
@@ -483,7 +489,7 @@ mod physics_color {
         snapshot = snapshot.with_body_color(Some([0.1, 0.2, 2.5]));
         assert!(matches!(
             snapshot_color(&snapshot),
-            Snapshotcolor::EditedElsewhere(_)
+            SnapshotColor::EditedElsewhere(_)
         ));
         let edited = gem_material_from_custom_snapshot("Physics Ruby", &snapshot);
         let kept = gem_material_from_custom_snapshot_keeping_recipe("Physics Ruby", &snapshot);
@@ -505,9 +511,47 @@ mod physics_color {
         let mut mode = ruby_mode();
         mode.fantasy_rgb = [0.3, 0.6, 1.2];
         mode.switch_to_fantasy();
-        assert_eq!(mode.active, Activecolor::Fantasy);
+        assert_eq!(mode.active, ActiveColor::Fantasy);
         let snapshot = snapshot_for(&mode);
         assert_eq!(snapshot.body_color(), Some([0.3, 0.6, 1.2]));
-        assert_eq!(snapshot_color(&snapshot), Snapshotcolor::Fantasy);
+        assert_eq!(snapshot_color(&snapshot), SnapshotColor::Fantasy);
     }
+}
+
+/// The N-band design colour (bands + path scale next to the triple) survives save/open, and a
+/// design saved without bands opens with none.
+#[test]
+fn a_design_body_color_bands_override_round_trips_next_to_the_triple() {
+    let mut design = simple_design();
+    design.material = MaterialSelection::none().with_body_color_bands(
+        Some([0.2, 0.4, 2.8]),
+        Some(vec![[460.0, 45.0, 0.25], [620.0, 45.0, 0.5]]),
+        Some(24.5),
+    );
+    let saved = save_paired(&design, "design.asc", None, None, None).expect("must save");
+    assert!(saved.native_toml.contains("body_color_bands_override"));
+    let loaded = load_paired(&saved.asc_text, &saved.native_toml, false).expect("must load back");
+    assert_eq!(loaded.design.material, design.material);
+
+    design.material = MaterialSelection::none().with_body_color(Some([0.2, 0.4, 2.8]));
+    let saved = save_paired(&design, "design.asc", None, None, None).expect("must save");
+    assert!(!saved.native_toml.contains("body_color_bands_override"));
+    let loaded = load_paired(&saved.asc_text, &saved.native_toml, false).expect("must load back");
+    assert_eq!(loaded.design.material.body_color_bands_override, None);
+    assert_eq!(loaded.design.material.absorption_path_scale_override, None);
+}
+
+/// A snapshot's `absorption_bands_per_mm` wins over the triple next to it; an old snapshot
+/// (triple only) rebuilds exactly as before.
+#[test]
+fn a_custom_snapshot_with_bands_rebuilds_from_the_bands() {
+    let rows = [[460.0_f32, 45.0, 0.2], [620.0, 45.0, 0.6]];
+    let base =
+        CustomMaterialSnapshot::new(1.62, 0.017, -0.021, None, "Trigonal", "UniaxialNegative")
+            .with_body_color(Some([0.2, 0.6, 1.8]));
+    let old = gem_material_from_custom_snapshot("Bespoke", &base);
+    let banded = gem_material_from_custom_snapshot("Bespoke", &base.with_absorption_bands(&rows));
+    assert_ne!(old.absorption, banded.absorption);
+    assert_eq!(banded.absorption.o_ray.len(), 2);
+    assert_eq!(old.absorption.o_ray.len(), 3);
 }

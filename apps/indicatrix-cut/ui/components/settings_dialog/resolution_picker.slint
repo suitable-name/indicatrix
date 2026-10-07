@@ -1,117 +1,36 @@
 import { Theme } from "../../theme.slint";
 import { SettingsModel } from "../../models/settings.slint";
+import { SegmentPill } from "../pill_button.slint";
+import { SettingLabel } from "setting_label.slint";
 
 // Render Resolution - Segmented Pill Selector, same idiom as the Ray Bounces
-// picker below and `export_dialog.slint`'s "Output Size" pills. A fixed list
+// picker and `export_dialog.slint`'s "Output Size" pills. A fixed list
 // rather than a slider -- see `SettingsDialog.resolution_index` for why.
 export component ResolutionPicker inherits VerticalLayout {
+    // 0 = 640x480, 1 = 800x600 (the default), 2 = 1280x720, 3 = 1920x1080.
+    pure function width_for(idx: int) -> int {
+        return idx == 0 ? 640 : (idx == 1 ? 800 : (idx == 2 ? 1280 : 1920));
+    }
+    pure function height_for(idx: int) -> int {
+        return idx == 0 ? 480 : (idx == 1 ? 600 : (idx == 2 ? 720 : 1080));
+    }
+
     spacing: 6px;
-    Text { text: "Render Resolution"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+    SettingLabel {
+        text: "Render Resolution";
+        hint: "Render Resolution: the size in pixels of the picture the Live Render view traces. Bigger pictures are sharper and take proportionally longer to settle.";
+    }
 
     HorizontalLayout {
         spacing: 4px;
 
-        // 640x480
-        Rectangle {
-            horizontal-stretch: 1;
-            height: 28px;
-            border-radius: Theme.radius-sm;
-            background: SettingsModel.resolution_index == 0 ? Theme.accent-cyan : (res0_touch.has-hover ? #1e293b : #0f172a);
-            border-width: 1px;
-            border-color: SettingsModel.resolution_index == 0 ? Theme.accent-cyan : #334155;
-
-            res0_touch := TouchArea {
-                clicked => {
-                    SettingsModel.resolution_index = 0;
-                    SettingsModel.resolution_changed(640, 480);
-                }
-            }
-
-            Text {
-                text: "640×480";
-                font-size: 11px;
-                font-weight: 600;
-                color: SettingsModel.resolution_index == 0 ? #0f172a : Theme.text-secondary;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-        }
-
-        // 800x600 (default)
-        Rectangle {
-            horizontal-stretch: 1;
-            height: 28px;
-            border-radius: Theme.radius-sm;
-            background: SettingsModel.resolution_index == 1 ? Theme.accent-cyan : (res1_touch.has-hover ? #1e293b : #0f172a);
-            border-width: 1px;
-            border-color: SettingsModel.resolution_index == 1 ? Theme.accent-cyan : #334155;
-
-            res1_touch := TouchArea {
-                clicked => {
-                    SettingsModel.resolution_index = 1;
-                    SettingsModel.resolution_changed(800, 600);
-                }
-            }
-
-            Text {
-                text: "800×600";
-                font-size: 11px;
-                font-weight: 600;
-                color: SettingsModel.resolution_index == 1 ? #0f172a : Theme.text-secondary;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-        }
-
-        // 1280x720
-        Rectangle {
-            horizontal-stretch: 1;
-            height: 28px;
-            border-radius: Theme.radius-sm;
-            background: SettingsModel.resolution_index == 2 ? Theme.accent-cyan : (res2_touch.has-hover ? #1e293b : #0f172a);
-            border-width: 1px;
-            border-color: SettingsModel.resolution_index == 2 ? Theme.accent-cyan : #334155;
-
-            res2_touch := TouchArea {
-                clicked => {
-                    SettingsModel.resolution_index = 2;
-                    SettingsModel.resolution_changed(1280, 720);
-                }
-            }
-
-            Text {
-                text: "1280×720";
-                font-size: 11px;
-                font-weight: 600;
-                color: SettingsModel.resolution_index == 2 ? #0f172a : Theme.text-secondary;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-        }
-
-        // 1920x1080
-        Rectangle {
-            horizontal-stretch: 1;
-            height: 28px;
-            border-radius: Theme.radius-sm;
-            background: SettingsModel.resolution_index == 3 ? Theme.accent-cyan : (res3_touch.has-hover ? #1e293b : #0f172a);
-            border-width: 1px;
-            border-color: SettingsModel.resolution_index == 3 ? Theme.accent-cyan : #334155;
-
-            res3_touch := TouchArea {
-                clicked => {
-                    SettingsModel.resolution_index = 3;
-                    SettingsModel.resolution_changed(1920, 1080);
-                }
-            }
-
-            Text {
-                text: "1920×1080";
-                font-size: 11px;
-                font-weight: 600;
-                color: SettingsModel.resolution_index == 3 ? #0f172a : Theme.text-secondary;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+        for label[idx] in ["640×480", "800×600", "1280×720", "1920×1080"]: SegmentPill {
+            text: label;
+            hint: "Trace the live picture at " + label + " pixels.";
+            selected: SettingsModel.resolution_index == idx;
+            picked => {
+                SettingsModel.resolution_index = idx;
+                SettingsModel.resolution_changed(root.width_for(idx), root.height_for(idx));
             }
         }
     }

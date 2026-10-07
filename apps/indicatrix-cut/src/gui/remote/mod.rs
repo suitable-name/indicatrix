@@ -22,6 +22,7 @@
 //! real socket -- it compiles but, like the rest of the GUI layer, is not exercised by
 //! an automated test here.
 
+mod advanced_in_use;
 mod orchestrator;
 mod worker_callbacks;
 mod worker_settings;

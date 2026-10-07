@@ -37,22 +37,32 @@ fn daylight_white_balance_keeps_a_d65_grey_neutral() {
     );
 }
 
-/// Every unrecognized preset label must parse (via `LightingPreset::from_label`)
-/// and fall through to the same default (D65 6500K) preset -- including the
-/// legacy, mislabelled `"D65 Daylight (5500K)"` string an older settings file may
-/// still contain (see `LightingPreset::from_label`'s doc comment).
+/// Every unrecognized preset label falls back to `LightingPreset::default()` (the light
+/// tent) and so shares its white balance, while the legacy, mislabelled
+/// `"D65 Daylight (5500K)"` string an older settings file may still contain maps
+/// explicitly to `Daylight` (identity white balance).
 #[test]
 fn illuminant_white_balance_default_arm_is_shared() {
     let a = illuminant_white_balance(LightingPreset::from_label("Totally Unknown Preset A"));
     let b = illuminant_white_balance(LightingPreset::from_label("Totally Unknown Preset B"));
+    let default = illuminant_white_balance(LightingPreset::default());
     let legacy = illuminant_white_balance(LightingPreset::from_label("D65 Daylight (5500K)"));
+    let daylight = illuminant_white_balance(LightingPreset::Daylight);
     assert!(
         (a - b).length() < 1e-6,
-        "distinct unrecognized presets must share the default D65 white balance"
+        "distinct unrecognized presets must share the default white balance"
     );
     assert!(
-        (a - legacy).length() < 1e-6,
-        "the legacy mislabelled D65 string must still migrate to the default D65 white balance"
+        (a - default).length() < 1e-6,
+        "unrecognized labels must give the default preset's white balance"
+    );
+    assert!(
+        (legacy - daylight).length() < 1e-6,
+        "the legacy 5500K label must map to Daylight's white balance"
+    );
+    assert!(
+        (legacy - Vec3::ONE).length() < 1e-5,
+        "Daylight's white balance is the identity"
     );
 }
 

@@ -5,7 +5,8 @@
 use super::{
     counts::{is_remote, refresh_counts, refresh_counts_if_filter_changed, sync_remote_message},
     cut_faces::{corner_names, edge_names, options_model},
-    editing, exclusions,
+    editing,
+    exclusions::{self, ExclusionWorker},
     format::to_i32,
     inputs::{built_in_choices, material_choices},
     library_link, run, saved,
@@ -14,9 +15,11 @@ use super::{
     view,
 };
 use crate::{
-    MainWindow, RoughPlanModel, RoughPlannerWindow, bridge::library::source::LibrarySource,
-    gui::show_toast,
+    MainWindow, RoughPlanModel, RoughPlannerWindow,
+    bridge::library::source::LibrarySource,
+    gui::{show_toast, tutorial_events::raise},
 };
+use indicatrix_editor::guide::viewing_events::ROUGH_PLANNER_OPENED;
 use indicatrix_vault::db::sqlite::Database;
 use slint::{
     CloseRequestResponse, ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel, Weak,
@@ -61,6 +64,8 @@ pub(super) struct Host {
     pub(super) session: Rc<RefCell<Session>>,
     /// The live model evaluation.
     pub(super) shape: ShapeWorker,
+    /// The reads and writes of the designs excluded from the planner, off the UI thread.
+    pub(super) exclusions: ExclusionWorker,
 }
 
 thread_local! {
@@ -268,7 +273,9 @@ fn fit_on_first_show(host: &Rc<Host>) {
 
 /// What opening (or re-opening) the window refreshes: the library links, and, unless a
 /// plan is running, the material list, the designs excluded from the planner and the two
-/// design counts (which leave those out, so the exclusions are read first).
+/// design counts (which leave those out and read the marks themselves). The material list
+/// and the exclusions are read on threads of their own; the window shows them when they
+/// arrive, so opening never waits for the library database.
 fn refresh_on_open(main: &MainWindow, host: &Rc<Host>) {
     push_links_enabled(host);
     if host.window.global::<RoughPlanModel>().get_running() {
@@ -293,8 +300,11 @@ fn create_host(
             return None;
         }
     };
+    // Starts in the current palette (high contrast) and follows later changes.
+    crate::gui::preferences::bind_planner_window_theme(&window);
     let host = Rc::new(Host {
         shape: ShapeWorker::new(window.as_weak()),
+        exclusions: ExclusionWorker::new(window.as_weak(), Arc::clone(db)),
         window,
         filter_watch: Timer::default(),
         size_fitted: Cell::new(false),
@@ -309,6 +319,7 @@ fn create_host(
         .window()
         .on_close_requested(|| CloseRequestResponse::HideWindow);
     let model = host.window.global::<RoughPlanModel>();
+    model.set_time_limit_secs(crate::plan_limit::stored_limit_secs().to_string().into());
     model.set_edge_options(options_model(edge_names()));
     model.set_corner_options(options_model(corner_names()));
     editing::setup_edit_callbacks(&host);
@@ -346,6 +357,8 @@ pub(in crate::gui) fn open_planner(
     fit_on_first_show(&host);
     // The 3D view's size: its own change notifications miss the size of the first layout.
     view::sync_view_size(&host);
+    // A tutorial step may wait for the planner to open.
+    raise(main, ROUGH_PLANNER_OPENED);
 }
 
 /// The sentence naming the planner work that closing the application would lose, given
@@ -400,6 +413,8 @@ pub(in crate::gui) fn close_planner_window() {
         flag.store(true, Ordering::Relaxed);
     }
     let _ = host.window.hide();
+    // The locate and rig windows belong to the planner and go with it.
+    super::locate::close_windows();
 }
 
 #[cfg(test)]

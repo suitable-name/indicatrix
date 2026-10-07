@@ -1,0 +1,161 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { RenderJobsModel } from "../../models/render_jobs.slint";
+import { HelpTopics } from "../../models/help.slint";
+import { HelpButton } from "../help_button.slint";
+import { ActionButton } from "../chip_toggle.slint";
+import { IconButton } from "../icon_button.slint";
+import { JobRowCard } from "job_row.slint";
+import { ScriptExportSection } from "script_export_section.slint";
+
+// The Jobs window (File > Render Jobs..., or the header's Jobs chip): the render queue as a
+// list, with Start Queue / Pause Queue, Clear Finished and Export Script. A modal card over
+// a full-window backdrop, mounted in `GlobalDialogsOverlay` under the usual `FocusScope`
+// (Escape closes it). Everything it shows is plain data from Rust (`RenderJobsModel`).
+export component RenderJobsPanel inherits Rectangle {
+    background: Theme.overlay-backdrop;
+
+    // Clicking beside the card closes it, like the export dialog.
+    TouchArea {
+        clicked => { RenderJobsModel.panel_open = false; }
+    }
+
+    Rectangle {
+        width: min(760px, root.width - 40px);
+        height: max(320px, min(root.height - 40px, root.height * 0.8));
+        background: Theme.surface-dialog;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-dialog;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.modal-shadow;
+        clip: true;
+
+        // Isolate clicks inside the card.
+        TouchArea {}
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 12px;
+
+            // Title and Close.
+            HorizontalLayout {
+                spacing: 8px;
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: "Render Jobs";
+                    font-size: 14px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                    accessible-role: AccessibleRole.text;
+                }
+
+                HelpButton {
+                    topic: HelpTopics.render-jobs;
+                    hint: "Open the manual page on render jobs";
+                }
+
+                IconButton {
+                    icon: @image-url("../../icons/close.svg");
+                    hint: "Close the render jobs. Jobs that are rendering go on.";
+                    hover_fill: Theme.surface-control-hover;
+                    clicked => { RenderJobsModel.panel_open = false; }
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.surface-raised; }
+
+            // The queue's own buttons and its status.
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: center;
+
+                if !RenderJobsModel.queue_running: ActionButton {
+                    width: 120px;
+                    height: 30px;
+                    text: "Start Queue";
+                    hint: RenderJobsModel.can_start_queue
+                        ? "Render the waiting jobs from the top of the list down, one at a time."
+                        : "There are no waiting jobs.";
+                    enabled: RenderJobsModel.can_start_queue;
+                    fill: Theme.accent-cyan;
+                    hover_fill: Theme.accent-cyan-hover;
+                    ink: Theme.text-on-accent;
+                    edge: Theme.accent-cyan;
+                    weight: 700;
+                    clicked => { RenderJobsModel.start_queue(); }
+                }
+
+                if RenderJobsModel.queue_running: ActionButton {
+                    width: 120px;
+                    height: 30px;
+                    text: "Pause Queue";
+                    hint: "Stop the job that is rendering and keep the rest waiting.";
+                    clicked => { RenderJobsModel.pause_queue(); }
+                }
+
+                Text {
+                    horizontal-stretch: 1;
+                    min-width: 0px;
+                    text: RenderJobsModel.queue_status;
+                    font-size: 11px;
+                    color: Theme.text-secondary;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    accessible-role: AccessibleRole.text;
+                }
+
+                ActionButton {
+                    width: 110px;
+                    height: 30px;
+                    text: "Clear Finished";
+                    hint: "Remove every Done and Cancelled job from the list. Files they wrote stay on disk.";
+                    ink: Theme.text-secondary;
+                    clicked => { RenderJobsModel.clear_finished(); }
+                }
+
+                ActionButton {
+                    width: 120px;
+                    height: 30px;
+                    text: "Export Script...";
+                    hint: "Write the unfinished jobs as a script that renders them with indicatrix-cli, on this or another computer.";
+                    ink: Theme.text-secondary;
+                    clicked => { RenderJobsModel.script_open = !RenderJobsModel.script_open; }
+                }
+            }
+
+            // The empty state.
+            if RenderJobsModel.rows.length == 0: Rectangle {
+                vertical-stretch: 1;
+                Text {
+                    width: parent.width - 32px;
+                    text: "No render jobs yet. Use Add to Queue in the export dialog or in the tilt video section.";
+                    font-size: 12px;
+                    color: Theme.text-muted;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                    accessible-role: AccessibleRole.text;
+                }
+            }
+
+            // The jobs, in queue order.
+            if RenderJobsModel.rows.length > 0: ScrollView {
+                vertical-stretch: 1;
+
+                VerticalLayout {
+                    alignment: start;
+                    spacing: 6px;
+
+                    for entry in RenderJobsModel.rows: JobRowCard {
+                        job: entry;
+                    }
+                }
+            }
+
+            if RenderJobsModel.script_open: ScriptExportSection {}
+        }
+    }
+}

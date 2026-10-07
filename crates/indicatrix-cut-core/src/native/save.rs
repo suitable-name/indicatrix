@@ -616,6 +616,11 @@ fn draft_tier_tables(design: &Design) -> Vec<TierTable> {
             .with_cheater_offset_deg(design.cheater_offsets_deg.get(&index).copied())
             .with_tier_id(design.tier_id_at(index).map(crate::design::TierId::value))
             .with_target(design.tier_target(index).map(native_tier_target_from))
+            .with_angle_relation(
+                design
+                    .tier_relation(index)
+                    .map(crate::design::TierRelation::to_canonical),
+            )
         })
         .collect()
 }

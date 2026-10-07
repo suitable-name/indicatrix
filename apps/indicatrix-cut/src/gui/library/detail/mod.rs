@@ -10,6 +10,7 @@ mod local_load;
 mod metadata;
 mod planes;
 mod remote_load;
+mod row_cursor;
 mod shared;
 #[cfg(test)]
 mod tests;

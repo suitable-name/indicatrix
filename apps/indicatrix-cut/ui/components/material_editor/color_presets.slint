@@ -1,125 +1,202 @@
 import { Theme } from "../../theme.slint";
 
+// One body-colour swatch: a small coloured chip with its name. One of a group where exactly one
+// is chosen, so a screen reader hears a radio button; Tab reaches it, Space and Enter pick it.
+// `fill` and `edge` are the colour the swatch stands for (data, not theme), `ink` the label colour
+// that reads on it.
+component ColorSwatch inherits Rectangle {
+    in property <string> label;
+    in property <string> hint;
+    in property <brush> fill;
+    in property <color> edge: Theme.border-control;
+    in property <color> ink: Theme.text-on-primary;
+    in property <bool> chosen: false;
+    callback picked();
+
+    width: 40px;
+    height: 26px;
+    border-radius: Theme.radius-sm;
+    background: root.fill;
+    border-width: root.chosen || swatch_focus.has-focus ? 2px : 1px;
+    border-color: swatch_focus.has-focus ? Theme.accent-cyan-hover : (root.chosen ? Theme.accent-cyan : root.edge);
+
+    accessible-role: AccessibleRole.radio-button;
+    accessible-label: root.label + " body colour";
+    accessible-description: root.hint;
+    accessible-checkable: true;
+    accessible-checked: root.chosen;
+    accessible-action-default => { root.picked(); }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    swatch_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.picked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    Text {
+        text: root.label;
+        font-size: 9px;
+        font-weight: 700;
+        color: root.ink;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.picked(); }
+    }
+}
+
 // Body Color & Transmission preset swatches -- split out of
 // `material_editor_dialog.slint` to keep that file under its line budget.
 // `selected_color_preset` is `MaterialEditorDialog`'s own state (also written
 // by the template-selector presets), two-way bound so a click here writes
 // straight back to it.
+//
+// The eight coloured swatches are DATA: each `fill` and `edge` is the colour of the gem body it
+// stands for, the same in every palette, so they stay literals (`tests/theme_tokens.rs` lists
+// them as the only colours this file may hold). "Clear" and "Keep" are chrome and use tokens.
 export component MaterialColorPresets inherits VerticalLayout {
     spacing: 6px;
 
     in-out property <int> selected_color_preset: 0;
+    // False while the material's color comes from something these swatches do not show (a
+    // physics recipe, in a build without the physics editor): no swatch is marked as selected
+    // until the user picks one. `selected_color_preset` itself is untouched, so saving without
+    // a pick keeps the stored fantasy color.
+    in property <bool> show_selection: true;
+    // A swatch was clicked (after `selected_color_preset` took its index): the dialog may
+    // answer with a different swatch to show (see `PhysicscolorModel.color_preset_chosen`).
+    callback chosen(int);
 
-    Text { text: "Gem Body Color & Transmission:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+    property <int> shown: root.show_selection ? root.selected_color_preset : -1;
+
+    function choose(index: int) {
+        root.selected_color_preset = index;
+        root.chosen(index);
+    }
+
+    Rectangle {
+        height: presets_caption.preferred-height;
+        Tooltip { text: @markdown("The colour of the stone body and how much light it lets through. Pick a swatch, or use Pick below for any colour."); }
+        presets_caption := Text { text: "Gem Body Color & Transmission:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+    }
 
     HorizontalLayout {
         spacing: 6px;
 
         // 0: Clear / White
-        Rectangle {
-            width: 40px; height: 26px; border-radius: Theme.radius-sm;
-            background: root.selected_color_preset == 0 ? #e2e8f0 : #94a3b844;
-            border-width: root.selected_color_preset == 0 ? 2px : 1px;
-            border-color: root.selected_color_preset == 0 ? Theme.accent-cyan : Theme.border-control;
-            TouchArea { clicked => { root.selected_color_preset = 0; } }
-            Text { text: "Clear"; font-size: 9px; font-weight: 700; color: root.selected_color_preset == 0 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+        ColorSwatch {
+            label: "Clear";
+            hint: "No body colour: a colourless stone.";
+            fill: root.shown == 0 ? Theme.swatch-clear : Theme.swatch-clear-off;
+            ink: root.shown == 0 ? Theme.text-on-accent : Theme.text-secondary;
+            chosen: root.shown == 0;
+            picked => { root.choose(0); }
         }
 
         // 1: Sapphire Blue
-        Rectangle {
-            width: 40px; height: 26px; border-radius: Theme.radius-sm;
-            background: #1e40af;
-            border-width: root.selected_color_preset == 1 ? 2px : 1px;
-            border-color: root.selected_color_preset == 1 ? Theme.accent-cyan : #1d4ed8;
-            TouchArea { clicked => { root.selected_color_preset = 1; } }
-            Text { text: "Blue"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
+        ColorSwatch {
+            label: "Blue";
+            hint: "A sapphire blue body colour.";
+            fill: #1e40af;
+            edge: #1d4ed8;
+            chosen: root.shown == 1;
+            picked => { root.choose(1); }
         }
 
         // 2: Ruby Red
-        Rectangle {
-            width: 40px; height: 26px; border-radius: Theme.radius-sm;
-            background: #be123c;
-            border-width: root.selected_color_preset == 2 ? 2px : 1px;
-            border-color: root.selected_color_preset == 2 ? Theme.accent-cyan : #e11d48;
-            TouchArea { clicked => { root.selected_color_preset = 2; } }
-            Text { text: "Red"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
+        ColorSwatch {
+            label: "Red";
+            hint: "A ruby red body colour.";
+            fill: #be123c;
+            edge: #e11d48;
+            chosen: root.shown == 2;
+            picked => { root.choose(2); }
         }
 
         // 3: Emerald Green
-        Rectangle {
-            width: 40px; height: 26px; border-radius: Theme.radius-sm;
-            background: #047857;
-            border-width: root.selected_color_preset == 3 ? 2px : 1px;
-            border-color: root.selected_color_preset == 3 ? Theme.accent-cyan : #059669;
-            TouchArea { clicked => { root.selected_color_preset = 3; } }
-            Text { text: "Green"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
+        ColorSwatch {
+            label: "Green";
+            hint: "An emerald green body colour.";
+            fill: #047857;
+            edge: #059669;
+            chosen: root.shown == 3;
+            picked => { root.choose(3); }
         }
 
         // 4: Tanzanite Violet
-        Rectangle {
-            width: 40px; height: 26px; border-radius: Theme.radius-sm;
-            background: #6b21a8;
-            border-width: root.selected_color_preset == 4 ? 2px : 1px;
-            border-color: root.selected_color_preset == 4 ? Theme.accent-cyan : #7c3aed;
-            TouchArea { clicked => { root.selected_color_preset = 4; } }
-            Text { text: "Violet"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
+        ColorSwatch {
+            label: "Violet";
+            hint: "A tanzanite violet body colour.";
+            fill: #6b21a8;
+            edge: #7c3aed;
+            chosen: root.shown == 4;
+            picked => { root.choose(4); }
         }
 
         // 5: Canary Yellow
-        Rectangle {
-            width: 40px; height: 26px; border-radius: Theme.radius-sm;
-            background: #b45309;
-            border-width: root.selected_color_preset == 5 ? 2px : 1px;
-            border-color: root.selected_color_preset == 5 ? Theme.accent-cyan : #d97706;
-            TouchArea { clicked => { root.selected_color_preset = 5; } }
-            Text { text: "Yellow"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
+        ColorSwatch {
+            label: "Yellow";
+            hint: "A canary yellow body colour.";
+            fill: #b45309;
+            edge: #d97706;
+            chosen: root.shown == 5;
+            picked => { root.choose(5); }
         }
 
         // 6: Pink Spinel
-        Rectangle {
-            width: 40px; height: 26px; border-radius: Theme.radius-sm;
-            background: #be185d;
-            border-width: root.selected_color_preset == 6 ? 2px : 1px;
-            border-color: root.selected_color_preset == 6 ? Theme.accent-cyan : #db2777;
-            TouchArea { clicked => { root.selected_color_preset = 6; } }
-            Text { text: "Pink"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
+        ColorSwatch {
+            label: "Pink";
+            hint: "A pink spinel body colour.";
+            fill: #be185d;
+            edge: #db2777;
+            chosen: root.shown == 6;
+            picked => { root.choose(6); }
         }
 
         // 7: Teal / Zircon
-        Rectangle {
-            width: 40px; height: 26px; border-radius: Theme.radius-sm;
-            background: #0891b2;
-            border-width: root.selected_color_preset == 7 ? 2px : 1px;
-            border-color: root.selected_color_preset == 7 ? Theme.accent-cyan : #06b6d4;
-            TouchArea { clicked => { root.selected_color_preset = 7; } }
-            Text { text: "Teal"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
+        ColorSwatch {
+            label: "Teal";
+            hint: "A teal body colour, like blue zircon.";
+            fill: #0891b2;
+            edge: #06b6d4;
+            chosen: root.shown == 7;
+            picked => { root.choose(7); }
         }
 
         // 8: Amber Topaz
-        Rectangle {
-            width: 40px; height: 26px; border-radius: Theme.radius-sm;
-            background: #d97706;
-            border-width: root.selected_color_preset == 8 ? 2px : 1px;
-            border-color: root.selected_color_preset == 8 ? Theme.accent-cyan : #f59e0b;
-            TouchArea { clicked => { root.selected_color_preset = 8; } }
-            Text { text: "Amber"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
+        ColorSwatch {
+            label: "Amber";
+            hint: "An amber topaz body colour.";
+            fill: #d97706;
+            edge: #f59e0b;
+            chosen: root.shown == 8;
+            picked => { root.choose(8); }
         }
 
         // 9: "Custom (keep)" -- selected by `ViewportModel.
         // selected_custom_material_color_idx` (never by a click here reachable through
         // the eight swatches above) whenever a reopened custom material's saved color
-        // matches none of the eight fixed presets exactly. A hatch pattern stands in
-        // for a swatch: there is no single RGB to preview, since the whole point is
+        // matches none of the eight fixed presets exactly. A faint chip stands in for a
+        // swatch: there is no single RGB to preview, since the whole point is
         // that this material's real color isn't one of the fixed eight. Clicking it
         // is still a legitimate choice (re-selecting "keep" after having picked a
         // preset by mistake), not just a display-only state.
-        Rectangle {
-            width: 40px; height: 26px; border-radius: Theme.radius-sm;
-            background: #94a3b822;
-            border-width: root.selected_color_preset == 9 ? 2px : 1px;
-            border-color: root.selected_color_preset == 9 ? Theme.accent-cyan : Theme.border-control;
-            TouchArea { clicked => { root.selected_color_preset = 9; } }
-            Text { text: "Keep"; font-size: 9px; font-weight: 700; color: root.selected_color_preset == 9 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+        ColorSwatch {
+            label: "Keep";
+            hint: "Keep the colour this material was saved with. It matches none of the swatches.";
+            fill: Theme.swatch-keep;
+            ink: root.shown == 9 ? Theme.text-primary : Theme.text-secondary;
+            chosen: root.shown == 9;
+            picked => { root.choose(9); }
         }
     }
 }

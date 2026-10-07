@@ -1,0 +1,125 @@
+import { CheckBox } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { RenderJobsModel } from "../../models/render_jobs.slint";
+import { SegmentPill } from "../pill_button.slint";
+import { ActionButton } from "../chip_toggle.slint";
+
+// A small caption above a row of choices.
+component Caption inherits Text {
+    font-size: 11px;
+    font-weight: 600;
+    color: Theme.text-secondary;
+    accessible-role: AccessibleRole.text;
+}
+
+// The inline "Export Script" section at the foot of the Jobs window. It writes the jobs that
+// are not finished, in queue order, to a new folder with a PowerShell script, a shell script
+// or both, plus one job file per job, so another computer can render them with
+// `indicatrix-cli`. The folder is picked in Rust (`gui::render_jobs::script_export`).
+export component ScriptExportSection inherits Rectangle {
+    height: content.preferred-height;
+    background: Theme.surface-sunken;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.border-dialog;
+
+    content := VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        Text {
+            text: "Export Script";
+            font-size: 13px;
+            font-weight: 700;
+            color: Theme.text-primary;
+            accessible-role: AccessibleRole.text;
+        }
+
+        Caption { text: "Script type"; }
+        HorizontalLayout {
+            spacing: 4px;
+            SegmentPill {
+                text: "Both";
+                hint: "Write a PowerShell script and a shell script.";
+                selected: RenderJobsModel.script_flavor_index == 0;
+                picked => { RenderJobsModel.script_flavor_index = 0; }
+            }
+            SegmentPill {
+                text: "PowerShell (.ps1)";
+                hint: "Write a PowerShell script, for Windows.";
+                selected: RenderJobsModel.script_flavor_index == 1;
+                picked => { RenderJobsModel.script_flavor_index = 1; }
+            }
+            SegmentPill {
+                text: "Shell (.sh)";
+                hint: "Write a shell script, for macOS and Linux.";
+                selected: RenderJobsModel.script_flavor_index == 2;
+                picked => { RenderJobsModel.script_flavor_index = 2; }
+            }
+        }
+
+        Caption { text: "Render on"; }
+        HorizontalLayout {
+            spacing: 4px;
+            SegmentPill {
+                text: "This computer";
+                hint: "The script renders on the computer that runs it.";
+                selected: RenderJobsModel.script_target_index == 0;
+                picked => { RenderJobsModel.script_target_index = 0; }
+            }
+            SegmentPill {
+                text: "This computer and the remote worker " + RenderJobsModel.script_remote_label;
+                hint: RenderJobsModel.script_remote_available
+                    ? "The script also uses the remote worker set up in Settings."
+                    : "No remote worker is set up in Settings.";
+                selected: RenderJobsModel.script_target_index == 1;
+                enabled: RenderJobsModel.script_remote_available;
+                picked => { RenderJobsModel.script_target_index = 1; }
+            }
+        }
+
+        CheckBox {
+            text: "Put the finished pictures and videos in the script folder";
+            checked <=> RenderJobsModel.script_outputs_beside;
+            accessible-description: "Without this, each picture or video goes to the folder its job was added with.";
+        }
+
+        Text {
+            text: RenderJobsModel.script_job_count == 1
+                ? "Exports 1 unfinished job."
+                : "Exports " + RenderJobsModel.script_job_count + " unfinished jobs.";
+            font-size: 11px;
+            color: Theme.text-secondary;
+            accessible-role: AccessibleRole.text;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: end;
+
+            ActionButton {
+                width: 90px;
+                height: 30px;
+                text: "Cancel";
+                hint: "Close this section without writing anything.";
+                ink: Theme.text-secondary;
+                clicked => { RenderJobsModel.script_open = false; }
+            }
+            ActionButton {
+                width: 200px;
+                height: 30px;
+                text: "Choose Folder and Export";
+                hint: RenderJobsModel.script_job_count == 0
+                    ? "There are no unfinished jobs to export."
+                    : "Choose where the script folder goes, then write it.";
+                enabled: RenderJobsModel.script_job_count > 0;
+                fill: Theme.accent-cyan;
+                hover_fill: Theme.accent-cyan-hover;
+                ink: Theme.text-on-accent;
+                edge: Theme.accent-cyan;
+                weight: 700;
+                clicked => { RenderJobsModel.export_script(); }
+            }
+        }
+    }
+}

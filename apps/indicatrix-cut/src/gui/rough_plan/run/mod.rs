@@ -23,10 +23,15 @@ use super::{
     inputs::{FilterSnapshot, sorted_unique},
     saved::{convert::CandidateSource, dto::DesignShape, format::design_shape},
 };
-use crate::{RoughPlanModel, RoughPlannerWindow, gui::batch::batch_queue::local_lane_count};
+use crate::{
+    RoughPlanModel, RoughPlannerWindow,
+    gui::{batch::batch_queue::local_lane_count, tutorial_events::raise},
+    plan_limit::{MAX_LIMIT_SECS, nothing_found_message, stop_note},
+};
 use indicatrix_cut_core::rough_plan::{
     CandidateDesign, PlanInput, PlanSettings, RoughLayout, RoughModel,
 };
+use indicatrix_editor::guide::viewing_events::ROUGH_PLAN_FINISHED;
 use indicatrix_vault::{
     db::sqlite::Database,
     model::{
@@ -48,7 +53,11 @@ use std::{
 };
 use tracing::warn;
 
-use self::{drive::drive, hulls::prepare_design_hulls, tracker::Tracker};
+use self::{
+    drive::drive,
+    hulls::prepare_design_hulls,
+    tracker::{Progress, Tracker},
+};
 pub(super) use self::{
     hulls::{rotate_into_caliper_frame, to_caliper_frame},
     results::show_layouts,
@@ -231,6 +240,9 @@ pub struct PlanJob {
     pub weighed_ct: Option<f64>,
     /// Whether the candidates were the library filter's designs or the whole library.
     pub candidate_source: CandidateSource,
+    /// The scan plan time limit in seconds, `0` for none. Only a mesh rough obeys it
+    /// (see [`crate::plan_limit`]).
+    pub time_limit_secs: u32,
 }
 
 /// A finished run.
@@ -495,13 +507,25 @@ pub fn run_plan(db: &Mutex<Database>, job: &PlanJob, reporter: &Reporter) -> Pla
     } else {
         0.0
     };
-    let tracker = Tracker::new(reporter, base, input.path());
-    let Some(layouts) = drive(&input, local_lane_count(), &tracker) else {
-        return PlanOutcome::Cancelled;
+    let tracker = Tracker::new(reporter, base, input.path()).with_limit(job.time_limit_secs);
+    let driven = drive(&input, local_lane_count(), &tracker);
+    let limit_secs = u64::from(job.time_limit_secs.min(MAX_LIMIT_SECS));
+    // The user's cancel wins over the limit (`time_stopped` is false after a cancel).
+    let stopped = tracker.time_stopped();
+    let layouts = match driven {
+        Some(layouts) => layouts,
+        None if stopped => Vec::new(),
+        None => return PlanOutcome::Cancelled,
     };
+    if stopped && layouts.is_empty() {
+        return PlanOutcome::Failed(nothing_found_message(limit_secs));
+    }
     let titles = load_titles(db, &layouts);
     let shapes = planned_shapes(&gathered.stored, &layouts);
-    let summary = summary_text(layouts.len(), designs.len(), started.elapsed(), &note);
+    let mut summary = summary_text(layouts.len(), designs.len(), started.elapsed(), &note);
+    if stopped {
+        summary = format!("{summary}. {}", stop_note(limit_secs));
+    }
     finished(job, layouts, titles, shapes, summary, skipped)
 }
 
@@ -557,12 +581,16 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
         .unwrap_or_else(|| "unknown panic".to_string())
 }
 
-/// The run is over: the window stops showing progress.
+/// The run is over: the window stops showing progress. A tutorial step may wait for the
+/// finished plan, and the result cards are on screen by now.
 fn end_run(host: &Rc<Host>) {
     let model = host.window.global::<RoughPlanModel>();
     model.set_running(false);
     model.set_stage("".into());
     model.set_progress_fraction(1.0);
+    if let Some(main) = host.main.upgrade() {
+        raise(&main, ROUGH_PLAN_FINISHED);
+    }
 }
 
 /// Shows a finished run on the UI thread. The window keeps its progress display until

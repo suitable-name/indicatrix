@@ -35,6 +35,7 @@ use crate::{
         editor::{
             auto_solve,
             native_io::ask_write_confirm,
+            relation_ui::{setup_relation_callbacks, take_cleared_relations_sentence},
             state::{EditorState, apply_multi_selection, push_multi_selected_count, push_tiers},
             view::{SolidLastSolved, refresh_editor_panel_stale, submit_preview_replan},
         },
@@ -129,16 +130,20 @@ fn remove_tier_now(
                 BTreeSet::new(),
                 false,
             );
+            // Tiers that followed the removed one keep their angles but follow nothing now:
+            // the session says which, and the toast repeats it.
+            let freed = take_cleared_relations_sentence(&mut st);
             drop(st);
             let plural = if removed.facet_count == 1 { "" } else { "s" };
-            show_toast(
-                ui,
-                &format!(
-                    "Removed {} ({} facet{plural}), Undo",
-                    removed.name, removed.facet_count
-                ),
-                "info",
+            let mut message = format!(
+                "Removed {} ({} facet{plural}), Undo",
+                removed.name, removed.facet_count
             );
+            if let Some(freed) = freed {
+                message.push_str(". ");
+                message.push_str(&freed);
+            }
+            show_toast(ui, &message, "info");
         }
         Err(error @ RemoveTierError::HasDependants { .. }) if !cascade => {
             drop(st);
@@ -362,6 +367,9 @@ pub(in crate::gui::editor) fn setup_toggle_detach_callback(
     setup_highlight_tooth_callback(ui, state);
     //    // reason given above.
     setup_generate_step_series_callback(ui, state, render_ctx, preview_state, solid_last_solved);
+    // Tier relations: "Remove relation" and the hint for an angle that cannot be edited
+    // (the linked step series registers with the plain one just above).
+    setup_relation_callbacks(ui, state, render_ctx, preview_state, solid_last_solved);
     setup_mirror_tier_to_other_block_callback(
         ui,
         state,
@@ -587,10 +595,16 @@ fn remove_multi_selected_now(
                 BTreeSet::new(),
                 false,
             );
+            let freed = take_cleared_relations_sentence(&mut st);
             drop(st);
             ui.global::<EditorModel>().set_selected_tier_index(-1);
             bump_form_reset_pulse(ui);
-            show_toast(ui, &format!("Removed {removed_count} tier(s)."), "info");
+            let mut message = format!("Removed {removed_count} tier(s).");
+            if let Some(freed) = freed {
+                message.push(' ');
+                message.push_str(&freed);
+            }
+            show_toast(ui, &message, "info");
         }
         Err(error @ RemoveTierError::HasDependants { .. }) if !cascade => {
             drop(st);

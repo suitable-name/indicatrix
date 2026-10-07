@@ -142,7 +142,15 @@ pub(super) const CUSTOM_GEM_MATERIALS_TABLE_SQL: &str = "
         specific_gravity REAL,
         -- Nullable color recipe (JSON) for physically based chromophores; see
         -- migrations::Database::migrate_custom_material_color_recipe's doc comment.
-        color_recipe_json TEXT
+        color_recipe_json TEXT,
+        -- Nullable dispersion model (JSON: Sellmeier or Cauchy coefficients); NULL is the
+        -- plain refractive index + dispersion path. See
+        -- migrations::Database::migrate_custom_material_dispersion_model's doc comment.
+        dispersion_model_json TEXT,
+        -- Nullable seven-band body colour (JSON rows); NULL means no bands (the legacy
+        -- triple colours the material). See
+        -- migrations::Database::migrate_custom_material_absorption_bands's doc comment.
+        absorption_bands_json TEXT
     );
 ";
 

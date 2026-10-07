@@ -1,6 +1,8 @@
-//! CPU-only fluorescence: data types and the sampling maths of the in-medium
-//! fluorescence vertex (see `docs/fluorescence-plan.md` sections 3-4, and the
-//! "Fluorescence" section of `crates/indicatrix/docs/physics.md`).
+//! CPU-only fluorescence: emitter data and the in-medium fluorescence vertex sampling.
+//!
+//! This module holds the data types and the sampling maths of the vertex (see
+//! `docs/fluorescence-plan.md` sections 3-4, and the "Fluorescence" section of
+//! `crates/indicatrix/docs/physics.md`).
 //!
 //! # Model
 //!
@@ -683,7 +685,7 @@ mod tests {
         let mut absorbed = 0.0f64;
         for i in 0..4800 {
             let l = (i as f32 + 0.5).mul_add(0.1, 300.0);
-            absorbed += f64::from(emitter.excitation_absorption(l)) * 0.1;
+            absorbed = f64::from(emitter.excitation_absorption(l)).mul_add(0.1, absorbed);
         }
         for lambda_em in 380..=780 {
             let lambda_em = lambda_em as f32;

@@ -1,0 +1,18 @@
+// Per-design lighting: what the settings dialog's "Lighting for this design" group shows
+// and the two buttons it offers. A design can remember its lighting in the library
+// database (never in the design file); the Rust side is `gui::render::design_lighting`.
+export global DesignLightingModel {
+    // Whether a design is open that lighting can be saved for. False before any design
+    // is opened or created.
+    in property <bool> available: false;
+    // Whether the open design has lighting saved in the library (usable or not).
+    in property <bool> has_saved: false;
+    // One plain sentence about the saved lighting, or why it is not used. Empty when
+    // nothing is saved.
+    in property <string> summary: "";
+
+    // Saves what the live view shows as this design's lighting.
+    callback use_for_design();
+    // Clears this design's saved lighting and goes back to the normal lighting.
+    callback forget_for_design();
+}

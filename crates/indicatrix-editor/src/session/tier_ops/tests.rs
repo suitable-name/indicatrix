@@ -354,6 +354,60 @@ fn inline_angle_text_is_a_no_op_when_bit_identical() {
     assert!(session.set_tier_angle_from_text(0, "abc").is_err());
 }
 
+/// The table prints a magnitude, so the inline cell commits one: a pavilion tier typed
+/// `38.5` is `-38.5`, however the number is written.
+#[test]
+fn inline_angle_text_on_a_pavilion_tier_keeps_its_side() {
+    let mut session = session_with_two_tiers();
+    // C1 is 41 (crown) and P1 is -41 (pavilion).
+    for (text, expected) in [
+        ("38.5", -38.5),
+        ("38.5 + 0.5", -39.0),
+        ("-40", -40.0),
+        ("C1 - 3", -38.0),
+    ] {
+        assert!(
+            matches!(
+                session.set_tier_angle_from_text(1, text).unwrap(),
+                InlineAngle::Applied(_)
+            ),
+            "{text}"
+        );
+        assert_eq!(session.design.tiers[1].angle_deg, expected, "{text}");
+    }
+    assert_eq!(
+        session.design.tiers[0].angle_deg, 41.0,
+        "the crown is untouched"
+    );
+    // Undo gives the pavilion angle back, still negative.
+    assert!(session.undo().unwrap().is_some());
+    assert_eq!(session.design.tiers[1].angle_deg, -40.0);
+}
+
+/// Zero is the one number whose side is not in its sign bit's number, so it follows the
+/// tier it is typed on; only an explicit leading sign (`-0`, `+0`) asks for the other side.
+#[test]
+fn inline_zero_keeps_the_side_of_the_tier_it_is_typed_on() {
+    let mut session = session_with_two_tiers();
+    session.set_tier_angle_from_text(1, "0").unwrap();
+    let pavilion = session.design.tiers[1].angle_deg;
+    assert!(pavilion == 0.0 && pavilion.is_sign_negative(), "{pavilion}");
+
+    // Arithmetic that works out to zero is not a sign.
+    session.set_tier_angle_from_text(0, "10 - 10").unwrap();
+    let crown = session.design.tiers[0].angle_deg;
+    assert!(crown == 0.0 && !crown.is_sign_negative(), "{crown}");
+
+    // A typed minus sign is: the crown tier crosses to the culet side...
+    session.set_tier_angle_from_text(0, "-0").unwrap();
+    let culet = session.design.tiers[0].angle_deg;
+    assert!(culet == 0.0 && culet.is_sign_negative(), "{culet}");
+    // ...and a typed plus sign takes a pavilion tier across to the crown side.
+    session.set_tier_angle_from_text(1, "+0").unwrap();
+    let table = session.design.tiers[1].angle_deg;
+    assert!(table == 0.0 && !table.is_sign_negative(), "{table}");
+}
+
 fn session_with_concave_fixture() -> EditorSession {
     let design = indicatrix_cut_core::Design::concave_fixture();
     EditorSession::with_history(design, indicatrix_cut_core::History::default())

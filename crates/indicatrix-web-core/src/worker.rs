@@ -616,7 +616,10 @@ fn run_solve_job(
         last_ms.set(now);
         last_stage.set(Some(report.stage));
         let elapsed_secs = ((now - start_ms) / 1000.0) as f32;
-        let counting = matches!(report.stage, SearchStage::Coordinate | SearchStage::Polish);
+        let counting = matches!(
+            report.stage,
+            SearchStage::Screening | SearchStage::Coordinate | SearchStage::Polish
+        );
         let fraction = (counting && report.max_evaluations > 0)
             .then(|| (report.evaluations as f32 / report.max_evaluations as f32).clamp(0.0, 1.0));
         emit(FromWorker::Progress {
@@ -625,6 +628,8 @@ fn run_solve_job(
                 report.stage,
                 report.evaluations,
                 report.max_evaluations,
+                // The web runs one start (no `on_start` report to show).
+                None,
                 elapsed_secs,
             ),
             fraction,

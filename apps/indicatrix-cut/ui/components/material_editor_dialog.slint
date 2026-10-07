@@ -2,15 +2,37 @@ import { Theme } from "../theme.slint";
 import { ComboBox, Slider, LineEdit, ScrollView } from "std-widgets.slint";
 import { ViewportModel } from "../models/viewport.slint";
 import { PhysicscolorModel } from "../models/physics_color.slint";
+import { DispersionEditorModel } from "../models/dispersion_editor.slint";
+import { GuideModel } from "../models/guide.slint";
+import { HelpTopics } from "../models/help.slint";
 import { ConfirmActionDialog } from "confirm_action_dialog.slint";
+import { HelpButton } from "help_button.slint";
+import { IconButton } from "icon_button.slint";
+import { ActionButton } from "chip_toggle.slint";
+import { SegmentPill } from "pill_button.slint";
+import { AdvancedNote } from "advanced_note.slint";
 // Split-out sections of this dialog -- see each component's own doc comment.
 import { MaterialTemplateSelector } from "material_editor/template_selector.slint";
+import { MaterialDispersionCoefficients } from "material_editor/dispersion_coefficients.slint";
 import { MaterialOpticsSliders } from "material_editor/optics_sliders.slint";
 import { MaterialCrystalClassification } from "material_editor/crystal_classification.slint";
 import { MaterialColorPresets } from "material_editor/color_presets.slint";
 import { ChromophorePicker } from "material_editor/chromophore_picker.slint";
-import { colorPicker } from "material_editor/color_picker.slint";
+import { LchEditor } from "material_editor/lch_editor.slint";
+import { BodyColorEditorModel } from "../models/body_color_editor.slint";
 
+// The Gem Material Editor.
+//
+// Simple and Advanced (`GuideModel.shows_advanced()`): the Simple interface keeps the template,
+// the name, the refractive index, dispersion and specific gravity sliders and the colour. It hides
+// the birefringence slider, the crystal system and optical character, and the Coefficients
+// mode of the refractive-index curve (a material that already has coefficients keeps showing
+// them). Their values stay and still apply; a line says so when one is off its default
+// (`advanced_in_use` below). The validity warning stays visible in both modes, because it is
+// the reason a Save can be disabled.
+//
+// Keyboard: Tab walks every control. Escape asks before it discards edits, Return saves, and
+// while the physics section shows Ctrl+Z / Ctrl+Y undo and redo its recipe.
 export component MaterialEditorDialog inherits Rectangle {
     // Delete gates behind an explicit "Are you sure" step, the same modal idiom
     // `ConfirmActionDialog` is already used for elsewhere -- a design referencing
@@ -49,7 +71,17 @@ export component MaterialEditorDialog inherits Rectangle {
     // Rust layer refuses it outright) -- disabling Save proactively means the
     // cutter sees why immediately instead of getting an error toast only after
     // clicking.
-    property <bool> can_save: root.optics_valid && !root.name_is_blank && !root.name_collides_with_builtin;
+    // `disp_section.save_ok` is false while the Dispersion section holds coefficients the
+    // engine cannot use (an unreadable field, a resonance inside the visible range, an index
+    // below 1); the section itself says why.
+    property <bool> can_save: root.optics_valid && !root.name_is_blank && !root.name_collides_with_builtin
+        && disp_section.save_ok;
+
+    // Why Save is not available, in plain words (the tooltip of the dimmed Save buttons).
+    property <string> save_blocked_reason: root.name_is_blank ? "Give the material a name first."
+        : (root.name_collides_with_builtin ? "This is the name of a built-in material. Pick another name."
+        : (!root.optics_valid ? root.optics_validation_message
+        : "The refractive-index coefficients cannot be used yet. The section above says why."));
 
     // Saving over an EXISTING custom name silently overwrites it (the Rust layer
     // allows it, only distinguishing "Saved" from "Overwrote" in its own success
@@ -116,7 +148,9 @@ export component MaterialEditorDialog inherits Rectangle {
         || Math.abs(root.biaxial_delta_beta_alpha_val - root.baseline_biaxial_delta_beta_alpha_val) > 0.0001
         // The physics color mode and recipe (kept in Rust, rebuilt on every open): a recipe
         // edit or a mode switch dirties the dialog, so closing it asks before discarding.
-        || PhysicscolorModel.dirty;
+        || PhysicscolorModel.dirty
+        // The Dispersion section's mode, model kind and typed coefficients.
+        || disp_section.dirty;
     property <bool> discard_confirm_open: false;
     // The fantasy mode's free color picker (spec 7), inline under the preset row.
     property <bool> fantasy_picker_open: false;
@@ -174,6 +208,8 @@ export component MaterialEditorDialog inherits Rectangle {
     // and the crystal classification; the physics state pushes them here as one proposal.
     property <int> prefill_serial: PhysicscolorModel.prefill_serial;
     changed prefill_serial => {
+        // The proposal is a refractive index and a dispersion number: the Simple mode.
+        disp_section.reset_to_simple();
         root.ri_val = PhysicscolorModel.prefill_ri;
         root.disp_val = PhysicscolorModel.prefill_dispersion;
         root.biref_val = PhysicscolorModel.prefill_birefringence;
@@ -181,6 +217,11 @@ export component MaterialEditorDialog inherits Rectangle {
         root.selected_crystal_system_idx = PhysicscolorModel.prefill_crystal_system_idx;
         root.selected_optical_character_idx = PhysicscolorModel.prefill_optical_character_idx;
         root.biaxial_delta_beta_alpha_val = PhysicscolorModel.prefill_biaxial_delta;
+    }
+    // Picking a template likewise proposes a refractive index and a dispersion number (the
+    // template selector assigns them itself): back to the Simple mode, so they take effect.
+    changed selected_template_idx => {
+        disp_section.reset_to_simple();
     }
     // The fantasy picker's fit selects the matching preset (or "Custom (keep)").
     property <int> fantasy_serial: PhysicscolorModel.fantasy_serial;
@@ -239,6 +280,13 @@ export component MaterialEditorDialog inherits Rectangle {
 
     property <bool> is_biaxial: root.selected_optical_character_idx >= 3;
 
+    // A setting that Simple mode hides is off its default: a birefringence, a crystal system or
+    // an optical character other than the Cubic / Isotropic the dialog opens with. (The
+    // coefficients mode is not counted: while it is in use it stays visible.)
+    property <bool> advanced_in_use: Math.abs(root.biref_val) > 0.0001
+        || root.selected_crystal_system_idx != 0
+        || root.selected_optical_character_idx != 0;
+
     // Physical validity of the character/birefringence combination: this dialog
     // REJECTS a contradictory combination by disabling Save rather than silently
     // deriving a sign or silently saving it.
@@ -286,6 +334,10 @@ export component MaterialEditorDialog inherits Rectangle {
     // save_gem_material`, so a typed SG is never silently dropped.
     callback save_material(string, float, float, float, int, int, int, float, float, bool);
     save_material(name, ri, disp, biref, color_idx, crystal_system_idx, optical_character_idx, biaxial_delta_beta_alpha, sg, apply) => {
+        // The Dispersion section's coefficient model ("" in the Simple mode) rides beside the
+        // call (`ViewportModel.save_custom_material` keeps its signature); Rust reads and clears
+        // it, and a model replaces `ri` and `disp` with its own n_d and n_F - n_C.
+        DispersionEditorModel.save_json = disp_section.model_json;
         ViewportModel.save_custom_material(
             name, ri, disp, biref, color_idx, crystal_system_idx, optical_character_idx, biaxial_delta_beta_alpha, sg, apply,
             PhysicscolorModel.mode_json
@@ -329,8 +381,9 @@ export component MaterialEditorDialog inherits Rectangle {
                 return accept;
             }
             // Ctrl-Z / Ctrl-Y (Ctrl-Shift-Z): the dialog's own recipe undo stack (50 entries),
-            // active only in Physics mode; the design's undo underneath is not reachable here.
-            if (event.modifiers.control || event.modifiers.meta) && PhysicscolorModel.active {
+            // active only while the physics section is shown; the design's undo underneath is
+            // not reachable here.
+            if (event.modifiers.control || event.modifiers.meta) && PhysicscolorModel.show_physics_section {
                 if event.text == "z" && !event.modifiers.shift {
                     PhysicscolorModel.undo();
                     return accept;
@@ -340,347 +393,331 @@ export component MaterialEditorDialog inherits Rectangle {
                     return accept;
                 }
             }
+            // Tab and Shift+Tab keep walking the controls.
+            if event.text == Key.Tab || event.text == Key.Backtab {
+                return reject;
+            }
             accept
         }
-    }
 
-    // Modal Card Container
-    Rectangle {
-        width: 440px;
-        // Content-driven height: without this, `Rectangle`'s default sizing ("expand to
-        // fill the parent" when width/height aren't both set explicitly) makes this card
-        // inherit the full-viewport backdrop's height -- i.e. it stretches to the bottom
-        // of the window instead of sizing to its content. Same idiom, and same reason, as
-        // `settings_dialog.slint` and `import_dialog.slint`. Capped at the backdrop's
-        // height less a 20px margin top and bottom; the body ScrollView takes the
-        // overflow so the header and the action buttons stay reachable.
-        height: min(content.preferred-height, root.height - 40px);
-        background: Theme.surface-dialog;
-        border-radius: Theme.radius-md;
-        border-width: 1px;
-        border-color: Theme.border-dialog;
-        drop-shadow-blur: 24px;
-        drop-shadow-color: Theme.modal-shadow;
-        clip: true;
+        // Modal Card Container
+        Rectangle {
+            width: 440px;
+            // Content-driven height: without this, `Rectangle`'s default sizing ("expand to
+            // fill the parent" when width/height aren't both set explicitly) makes this card
+            // inherit the full-viewport backdrop's height -- i.e. it stretches to the bottom
+            // of the window instead of sizing to its content. Same idiom, and same reason, as
+            // `settings_dialog.slint` and `import_dialog.slint`. Capped at the backdrop's
+            // height less a 20px margin top and bottom; the body ScrollView takes the
+            // overflow so the header and the action buttons stay reachable.
+            height: min(content.preferred-height, root.height - 40px);
+            background: Theme.surface-dialog;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border-dialog;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: Theme.modal-shadow;
+            clip: true;
 
-        // Isolate clicks inside modal
-        TouchArea {}
+            // Isolate clicks inside modal
+            TouchArea {}
 
-        content := VerticalLayout {
-            padding: 16px;
-            spacing: 14px;
+            content := VerticalLayout {
+                padding: 16px;
+                spacing: 14px;
 
-            // 1. Header Bar
-            HorizontalLayout {
-                alignment: space-between;
-
+                // 1. Header Bar
                 HorizontalLayout {
+                    alignment: space-between;
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Image { source: @image-url("../icons/gem.svg"); colorize: Theme.text-primary; width: 16px; height: 16px; vertical-alignment: center; }
+                        Text {
+                            text: "Gem Material Editor";
+                            font-size: 14px;
+                            font-weight: 700;
+                            color: Theme.text-primary;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        VerticalLayout {
+                            alignment: center;
+                            HelpButton { topic: HelpTopics.material-editor; hint: "Open the manual page on custom materials"; }
+                        }
+                        IconButton {
+                            icon: @image-url("../icons/close.svg");
+                            hint: "Close the material editor. It asks first if there are unsaved edits.";
+                            tint: Theme.text-muted;
+                            hover_fill: Theme.surface-control-hover;
+                            clicked => { root.request_close(); }
+                        }
+                    }
+                }
+
+                Rectangle { height: 1px; background: Theme.surface-raised; }
+
+                // Scrollable body between the fixed header and the fixed action
+                // buttons: the card's `height` is capped at the backdrop's, and whatever
+                // does not fit scrolls here so Save / Cancel / Delete stay reachable on
+                // a short viewport. `preferred-height` is stated from the inner layout so
+                // the card still sizes to its content when there is room.
+                body := ScrollView {
+                    vertical-stretch: 1;
+                    content-width: self.visible-width;
+                    preferred-height: body_col.preferred-height;
+
+                    body_col := VerticalLayout {
+                        spacing: 14px;
+                        padding-right: 12px;
+
+                // 2. Base Template Selector & Name Input -- see
+                // `MaterialTemplateSelector`'s own doc comment
+                // (`material_editor/template_selector.slint`) for why this is split
+                // out.
+                MaterialTemplateSelector {
+                    base_templates: root.base_templates;
+                    selected_template_idx <=> root.selected_template_idx;
+                    mat_name <=> root.mat_name;
+                    ri_val <=> root.ri_val;
+                    disp_val <=> root.disp_val;
+                    biref_val <=> root.biref_val;
+                    selected_color_preset <=> root.selected_color_preset;
+                    selected_crystal_system_idx <=> root.selected_crystal_system_idx;
+                    selected_optical_character_idx <=> root.selected_optical_character_idx;
+                    biaxial_delta_beta_alpha_val <=> root.biaxial_delta_beta_alpha_val;
+                }
+
+                // 3/4/SG/5. Refractive Index, Dispersion, Specific Gravity and
+                // Birefringence sliders -- see `MaterialOpticsSliders`'s own doc
+                // comment (`material_editor/optics_sliders.slint`) for why this is
+                // split out.
+                // 3a. The refractive-index curve: the sliders below (Simple) or Sellmeier/Cauchy
+                // coefficients with a live readout and plot -- see `MaterialDispersionCoefficients`'s
+                // own doc comment (`material_editor/dispersion_coefficients.slint`). Its Simple
+                // mode shares `ri_val` / `disp_val` with the sliders; its Coefficients mode hides
+                // those two sliders.
+                disp_section := MaterialDispersionCoefficients {
+                    ri_val <=> root.ri_val;
+                    disp_val <=> root.disp_val;
+                }
+
+                MaterialOpticsSliders {
+                    ri_val <=> root.ri_val;
+                    disp_val <=> root.disp_val;
+                    sg_val <=> root.sg_val;
+                    biref_val <=> root.biref_val;
+                    show_dispersion_sliders: disp_section.mode == 0;
+                }
+
+                // 5b. Crystal Classification, biaxial n-beta-n-alpha, and the
+                // optics-validity/built-in-collision warnings -- see
+                // `MaterialCrystalClassification`'s own doc comment
+                // (`material_editor/crystal_classification.slint`) for why this is
+                // split out.
+                MaterialCrystalClassification {
+                    selected_crystal_system_idx <=> root.selected_crystal_system_idx;
+                    selected_optical_character_idx <=> root.selected_optical_character_idx;
+                    biaxial_delta_beta_alpha_val <=> root.biaxial_delta_beta_alpha_val;
+                    biref_val: root.biref_val;
+                    is_biaxial: root.is_biaxial;
+                    optics_valid: root.optics_valid;
+                    optics_validation_message: root.optics_validation_message;
+                    name_collides_with_builtin: root.name_collides_with_builtin;
+                    mat_name: root.mat_name;
+                    locked_by_host: PhysicscolorModel.optics_locked;
+                }
+
+                // Simple mode hides the birefringence, crystal system and optical character; say
+                // so when one of them holds something other than the default.
+                if !GuideModel.shows_advanced() && root.advanced_in_use: AdvancedNote {}
+
+                // 6. Color area. Fantasy (the nine presets or a free pick, fitted to the three
+                // legacy bands) or Physics (host + elements, see `ChromophorePicker`). Switching
+                // keeps BOTH payloads: the recipe survives a trip through Fantasy and a saved
+                // fantasy color survives a trip through Physics.
+                // The physics editor is a cargo feature (`physical-color`). Without it the toggle and
+                // the recipe section are not shown and the Fantasy controls are always shown, even
+                // over a stored physics recipe (a note says so); which of the four views applies is
+                // decided in Rust (`gui::optics::physics_state::color_section_view`).
+                VerticalLayout {
                     spacing: 8px;
-                    Image { source: @image-url("../icons/gem.svg"); colorize: Theme.text-primary; width: 16px; height: 16px; vertical-alignment: center; }
-                    Text {
-                        text: "Gem Material Editor";
-                        font-size: 14px;
-                        font-weight: 700;
-                        color: Theme.text-primary;
-                        vertical-alignment: center;
-                    }
-                }
-
-                Rectangle {
-                    width: 24px;
-                    height: 24px;
-                    border-radius: Theme.radius-sm;
-                    background: close_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
-
-                    close_touch := TouchArea {
-                        clicked => { root.request_close(); }
-                    }
-
-                    Image {
-                        source: @image-url("../icons/close.svg");
-                        colorize: Theme.text-muted;
-                        width: 12px;
-                        height: 12px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-
-            Rectangle { height: 1px; background: Theme.surface-raised; }
-
-            // Scrollable body between the fixed header and the fixed action
-            // buttons: the card's `height` is capped at the backdrop's, and whatever
-            // does not fit scrolls here so Save / Cancel / Delete stay reachable on
-            // a short viewport. `preferred-height` is stated from the inner layout so
-            // the card still sizes to its content when there is room.
-            body := ScrollView {
-                vertical-stretch: 1;
-                content-width: self.visible-width;
-                preferred-height: body_col.preferred-height;
-
-                body_col := VerticalLayout {
-                    spacing: 14px;
-                    padding-right: 12px;
-
-            // 2. Base Template Selector & Name Input -- see
-            // `MaterialTemplateSelector`'s own doc comment
-            // (`material_editor/template_selector.slint`) for why this is split
-            // out.
-            MaterialTemplateSelector {
-                base_templates: root.base_templates;
-                selected_template_idx <=> root.selected_template_idx;
-                mat_name <=> root.mat_name;
-                ri_val <=> root.ri_val;
-                disp_val <=> root.disp_val;
-                biref_val <=> root.biref_val;
-                selected_color_preset <=> root.selected_color_preset;
-                selected_crystal_system_idx <=> root.selected_crystal_system_idx;
-                selected_optical_character_idx <=> root.selected_optical_character_idx;
-                biaxial_delta_beta_alpha_val <=> root.biaxial_delta_beta_alpha_val;
-            }
-
-            // 3/4/SG/5. Refractive Index, Dispersion, Specific Gravity and
-            // Birefringence sliders -- see `MaterialOpticsSliders`'s own doc
-            // comment (`material_editor/optics_sliders.slint`) for why this is
-            // split out.
-            MaterialOpticsSliders {
-                ri_val <=> root.ri_val;
-                disp_val <=> root.disp_val;
-                sg_val <=> root.sg_val;
-                biref_val <=> root.biref_val;
-            }
-
-            // 5b. Crystal Classification, biaxial n-beta-n-alpha, and the
-            // optics-validity/built-in-collision warnings -- see
-            // `MaterialCrystalClassification`'s own doc comment
-            // (`material_editor/crystal_classification.slint`) for why this is
-            // split out.
-            MaterialCrystalClassification {
-                selected_crystal_system_idx <=> root.selected_crystal_system_idx;
-                selected_optical_character_idx <=> root.selected_optical_character_idx;
-                biaxial_delta_beta_alpha_val <=> root.biaxial_delta_beta_alpha_val;
-                biref_val: root.biref_val;
-                is_biaxial: root.is_biaxial;
-                optics_valid: root.optics_valid;
-                optics_validation_message: root.optics_validation_message;
-                name_collides_with_builtin: root.name_collides_with_builtin;
-                mat_name: root.mat_name;
-                locked_by_host: PhysicscolorModel.optics_locked;
-            }
-
-            // 6. color Mode Selector & Controls: Fantasy (the nine presets or a free pick,
-            // fitted to the three legacy bands) or Physics (host + elements, see
-            // `ChromophorePicker`). Switching keeps BOTH payloads: the recipe survives a trip
-            // through Fantasy and a saved fantasy color survives a trip through Physics.
-            VerticalLayout {
-                spacing: 8px;
-                HorizontalLayout {
-                    spacing: 10px;
-                    alignment: start;
-                    Text {
-                        text: "color Mode:";
-                        font-size: 11px;
-                        font-weight: 600;
-                        color: Theme.text-secondary;
-                        vertical-alignment: center;
-                    }
-                    Rectangle {
-                        width: 70px;
-                        height: 22px;
-                        border-radius: Theme.radius-sm;
-                        background: !PhysicscolorModel.active ? Theme.surface-raised : Theme.surface-sunken;
-                        border-width: 1px;
-                        border-color: !PhysicscolorModel.active ? Theme.accent-cyan : Theme.border-dialog;
-                        TouchArea {
-                            clicked => {
+                    if PhysicscolorModel.show_mode_toggle : HorizontalLayout {
+                        spacing: 10px;
+                        alignment: start;
+                        Text {
+                            text: "Color Mode:";
+                            font-size: 11px;
+                            font-weight: 600;
+                            color: Theme.text-secondary;
+                            vertical-alignment: center;
+                            accessible-role: AccessibleRole.text;
+                        }
+                        SegmentPill {
+                            width: 76px;
+                            text: "Fantasy";
+                            hint: "Pick the body colour from the swatches or any colour you like. The program finds the closest colour the model can show.";
+                            selected: !PhysicscolorModel.active;
+                            picked => {
                                 // Physics -> Fantasy returns the preset to show (a recipe-seeded
                                 // fantasy color is "Custom (keep)").
                                 root.selected_color_preset = PhysicscolorModel.set_mode(false, root.selected_color_preset);
                             }
                         }
-                        Text {
-                            text: "Fantasy";
-                            font-size: 10px;
-                            font-weight: 600;
-                            color: !PhysicscolorModel.active ? Theme.accent-cyan : Theme.text-secondary;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
-                    Rectangle {
-                        width: 70px;
-                        height: 22px;
-                        border-radius: Theme.radius-sm;
-                        background: PhysicscolorModel.active ? Theme.surface-raised : Theme.surface-sunken;
-                        border-width: 1px;
-                        border-color: PhysicscolorModel.active ? Theme.accent-cyan : Theme.border-dialog;
-                        TouchArea {
-                            clicked => {
+                        SegmentPill {
+                            width: 76px;
+                            text: "Physics";
+                            hint: "Build the colour from a host crystal and the elements that colour it, as in the real stone.";
+                            selected: PhysicscolorModel.active;
+                            picked => {
                                 // The first switch solves the current fantasy color into the
                                 // host on the solver worker (never on this thread).
                                 root.selected_color_preset = PhysicscolorModel.set_mode(true, root.selected_color_preset);
                             }
                         }
-                        Text {
-                            text: "Physics";
-                            font-size: 10px;
-                            font-weight: 600;
-                            color: PhysicscolorModel.active ? Theme.accent-cyan : Theme.text-secondary;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
                     }
-                }
 
-                if !PhysicscolorModel.active : VerticalLayout {
-                    spacing: 6px;
-                    MaterialColorPresets {
-                        selected_color_preset <=> root.selected_color_preset;
-                    }
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: start;
-                        Rectangle {
-                            width: 100px;
-                            height: 26px;
+                    if PhysicscolorModel.show_fantasy_section : VerticalLayout {
+                        spacing: 6px;
+                        // Physics editor not in this build, but the material's color is a physics
+                        // recipe: say so, and say what picking a color does.
+                        if PhysicscolorModel.show_recipe_note : Rectangle {
                             border-radius: Theme.radius-sm;
-                            background: fantasy_pick_touch.has-hover ? Theme.accent-cyan : Theme.surface-raised;
-                            border-width: 1px;
-                            border-color: Theme.border-dialog;
-                            fantasy_pick_touch := TouchArea { clicked => { root.fantasy_picker_open = !root.fantasy_picker_open; } }
-                            Text {
-                                text: "Pick\u{2026}";
+                            background: Theme.surface-info;
+                            height: recipe_note.preferred-height + 12px;
+                            recipe_note := Text {
+                                x: 8px;
+                                width: parent.width - 16px;
+                                y: 6px;
+                                text: "This material's color comes from a physics recipe made in another build. Picking a color here replaces it with a fixed color; the recipe stays saved with the material."
+                                    + (PhysicscolorModel.optics_locked ? " Crystal system and optical character stay locked until you pick a color." : "");
                                 font-size: 10px;
-                                font-weight: 600;
-                                color: fantasy_pick_touch.has-hover ? Theme.text-on-accent : Theme.text-primary;
-                                horizontal-alignment: center;
+                                color: Theme.text-primary;
+                                wrap: word-wrap;
+                            }
+                        }
+                        MaterialColorPresets {
+                            selected_color_preset <=> root.selected_color_preset;
+                            show_selection: !PhysicscolorModel.show_recipe_note;
+                            // Replaces a physics recipe's color when the editor is hidden; otherwise
+                            // hands the same swatch back.
+                            chosen(index) => {
+                                root.selected_color_preset = PhysicscolorModel.color_preset_chosen(index);
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            ActionButton {
+                                width: 100px;
+                                height: 26px;
+                                text: "Pick\u{2026}";
+                                hint: "Open the colour editor: choose the tone, saturation and hue of the body colour for a stone of this size. Saving keeps the full colour, not just the closest swatch.";
+                                fill: Theme.surface-raised;
+                                hover_fill: Theme.surface-control-hover;
+                                font_size: 10px;
+                                clicked => {
+                                    root.fantasy_picker_open = !root.fantasy_picker_open;
+                                    if root.fantasy_picker_open {
+                                        BodyColorEditorModel.target = 1;
+                                        BodyColorEditorModel.open_requested();
+                                    }
+                                }
+                            }
+                            Text {
+                                text: "Tone, saturation and hue; the colour deepens in a larger stone.";
+                                font-size: 9px;
+                                color: Theme.text-muted;
                                 vertical-alignment: center;
                             }
                         }
-                        Text {
-                            text: "closest reachable with three bands";
-                            font-size: 9px;
-                            color: Theme.text-muted;
-                            vertical-alignment: center;
+                        if root.fantasy_picker_open : LchEditor {
+                            apply_hint: "Use this colour for the material. Save the material to keep it.";
+                            applied => { root.fantasy_picker_open = false; }
+                            cancelled => { root.fantasy_picker_open = false; }
                         }
                     }
-                    if root.fantasy_picker_open : colorPicker {
-                        apply_label: "Apply";
-                        applied(c) => {
-                            root.fantasy_picker_open = false;
-                            PhysicscolorModel.fantasy_pick(c);
-                        }
-                        cancelled => { root.fantasy_picker_open = false; }
+
+                    if PhysicscolorModel.show_physics_section : ChromophorePicker {
                     }
                 }
+                    } // end body_col
+                } // end body := ScrollView
 
-                if PhysicscolorModel.active : ChromophorePicker {
-                }
-            }
-                } // end body_col
-            } // end body := ScrollView
+                Rectangle { height: 1px; background: Theme.surface-raised; }
 
-            Rectangle { height: 1px; background: Theme.surface-raised; }
+                // 7. Action Buttons Bar
+                HorizontalLayout {
+                    spacing: 8px;
 
-            // 7. Action Buttons Bar
-            HorizontalLayout {
-                spacing: 8px;
-
-                // Delete Button -- opens the confirmation overlay below rather than
-                // deleting immediately (see `confirm_delete_open`'s own doc comment).
-                Rectangle {
-                    width: 70px;
-                    height: 32px;
-                    border-radius: Theme.radius-sm;
-                    background: root.name_is_existing_custom ? (del_touch.has-hover ? Theme.danger-surface-hover : Theme.danger-surface) : Theme.danger-surface;
-                    opacity: root.name_is_existing_custom ? 1.0 : 0.5;
-                    border-width: 1px;
-                    border-color: Theme.danger-border;
-
-                    // Only enabled for a name that actually names an existing
-                    // custom material -- see `name_is_existing_custom`'s own doc
-                    // comment.
-                    del_touch := TouchArea {
+                    // Delete Button -- opens the confirmation overlay below rather than
+                    // deleting immediately (see `confirm_delete_open`'s own doc comment). Only
+                    // enabled for a name that actually names an existing custom material --
+                    // see `name_is_existing_custom`'s own doc comment.
+                    ActionButton {
+                        width: 84px;
+                        height: 32px;
+                        text: "Delete";
+                        hint: root.name_is_existing_custom ? "Delete this custom material for good. You are asked to confirm first." : "Only a saved custom material can be deleted. This name is not one.";
+                        icon: @image-url("../icons/trash.svg");
+                        fill: Theme.danger-surface;
+                        hover_fill: Theme.danger-surface-hover;
+                        ink: Theme.danger;
+                        edge: Theme.danger-border;
                         enabled: root.name_is_existing_custom;
                         clicked => { root.confirm_delete_open = true; }
                     }
 
-                    HorizontalLayout {
-                        alignment: center;
-                        spacing: 5px;
-                        Image { source: @image-url("../icons/trash.svg"); colorize: Theme.danger; width: 11px; height: 11px; vertical-alignment: center; }
-                        Text { text: "Delete"; font-size: 11px; font-weight: 600; color: Theme.danger; vertical-alignment: center; }
-                    }
-                }
-
-                // Cancel Button
-                Rectangle {
-                    width: 70px;
-                    height: 32px;
-                    border-radius: Theme.radius-sm;
-                    background: cancel_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken;
-                    border-width: 1px;
-                    border-color: Theme.border-dialog;
-
-                    cancel_touch := TouchArea {
+                    // Cancel Button
+                    ActionButton {
+                        width: 76px;
+                        height: 32px;
+                        text: "Cancel";
+                        hint: "Close the editor. It asks first if there are unsaved edits.";
+                        ink: Theme.text-secondary;
                         clicked => { root.request_close(); }
                     }
 
-                    Text { text: "Cancel"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                }
-
-                // Save Button: saves/overwrites the custom material in the
-                // database and the in-memory material list WITHOUT touching the live
-                // render's selected material -- lets a cutter prepare several custom
-                // materials in a row without re-rendering the viewport with each one.
-                // Disabled (and visibly dimmed) while `!root.can_save`: either a
-                // contradictory optical-character/birefringence combination (see
-                // `optics_valid`'s own doc comment) or a blank name.
-                Rectangle {
-                    horizontal-stretch: 1;
-                    height: 32px;
-                    border-radius: Theme.radius-sm;
-                    background: root.can_save ? (save_only_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken) : Theme.surface-sunken;
-                    opacity: root.can_save ? 1.0 : 0.6;
-                    border-width: 1px;
-                    border-color: Theme.border-dialog;
-
-                    save_only_touch := TouchArea {
+                    // Save Button: saves/overwrites the custom material in the
+                    // database and the in-memory material list WITHOUT touching the live
+                    // render's selected material -- lets a cutter prepare several custom
+                    // materials in a row without re-rendering the viewport with each one.
+                    // Disabled (and visibly dimmed) while `!root.can_save`: either a
+                    // contradictory optical-character/birefringence combination (see
+                    // `optics_valid`'s own doc comment) or a blank name.
+                    ActionButton {
+                        horizontal-stretch: 1;
+                        height: 32px;
+                        text: "Save";
+                        hint: root.can_save ? "Save this material without changing the material in the live render." : root.save_blocked_reason;
+                        font_size: 12px;
+                        weight: 700;
                         enabled: root.can_save;
                         clicked => { root.request_save(false); }
                     }
 
-                    Text { text: "Save"; font-size: 12px; font-weight: 700; color: root.can_save ? Theme.text-primary : Theme.text-muted; horizontal-alignment: center; vertical-alignment: center; }
-                }
-
-                // Save & Apply Button: saves, then also switches the live render's
-                // material (see `save_material`'s own doc comment above). Same
-                // enablement rule as the plain Save button.
-                Rectangle {
-                    horizontal-stretch: 1;
-                    height: 32px;
-                    border-radius: Theme.radius-sm;
-                    background: root.can_save ? (save_apply_touch.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan) : Theme.surface-disabled;
-                    opacity: root.can_save ? 1.0 : 0.6;
-
-                    save_apply_touch := TouchArea {
+                    // Save & Apply Button: saves, then also switches the live render's
+                    // material (see `save_material`'s own doc comment above). Same
+                    // enablement rule as the plain Save button. Routed through
+                    // `request_save`, which interposes an "Overwrite?" confirmation when
+                    // `mat_name` already names an existing custom material.
+                    ActionButton {
+                        horizontal-stretch: 1;
+                        height: 32px;
+                        text: "Save & Apply";
+                        hint: root.can_save ? "Save this material and use it in the live render." : root.save_blocked_reason;
+                        icon: @image-url("../icons/check.svg");
+                        fill: Theme.accent-cyan;
+                        hover_fill: Theme.accent-cyan-hover;
+                        ink: Theme.text-on-accent;
+                        edge: Theme.accent-cyan;
+                        font_size: 12px;
+                        weight: 700;
                         enabled: root.can_save;
-                        // `save_material`'s own handler (above) already sets
-                        // `ViewportModel.material_editor_open = false`, so a second
-                        // `root.close()` here would be redundant -- both write the
-                        // same property to the same value. Routed through
-                        // `request_save`, which interposes an "Overwrite?"
-                        // confirmation when `mat_name` already names an existing
-                        // custom material.
                         clicked => { root.request_save(true); }
-                    }
-
-                    HorizontalLayout {
-                        alignment: center;
-                        spacing: 6px;
-                        Image { source: @image-url("../icons/check.svg"); colorize: root.can_save ? Theme.text-on-accent : Theme.text-muted; width: 12px; height: 12px; vertical-alignment: center; }
-                        Text { text: "Save & Apply"; font-size: 12px; font-weight: 700; color: root.can_save ? Theme.text-on-accent : Theme.text-muted; vertical-alignment: center; }
                     }
                 }
             }
@@ -696,6 +733,7 @@ export component MaterialEditorDialog inherits Rectangle {
             + "\"? This cannot be undone. Any design currently selecting it will fall back to a built-in material of the same name, or Diamond.";
         primary_label: "Delete";
         secondary_label: "";
+        primary_hint: "Delete the custom material for good.";
         primary => {
             // `delete_material`'s own handler (above) already sets
             // `ViewportModel.material_editor_open = false` -- see the matching
@@ -716,6 +754,7 @@ export component MaterialEditorDialog inherits Rectangle {
             + "\" already exists. Overwrite it with these values? Any design currently using it will pick up the change.";
         primary_label: "Overwrite";
         secondary_label: "";
+        primary_hint: "Replace the saved material with these values.";
         primary => {
             root.confirm_overwrite_open = false;
             root.save_material(
@@ -739,6 +778,7 @@ export component MaterialEditorDialog inherits Rectangle {
         message: "This custom material has unsaved edits. Discard them?";
         primary_label: "";
         secondary_label: "Discard";
+        secondary_hint: "Close the editor and throw the edits away.";
         cancel => { root.discard_confirm_open = false; }
         secondary => {
             root.discard_confirm_open = false;

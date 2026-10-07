@@ -45,6 +45,11 @@ export global RemoteWorkerModel {
     // `claimed_cert_dir` above already uses.
     in property <string> picked_cert_dir: "";
 
+    // Whether a setting that Simple mode hides is off its default: live-stream mode index,
+    // cadence in ms, preview-scale index and percent, export-transfer index and batch lanes,
+    // in that order (`gui::remote::advanced_in_use`, which holds the rule and its tests).
+    pure callback advanced_in_use(int, int, int, int, int, int) -> bool;
+
     callback pick_cert_dir(string);
     callback denoise_toggled(bool);
     callback remote_batch_lanes_changed(int);

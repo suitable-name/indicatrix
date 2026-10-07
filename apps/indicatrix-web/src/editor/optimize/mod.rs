@@ -96,6 +96,7 @@ fn build_params(
         &model.get_weight_extinction(),
         &model.get_weight_tilt_brilliance(),
         model.get_weight_yield(),
+        0.0, // the web Optimize tab has no tone slider
     )?;
     Ok(OptimizeParams {
         windowing: weights.windowing,
@@ -108,6 +109,7 @@ fn build_params(
         only_tiers: (model.get_only_selected() && !multi_selected.is_empty())
             .then(|| multi_selected.iter().map(|&i| i as u32).collect()),
         lighting_preset_index,
+        starts: 1,
     })
 }
 
@@ -123,6 +125,7 @@ pub fn params_or_default(ui: &AppWindow) -> OptimizeParams {
         &model.get_weight_extinction(),
         &model.get_weight_tilt_brilliance(),
         model.get_weight_yield(),
+        0.0, // the web Optimize tab has no tone slider
     )
     .map_or_else(
         |_| OptimizeParams {

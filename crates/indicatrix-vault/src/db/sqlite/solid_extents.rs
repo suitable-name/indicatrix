@@ -432,21 +432,25 @@ mod tests {
     }
 
     #[test]
-    fn a_version_two_row_with_a_convex_volume_is_re_measured_under_version_three() {
-        // Version 2 cached the convex volume; version 3 caches the concave-carved one,
-        // so such a row must read as missing and be measured again.
-        assert_eq!(SOLID_EXTENTS_VERSION, 3);
+    fn rows_of_the_flat_measuring_rules_are_re_measured_under_version_four() {
+        // Version 2 cached the convex volume, version 3 the carved volume with the flat
+        // extents; version 4 caches the carved stone's hull extents. Each must read as
+        // missing and be measured again.
+        assert_eq!(SOLID_EXTENTS_VERSION, 4);
         let (db, path) = temp_db();
         let a = add_entry(&db, "a");
-        db.save_solid_extents(a, Some(sample(1.0)), SolidExtentsSource::DesignFile, 1)
-            .unwrap();
-        db.conn
-            .execute(
-                "UPDATE diagram_solid_extents SET extents_version = 2 WHERE entry_id = ?1",
-                params![a],
-            )
-            .unwrap();
-        assert!(!db.solid_extents_for(&[a]).unwrap().contains_key(&a));
+        for old in [2, 3] {
+            db.save_solid_extents(a, Some(sample(1.0)), SolidExtentsSource::DesignFile, 1)
+                .unwrap();
+            assert!(db.solid_extents_for(&[a]).unwrap().contains_key(&a));
+            db.conn
+                .execute(
+                    "UPDATE diagram_solid_extents SET extents_version = ?1 WHERE entry_id = ?2",
+                    params![old, a],
+                )
+                .unwrap();
+            assert!(!db.solid_extents_for(&[a]).unwrap().contains_key(&a));
+        }
         cleanup(db, &path);
     }
 

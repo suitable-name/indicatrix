@@ -57,6 +57,10 @@
 //! view through the stone.
 //!
 //! The profile panel has no index wheel (a side elevation has no azimuth to mark).
+//!
+//! The profile looks from world `+Z` towards `-Z`. [`render_diagram_end_view`] adds the
+//! second side view, from world `-X` towards `+X`, as a separate function (the stone turned
+//! a quarter turn about `+Y`, drawn as a profile panel) so [`PanelKind`] stays as it is.
 
 use super::raster::simplify_ring;
 use indicatrix::geometry::meet_solver::Block;
@@ -69,7 +73,8 @@ mod render;
 #[cfg(test)]
 mod tests;
 
-pub use render::{render_diagram, render_diagram_single_panel};
+pub use layout::{PanelLayout, project_point};
+pub use render::{render_diagram, render_diagram_end_view, render_diagram_single_panel};
 // `raster.rs`'s orientation-marker/facet-label overlay shares this module's one
 // bitmap font rather than carrying a second copy -- see `labels`'s own doc
 // comment.
@@ -139,6 +144,63 @@ impl PanelKind {
             Self::Profile => "PROFILE",
         }
     }
+
+    /// Whether a facet with outward unit `normal` is drawn on this panel -- the same
+    /// predicate the renderer fills with ([`layout::crown_visible`],
+    /// [`layout::pavilion_visible`], [`layout::profile_visible`]).
+    ///
+    /// A facet can be visible on the profile panel as well as on a crown or pavilion
+    /// panel. A concave tool piece has one more test the renderer applies (its
+    /// block), which a flat facet's normal does not need.
+    #[must_use]
+    pub fn shows(self, normal: glam::Vec3) -> bool {
+        match self {
+            Self::Crown => layout::crown_visible(normal),
+            Self::Pavilion => layout::pavilion_visible(normal),
+            Self::Profile => layout::profile_visible(normal),
+        }
+    }
+}
+
+/// Where every panel of one diagram frame sits in the frame's pixel space, plus the
+/// index wheel the crown and pavilion panels draw.
+///
+/// Carried out of [`render_diagram`] / [`render_diagram_single_panel`] on
+/// [`DiagramFrame::layout`], and from there through the preview frame, so an app can
+/// hit-test the panels and place drag handles on the pixels that were drawn. The
+/// diagram refits its scale on every replan, so a caller that starts a drag must
+/// freeze the numbers it needs at press time.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DiagramLayout {
+    /// The drawn panels: three in the ordinary layout (crown, pavilion, profile), one
+    /// in the enlarged-panel layout. Empty for a zero-sized frame.
+    pub panels: Vec<PanelLayout>,
+    /// `true` when one panel fills the whole frame ([`render_diagram_single_panel`]).
+    pub enlarged: bool,
+    /// The index wheel's tooth count the frame was drawn with (never `0`).
+    pub gear_teeth: u32,
+    /// The index wheel's reference angle exactly as the schedule stores it (an offset in
+    /// index units, not degrees); a facet's azimuth is `2 pi (index + reference) / teeth`.
+    pub gear_reference_angle: f32,
+}
+
+impl DiagramLayout {
+    /// The layout of `kind`'s panel, `None` when this frame did not draw it (an
+    /// enlarged frame draws one panel only).
+    #[must_use]
+    pub fn panel(&self, kind: PanelKind) -> Option<&PanelLayout> {
+        self.panels.iter().find(|panel| panel.kind == kind)
+    }
+
+    /// The panel whose clip rectangle contains pixel `(x, y)`, `None` outside every
+    /// panel. Panels never overlap, so the answer is unique.
+    #[must_use]
+    pub fn panel_at(&self, x: f32, y: f32) -> Option<&PanelLayout> {
+        self.panels.iter().find(|panel| {
+            let (left, top, right, bottom) = panel.clip;
+            x >= left as f32 && x < (right + 1) as f32 && y >= top as f32 && y < (bottom + 1) as f32
+        })
+    }
 }
 
 /// What [`render_diagram`] needs beyond the mesh: the frame size and the index
@@ -200,6 +262,9 @@ pub struct DiagramStyle {
     /// Matches `raster::SolidStyle::multi_selected_color` -- see that field's doc
     /// comment.
     pub multi_selected_color: [u8; 3],
+    /// Matches `raster::SolidStyle::moved_color` -- the outline of every facet in
+    /// [`Self::moved`].
+    pub moved_color: [u8; 3],
     /// Background clear color (RGBA8).
     pub background: [u8; 4],
     /// Per-facet flag, indexed by facet id: facet is flagged by the critical-angle overlay.
@@ -217,6 +282,11 @@ pub struct DiagramStyle {
     pub selected_facet: Option<u32>,
     /// Matches `raster::SolidStyle::multi_selected` -- see that field's doc comment.
     pub multi_selected: Vec<u32>,
+    /// Matches `raster::SolidStyle::moved` -- every facet id of a tier whose mast
+    /// moved during the drag in progress. Outlined in [`Self::moved_color`] below
+    /// every selection colour, so a selected facet keeps its own outline on a shared
+    /// edge.
+    pub moved: Vec<u32>,
     /// Facet id -> index-wheel tooth (`facet_map::FacetMap::index_on_gear`), for
     /// the radial-line pass: whenever a facet on a crown/pavilion panel is
     /// selected/hovered/multi-selected, a line is drawn from the panel centre
@@ -265,6 +335,7 @@ impl Default for DiagramStyle {
             hover_color: [226, 232, 240],
             selected_facet_color: [168, 85, 247],
             multi_selected_color: [56, 189, 248],
+            moved_color: [251, 146, 60],
             background: [12, 14, 20, 255],
             flagged: Vec::new(),
             pending: Vec::new(),
@@ -273,6 +344,7 @@ impl Default for DiagramStyle {
             hovered: None,
             selected_facet: None,
             multi_selected: Vec::new(),
+            moved: Vec::new(),
             facet_index_on_gear: Vec::new(),
             meet_marker_pairs: Vec::new(),
             meet_marker_color: [250, 250, 250],
@@ -315,6 +387,8 @@ pub struct DiagramFrame {
     /// bit-for-bit the same convention `PickBuffer::facet_at` already reads, so
     /// this buffer is threaded through as one without a second accessor type.
     pub tooth: Vec<u32>,
+    /// Where each drawn panel sits in this frame's pixels -- see [`DiagramLayout`].
+    pub layout: DiagramLayout,
     /// View-space depth of the closest fill written to each pixel so far, within
     /// that pixel's own panel (panels never share a clip rect, so cross-panel
     /// depth comparisons never happen even though the depth CONVENTION differs
@@ -338,6 +412,7 @@ impl DiagramFrame {
             pick: vec![0u32; n],
             panel: vec![0u8; n],
             tooth: vec![0u32; n],
+            layout: DiagramLayout::default(),
             depth: vec![f32::INFINITY; n],
         }
     }

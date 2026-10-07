@@ -8,16 +8,19 @@
 //! decide how much to refresh. The desktop's tier-list callbacks and the web app's tier
 //! table both call these, so the two edit identically.
 
-use super::{EditChange, EditorSession};
+use super::{EditChange, EditorSession, relations::linked_rung_relation};
 use crate::{
     loading::{
         naming::{series_names, unique_mirror_name},
-        parse_angle_only, parse_index_list, parse_step_series_form, unique_duplicate_name,
+        parse_angle_only_with_names, parse_index_list, parse_step_series_form,
+        unique_duplicate_name,
     },
     manipulate::{dependents::clear_dependant_edits, tiers_meeting},
 };
 use indicatrix_cut_core::{ConstraintTier, Edit, EditError};
 use std::{collections::BTreeSet, fmt};
+
+mod concave;
 
 #[cfg(test)]
 mod tests;
@@ -158,6 +161,18 @@ pub enum InlineAngle {
     NoChange,
     /// The angle was changed.
     Applied(EditChange),
+}
+
+/// One `Edit::AddTier` per tier, appended in order from `start_index`.
+fn add_tier_edits(tiers: Vec<ConstraintTier>, start_index: usize) -> Vec<Edit> {
+    tiers
+        .into_iter()
+        .enumerate()
+        .map(|(offset, tier)| Edit::AddTier {
+            index: start_index + offset,
+            tier,
+        })
+        .collect()
 }
 
 /// The selection after tier `removed` was removed (every later tier shifted down by
@@ -373,6 +388,8 @@ impl EditorSession {
             return Err(self.has_dependants("the selected tiers".to_string(), dependants));
         }
         let mut last_err = None;
+        // One command of several edits: the relations they free add up in one notice.
+        self.begin_relation_notice_command();
         for index in targets {
             let outcome = if cascade {
                 self.remove_tier_with(index, true).map(|_| ())
@@ -385,6 +402,7 @@ impl EditorSession {
                 last_err = Some(e);
             }
         }
+        self.end_relation_notice_command();
         last_err.map_or(Ok(removed), Err)
     }
 
@@ -520,6 +538,88 @@ impl EditorSession {
         indices_text: &str,
         anchor_text: &str,
     ) -> Result<GeneratedSeries, String> {
+        let (tiers, _, _) = self.step_series_tiers(
+            name_prefix,
+            start_angle_text,
+            angle_step_text,
+            count,
+            indices_text,
+            anchor_text,
+        )?;
+        let start_index = self.design.tiers.len();
+        let edits = add_tier_edits(tiers, start_index);
+        let added = edits.len();
+        let change = self.apply(Edit::Batch(edits)).map_err(|e| e.to_string())?;
+        Ok(GeneratedSeries {
+            change,
+            start_index,
+            added,
+        })
+    }
+
+    /// [`Self::generate_step_series`] with the ladder LINKED: every tier after the
+    /// first gets the relation "first tier's angle plus its own number of steps" (a
+    /// step of 2 degrees on `P1` makes `P2 = P1 + 2`, `P3 = P1 + 4`, ...), added in the
+    /// same undo step, so moving the first tier moves the whole ladder. The parameters,
+    /// naming and errors are those of [`Self::generate_step_series`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::generate_step_series`]; also the relation error's text when a rung
+    /// would not be a facet angle.
+    pub fn generate_step_series_linked(
+        &mut self,
+        name_prefix: &str,
+        start_angle_text: &str,
+        angle_step_text: &str,
+        count: i32,
+        indices_text: &str,
+        anchor_text: &str,
+    ) -> Result<GeneratedSeries, String> {
+        let (tiers, start_angle, angle_step) = self.step_series_tiers(
+            name_prefix,
+            start_angle_text,
+            angle_step_text,
+            count,
+            indices_text,
+            anchor_text,
+        )?;
+        let start_index = self.design.tiers.len();
+        let first_id = self.design.peek_next_tier_id();
+        // A pavilion ladder (negative angles) steps away from the girdle with a
+        // negative step, which is a positive step in magnitude.
+        let side = if start_angle.is_sign_negative() {
+            -1.0
+        } else {
+            1.0
+        };
+        let mut edits = add_tier_edits(tiers, start_index);
+        let added = edits.len();
+        edits.extend((1..added).map(|rung| Edit::SetTierRelation {
+            index: start_index + rung,
+            relation: Some(linked_rung_relation(first_id, rung, angle_step, side)),
+        }));
+        let change = self
+            .try_apply(Edit::Batch(edits))
+            .map_err(|e| e.to_string())?;
+        Ok(GeneratedSeries {
+            change,
+            start_index,
+            added,
+        })
+    }
+
+    /// The Generate steps form turned into the ladder's tiers, named and ready to add,
+    /// with the start angle and angle step they came from.
+    fn step_series_tiers(
+        &self,
+        name_prefix: &str,
+        start_angle_text: &str,
+        angle_step_text: &str,
+        count: i32,
+        indices_text: &str,
+        anchor_text: &str,
+    ) -> Result<(Vec<ConstraintTier>, f64, f64), String> {
         let (start_angle, angle_step, count, first_constraint) =
             parse_step_series_form(start_angle_text, angle_step_text, count, anchor_text)?;
         let indices = parse_index_list(indices_text, self.design.meta.gear_teeth_abs())?;
@@ -541,33 +641,32 @@ impl EditorSession {
         {
             tier.name = name;
         }
-        let start_index = self.design.tiers.len();
-        let edits: Vec<Edit> = tiers
-            .into_iter()
-            .enumerate()
-            .map(|(offset, tier)| Edit::AddTier {
-                index: start_index + offset,
-                tier,
-            })
-            .collect();
-        let added = edits.len();
-        let change = self.apply(Edit::Batch(edits)).map_err(|e| e.to_string())?;
-        Ok(GeneratedSeries {
-            change,
-            start_index,
-            added,
-        })
+        Ok((tiers, start_angle, angle_step))
     }
 
     /// The inline angle cell's commit: parses `text` like the tier form's Angle field
-    /// ([`parse_angle_only`]) and applies it as one `Edit::ModifyTier` (angle only,
-    /// everything else on the tier untouched). Text that parses to the tier's current
-    /// angle bit for bit spends no undo step; it ends any nudge coalescing run instead
-    /// (opening the cell, looking and closing it is a real interaction boundary).
+    /// ([`parse_angle_only_with_names`]) and applies it as one `Edit::ModifyTier` (angle
+    /// only, everything else on the tier untouched). Text that parses to the tier's
+    /// current angle bit for bit spends no undo step; it ends any nudge coalescing run
+    /// instead (opening the cell, looking and closing it is a real interaction
+    /// boundary).
+    ///
+    /// The table shows an angle without its sign (a pavilion tier reads `41`), so the text
+    /// is a magnitude and the tier keeps its side: `41` on a pavilion tier stores `-41`,
+    /// and `0` on one stores minus zero, never a crown tier's `+0`. Only a signed zero
+    /// (`-0` on a crown tier, `+0` on a pavilion tier) crosses to the other block, on
+    /// purpose.
+    ///
+    /// The text may be arithmetic (`41 + 0.5`) that may name other tiers (`P1 - 2`, the
+    /// angle magnitude of the tier called `P1`), worked out once. Text starting with
+    /// `=` (`=P1-2`) is a RELATION instead: the tier then keeps following it, as
+    /// [`Self::set_tier_relation`] sets up.
     ///
     /// # Errors
     ///
-    /// A message ready to show the cutter: the parse failure, or the apply error's text.
+    /// A message ready to show the cutter: the parse failure, the apply error's text, or
+    /// -- for a tier whose angle follows a relation -- "This angle follows a relation
+    /// (P2 = P1 - 2). Edit the relation or remove it.".
     pub fn set_tier_angle_from_text(
         &mut self,
         index: usize,
@@ -576,9 +675,36 @@ impl EditorSession {
         let Some(current) = self.design.tiers.get(index) else {
             return Ok(InlineAngle::Missing);
         };
-        let parsed = parse_angle_only(text)?;
+        if text.trim_start().starts_with('=') {
+            let applied = self
+                .set_tier_relation(index, text)
+                .map_err(|error| error.to_string())?;
+            let Some(change) = applied else {
+                self.history.end_coalesce_run();
+                return Ok(InlineAngle::NoChange);
+            };
+            return Ok(InlineAngle::Applied(change));
+        }
+        let design = &self.design;
+        let magnitude_of = |name: &str| {
+            let position = design.tier_position_by_name(name).ok()?;
+            Some(design.tiers.get(position)?.angle_deg.abs())
+        };
+        let parsed = parse_angle_only_with_names(text, Some(&magnitude_of))?;
+        // The table shows the magnitude, so the cutter types the magnitude: the tier keeps
+        // its side of zero. Zero is the one value whose side is not in its number, so it
+        // keeps the tier's side too (a pavilion tier typed `0` stays a pavilion tier at
+        // minus zero). Only a leading sign on the zero (`-0`, `+0`) crosses to the other
+        // side on purpose, the way the nudge's "stopped at 0" notice says.
         let angle_deg = if parsed == 0.0 {
-            if text.contains('-') { -0.0 } else { 0.0 }
+            let typed = text.trim_start();
+            if typed.starts_with('-')
+                || (current.angle_deg.is_sign_negative() && !typed.starts_with('+'))
+            {
+                -0.0
+            } else {
+                0.0
+            }
         } else if current.angle_deg.is_sign_negative() {
             -parsed.abs()
         } else {
@@ -593,100 +719,8 @@ impl EditorSession {
         }
         let mut tier = current.clone();
         tier.angle_deg = angle_deg;
-        self.apply(Edit::ModifyTier { index, tier })
+        self.try_apply(Edit::ModifyTier { index, tier })
             .map(InlineAngle::Applied)
             .map_err(|e| e.to_string())
-    }
-
-    /// Duplicate for a concave tier: inserts a copy right after tier `index` of
-    /// `design.concave_tiers` as one `Edit::AddConcaveTier`, named by
-    /// [`unique_duplicate_name`] against every flat AND concave name (a concave tier may
-    /// not reuse a flat tier's name).
-    ///
-    /// `Ok(None)` when the tier does not exist.
-    ///
-    /// # Errors
-    ///
-    /// [`Self::apply`]'s error.
-    pub fn duplicate_concave_tier(
-        &mut self,
-        index: usize,
-    ) -> Result<Option<DuplicateOutcome>, EditError> {
-        let Some(source) = self.design.concave_tiers.get(index) else {
-            return Ok(None);
-        };
-        let mut duplicate = source.clone();
-        let source_label = display_name(&source.name);
-        let existing_names: Vec<String> = self
-            .design
-            .tiers
-            .iter()
-            .map(|t| t.name.clone())
-            .chain(self.design.concave_tiers.iter().map(|t| t.name.clone()))
-            .collect();
-        duplicate.name = unique_duplicate_name(&source.name, &existing_names);
-        let duplicate_label = duplicate.name.clone();
-        let new_index = index + 1;
-        let change = self.apply(Edit::AddConcaveTier {
-            index: new_index,
-            tier: duplicate,
-        })?;
-        Ok(Some(DuplicateOutcome {
-            change,
-            new_index,
-            source_label,
-            duplicate_label,
-        }))
-    }
-
-    /// Remove for a concave tier, as one `Edit::RemoveConcaveTier`. Nothing can meet a
-    /// concave tier by name, so unlike [`Self::remove_tier`] there is no dependant check.
-    ///
-    /// `Ok(None)` when the tier does not exist.
-    ///
-    /// # Errors
-    ///
-    /// [`Self::apply`]'s error.
-    pub fn remove_concave_tier(&mut self, index: usize) -> Result<Option<RemovedTier>, EditError> {
-        let Some(tier) = self.design.concave_tiers.get(index) else {
-            return Ok(None);
-        };
-        let (name, facet_count) = (display_name(&tier.name), tier.indices.len());
-        let change = self.apply(Edit::RemoveConcaveTier { index })?;
-        Ok(Some(RemovedTier {
-            change,
-            name,
-            facet_count,
-        }))
-    }
-
-    /// Row reorder for a concave tier: one place up (`direction < 0`) or down as one
-    /// `Edit::MoveConcaveTier`. The order matters, since it is the cutting order inside
-    /// a section's concave group.
-    ///
-    /// `Ok(None)` at either end of the list.
-    ///
-    /// # Errors
-    ///
-    /// [`Self::apply`]'s error.
-    pub fn move_concave_tier(
-        &mut self,
-        index: usize,
-        direction: i32,
-    ) -> Result<Option<MovedTier>, EditError> {
-        let tier_count = self.design.concave_tiers.len();
-        let target = if direction < 0 {
-            index.checked_sub(1)
-        } else {
-            index.checked_add(1).filter(|&t| t < tier_count)
-        };
-        let Some(target) = target else {
-            return Ok(None);
-        };
-        let change = self.apply(Edit::MoveConcaveTier {
-            from: index,
-            to: target,
-        })?;
-        Ok(Some(MovedTier { change, target }))
     }
 }

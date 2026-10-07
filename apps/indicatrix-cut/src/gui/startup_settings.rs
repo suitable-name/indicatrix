@@ -19,7 +19,7 @@ use crate::{
     },
     settings::{
         LightingPreset as SavedLightingPreset, LocalComputeTarget, LocalPreviewScale, SettingsFile,
-        model::{clamp_surface_glare, percent_from_surface_glare},
+        model::{clamp_head_shadow_deg, clamp_surface_glare, percent_from_surface_glare},
     },
 };
 use indicatrix::{
@@ -27,6 +27,7 @@ use indicatrix::{
     optics::{
         LightingPreset,
         materials::{GemMaterial, OpticalCharacter},
+        raytracer::LightingModel,
     },
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
@@ -57,7 +58,8 @@ pub(super) fn apply_loaded_settings(
     // old, mislabelled `"D65 Daylight (5500K)"` string) via `from_label`'s own
     // fallback, rather than resetting the user's choice. See
     // `indicatrix::optics::LightingPreset::from_label`.
-    let lighting_preset = LightingPreset::from_label(&s.lighting_rig);
+    // A stored UV lamp falls back to the default rig in a build without `physical-color`.
+    let lighting_preset = crate::gui::optics::offered_lighting::offered_from_label(&s.lighting_rig);
 
     // Resolve the persisted material once upfront so the render context, dropdown,
     // and UI defaults all agree on the effective name. A deleted custom material
@@ -218,6 +220,7 @@ fn apply_loaded_render_context(
     ctx.denoise_enabled = s.denoise_enabled;
     ctx.backdrop = s.backdrop;
     ctx.surface_glare = clamp_surface_glare(s.surface_glare);
+    ctx.head_shadow_deg = clamp_head_shadow_deg(s.head_shadow_deg);
     // Local preview-then-settle rendering and the live compute targets --
     // live-update `RenderContext` at startup exactly like every other setting in
     // this block, `camera_moving` deliberately left at its
@@ -262,6 +265,8 @@ fn apply_loaded_ui_mirrors(
         .set_backdrop_index(s.backdrop.index());
     ui.global::<SettingsModel>()
         .set_surface_glare_pct(percent_from_surface_glare(s.surface_glare));
+    ui.global::<SettingsModel>()
+        .set_head_shadow_deg(clamp_head_shadow_deg(s.head_shadow_deg));
     ui.global::<SettingsModel>()
         .set_inclusion_sigma_s(s.inclusion_sigma_s.clamp(0.0, 3.0));
     ui.global::<SettingsModel>()
@@ -324,6 +329,15 @@ fn apply_loaded_ui_mirrors(
         .set_auto_solve_budget_ms(i32::try_from(s.editor_auto_solve_budget_ms).unwrap_or(i32::MAX));
     ui.global::<ViewportModel>()
         .set_selected_lighting_index(lighting_preset.index());
+    // Which combo entries are Studio rigs (parallel to `LightingPreset::ALL`): the Optimize
+    // tab's "measured against this rig's light sources" note keys on it.
+    ui.global::<ViewportModel>()
+        .set_lighting_is_studio(ModelRc::new(VecModel::from(
+            LightingPreset::ALL
+                .iter()
+                .map(|preset| preset.model() == LightingModel::Studio)
+                .collect::<Vec<bool>>(),
+        )));
     // File > Open Recent (`MainWindow.recent_native_files`, `ui/app.slint`) -- a
     // root-component property, not an `EditorModel` one. `gui::editor::native_io`'s
     // `record_recent_native_file` keeps this same property live afterward on every
@@ -338,6 +352,9 @@ fn apply_loaded_ui_mirrors(
             .map(SharedString::from)
             .collect::<Vec<_>>(),
     )));
+    // The Simple/Advanced switch, UI scale, high contrast, larger handles and the
+    // Solid viewport's remembered Snap/Slice pills -- see `gui::preferences`.
+    crate::gui::preferences::apply_loaded(ui, s);
 }
 
 /// The settings dialog's "Loaded: <file> (`WxH`)" status line for a decoded

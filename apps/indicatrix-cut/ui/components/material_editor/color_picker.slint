@@ -1,12 +1,22 @@
 import { LineEdit } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { PhysicscolorModel } from "../../models/physics_color.slint";
+import { ActionButton } from "../chip_toggle.slint";
+import { TipBox } from "../tip_box.slint";
 
 // A small color picker: a saturation/value square over the current hue, a hue strip, a hex
 // field and Apply/Cancel. Used by the physics mode's "Pick color..." (the applied color is the
 // solver's target) and by the fantasy mode's "Pick..." -- the caller decides what `applied`
 // does. color maths stays in Slint (`Colors.hsv`, `to-hsv`); only hex text formatting/parsing
 // is Rust (`PhysicscolorModel.format_hex`/`parse_hex`).
+//
+// Keyboard: Tab reaches the square, the strip, the hex field and the buttons. On the square the
+// arrow keys change the saturation (left, right) and the brightness (up, down) by 5 %; on the
+// strip left and right turn the hue by 5 degrees.
+//
+// The gradients of the square and the strip are the colour space itself, not theme colours, so
+// their literals stay (`tests/theme_tokens.rs` lists them as the only colours this file may
+// hold).
 export component colorPicker inherits Rectangle {
     // The color the picker opens on.
     in property <color> initial: #c0392b;
@@ -47,6 +57,14 @@ export component colorPicker inherits Rectangle {
             border-radius: 3px;
             clip: true;
             background: Colors.hsv(root.hue, 1.0, 1.0, 1.0);
+
+            accessible-role: AccessibleRole.slider;
+            accessible-label: "Saturation and brightness";
+            accessible-description: "Left and right change the saturation, up and down change the brightness.";
+            accessible-value: "saturation " + Math.round(root.sat * 100) + " percent, brightness " + Math.round(root.val * 100) + " percent";
+
+            Tooltip { text: @markdown("Pick how rich (left to right) and how bright (bottom to top) the colour is."); }
+
             Rectangle { background: @linear-gradient(90deg, #ffffff 0%, #ffffff00 100%); }
             Rectangle { background: @linear-gradient(180deg, #00000000 0%, #000000 100%); }
             Rectangle {
@@ -59,9 +77,27 @@ export component colorPicker inherits Rectangle {
                 border-color: #ffffff;
                 background: root.current;
             }
+            sv_focus := FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.LeftArrow {
+                        root.sat = max(0.0, root.sat - 0.05);
+                    } else if event.text == Key.RightArrow {
+                        root.sat = min(1.0, root.sat + 0.05);
+                    } else if event.text == Key.UpArrow {
+                        root.val = min(1.0, root.val + 0.05);
+                    } else if event.text == Key.DownArrow {
+                        root.val = max(0.0, root.val - 0.05);
+                    } else {
+                        return reject;
+                    }
+                    root.sync_hex();
+                    return accept;
+                }
+            }
             sv_touch := TouchArea {
                 pointer-event(e) => {
                     if (e.button == PointerEventButton.left && (e.kind == PointerEventKind.down || e.kind == PointerEventKind.move)) {
+                        sv_focus.focus();
                         root.sat = max(0.0, min(1.0, self.mouse-x / self.width));
                         root.val = 1.0 - max(0.0, min(1.0, self.mouse-y / self.height));
                         root.sync_hex();
@@ -75,13 +111,32 @@ export component colorPicker inherits Rectangle {
                     }
                 }
             }
+            // The focus ring, drawn over the picture.
+            Rectangle {
+                border-radius: 3px;
+                border-width: sv_focus.has-focus ? 2px : 0px;
+                border-color: Theme.accent-cyan-hover;
+            }
         }
 
         // Hue strip.
         hue_strip := Rectangle {
-            height: 14px;
+            height: 20px;
             border-radius: 3px;
             background: @linear-gradient(90deg, #ff0000 0%, #ffff00 17%, #00ff00 33%, #00ffff 50%, #0000ff 67%, #ff00ff 83%, #ff0000 100%);
+
+            accessible-role: AccessibleRole.slider;
+            accessible-label: "Hue";
+            accessible-description: "Left and right turn the hue.";
+            accessible-value: "" + Math.round(root.hue);
+            accessible-value-minimum: 0;
+            accessible-value-maximum: 360;
+            accessible-value-step: 5;
+            accessible-action-increment => { root.hue = min(359.9, root.hue + 5.0); root.sync_hex(); }
+            accessible-action-decrement => { root.hue = max(0.0, root.hue - 5.0); root.sync_hex(); }
+
+            Tooltip { text: @markdown("Pick the hue: the basic colour, from red through green and blue and back to red."); }
+
             Rectangle {
                 x: root.hue / 360.0 * parent.width - 2px;
                 width: 4px;
@@ -90,9 +145,23 @@ export component colorPicker inherits Rectangle {
                 border-width: 1px;
                 border-color: #000000;
             }
+            hue_focus := FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.LeftArrow {
+                        root.hue = max(0.0, root.hue - 5.0);
+                    } else if event.text == Key.RightArrow {
+                        root.hue = min(359.9, root.hue + 5.0);
+                    } else {
+                        return reject;
+                    }
+                    root.sync_hex();
+                    return accept;
+                }
+            }
             hue_touch := TouchArea {
                 pointer-event(e) => {
                     if (e.button == PointerEventButton.left && (e.kind == PointerEventKind.down || e.kind == PointerEventKind.move)) {
+                        hue_focus.focus();
                         root.hue = max(0.0, min(359.9, self.mouse-x / self.width * 360.0));
                         root.sync_hex();
                     }
@@ -103,6 +172,11 @@ export component colorPicker inherits Rectangle {
                         root.sync_hex();
                     }
                 }
+            }
+            Rectangle {
+                border-radius: 3px;
+                border-width: hue_focus.has-focus ? 2px : 0px;
+                border-color: Theme.accent-cyan-hover;
             }
         }
 
@@ -115,34 +189,44 @@ export component colorPicker inherits Rectangle {
                 background: root.current;
                 border-width: 1px;
                 border-color: Theme.border-dialog;
+                accessible-role: AccessibleRole.image;
+                accessible-label: "Chosen colour " + root.hex_text;
             }
-            LineEdit {
+            TipBox {
                 width: 90px;
-                text <=> root.hex_text;
-                placeholder-text: "#rrggbb";
-                edited(t) => {
-                    root.load(PhysicscolorModel.parse_hex(t, root.current));
-                    root.hex_text = t;
+                hint: "The colour as hex digits, for example #c0392b. Type or paste one to jump to it.";
+                LineEdit {
+                    text <=> root.hex_text;
+                    placeholder-text: "#rrggbb";
+                    accessible-label: "Colour as hex digits";
+                    edited(t) => {
+                        root.load(PhysicscolorModel.parse_hex(t, root.current));
+                        root.hex_text = t;
+                    }
                 }
             }
             Rectangle { horizontal-stretch: 1; }
-            Rectangle {
-                width: 56px;
+            ActionButton {
+                width: 64px;
                 height: 24px;
-                border-radius: Theme.radius-sm;
-                background: cancel_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken;
-                border-width: 1px;
-                border-color: Theme.border-dialog;
-                cancel_touch := TouchArea { clicked => { root.cancelled(); } }
-                Text { text: "Cancel"; font-size: 10px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                text: "Cancel";
+                hint: "Close the picker without choosing a colour.";
+                ink: Theme.text-secondary;
+                font_size: 10px;
+                clicked => { root.cancelled(); }
             }
-            Rectangle {
-                width: 70px;
+            ActionButton {
+                width: 80px;
                 height: 24px;
-                border-radius: Theme.radius-sm;
-                background: apply_touch.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan;
-                apply_touch := TouchArea { clicked => { root.applied(root.current); } }
-                Text { text: root.apply_label; font-size: 10px; font-weight: 700; color: Theme.text-on-accent; horizontal-alignment: center; vertical-alignment: center; }
+                text: root.apply_label;
+                hint: "Use the chosen colour.";
+                fill: Theme.accent-cyan;
+                hover_fill: Theme.accent-cyan-hover;
+                ink: Theme.text-on-accent;
+                edge: Theme.accent-cyan;
+                font_size: 10px;
+                weight: 700;
+                clicked => { root.applied(root.current); }
             }
         }
     }

@@ -135,6 +135,11 @@ pub enum ManufacturabilityWarning {
     /// width, length or height), so the finished stone is smaller than the flat
     /// schedule implies.
     ToolRemovesHullVertex { tier: usize, placement: usize },
+    /// A concave tool sits wholly inside the stone: it removes volume but never reaches
+    /// a flat facet, so it would be an internal void, which no cutter can reach. The
+    /// tool's position or size is wrong (a displacement or depth beyond the stone, or a
+    /// tool too small for the depth asked of it).
+    ToolEnclosed { tier: usize, placement: usize },
     /// The design has concave tiers and the file format being written (`.asc`,
     /// `.gem`, `.gcs`) cannot represent them, so they are left out of the tier
     /// records (`.asc` keeps two footnotes per tier; the native `.indicatrix` file
@@ -168,7 +173,8 @@ impl ManufacturabilityWarning {
             | Self::ToolRemovesMeet { .. }
             | Self::ToolsOverlap { .. }
             | Self::ConcaveSliver { .. }
-            | Self::ToolRemovesHullVertex { .. } => 0,
+            | Self::ToolRemovesHullVertex { .. }
+            | Self::ToolEnclosed { .. } => 0,
         }
     }
 
@@ -191,7 +197,8 @@ impl ManufacturabilityWarning {
             | Self::ToolRemovesMeet { .. }
             | Self::ToolsOverlap { .. }
             | Self::ConcaveSliver { .. }
-            | Self::ToolRemovesHullVertex { .. } => TierId(0),
+            | Self::ToolRemovesHullVertex { .. }
+            | Self::ToolEnclosed { .. } => TierId(0),
         }
     }
 
@@ -205,7 +212,8 @@ impl ManufacturabilityWarning {
             Self::ToolMissesStone { tier, .. }
             | Self::ToolBreaksThrough { tier, .. }
             | Self::ToolRemovesMeet { tier, .. }
-            | Self::ToolRemovesHullVertex { tier, .. } => Some(*tier),
+            | Self::ToolRemovesHullVertex { tier, .. }
+            | Self::ToolEnclosed { tier, .. } => Some(*tier),
             Self::VanishingFacet { .. }
             | Self::UndersizedFacet { .. }
             | Self::FractionalIndex { .. }
@@ -241,7 +249,8 @@ impl ManufacturabilityWarning {
             | Self::ToolRemovesMeet { .. }
             | Self::ToolsOverlap { .. }
             | Self::ConcaveSliver { .. }
-            | Self::ToolRemovesHullVertex { .. } => None,
+            | Self::ToolRemovesHullVertex { .. }
+            | Self::ToolEnclosed { .. } => None,
         }
     }
 }
@@ -385,6 +394,13 @@ impl std::fmt::Display for ManufacturabilityWarning {
                 f,
                 "concave tier {} placement {}: the tool cuts away a vertex that sets the \
                  stone's width, length or height",
+                tier + 1,
+                placement + 1
+            ),
+            Self::ToolEnclosed { tier, placement } => write!(
+                f,
+                "concave tier {} placement {}: the tool sits entirely inside the stone and never \
+                 reaches its surface, so it cannot be cut",
                 tier + 1,
                 placement + 1
             ),

@@ -8,7 +8,7 @@
 use std::time::Instant;
 
 use crate::{
-    optics::raytracer::{EnvironmentSource, illuminant_temperature_k},
+    optics::raytracer::{EnvironmentSource, head_shadow_cosines, illuminant_temperature_k},
     renderer::{
         buffers::{GpuTransportParams, GpuWavefrontParams, transport_env_mode},
         gpu::compute,
@@ -58,7 +58,7 @@ pub fn encode_and_dispatch(args: &TransportDispatchArgs<'_>, total_tuples: usize
 /// [`GpuFrameRenderer::dispatch_chunk`] purely to keep that method under clippy's
 /// function-length limit. `params` is written into this chunk's slot's persistent
 /// uniform buffer by the caller instead of being uploaded fresh here.
-const fn build_chunk_params(
+fn build_chunk_params(
     state: &ChunkFrameState<'_>,
     first_pixel: usize,
     pixels_this_chunk: usize,
@@ -80,8 +80,12 @@ const fn build_chunk_params(
     .with_debug_buffers_disabled()
     .with_studio_use_d65(state.use_d65)
     .with_studio_model(state.studio_model)
+    .with_tent_of(state.scene.environment)
     .with_backdrop(state.backdrop)
     .with_surface_glare(state.scene.environment.surface_glare())
+    .with_head_shadow(head_shadow_cosines(
+        state.scene.environment.head_shadow_deg(),
+    ))
 }
 
 impl GpuFrameRenderer {

@@ -1,7 +1,8 @@
 import { Theme } from "../../theme.slint";
-import { ComboBox } from "std-widgets.slint";
+import { ComboBox, LineEdit } from "std-widgets.slint";
 import { RoughPlanModel } from "../../models/rough_plan.slint";
-import { RoughField, RoughRadio, RoughPill } from "fields.slint";
+import { RoughField, RoughRadio, RoughPill, ElidedText } from "fields.slint";
+import { TipBox, FieldCaption } from "../tip_box.slint";
 
 // Left column rough base definition, dimensions, material, weighed carat,
 // and the weight-check readout chip.
@@ -23,28 +24,63 @@ export component RoughForm inherits VerticalLayout {
 
         RoughRadio {
             label: "Block";
+            hint: "A rectangular block of rough. You give its three sizes in millimetres.";
             selected: RoughPlanModel.base_kind == 0;
-            editable: !RoughPlanModel.running;
+            editable: !RoughPlanModel.running && !RoughPlanModel.mesh_busy;
             picked => { RoughPlanModel.set_base(0); }
         }
         RoughRadio {
             label: "Cylinder";
+            hint: "A round rod of rough: you give its diameter, its length and the axis it runs along.";
             selected: RoughPlanModel.base_kind == 1;
-            editable: !RoughPlanModel.running;
+            editable: !RoughPlanModel.running && !RoughPlanModel.mesh_busy;
             picked => { RoughPlanModel.set_base(1); }
         }
         RoughRadio {
             label: "Pebble";
+            hint: "A rounded, pebble-shaped rough. You give its three sizes in millimetres.";
             selected: RoughPlanModel.base_kind == 2;
-            editable: !RoughPlanModel.running;
+            editable: !RoughPlanModel.running && !RoughPlanModel.mesh_busy;
             picked => { RoughPlanModel.set_base(2); }
         }
         RoughRadio {
-            label: "Mesh (OBJ)";
+            label: "Mesh (OBJ/STL/PLY)";
+            hint: "Use your own 3D model of the rough from an .OBJ, .STL or .PLY file. Choosing this opens a file picker. The numbers in the file are read in the unit chosen below. Files up to 64 MB are read.";
             selected: RoughPlanModel.base_kind == 3;
-            editable: !RoughPlanModel.running;
+            editable: !RoughPlanModel.running && !RoughPlanModel.mesh_busy;
             picked => { RoughPlanModel.import_obj(); }
         }
+    }
+
+    // The unit the numbers of a mesh file are read in. The choice is read when a file is picked
+    // and is kept for the session. A refused size suggests a unit but never applies it.
+    HorizontalLayout {
+        spacing: 6px;
+        alignment: start;
+        Text {
+            text: "Mesh file units:";
+            font-size: 10px;
+            color: Theme.text-muted;
+            vertical-alignment: center;
+        }
+        TipBox {
+            hint: "The unit the numbers in an OBJ, STL or PLY file are in. The planner scales them to millimetres. Choose it before you pick the file. If the size looks wrong, the message suggests a unit; it is never applied for you.";
+            ComboBox {
+                min-width: 0px;
+                model: ["mm", "cm", "m", "inch", "µm"];
+                current-index <=> RoughPlanModel.mesh_unit_index;
+                enabled: !RoughPlanModel.running && !RoughPlanModel.mesh_busy;
+                accessible-label: "Unit of the numbers in a mesh file";
+            }
+        }
+    }
+
+    // A mesh is being read or scaled in the background.
+    if RoughPlanModel.mesh_busy: Text {
+        text: RoughPlanModel.mesh_busy_text;
+        font-size: 11px;
+        color: Theme.text-secondary;
+        wrap: word-wrap;
     }
 
     // Imported mesh: the size of its bounding box (read-only; a pick of the radio
@@ -52,10 +88,71 @@ export component RoughForm inherits VerticalLayout {
     if RoughPlanModel.base_kind == 3: Text {
         text: "Bounding box of the mesh, " + RoughPlanModel.rough_x + " x "
             + RoughPlanModel.rough_y + " x " + RoughPlanModel.rough_z
-            + " mm (OBJ units read as mm; Fit to weight rescales it).";
+            + " mm (the file's numbers read in the unit chosen above; Fit to weight rescales it).";
         font-size: 10px;
         color: Theme.text-muted;
         wrap: word-wrap;
+    }
+
+    // Inclusions of an imported mesh: closed meshes inside the rough where no stone may go. They
+    // still count as material in the weight and the yield. Adding or removing one is an undo step.
+    if RoughPlanModel.inclusions_possible: VerticalLayout {
+        spacing: 4px;
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+            RoughPill {
+                text: "Add inclusion...";
+                hint: RoughPlanModel.running ? "Not while a plan is running. Wait for it to finish, or cancel it."
+                    : (RoughPlanModel.mesh_busy ? "Wait for the mesh to finish loading."
+                    : "Pick a mesh file (OBJ, STL or PLY) of a closed shape inside the rough, such as a crack or a crystal of another mineral. Stones keep clear of it, and the weight and the yield count it as material. The file uses the same coordinates and unit as the rough's file.");
+                enabled: !RoughPlanModel.running && !RoughPlanModel.mesh_busy;
+                clicked => { RoughPlanModel.add_inclusion(); }
+            }
+            Text {
+                text: "Margin (mm):";
+                font-size: 10px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+            TipBox {
+                width: 56px;
+                hint: "How far stones keep away from the inclusion, in millimetres, because the edge of a real inclusion is uncertain. Leave it empty for 0.3. It is applied when you add the inclusion.";
+                LineEdit {
+                    min-width: 0px;
+                    text <=> RoughPlanModel.inclusion_margin;
+                    enabled: !RoughPlanModel.running && !RoughPlanModel.mesh_busy;
+                    accessible-label: "Margin of a new inclusion in millimetres";
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+            RoughPill {
+                text: "Locate inclusion from photos...";
+                hint: RoughPlanModel.running ? "Not while a plan is running. Wait for it to finish, or cancel it."
+                    : (RoughPlanModel.mesh_busy ? "Wait for the mesh to finish loading."
+                    : (!RoughPlanModel.locate_possible ? "This rough has no mesh to trace photos through: import a closed mesh of the rough first."
+                    : "Find an inclusion from photos of the rough taken on a fixed camera rig. Light from the inclusion bends at the surface, so the position is worked out through the mesh."));
+                enabled: !RoughPlanModel.running && !RoughPlanModel.mesh_busy && RoughPlanModel.locate_possible;
+                clicked => { RoughPlanModel.locate_inclusion(); }
+            }
+        }
+        for row[i] in RoughPlanModel.inclusion_rows: HorizontalLayout {
+            spacing: 6px;
+            ElidedText {
+                text: row;
+                font_size: 10px;
+                text_color: Theme.text-secondary;
+            }
+            RoughPill {
+                text: "Remove";
+                hint: "Take this inclusion out again. Stones may then be placed there, and the weight is unchanged.";
+                enabled: !RoughPlanModel.running && !RoughPlanModel.mesh_busy;
+                clicked => { RoughPlanModel.remove_inclusion(i); }
+            }
+        }
     }
 
     // Block or Pebble dimensions (X, Y, Z in mm)
@@ -63,6 +160,7 @@ export component RoughForm inherits VerticalLayout {
         spacing: 6px;
         RoughField {
             label: "Rough X (mm)";
+            hint: "The size of the rough along the X axis, in millimetres.";
             placeholder: "e.g. 18.4";
             editable: !RoughPlanModel.running;
             value <=> RoughPlanModel.rough_x;
@@ -70,6 +168,7 @@ export component RoughForm inherits VerticalLayout {
         }
         RoughField {
             label: "Rough Y (mm)";
+            hint: "The size of the rough along the Y axis, in millimetres.";
             placeholder: "e.g. 11.0";
             editable: !RoughPlanModel.running;
             value <=> RoughPlanModel.rough_y;
@@ -77,6 +176,7 @@ export component RoughForm inherits VerticalLayout {
         }
         RoughField {
             label: "Rough Z (mm)";
+            hint: "The size of the rough along the Z axis, in millimetres.";
             placeholder: "e.g. 9.6";
             editable: !RoughPlanModel.running;
             value <=> RoughPlanModel.rough_z;
@@ -91,6 +191,7 @@ export component RoughForm inherits VerticalLayout {
             spacing: 6px;
             RoughField {
                 label: "Diameter (mm)";
+                hint: "How wide the round rough is across, in millimetres.";
                 placeholder: "e.g. 10.0";
                 editable: !RoughPlanModel.running;
                 value <=> RoughPlanModel.cyl_diameter;
@@ -98,6 +199,7 @@ export component RoughForm inherits VerticalLayout {
             }
             RoughField {
                 label: "Length (mm)";
+                hint: "How long the rough is along its axis, in millimetres.";
                 placeholder: "e.g. 24.0";
                 editable: !RoughPlanModel.running;
                 value <=> RoughPlanModel.cyl_length;
@@ -115,18 +217,21 @@ export component RoughForm inherits VerticalLayout {
             }
             RoughPill {
                 text: "X";
+                hint: "The rod runs along the X axis.";
                 active: RoughPlanModel.cyl_axis == 0;
                 enabled: !RoughPlanModel.running;
                 clicked => { RoughPlanModel.cyl_axis = 0; RoughPlanModel.base_field_committed(); }
             }
             RoughPill {
                 text: "Y";
+                hint: "The rod runs along the Y axis.";
                 active: RoughPlanModel.cyl_axis == 1;
                 enabled: !RoughPlanModel.running;
                 clicked => { RoughPlanModel.cyl_axis = 1; RoughPlanModel.base_field_committed(); }
             }
             RoughPill {
                 text: "Z";
+                hint: "The rod runs along the Z axis.";
                 active: RoughPlanModel.cyl_axis == 2;
                 enabled: !RoughPlanModel.running;
                 clicked => { RoughPlanModel.cyl_axis = 2; RoughPlanModel.base_field_committed(); }
@@ -137,17 +242,21 @@ export component RoughForm inherits VerticalLayout {
     // Material dropdown
     VerticalLayout {
         spacing: 2px;
-        Text {
+        FieldCaption {
             text: "Material";
-            font-size: 10px;
-            color: Theme.text-muted;
+            hint: "The gem material of the rough. Its specific gravity turns the volume of the model into carats.";
+            font_size: 10px;
         }
-        ComboBox {
-            min-width: 0px;
-            model: RoughPlanModel.materials;
-            current-index <=> RoughPlanModel.material_index;
-            enabled: !RoughPlanModel.running && RoughPlanModel.materials.length > 0;
-            selected(value) => { RoughPlanModel.base_field_committed(); }
+        TipBox {
+            hint: "The gem material of the rough. Its specific gravity turns the volume of the model into carats.";
+            ComboBox {
+                min-width: 0px;
+                model: RoughPlanModel.materials;
+                current-index <=> RoughPlanModel.material_index;
+                enabled: !RoughPlanModel.running && RoughPlanModel.materials.length > 0;
+                accessible-label: "Material of the rough";
+                selected(value) => { RoughPlanModel.base_field_committed(); }
+            }
         }
     }
     if RoughPlanModel.materials.length == 0: Text {
@@ -164,6 +273,7 @@ export component RoughForm inherits VerticalLayout {
         alignment: stretch;
         RoughField {
             label: "Carat (ct)";
+            hint: "The weight of the rough in carats, if you have weighed it. Leave it alone to use the weight of the model. Fit to weight scales the model to this weight.";
             placeholder: "e.g. 8.90";
             editable: !RoughPlanModel.running;
             value <=> RoughPlanModel.weighed_ct;
@@ -173,7 +283,11 @@ export component RoughForm inherits VerticalLayout {
             alignment: end;
             RoughPill {
                 text: "Fit to weight";
-                enabled: !RoughPlanModel.running && RoughPlanModel.weight_check_level != 0;
+                hint: RoughPlanModel.running ? "Not while a plan is running. Wait for it to finish, or cancel it."
+                    : (RoughPlanModel.mesh_busy ? "Wait for the mesh to finish loading."
+                    : (RoughPlanModel.weight_check_level == 0 ? "Type a weighed carat first, so there is a weight to scale the model to."
+                    : "Scale the model up or down until its weight matches the carat you typed."));
+                enabled: !RoughPlanModel.running && !RoughPlanModel.mesh_busy && RoughPlanModel.weight_check_level != 0;
                 clicked => { RoughPlanModel.fit_to_weight(); }
             }
         }

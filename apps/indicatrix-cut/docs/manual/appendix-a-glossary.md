@@ -22,6 +22,13 @@ three different measurements. Similarly, "block" and "tier group" both
 sometimes describe the crown/pavilion/girdle split — this manual always
 uses **block** for that.
 
+**Abbe number** — A single figure for how strongly a material spreads
+colors: V_d = (n_d − 1) / (n_F − n_C), using the refractive index at the
+sodium D line and at the blue F and red C lines. A lower number means more
+dispersion and more fire (diamond is about 55, a crown glass about 64). The
+Material Editor shows it live when you type a refractive-index curve as
+coefficients (Chapter 6).
+
 **Anchor** — A tier whose scale is stated directly (Meets: **Exact scale
 value**) rather than derived from meeting other facets. Every block (crown,
 pavilion, girdle) needs at least one anchor, or its overall size has
@@ -39,6 +46,12 @@ those two indices at the sodium D line. Zero for an isotropic material.
 **Brilliance** — The percentage of light returned to the eye by a rendered
 stone; one of the app's optical performance readouts.
 
+**Cauchy equation** — A short formula for a refractive-index curve:
+n = A + B/λ² + C/λ^4, with the wavelength λ in micrometres. It describes a
+transparent material well across the visible range, and it is what the
+Material Editor builds from a refractive index and a dispersion slider
+value. You can also type its A, B and C yourself (Chapter 6).
+
 **Cheater offset** — A small azimuth (index-wheel) adjustment recorded
 against a tier, used when a facet needs to sit slightly off its
 mathematically exact index position to actually meet its neighbours
@@ -46,7 +59,16 @@ correctly on the real stone. Shown in the cutting sheet (Chapter 11)
 alongside the tier's ordinary index.
 
 **Chromophore** — The trace element or defect in a gem material responsible
-for its color (for example, Cr3+ in ruby, Fe2+ in aquamarine).
+for its color (for example, Cr3+ in ruby, Fe2+ in aquamarine). The Material
+Editor's physics color mode builds a color from chromophores; that editor is
+shown only in builds with the `physical-color` feature (Chapter 6), but a
+material's stored chromophore recipe is kept and rendered in every build.
+
+**Code** — A tier's label on the cutting sheet, in cutting mode and in the tier
+table's CODE column: P1, P2, ... for pavilion tiers, G1, ... for girdle tiers,
+C1, C2, ... for crown tiers, T for the table and Culet for the culet. Each letter
+is numbered on its own, in the order the tiers are cut, and a concave tier carries
+on the count of its side (Chapters 3 and 11).
 
 **Compare (to Snapshot)** — The dialog that diffs the current design's
 tiers and masts against the last Snapshot taken in this session (Chapter
@@ -75,10 +97,16 @@ design (Chapter 4).
 **Dispersion** — How much a material's refractive index varies across the
 visible spectrum, which is what produces "fire" (spectral flare). Reported
 in this manual as the Abbe number V_d (lower means more dispersive) or, for
-a few entries, directly as Δn(F–C).
+a few entries, directly as Δn(F–C). A custom material can carry its full
+curve as Sellmeier or Cauchy coefficients (Chapter 6).
 
 **Extinction** — The percentage of a stone's face reading as dark, dead
 shadow rather than bright; one of the app's optical performance readouts.
+
+**Face-up tone** — The lightness `L*` and colour strength `C*` of the light a
+stone returns face-up, worked out from how far that light travelled through the
+body colour, under the lighting preset of the run. Shown in the Optimize tab's
+Tone column and swatches.
 
 **Facet** — One flat cut face of a stone. A single tier normally describes
 a whole symmetric family of identical facets (an orbit), not just one.
@@ -140,6 +168,20 @@ example, a cylinder).
 light, expressed as n at a reference wavelength (this manual, like the
 app's render materials, uses the sodium D line, 589.3nm, written n_D).
 
+**Relation** — A rule that makes one tier's angle follow other tiers' angles
+instead of being a number of its own: `P2 = P1 - 2` keeps P2 two degrees
+shallower than P1, whatever P1 becomes. You type it into the Tier form's
+Angle field after an `=` (`=P1-2`); the tier table marks such a tier with a
+link icon. Saved with the design (Chapter 4; Chapter 11 for the file
+version). An exported `.asc` carries the plain angle.
+
+**Render job** — A saved set of render settings and a frozen copy of the stone,
+waiting to be rendered. See Chapter 23.
+
+**Render queue** — The list of render jobs in the Render Jobs window. It renders
+one job at a time, from the top down, once you press **Start Queue**. See
+Chapter 23.
+
 **Retarget** — The command bar's automated proposal for adapting a
 design's pavilion and crown angles to a different material, reviewed in a
 dialog before anything is applied (Chapter 6).
@@ -152,6 +194,13 @@ solved masts, taken by **Snapshot Design**, for diffing against with
 **Scintillation** — The percentage measure of sparkle as light and stone
 move relative to each other; one of the app's optical performance
 readouts.
+
+**Sellmeier equation** — The standard formula for the refractive-index curve
+of glass and crystals: n² = 1 + the sum of B·λ²/(λ² − C), one term per
+resonance (usually one or three), with the wavelength λ in micrometres. Each
+B is a strength and each C is a resonance wavelength squared, in µm². The
+built-in Diamond, Sapphire and glass entries use it, and the Material
+Editor accepts one-term and three-term fits (Chapter 6).
 
 **Solved / stale** — A design is "solved" once Solve has successfully run
 against its current tier list; it becomes "stale" the moment any further
@@ -172,6 +221,11 @@ family of identical facets cut at the same angle and depth.
 **Tilt curve / tilt axis** — The app's sweep of a design's optical
 performance as it tips away from face-up viewing, along a chosen compass
 direction around the stone (Chapter 2).
+
+**Variant** — A named copy of the open design that you keep so you can come
+back to it or compare it with another version. Variants live in your
+library, not in the design file. Saved and opened from the inspector's
+History tab (Chapter 18).
 
 **Windowing** — The percentage of a stone's face reading as see-through
 rather than reflective, caused by light leaking straight through the

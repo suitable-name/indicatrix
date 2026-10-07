@@ -1,0 +1,84 @@
+// The render queue: the Jobs window (File > Render Jobs...), the header's Jobs chip and the
+// "Add to Queue" buttons of the export dialog and the tilt video section. Rust-driven: the
+// queue controller (`gui::render_jobs::controller`) owns what runs, the database holds the
+// jobs, and `gui::render_jobs::rows` turns each job into the plain row below.
+//
+// A global of its own so `ui/models/export.slint` and `ui/models/tilt.slint` stay untouched.
+// It is only a Rust type because `app.slint`'s export block names it.
+
+// One job as the list shows it. Every text is computed in Rust (`rows::row_view`), so the
+// window only lays it out. `progress` is -1 for "no bar".
+export struct RenderJobRow {
+    id: int,
+    number_text: string,
+    label: string,
+    kind_text: string,
+    state_word: string,
+    state_text: string,
+    summary: string,
+    progress: float,
+    progress_text: string,
+    error_text: string,
+    can_pause: bool,
+    can_resume: bool,
+    can_restart: bool,
+    can_cancel: bool,
+    can_delete: bool,
+    can_run_next: bool,
+    can_move_up: bool,
+    can_move_down: bool,
+    can_show: bool,
+}
+
+export global RenderJobsModel {
+    // The Jobs window is open. Opening it refreshes the rows (the handler is in Rust).
+    in-out property <bool> panel_open: false;
+    in property <[RenderJobRow]> rows: [];
+    in property <bool> queue_running: false;
+    in property <bool> can_start_queue: false;
+    // "3 waiting · 1 done"
+    in property <string> queue_status: "";
+    // The header chip shows while a job is waiting or running.
+    in property <bool> chip_visible: false;
+    in property <string> chip_text: "";
+    // -1 = no bar under the chip.
+    in property <float> chip_progress: -1;
+
+    // The Export Script section at the foot of the window.
+    in-out property <bool> script_open: false;
+    // 0 both, 1 PowerShell, 2 shell
+    in-out property <int> script_flavor_index: 0;
+    // 0 this computer, 1 this computer and the remote worker
+    in-out property <int> script_target_index: 0;
+    in-out property <bool> script_outputs_beside: false;
+    in property <bool> script_remote_available: false;
+    // "render-box.local:7878"
+    in property <string> script_remote_label: "";
+    in property <int> script_job_count: 0;
+
+    callback refresh();
+    callback start_queue();
+    callback pause_queue();
+    callback clear_finished();
+    callback pause_job(int);
+    callback resume_job(int);
+    callback restart_job(int);
+    callback cancel_job(int);
+    callback delete_job(int);
+    callback run_next(int);
+    // (job id, places): negative is up.
+    callback move_job(int, int);
+    callback show_result(int);
+    callback export_script();
+
+    // "Add to Queue" entry points. Same arguments as `ExportModel.start_export`
+    // (ui/models/export.slint) and `TiltVideoExportModel.start_video_export`.
+    callback add_still_jobs(int, int, int, int, int, int);
+    callback add_tilt_video_job(int);
+
+    changed panel_open => {
+        if self.panel_open {
+            self.refresh();
+        }
+    }
+}

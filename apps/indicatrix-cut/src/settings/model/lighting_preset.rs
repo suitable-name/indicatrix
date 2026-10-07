@@ -74,11 +74,11 @@ pub struct LightingPreset {
 /// deleted. Names double as their stable identity -- `SettingsFile::ensure_built_in_presets`
 /// matches on `name` to decide whether a loaded file already has one.
 ///
-/// `camera_yaw`/`camera_pitch`/`env_map_path` are all `None`, and `export_usable` is
-/// `false`, for every built-in: these are lighting moods, not shots of any particular
-/// design, so applying one must only ever change the lighting, never reposition the
-/// camera or swap in an environment map. They also default out of the export fan-out
-/// list.
+/// `env_map_path` is `None` and `export_usable` is `false` for every built-in, and
+/// `camera_yaw`/`camera_pitch` are `None` for every built-in except "Grading tray"
+/// (a view, not just a mood: it recalls the near face-up pose a grader looks from):
+/// applying a lighting mood must only change the lighting, never reposition the camera
+/// or swap in an environment map. They also default out of the export fan-out list.
 #[must_use]
 pub fn built_in_presets() -> Vec<LightingPreset> {
     vec![
@@ -127,12 +127,31 @@ pub fn built_in_presets() -> Vec<LightingPreset> {
             name: "Light Tent".to_string(),
             built_in: true,
             light_yaw_deg: 48.0,
-            light_pitch_deg: 54.0,
+            light_pitch_deg: 72.0,
             exposure: 1.0,
             lighting_rig: "Light tent + black cards".to_string(),
             camera_distance: 2.4,
             camera_yaw: None,
             camera_pitch: None,
+            env_map_path: None,
+            export_usable: false,
+        },
+        // The colour-grading view: the D65 hemisphere with the observer's head shadow,
+        // seen face-up. The one built-in that carries a camera pose (yaw and pitch must
+        // both be `Some`; the apply callback clamps pitch to +-1.48, so 1.48 is the
+        // steepest view it can restore).
+        LightingPreset {
+            name: "Grading tray".to_string(),
+            built_in: true,
+            light_yaw_deg: 48.0,
+            light_pitch_deg: 72.0,
+            exposure: 1.0,
+            lighting_rig: indicatrix::optics::raytracer::LightingPreset::IsoHemisphere
+                .label()
+                .to_string(),
+            camera_distance: 2.4,
+            camera_yaw: Some(0.35),
+            camera_pitch: Some(1.48),
             env_map_path: None,
             export_usable: false,
         },
@@ -142,7 +161,24 @@ pub fn built_in_presets() -> Vec<LightingPreset> {
             light_yaw_deg: 30.0,
             light_pitch_deg: 55.0,
             exposure: 1.0,
-            lighting_rig: "Daylight sky + sun".to_string(),
+            lighting_rig: "Daylight sky + direct sun".to_string(),
+            camera_distance: 2.4,
+            camera_yaw: None,
+            camera_pitch: None,
+            env_map_path: None,
+            export_usable: false,
+        },
+        // Window daylight: one broad soft source low in the sky (30 degrees = 0.52 rad, in
+        // the 25-35 degree band the preset is designed for), a dim room around it.
+        LightingPreset {
+            name: "Window daylight".to_string(),
+            built_in: true,
+            light_yaw_deg: 40.0,
+            light_pitch_deg: 30.0,
+            exposure: 1.2,
+            lighting_rig: indicatrix::optics::raytracer::LightingPreset::WindowDaylight
+                .label()
+                .to_string(),
             camera_distance: 2.4,
             camera_yaw: None,
             camera_pitch: None,
@@ -199,20 +235,50 @@ mod tests {
         assert_eq!(preset, round_tripped);
     }
 
-    /// Every built-in ships with no camera/env data and is not export-usable by default.
+    /// The "Window daylight" built-in exists, selects the window rig and keeps the key low
+    /// (0.45 to 0.6 rad, i.e. 25 to 35 degrees).
+    #[test]
+    fn window_daylight_view_preset_exists_with_a_low_light_pitch() {
+        let preset = built_in_presets()
+            .into_iter()
+            .find(|p| p.name == "Window daylight")
+            .expect("the Window daylight built-in must exist");
+        assert!(preset.built_in);
+        assert_eq!(
+            preset.lighting_rig,
+            indicatrix::optics::raytracer::LightingPreset::WindowDaylight.label()
+        );
+        let pitch_rad = preset.light_pitch_deg.to_radians();
+        assert!(
+            (0.45..=0.6).contains(&pitch_rad),
+            "light pitch {pitch_rad} rad"
+        );
+    }
+
+    /// Every built-in ships with no env data and is not export-usable by default, and
+    /// none carries a camera pose except "Grading tray" (which carries both halves).
     #[test]
     fn built_in_presets_carry_no_camera_or_env_data_and_are_not_export_usable() {
         for preset in built_in_presets() {
-            assert_eq!(
-                preset.camera_yaw, None,
-                "{}: built-ins must not carry a camera pose",
-                preset.name
-            );
-            assert_eq!(
-                preset.camera_pitch, None,
-                "{}: built-ins must not carry a camera pose",
-                preset.name
-            );
+            if preset.name == "Grading tray" {
+                assert_eq!(preset.camera_yaw, Some(0.35));
+                assert_eq!(preset.camera_pitch, Some(1.48));
+                assert_eq!(
+                    preset.lighting_rig,
+                    indicatrix::optics::raytracer::LightingPreset::IsoHemisphere.label()
+                );
+            } else {
+                assert_eq!(
+                    preset.camera_yaw, None,
+                    "{}: only the grading tray carries a camera pose",
+                    preset.name
+                );
+                assert_eq!(
+                    preset.camera_pitch, None,
+                    "{}: only the grading tray carries a camera pose",
+                    preset.name
+                );
+            }
             assert_eq!(
                 preset.env_map_path, None,
                 "{}: built-ins must not carry an HDR map",

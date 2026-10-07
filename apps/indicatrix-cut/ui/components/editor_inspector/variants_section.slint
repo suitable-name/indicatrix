@@ -1,0 +1,653 @@
+import { ComboBox, LineEdit, ListView, ScrollView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { EditorModel } from "../../models/editor.slint";
+import { GuideModel } from "../../models/guide.slint";
+import { VariantsModel, VariantRowData, VariantDiffRow } from "../../models/variants.slint";
+import { TipButton } from "../compact_controls.slint";
+import { FormRow } from "form_row.slint";
+
+// A small text button for a variant's row. `std-widgets` buttons are too tall for a row of
+// four, so this draws the same thing at a row's scale. It takes Tab, answers Space and Enter,
+// shows a ring while it has focus, and has a tooltip (`hint`) and a screen-reader label
+// (`reader_label`, for example "Open Variant 2": four rows of "Open" alone could not be told
+// apart).
+component VariantAction inherits Rectangle {
+    in property <string> label;
+    in property <string> reader_label;
+    // One plain sentence: what the button does (or why it is switched off). The tooltip.
+    in property <string> hint;
+    in property <bool> enabled: true;
+    in property <bool> danger: false;
+    callback clicked();
+
+    height: 22px;
+    width: action_text.preferred-width + 16px;
+    background: !root.enabled ? transparent
+        : (touch.has-hover
+            ? (root.danger ? Theme.danger-surface-hover : Theme.bg-card-hover)
+            : (root.danger ? Theme.danger-surface : Theme.bg-elevated));
+    border-radius: Theme.radius-sm;
+    border-width: action_focus.has-focus ? 2px : 1px;
+    border-color: action_focus.has-focus ? Theme.accent-cyan-hover : (root.danger ? Theme.danger-border : Theme.border-medium);
+    opacity: root.enabled ? 1.0 : 0.5;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.reader_label != "" ? root.reader_label : root.label;
+    accessible-description: root.hint;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    action_focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+
+    action_text := Text {
+        text: root.label;
+        font-size: 10px;
+        font-weight: 600;
+        color: root.danger ? Theme.danger : Theme.text-primary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// A drop-down of the designs that can be compared, with a tooltip. The standard drop-down has
+// none, so it sits in a rectangle that sizes itself like the drop-down does.
+component CompareChoice inherits Rectangle {
+    in property <string> hint;
+    // What a screen reader says ("First design to compare").
+    in property <string> reader_label;
+    in property <bool> enabled: true;
+    in-out property <int> index;
+
+    min-width: choice_combo.min-width;
+    min-height: choice_combo.min-height;
+    preferred-width: choice_combo.preferred-width;
+    preferred-height: choice_combo.preferred-height;
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    choice_combo := ComboBox {
+        width: root.width;
+        height: root.height;
+        enabled: root.enabled;
+        model: VariantsModel.choices;
+        current-index <=> root.index;
+        accessible-label: root.reader_label;
+        accessible-description: root.hint;
+    }
+}
+
+// One saved variant: its picture, its name and note, where it came from and when, and what
+// can be done with it.
+component VariantRowView inherits Rectangle {
+    in property <VariantRowData> entry;
+    // Saving, renaming and deleting are allowed (a design is open and nothing is running).
+    in property <bool> can_edit;
+    // Opening is allowed as well (the guide has not switched off undo and redo).
+    in property <bool> can_open;
+    callback open_requested();
+    callback rename_requested();
+    callback note_requested();
+    callback delete_requested();
+
+    // Why a button is switched off, or what it does while it is on.
+    property <string> busy_hint: "Switched off while something is being worked out.";
+
+    // The card plus the 4px gap that separates it from the next row.
+    height: 104px;
+
+    card := Rectangle {
+        y: 0px;
+        height: 100px;
+        background: root.entry.opened_from ? Theme.surface-selected : Theme.bg-input;
+        border-radius: Theme.radius-sm;
+        border-width: root.entry.opened_from ? 2px : 1px;
+        border-color: root.entry.opened_from ? Theme.accent-cyan : Theme.border-subtle;
+        clip: true;
+        accessible-role: AccessibleRole.list-item;
+        accessible-label: root.entry.name + (root.entry.opened_from ? ", working from this one" : "") + ", " + root.entry.age;
+        accessible-description: root.entry.note;
+
+        Tooltip { text: @markdown("Saved \{root.entry.exact}"); }
+
+        HorizontalLayout {
+            padding: 4px;
+            spacing: 8px;
+
+            Rectangle {
+                width: 72px;
+                height: 72px;
+                background: Theme.surface-sunken;
+                border-radius: Theme.radius-sm;
+
+                if root.entry.has_picture: Image {
+                    source: root.entry.picture;
+                    width: 100%;
+                    height: 100%;
+                    image-fit: contain;
+                }
+                if !root.entry.has_picture: Text {
+                    text: "No picture";
+                    font-size: 9px;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 2px;
+
+                HorizontalLayout {
+                    spacing: 6px;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.entry.name;
+                        font-size: 11px;
+                        font-weight: 700;
+                        color: Theme.text-primary;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    if root.entry.opened_from: Rectangle {
+                        background: Theme.primary;
+                        border-radius: Theme.radius-sm;
+                        width: pill_text.preferred-width + 12px;
+                        height: pill_text.preferred-height + 4px;
+                        Tooltip { text: @markdown("The next variant you save is marked as made from this one."); }
+                        pill_text := Text {
+                            text: "Working from";
+                            font-size: 9px;
+                            font-weight: 700;
+                            color: Theme.text-on-primary;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                Text {
+                    text: root.entry.parent == "" ? root.entry.age : root.entry.parent + " · " + root.entry.age;
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    overflow: elide;
+                }
+
+                if root.entry.note != "": Rectangle {
+                    height: 26px;
+                    clip: true;
+                    Text {
+                        width: 100%;
+                        text: root.entry.note;
+                        font-size: 10px;
+                        color: Theme.text-secondary;
+                        wrap: word-wrap;
+                        overflow: elide;
+                    }
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                HorizontalLayout {
+                    spacing: 4px;
+                    VariantAction {
+                        label: "Open";
+                        reader_label: "Open " + root.entry.name;
+                        hint: root.can_open
+                            ? "Replace the open design with this variant. It is one undo step, so Undo takes it back."
+                            : "Opening is switched off while something is being worked out or the lesson has switched off Undo and Redo.";
+                        enabled: root.can_open;
+                        clicked => { root.open_requested(); }
+                    }
+                    VariantAction {
+                        label: "Rename";
+                        reader_label: "Rename " + root.entry.name;
+                        hint: root.can_edit ? "Change the name of this variant." : root.busy_hint;
+                        enabled: root.can_edit;
+                        clicked => { root.rename_requested(); }
+                    }
+                    VariantAction {
+                        label: "Note";
+                        reader_label: "Edit the note of " + root.entry.name;
+                        hint: root.can_edit ? "Write or change the note that goes with this variant." : root.busy_hint;
+                        enabled: root.can_edit;
+                        clicked => { root.note_requested(); }
+                    }
+                    VariantAction {
+                        label: "Delete";
+                        reader_label: "Delete " + root.entry.name;
+                        hint: root.can_edit
+                            ? "Delete this variant from your library. You are asked first, and a deleted variant cannot be brought back."
+                            : root.busy_hint;
+                        danger: true;
+                        enabled: root.can_edit;
+                        clicked => { root.delete_requested(); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+        }
+    }
+}
+
+// The small form above the list: save a new variant, rename one, change its note, or ask
+// before deleting one. What it shows depends on `VariantsModel.form_mode`.
+component VariantForm inherits Rectangle {
+    // What the confirm button does in each mode: 1 save, 2 rename, 3 note, 4 delete.
+    property <string> ok_hint: VariantsModel.form_mode == 1
+        ? "Keep a variant with this name and note."
+        : (VariantsModel.form_mode == 2
+            ? "Give the variant this name."
+            : (VariantsModel.form_mode == 3
+                ? "Keep this note on the variant."
+                : "Delete the variant for good. It cannot be brought back."));
+
+    background: Theme.bg-input;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.border-medium;
+    // The form is as tall as what it holds, whatever the layout around it does.
+    min-height: form_column.preferred-height;
+    max-height: form_column.preferred-height;
+
+    // The text fields hand Escape up to this scope (a field itself has no key callback), so
+    // Escape cancels the form from either field.
+    FocusScope {
+        width: 100%;
+        height: 100%;
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                VariantsModel.cancel_form();
+                return accept;
+            }
+            reject
+        }
+
+        form_column := VerticalLayout {
+            padding: 8px;
+            spacing: 6px;
+
+            Text {
+                text: VariantsModel.form_title;
+                font-size: 12px;
+                font-weight: 700;
+                color: Theme.text-primary;
+                wrap: word-wrap;
+            }
+            if VariantsModel.form_hint != "": Text {
+                text: VariantsModel.form_hint;
+                font-size: 10px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+            if VariantsModel.form_mode == 1 || VariantsModel.form_mode == 2: FormRow {
+                label: "Name";
+                label_width: 48px;
+                tooltip: "A name you will recognise, up to 80 characters. Two variants may share a name.";
+                LineEdit {
+                    text <=> VariantsModel.form_name;
+                    enabled: !VariantsModel.busy;
+                    accessible-label: "Variant name";
+                    accepted => { VariantsModel.submit_form(); }
+                    changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                    init => { self.focus(); }
+                }
+            }
+            if VariantsModel.form_mode == 1 || VariantsModel.form_mode == 3: FormRow {
+                label: "Note";
+                label_width: 48px;
+                tooltip: "Optional: why you keep this design, for example steeper crown. Up to 400 characters.";
+                LineEdit {
+                    text <=> VariantsModel.form_note;
+                    enabled: !VariantsModel.busy;
+                    placeholder-text: "Optional, for example: steeper crown";
+                    accessible-label: "Variant note";
+                    accepted => { VariantsModel.submit_form(); }
+                    changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                    init => {
+                        if VariantsModel.form_mode == 3 {
+                            self.focus();
+                        }
+                    }
+                }
+            }
+            if VariantsModel.form_error != "": Text {
+                text: VariantsModel.form_error;
+                font-size: 10px;
+                color: Theme.danger;
+                wrap: word-wrap;
+                accessible-role: AccessibleRole.text;
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                TipButton {
+                    text: VariantsModel.form_ok;
+                    hint: root.ok_hint;
+                    primary: true;
+                    enabled: !VariantsModel.busy;
+                    clicked => { VariantsModel.submit_form(); }
+                }
+                TipButton {
+                    text: "Cancel";
+                    hint: "Close this form without changing anything. Escape does the same.";
+                    clicked => { VariantsModel.cancel_form(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+    }
+}
+
+// The text comparison of two designs: the cutting instructions as lines, with the lines
+// only one of the two has marked. Escape goes back to the list.
+component VariantDiffPage inherits Rectangle {
+    FocusScope {
+        width: 100%;
+        height: 100%;
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                VariantsModel.close_diff();
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            spacing: 6px;
+
+            HorizontalLayout {
+                spacing: 8px;
+                TipButton {
+                    text: "Back to variants";
+                    hint: "Close the comparison and go back to the list of variants. Escape does the same.";
+                    clicked => { VariantsModel.close_diff(); }
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: VariantsModel.diff_title;
+                    font-size: 12px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                    wrap: word-wrap;
+                    vertical-alignment: center;
+                }
+            }
+
+            Text {
+                text: VariantsModel.diff_busy ? "Working out the text..." : VariantsModel.diff_summary;
+                font-size: 10px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+                min-height: 80px;
+                background: Theme.bg-input;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                clip: true;
+
+                ListView {
+                    for row in VariantsModel.diff_rows: Rectangle {
+                        height: 18px;
+                        accessible-role: AccessibleRole.list-item;
+                        accessible-label: (row.kind == 1 ? "Added: " : (row.kind == 2 ? "Removed: " : "")) + row.text;
+
+                        // The tint behind a changed line. Colour is never the only cue: an added
+                        // line has only a new line number, a removed line only an old one.
+                        Rectangle {
+                            background: row.kind == 1 ? Theme.compare-added
+                                : (row.kind == 2 ? Theme.compare-removed : transparent);
+                            opacity: 0.18;
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            spacing: 8px;
+
+                            Text {
+                                width: 36px;
+                                text: row.old_line;
+                                font-family: "Consolas";
+                                font-size: 11px;
+                                color: Theme.text-muted;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                width: 36px;
+                                text: row.new_line;
+                                font-family: "Consolas";
+                                font-size: 11px;
+                                color: Theme.text-muted;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+                            Rectangle {
+                                width: 3px;
+                                background: row.kind == 1 ? Theme.compare-added
+                                    : (row.kind == 2 ? Theme.compare-removed : transparent);
+                            }
+                            Text {
+                                horizontal-stretch: 1;
+                                text: row.text;
+                                font-family: "Consolas";
+                                font-size: 12px;
+                                font-italic: row.kind == 3;
+                                color: row.kind == 3 ? Theme.text-muted : Theme.text-primary;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The History tab's "Variants" view. A variant is a named copy of the open design, kept in
+// the local library under the design's id (never in the design file): save one from the
+// design as it is or from any history step, open one to go back to it (one undo step),
+// and compare any two as pictures or as text.
+//
+// Simple and Advanced (`GuideModel.shows_advanced()`): the Simple interface leaves out
+// "Compare text" (the text comparison of the cutting instructions); everything else is in
+// both. Nothing here holds a setting, so there is no "advanced settings are in use" note.
+export component VariantsSection inherits Rectangle {
+    // Saving, renaming and deleting need a real design and nothing running in the background.
+    property <bool> can_edit: EditorModel.enabled && VariantsModel.design_open && !VariantsModel.busy;
+    // Opening replaces the design, so it is switched off with undo and redo during a lesson.
+    property <bool> can_open: root.can_edit && GuideModel.allows_history();
+    property <bool> can_compare: root.can_edit
+        && VariantsModel.choices.length >= 2
+        && VariantsModel.compare_first >= 0
+        && VariantsModel.compare_second >= 0
+        && VariantsModel.compare_first != VariantsModel.compare_second;
+    // Whether the Advanced controls show.
+    property <bool> advanced: GuideModel.shows_advanced();
+
+    init => {
+        VariantsModel.refresh();
+    }
+
+    if VariantsModel.diff_open: VariantDiffPage {
+        width: 100%;
+        height: 100%;
+    }
+
+    if !VariantsModel.diff_open: ScrollView {
+        width: 100%;
+        height: 100%;
+
+        VerticalLayout {
+            spacing: 6px;
+            // Packed at the top: a short list would otherwise be stretched to the view's
+            // height, spreading the rows apart and blowing up the Save button.
+            alignment: start;
+
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    horizontal-stretch: 1;
+                    text: "Variants";
+                    font-size: 12px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                }
+                if VariantsModel.busy: Text {
+                    text: "Working...";
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+                TipButton {
+                    text: "Save as variant...";
+                    hint: root.can_edit
+                        ? "Keep a named copy of the design as it is now. Variants are kept in your library, not in the design file. See the glossary."
+                        : "Switched off until a design is open and nothing is being worked out.";
+                    enabled: root.can_edit;
+                    clicked => { VariantsModel.begin_save(-1); }
+                }
+            }
+
+            Text {
+                text: "A variant is a named copy of this design. Variants are kept in your library, not in the design file. Open one to go back to it; Undo takes that back in one step.";
+                font-size: 10px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+
+            if VariantsModel.form_mode != 0: VariantForm { }
+
+            if !VariantsModel.design_open: Text {
+                text: "Open or create a design to save variants.";
+                font-size: 11px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+
+            if VariantsModel.list_error != "": Text {
+                text: VariantsModel.list_error;
+                font-size: 10px;
+                color: Theme.danger;
+                wrap: word-wrap;
+                accessible-role: AccessibleRole.text;
+            }
+
+            if VariantsModel.design_open && VariantsModel.choices.length >= 1: Rectangle {
+                background: Theme.bg-input;
+                border-radius: Theme.radius-sm;
+                min-height: compare_column.preferred-height;
+                max-height: compare_column.preferred-height;
+
+                compare_column := VerticalLayout {
+                    padding: 8px;
+                    spacing: 6px;
+
+                    Text {
+                        text: "Compare two designs";
+                        font-size: 11px;
+                        font-weight: 700;
+                        color: Theme.text-primary;
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        CompareChoice {
+                            horizontal-stretch: 1;
+                            enabled: root.can_edit;
+                            hint: "The first design to compare. It is shown on the left in a picture comparison.";
+                            reader_label: "First design to compare";
+                            index <=> VariantsModel.compare_first;
+                        }
+                        Text {
+                            text: "and";
+                            font-size: 10px;
+                            color: Theme.text-muted;
+                            vertical-alignment: center;
+                        }
+                        CompareChoice {
+                            horizontal-stretch: 1;
+                            enabled: root.can_edit;
+                            hint: "The second design to compare. It is shown on the right in a picture comparison.";
+                            reader_label: "Second design to compare";
+                            index <=> VariantsModel.compare_second;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        TipButton {
+                            text: "Compare pictures";
+                            hint: root.can_compare
+                                ? "Open the compare window with the two designs side by side. It only looks: nothing is changed."
+                                : "Choose two different designs above to compare them.";
+                            enabled: root.can_compare;
+                            clicked => { VariantsModel.compare_pictures(); }
+                        }
+                        if root.advanced: TipButton {
+                            text: "Compare text";
+                            hint: root.can_compare
+                                ? "Show the cutting instructions of the two designs line by line, with the lines only one of them has marked."
+                                : "Choose two different designs above to compare them.";
+                            enabled: root.can_compare;
+                            clicked => { VariantsModel.compare_text(); }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    if VariantsModel.choices.length < 2: Text {
+                        text: "Save a variant first. Then you can compare it with the design as it is now.";
+                        font-size: 10px;
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+                    if VariantsModel.choices.length >= 2 && VariantsModel.compare_first == VariantsModel.compare_second: Text {
+                        text: "Choose two different designs to compare.";
+                        font-size: 10px;
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+
+            if VariantsModel.design_open && VariantsModel.loaded && VariantsModel.rows.length == 0 && VariantsModel.list_error == "": Text {
+                text: "No variants yet. Save one to keep this design as it is now, then go on and try something else.";
+                font-size: 11px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+
+            for item in VariantsModel.rows: VariantRowView {
+                entry: item;
+                can_edit: root.can_edit;
+                can_open: root.can_open;
+                open_requested => { VariantsModel.open_variant(item.key); }
+                rename_requested => { VariantsModel.begin_rename(item.key); }
+                note_requested => { VariantsModel.begin_note(item.key); }
+                delete_requested => { VariantsModel.begin_delete(item.key); }
+            }
+        }
+    }
+}

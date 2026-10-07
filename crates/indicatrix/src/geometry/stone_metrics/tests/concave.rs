@@ -339,3 +339,55 @@ fn edge_visibility_hides_tessellation_seams_and_shows_facet_tool_boundaries() {
     }
     assert!(seen.iter().all(|&c| c > 0), "every class occurs: {seen:?}");
 }
+
+/// Every vertex of a tool's tessellated polytope lies inside the box `tool_bounds` reports,
+/// for every shape, with and without each sweep, at the production and the coarse segment
+/// counts -- the box is what lets a caller skip a mesh build, so it must never be smaller.
+#[test]
+fn tool_bounds_contain_the_tessellated_polytope_of_every_tool() {
+    use crate::geometry::{stone_metrics::tool_bounds, tool::ToolSweep};
+    let axis = Vec3::new(0.3, -0.5, 0.8).normalize();
+    let centre = Vec3::new(0.2, -0.1, 0.4);
+    let shapes = [
+        ToolPrimitive::ball(centre, 0.45),
+        ToolPrimitive::cylinder(centre, axis, 0.3, 0.8),
+        ToolPrimitive::frustum(centre, axis, 0.5, 0.2, 0.6),
+        ToolPrimitive::frustum(centre, axis, 0.1, 0.4, 0.7),
+        ToolPrimitive::bicone(centre, axis, 0.5, 0.6),
+    ];
+    for shape in shapes {
+        // Perpendicular to this shape's own axis (a ball's is +Z), for the across-axis sweep.
+        let own_axis = Vec3::new(shape.axis[0], shape.axis[1], shape.axis[2]);
+        let across = own_axis.cross(Vec3::X).normalize();
+        let variants = [
+            shape,
+            shape.with_sweep(ToolSweep::AlongAxis, 0.35, Vec3::ZERO),
+            shape.with_sweep(ToolSweep::AcrossAxis, 0.35, across),
+        ];
+        for tool in variants {
+            for segments in [TOOL_SEGMENTS, 8] {
+                let bounds = tool_bounds(&tool, segments).expect("a valid tool has bounds");
+                let SolidStatus::Closed(mesh) = build_solid_mesh(&tessellate_tool(&tool, segments))
+                else {
+                    panic!("{tool:?} at {segments} segments must close on its own");
+                };
+                for (_, ring) in &mesh.rings {
+                    for &vertex in ring {
+                        for (box_axis, half) in bounds.axes.iter().zip(bounds.half_extents) {
+                            let along = (vertex - bounds.centre).dot(*box_axis).abs();
+                            assert!(
+                                along <= half,
+                                "{tool:?} at {segments} segments: vertex {vertex:?} is {along} \
+                                 along an axis whose half-extent is {half}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // An invalid tool has neither a polytope nor bounds.
+    let mut broken = ToolPrimitive::ball(Vec3::ZERO, 0.5);
+    broken.origin[3] = f32::NAN;
+    assert!(tool_bounds(&broken, TOOL_SEGMENTS).is_none());
+}

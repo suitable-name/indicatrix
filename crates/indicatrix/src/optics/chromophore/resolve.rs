@@ -1,4 +1,4 @@
-//! Forward model resolution from [`colorRecipe`] to [`AbsorptionTensor`].
+//! Forward model resolution from [`ColorRecipe`] to [`AbsorptionTensor`].
 //!
 //! Dispatch is on the chromophore `kind` and its data fields (elements, partners, valence,
 //! end member), never on id strings. Enforces:
@@ -24,7 +24,7 @@ use super::{
     catalogue::{
         ChromophoreCatalogue, ChromophoreData, HostData, TreatmentEffectData, species_element,
     },
-    recipe::{ResolveError, ResolveWarning, colorRecipe},
+    recipe::{ColorRecipe, ResolveError, ResolveWarning},
 };
 use crate::{
     color::{
@@ -45,7 +45,7 @@ type TaggedBand = (AbsorptionBand, String);
 /// Per-chromophore multipliers from `remove_centre` effects: `(bands_nm filter, factor)`.
 pub(super) type Removal = (Vec<f64>, f64);
 
-/// Resolves a [`colorRecipe`] into an [`AbsorptionTensor`].
+/// Resolves a [`ColorRecipe`] into an [`AbsorptionTensor`].
 ///
 /// # Errors
 ///
@@ -53,7 +53,7 @@ pub(super) type Removal = (Vec<f64>, f64);
 /// - [`ResolveError::NonFinite`] for a NaN/infinite amount, strength or reference path;
 /// - [`ResolveError::EndMemberSumExceeded`] if end-member fractions sum to more than 1.
 pub fn resolve(
-    recipe: &colorRecipe,
+    recipe: &ColorRecipe,
     catalogue: &ChromophoreCatalogue,
 ) -> Result<(AbsorptionTensor, Vec<ResolveWarning>), ResolveError> {
     resolve_impl(recipe, catalogue, true)
@@ -63,14 +63,14 @@ pub fn resolve(
 /// the solver's linear forward model corresponds to. Not for rendering (more than 8 bands).
 #[cfg(test)]
 pub(super) fn resolve_unbudgeted(
-    recipe: &colorRecipe,
+    recipe: &ColorRecipe,
     catalogue: &ChromophoreCatalogue,
 ) -> Result<AbsorptionTensor, ResolveError> {
     resolve_impl(recipe, catalogue, false).map(|(t, _)| t)
 }
 
 fn resolve_impl(
-    recipe: &colorRecipe,
+    recipe: &ColorRecipe,
     catalogue: &ChromophoreCatalogue,
     budget: bool,
 ) -> Result<(AbsorptionTensor, Vec<ResolveWarning>), ResolveError> {
@@ -203,7 +203,7 @@ fn relation_warnings(
 pub(super) fn clamped_amounts(
     catalogue: &ChromophoreCatalogue,
     host: &HostData,
-    recipe: &colorRecipe,
+    recipe: &ColorRecipe,
     warnings: &mut Vec<ResolveWarning>,
 ) -> BTreeMap<String, f64> {
     let selectable = catalogue.selectable_elements(&host.id);
@@ -340,7 +340,7 @@ pub(super) struct Treated {
 /// those whose required elements are absent.
 pub(super) fn apply_treatments(
     host: &HostData,
-    recipe: &colorRecipe,
+    recipe: &ColorRecipe,
     amounts: &BTreeMap<String, f64>,
     warnings: &mut Vec<ResolveWarning>,
 ) -> Treated {
@@ -819,7 +819,7 @@ total_atom_density_cm3 = 5.0e22
 
     #[test]
     fn fe_alone_gives_no_fe_ti_band() {
-        let mut r = colorRecipe::new("corundum", cat().data_version);
+        let mut r = ColorRecipe::new("corundum", cat().data_version);
         r.set_amount("Fe", 1000.0);
         let (t, _) = resolve(&r, cat()).expect("resolves");
         assert!(
@@ -829,7 +829,7 @@ total_atom_density_cm3 = 5.0e22
         );
         assert!(peak_near(&t.e_ray, 580.0).is_none());
         // Ti alone is colorless too.
-        let mut r = colorRecipe::new("corundum", cat().data_version);
+        let mut r = ColorRecipe::new("corundum", cat().data_version);
         r.set_amount("Ti", 500.0);
         let (t, _) = resolve(&r, cat()).expect("resolves");
         assert!(t.o_ray.is_empty() && t.e_ray.is_empty(), "{:?}", t.o_ray);
@@ -842,7 +842,7 @@ total_atom_density_cm3 = 5.0e22
         let (o_nm, o_k) = data_band("corundum", "Fe2+-Ti4+", "o");
         let (e_nm, e_k) = data_band("corundum", "Fe2+-Ti4+", "e");
         let peak = |fe: f64, ti: f64, mg: f64| {
-            let mut r = colorRecipe::new("corundum", cat().data_version);
+            let mut r = ColorRecipe::new("corundum", cat().data_version);
             r.set_amount("Fe", fe);
             r.set_amount("Ti", ti);
             if mg > 0.0 {
@@ -885,7 +885,7 @@ total_atom_density_cm3 = 5.0e22
     }
 
     fn resolve_o(fe: f64, ti: f64, mg: f64) -> Vec<AbsorptionBand> {
-        let mut r = colorRecipe::new("corundum", cat().data_version);
+        let mut r = ColorRecipe::new("corundum", cat().data_version);
         r.set_amount("Fe", fe);
         r.set_amount("Ti", ti);
         r.set_amount("Mg", mg);
@@ -895,7 +895,7 @@ total_atom_density_cm3 = 5.0e22
     #[test]
     fn random_pair_law_is_z_ca_cb_in_ppm_site() {
         let cat = fixture();
-        let mut r = colorRecipe::new("toy", cat.data_version);
+        let mut r = ColorRecipe::new("toy", cat.data_version);
         r.set_amount("Fe", 100.0); // Fe2+ 50 ppm
         r.set_amount("Ti", 40.0);
         let (t, _) = resolve(&r, &cat).expect("resolves");
@@ -903,7 +903,7 @@ total_atom_density_cm3 = 5.0e22
         let got = f64::from(peak_near(&t.o_ray, 600.0).expect("pair band"));
         assert!((got - expect).abs() / expect < 1e-4, "{got} vs {expect}");
         // One element alone activates nothing.
-        let mut r = colorRecipe::new("toy", cat.data_version);
+        let mut r = ColorRecipe::new("toy", cat.data_version);
         r.set_amount("Fe", 100.0);
         let (t, _) = resolve(&r, &cat).expect("resolves");
         assert!(peak_near(&t.o_ray, 600.0).is_none());
@@ -913,7 +913,7 @@ total_atom_density_cm3 = 5.0e22
     fn suspect_chromophores_and_bands_are_skipped_and_not_offered() {
         let cat = fixture();
         assert_eq!(cat.selectable_elements("toy"), vec!["Cr", "Fe", "Ti"]);
-        let mut r = colorRecipe::new("toy", cat.data_version);
+        let mut r = ColorRecipe::new("toy", cat.data_version);
         r.set_amount("Cr", 10.0);
         let (t, _) = resolve(&r, &cat).expect("resolves");
         assert!(
@@ -930,7 +930,7 @@ total_atom_density_cm3 = 5.0e22
     #[test]
     fn missing_pol_key_is_weight_zero_except_isotropic() {
         let cat = fixture();
-        let mut r = colorRecipe::new("toy", cat.data_version);
+        let mut r = ColorRecipe::new("toy", cat.data_version);
         r.set_amount("Cr", 10.0);
         let (t, _) = resolve(&r, &cat).expect("resolves");
         assert!(peak_near(&t.o_ray, 550.0).is_some());
@@ -940,7 +940,7 @@ total_atom_density_cm3 = 5.0e22
         );
         assert!(peak_near(&t.e_ray, 450.0).is_some());
 
-        let mut r = colorRecipe::new("iso", cat.data_version);
+        let mut r = ColorRecipe::new("iso", cat.data_version);
         r.set_amount("Cr", 10.0);
         let (t, _) = resolve(&r, &cat).expect("resolves");
         assert!(
@@ -951,10 +951,10 @@ total_atom_density_cm3 = 5.0e22
 
     #[test]
     fn non_finite_amounts_are_rejected_and_amounts_clamped() {
-        let mut r = colorRecipe::new("corundum", cat().data_version);
+        let mut r = ColorRecipe::new("corundum", cat().data_version);
         assert!(!r.set_amount("Cr", f64::NAN));
         assert!(!r.set_amount("Cr", f64::INFINITY));
-        assert!(r.entries.is_empty());
+        assert_eq!(r.entries.len(), 0, "no entries");
         r.entries.push(super::super::recipe::RecipeEntry {
             id: "Cr".into(),
             amount: f64::NAN,
@@ -971,7 +971,7 @@ total_atom_density_cm3 = 5.0e22
         ));
 
         // 1e300 is clamped to conc_max (2.0 wt% Cr2O3): U-band peak = 2.0 * k / 10 mm^-1.
-        let mut r = colorRecipe::new("corundum", cat().data_version);
+        let mut r = ColorRecipe::new("corundum", cat().data_version);
         r.set_amount("Cr", 1e300);
         let (t, w) = resolve(&r, cat()).expect("resolves");
         let (u_nm, u_k) = data_band("corundum", "Cr3+", "o");
@@ -996,7 +996,7 @@ total_atom_density_cm3 = 5.0e22
 
     #[test]
     fn bands_are_emitted_in_centre_width_id_order() {
-        let mut r = colorRecipe::new("corundum", cat().data_version);
+        let mut r = ColorRecipe::new("corundum", cat().data_version);
         for (el, a) in [("Cr", 0.3), ("Fe", 800.0), ("Ti", 100.0), ("V", 100.0)] {
             r.set_amount(el, a);
         }
@@ -1015,7 +1015,7 @@ total_atom_density_cm3 = 5.0e22
         // Quartz: Fe and Al only color through the gamma-irradiation centres.
         let c = cat();
         assert!(c.selectable_elements("quartz").contains(&"Al".to_string()));
-        let mut r = colorRecipe::new("quartz", c.data_version);
+        let mut r = ColorRecipe::new("quartz", c.data_version);
         r.set_amount("Al", 50.0);
         let (t, _) = resolve(&r, c).expect("resolves");
         assert!(t.o_ray.is_empty(), "Al hole centre needs irradiation");
@@ -1035,7 +1035,7 @@ total_atom_density_cm3 = 5.0e22
                 || t2.o_ray.iter().map(|b| b.peak).sum::<f32>() > smoky_peak
         );
         // A treatment whose required element is absent is skipped with a warning.
-        let mut r = colorRecipe::new("quartz", c.data_version);
+        let mut r = ColorRecipe::new("quartz", c.data_version);
         r.set_amount("Al", 50.0);
         r.treatments.push("thermal_anneal_450".to_string());
         let (_, w) = resolve(&r, c).expect("resolves");
@@ -1045,7 +1045,7 @@ total_atom_density_cm3 = 5.0e22
         );
 
         // Diamond: nitrogen reaches the C-centre (the other N species are unpopulated).
-        let mut r = colorRecipe::new("diamond", c.data_version);
+        let mut r = ColorRecipe::new("diamond", c.data_version);
         r.set_amount("N", 100.0);
         let (t, _) = resolve(&r, c).expect("resolves");
         assert!(!t.o_ray.is_empty(), "diamond N must color");
@@ -1056,7 +1056,7 @@ total_atom_density_cm3 = 5.0e22
         let fe2_reduced = (1.0 - fe2_default).mul_add(0.8, fe2_default);
         let (o_nm, _) = data_band("corundum", "Fe2+-Ti4+", "o");
         let blue = |treat: bool| {
-            let mut r = colorRecipe::new("corundum", c.data_version);
+            let mut r = ColorRecipe::new("corundum", c.data_version);
             r.set_amount("Fe", 200.0);
             r.set_amount("Ti", 300.0);
             if treat {
@@ -1073,7 +1073,7 @@ total_atom_density_cm3 = 5.0e22
     fn heated_tanzanite_reduces_coefficient_and_keeps_weights() {
         let c = cat();
         let mk = |heated: bool| {
-            let mut r = colorRecipe::new("tanzanite", c.data_version);
+            let mut r = ColorRecipe::new("tanzanite", c.data_version);
             r.set_amount("V", 500.0);
             if heated {
                 r.treatments.push("air_anneal_550".to_string());
@@ -1085,7 +1085,7 @@ total_atom_density_cm3 = 5.0e22
         // coefficient factor is applied to those bands only, the polarization weights are not.
         let eff = &c.host("tanzanite").expect("tanzanite").treatments[0].effects[0];
         let factor = eff.factor.expect("factor");
-        assert!(!eff.bands_nm.is_empty());
+        assert_ne!(eff.bands_nm.len(), 0, "the effect names its bands");
         let brown = eff.bands_nm[0] as f32;
         let raw_brown = peak_near(&raw.e_ray, brown).expect("brown band in the unheated gamma ray");
         match peak_near(&heated.e_ray, brown) {
@@ -1111,10 +1111,10 @@ total_atom_density_cm3 = 5.0e22
             "the remainder is not selectable"
         );
 
-        let mut r = colorRecipe::new("garnet_pyralspite", c.data_version);
+        let mut r = ColorRecipe::new("garnet_pyralspite", c.data_version);
         r.set_amount("almandine", 0.3);
         let (t, _) = resolve(&r, c).expect("resolves");
-        assert!(!t.o_ray.is_empty());
+        assert_ne!(t.o_ray.len(), 0, "the ordinary ray has bands");
         let lab = body_colors(&t, 5.0, Illuminant::D65).unpolarised.lab;
         assert!(lab[0] < 90.0, "almandine must absorb: {lab:?}");
 
@@ -1140,7 +1140,7 @@ total_atom_density_cm3 = 5.0e22
         assert!((sg - 3.885).abs() < 1e-12);
         let (ri, _) = c
             .recipe_optics(&{
-                let mut r = colorRecipe::new("garnet_pyralspite", c.data_version);
+                let mut r = ColorRecipe::new("garnet_pyralspite", c.data_version);
                 r.set_amount("almandine", 0.5);
                 r
             })
@@ -1166,7 +1166,7 @@ total_atom_density_cm3 = 5.0e22
         }
         // 1000 ppm_site of V = 400 ppma_all: the V3+ visible band is k * 400 / 10 mm^-1.
         let (v_nm, v_k) = data_band("corundum", "V3+", "o");
-        let mut r = colorRecipe::new("corundum", c.data_version);
+        let mut r = ColorRecipe::new("corundum", c.data_version);
         r.set_amount("V", 1000.0);
         let (t, _) = resolve(&r, c).expect("resolves");
         let p = f64::from(peak_near(&t.o_ray, v_nm).expect("band"));
@@ -1176,7 +1176,7 @@ total_atom_density_cm3 = 5.0e22
     #[test]
     fn violated_requires_and_excludes_are_reported_without_changing_the_bands() {
         let c = cat();
-        let mut both = colorRecipe::new("diamond", c.data_version);
+        let mut both = ColorRecipe::new("diamond", c.data_version);
         both.set_amount("N", 200.0);
         both.set_amount("B", 0.5);
         let (tensor, warnings) = resolve(&both, c).expect("resolves");
@@ -1188,9 +1188,9 @@ total_atom_density_cm3 = 5.0e22
             )),
             "{warnings:?}"
         );
-        assert!(!tensor.o_ray.is_empty());
+        assert_ne!(tensor.o_ray.len(), 0, "the ordinary ray has bands");
         // Nitrogen alone violates nothing.
-        let mut n_only = colorRecipe::new("diamond", c.data_version);
+        let mut n_only = ColorRecipe::new("diamond", c.data_version);
         n_only.set_amount("N", 200.0);
         let (_, warnings) = resolve(&n_only, c).expect("resolves");
         assert!(

@@ -55,6 +55,13 @@ pub(super) struct ExitPath {
     pub(super) exit_cos_theta: f32,
     pub(super) facet_idx: usize,
     pub(super) bounces: u32,
+    /// Total internal path of the ray in model units: the sum of every internal segment
+    /// length (`next_rec.t` of each bounce, the final exit segment included), so a ray that
+    /// exits at bounce 0 has one segment. Together with `transmittance` (the Fresnel
+    /// weight) it describes the ray's contribution to the face-up colour: the weight says
+    /// how much light the ray carries, the path how far that light travelled through the
+    /// stone's body colour (Beer-Lambert).
+    pub(super) path_len: f32,
 }
 
 /// Unpolarized Fresnel transmittance at a dielectric interface, given the cosines of the
@@ -130,6 +137,7 @@ pub(super) fn trace_wavelength(
     let mut exit_cos_theta = 0.0f32;
     let mut exit_facet_idx = usize::MAX;
     let mut exit_bounces = 0u32;
+    let mut path_len = 0.0f32;
 
     for bounce in 0..10 {
         let inside_ray = Ray {
@@ -138,6 +146,7 @@ pub(super) fn trace_wavelength(
         };
         let next_hit = stone.intersect(inside_ray);
         let Some(next_rec) = next_hit else { break };
+        path_len += next_rec.t;
         let next_point = inside_ray.origin + next_rec.t * inside_ray.dir;
         let n_out = next_rec.normal; // outward-pointing facet normal
 
@@ -180,6 +189,7 @@ pub(super) fn trace_wavelength(
             exit_cos_theta,
             facet_idx: exit_facet_idx,
             bounces: exit_bounces,
+            path_len,
         })
     } else {
         RayFate::Absorbed

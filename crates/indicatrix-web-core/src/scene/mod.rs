@@ -46,10 +46,10 @@ use indicatrix::{
 };
 use indicatrix_cut_core::{
     MaterialSelection,
-    native::{Snapshotcolor, gem_material_from_custom_snapshot, snapshot_color},
+    native::{SnapshotColor, gem_material_from_custom_snapshot, snapshot_color},
 };
 use indicatrix_editor::material_lookup::{EditorMaterialLookup, traced_gem_material};
-use indicatrix_formats::native::{CustomMaterialSnapshot, colorRecipeDto};
+use indicatrix_formats::native::{ColorRecipeDto, CustomMaterialSnapshot};
 use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
@@ -128,7 +128,12 @@ pub struct CustomMaterialSpec {
     pub absorption_rgb: Option<[f64; 3]>,
     /// The snapshot's physics color recipe (`color_recipe`); when present the material
     /// renders from its stored resolved bands, `absorption_rgb` being only the fallback.
-    pub color_recipe: Option<colorRecipeDto>,
+    pub color_recipe: Option<ColorRecipeDto>,
+    /// The snapshot's seven-band body colour (`absorption_bands_per_mm`, rows
+    /// `[centre_nm, width_nm, amplitude_per_mm]`); empty is "no bands" and `absorption_rgb`
+    /// colours the material. Wire version 12.
+    #[serde(default)]
+    pub absorption_bands: Vec<[f64; 3]>,
 }
 
 impl CustomMaterialSpec {
@@ -142,10 +147,16 @@ impl CustomMaterialSpec {
             birefringence_delta: snapshot.birefringence_delta,
             absorption_rgb: snapshot.absorption_rgb,
             color_recipe: snapshot.color_recipe.clone(),
+            absorption_bands: snapshot.absorption_bands_per_mm.clone().unwrap_or_default(),
         }
     }
 
     fn to_snapshot(&self) -> CustomMaterialSnapshot {
+        let rows: Vec<[f32; 3]> = self
+            .absorption_bands
+            .iter()
+            .map(|row| row.map(|v| v as f32))
+            .collect();
         CustomMaterialSnapshot::new(
             self.mean_ri,
             self.dispersion_delta,
@@ -156,6 +167,7 @@ impl CustomMaterialSpec {
         )
         .with_absorption_rgb(self.absorption_rgb)
         .with_color_recipe(self.color_recipe.clone())
+        .with_absorption_bands(&rows)
     }
 
     /// Builds the material through `native::gem_material_from_custom_snapshot`, the
@@ -176,18 +188,18 @@ impl CustomMaterialSpec {
         self.color_recipe.is_some()
             && matches!(
                 snapshot_color(&self.to_snapshot()),
-                Snapshotcolor::Physics(_)
+                SnapshotColor::Physics(_)
             )
     }
 
     /// The fluorescence this material renders with: the emitters of its physics recipe
-    /// (`colorMode::fluorescence`, resolved from the recipe's elements and concentrations
+    /// (`ColorMode::fluorescence`, resolved from the recipe's elements and concentrations
     /// against the catalogue), empty for every other material -- fantasy colors, edited
     /// ones ([`Self::is_physics_color`] false) and recipes without emitters.
     #[must_use]
     pub fn fluorescence(&self) -> Fluorescence {
         match snapshot_color(&self.to_snapshot()) {
-            Snapshotcolor::Physics(mode) => mode.fluorescence(ChromophoreCatalogue::global()),
+            SnapshotColor::Physics(mode) => mode.fluorescence(ChromophoreCatalogue::global()),
             _ => Fluorescence::new(Vec::new()),
         }
     }
@@ -195,28 +207,46 @@ impl CustomMaterialSpec {
 
 /// The linked design's per-design material overrides (`MaterialSelection`'s RI
 /// override and body color).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct DesignMaterialOverrides {
     /// `MaterialSelection::refractive_index_override`: a flat dispersion at this `n_d`.
     pub refractive_index_override: Option<f64>,
     /// `MaterialSelection::body_color_override`: an isotropic body color.
     pub body_color_override: Option<[f32; 3]>,
+    /// `MaterialSelection::body_color_bands_override`: the seven-band body colour of the
+    /// path-aware L*C*h editor, rows `[centre_nm, width_nm, amplitude_per_mm]`. Empty is
+    /// "no bands" (the triple above colours the stone); non-empty bands win over the triple.
+    /// Wire version 12.
+    #[serde(default)]
+    pub body_color_bands: Vec<[f32; 3]>,
+    /// `MaterialSelection::absorption_path_scale_override`: mm per model unit for the bands.
+    /// Wire version 12.
+    #[serde(default)]
+    pub absorption_path_scale_override: Option<f32>,
 }
 
 impl DesignMaterialOverrides {
-    /// Copies the two render-relevant overrides from a design's selection.
+    /// Copies the render-relevant overrides from a design's selection.
     #[must_use]
-    pub const fn from_selection(selection: &MaterialSelection) -> Self {
+    pub fn from_selection(selection: &MaterialSelection) -> Self {
         Self {
             refractive_index_override: selection.refractive_index_override,
             body_color_override: selection.body_color_override,
+            body_color_bands: selection
+                .body_color_bands_override
+                .clone()
+                .unwrap_or_default(),
+            absorption_path_scale_override: selection.absorption_path_scale_override,
         }
     }
 
-    fn to_selection(self) -> MaterialSelection {
+    fn to_selection(&self) -> MaterialSelection {
+        let bands = (!self.body_color_bands.is_empty()).then(|| self.body_color_bands.clone());
         MaterialSelection {
             refractive_index_override: self.refractive_index_override,
             body_color_override: self.body_color_override,
+            absorption_path_scale_override: bands.as_ref().and(self.absorption_path_scale_override),
+            body_color_bands_override: bands,
             ..MaterialSelection::default()
         }
     }
@@ -294,7 +324,7 @@ pub struct CameraSpec {
 /// Studio lighting: preset, exposure, light direction and backdrop.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct LightingSpec {
-    /// `LightingPreset::index` (0-6).
+    /// `LightingPreset::index` (0-14; see `LightingPreset::ALL`).
     pub preset_index: i32,
     /// Exposure multiplier.
     pub exposure: f32,
@@ -304,6 +334,9 @@ pub struct LightingSpec {
     pub light_pitch: f32,
     /// `render_setup::Backdrop::index` (0 as lit, 1 grey, 2 white).
     pub backdrop_index: i32,
+    /// Head-shadow radius in degrees of the lit presets (`0.0` off, default `16.0`,
+    /// `EnvironmentSource::Studio::head_shadow_deg`); appended in protocol v11.
+    pub head_shadow_deg: f32,
 }
 
 impl LightingSpec {
@@ -315,6 +348,7 @@ impl LightingSpec {
         light_yaw: f32,
         light_pitch: f32,
         backdrop: Backdrop,
+        head_shadow_deg: f32,
     ) -> Self {
         Self {
             preset_index: preset.index(),
@@ -322,6 +356,7 @@ impl LightingSpec {
             light_yaw,
             light_pitch,
             backdrop_index: backdrop.index(),
+            head_shadow_deg,
         }
     }
 
@@ -343,6 +378,7 @@ impl LightingSpec {
         self.preset()
             .studio(self.exposure, self.light_yaw, self.light_pitch)
             .with_backdrop(self.backdrop().level())
+            .with_head_shadow(self.head_shadow_deg)
     }
 }
 
@@ -451,10 +487,12 @@ pub fn resolve_scene_material(
     resolve_scene_material_with(spec, planes, false)
 }
 
-/// [`resolve_scene_material`] for a traced material whose color is (`physics_color`) or is
-/// not a physics recipe -- the flag comes from [`CustomMaterialSpec::is_physics_color`] of the
-/// traced custom material, never from the built material's bands. A physics material
-/// takes the 7 mm default stone width when `overrides.stone_width_mm` is 0.
+/// [`resolve_scene_material`] with an explicit `physics_color` flag.
+///
+/// The flag says whether the traced material's color is a physics recipe. It comes from
+/// [`CustomMaterialSpec::is_physics_color`] of the traced custom material, never from the
+/// built material's bands. A physics material takes the 7 mm default stone width when
+/// `overrides.stone_width_mm` is 0.
 ///
 /// [`resolve_scene_material`] itself passes `false`: a [`MaterialSpec`] carries built
 /// `GemMaterial`s only, so a caller that holds [`CustomMaterialSpec`]s calls this.
@@ -470,7 +508,7 @@ pub fn resolve_scene_material_with(
 ) -> Result<GemMaterial, SceneError> {
     let materials = GemMaterial::all_materials();
     let custom = &spec.custom_materials;
-    let material_override = spec.linked_design.and_then(|linked| {
+    let material_override = spec.linked_design.as_ref().and_then(|linked| {
         traced_gem_material(
             &spec.name,
             &linked.to_selection(),
@@ -721,11 +759,11 @@ mod physics_flag_tests {
     use super::*;
     use indicatrix::{
         geometry::cuts::StandardGemCuts,
-        optics::chromophore::{ChromophoreCatalogue, ResolvedBands, colorRecipe, resolve},
+        optics::chromophore::{ChromophoreCatalogue, ColorRecipe, ResolvedBands, resolve},
     };
-    use indicatrix_cut_core::{material::colorMode, native::color_recipe_dto};
+    use indicatrix_cut_core::{material::ColorMode, native::color_recipe_dto};
 
-    fn spec_with(mode: Option<&colorMode>, rgb: [f32; 3]) -> CustomMaterialSpec {
+    fn spec_with(mode: Option<&ColorMode>, rgb: [f32; 3]) -> CustomMaterialSpec {
         CustomMaterialSpec {
             name: "Ruby X".to_string(),
             mean_ri: 1.77,
@@ -733,15 +771,16 @@ mod physics_flag_tests {
             birefringence_delta: -0.008,
             absorption_rgb: Some(rgb.map(f64::from)),
             color_recipe: mode.map(color_recipe_dto),
+            absorption_bands: Vec::new(),
         }
     }
 
-    fn pure_host_mode() -> colorMode {
+    fn pure_host_mode() -> ColorMode {
         let cat = ChromophoreCatalogue::global();
-        let mut recipe = colorRecipe::new("corundum", cat.data_version);
+        let mut recipe = ColorRecipe::new("corundum", cat.data_version);
         let (tensor, _) = resolve(&recipe, cat).expect("pure host resolves");
         recipe.resolved_bands = ResolvedBands::from_tensor(&tensor);
-        colorMode::physics(recipe, [0.0; 3])
+        ColorMode::physics(recipe, [0.0; 3])
     }
 
     /// The flag follows the recipe the spec carries, not the shape of the built bands: a
@@ -788,11 +827,11 @@ mod physics_flag_tests {
     #[test]
     fn a_physics_recipe_fills_the_scenes_fluorescence() {
         let cat = ChromophoreCatalogue::global();
-        let mut recipe = colorRecipe::new("corundum", cat.data_version);
+        let mut recipe = ColorRecipe::new("corundum", cat.data_version);
         recipe.set_amount("Cr", 0.5);
         let (tensor, _) = resolve(&recipe, cat).expect("ruby resolves");
         recipe.resolved_bands = ResolvedBands::from_tensor(&tensor);
-        let mode = colorMode::physics(recipe, [0.0; 3]);
+        let mode = ColorMode::physics(recipe, [0.0; 3]);
         let custom = spec_with(Some(&mode), mode.fallback_rgb());
         assert_eq!(custom.fluorescence().emitters().len(), 1);
         assert!(spec_with(None, [0.0; 3]).fluorescence().is_empty());
@@ -806,7 +845,14 @@ mod physics_flag_tests {
                 pitch: 0.35,
                 distance: 4.2,
             },
-            lighting: LightingSpec::new(LightingPreset::UvLamp365, 1.0, 0.4, 0.35, Backdrop::Grey),
+            lighting: LightingSpec::new(
+                LightingPreset::UvLamp365,
+                1.0,
+                0.4,
+                0.35,
+                Backdrop::Grey,
+                16.0,
+            ),
             max_bounces: 4,
             width: 4,
             height: 4,

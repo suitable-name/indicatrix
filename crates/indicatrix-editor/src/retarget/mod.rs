@@ -6,22 +6,42 @@
 //! [`apply`] turns an accepted proposal into the one `Edit::RetargetAngles` the
 //! caller pushes through `History`, exactly like every other edit in this crate.
 //!
+//! The desktop dialog uses the richer pieces on top of that:
+//!
+//! - [`plan`]: [`build_plan`] is the cheap synchronous half (which tiers move, the
+//!   guarded new angles, the per-row margin and risk). Nothing in it solves the design.
+//! - [`check`]: the half that needs a solved stone and runs on a worker thread. It
+//!   re-anchors the masts so every facet turns about its girdle-side edge (the girdle
+//!   keeps its outline and height), refits the table and culet heights, judges the
+//!   result with [`validity`]'s gate and measures the optics ([`metrics`]).
+//! - [`anchors`]: [`apply_with_anchors`] turns a proposal plus the re-anchored masts
+//!   into ONE undoable `Edit::Batch` (angles and masts together).
+//! - [`search`]: the desktop dialog's Optimize mode. It starts from the Shift result and
+//!   searches every crown and pavilion angle inside a range (pinned facets included, each
+//!   turning about its girdle edge), then runs the validity gate on the ranked results.
+//!   [`RetargetMode::Optimize`] below is the older, simpler path the web app still uses.
+//!
 //! # The two algorithms
 //!
 //! - [`RetargetMode::Shift`] (default): every pavilion tier's angle moves by
 //!   `retarget_angle_deg`, which keeps that tier's margin over the critical angle
-//!   exactly fixed; every crown tier moves by [`CrownShift`]'s policy. Girdle tiers
-//!   are never touched -- not even listed in [`RetargetProposal::rows`]: a tier at
-//!   (or near) plus-or-minus 90 degrees from the girdle plane classifies as
-//!   `Block::Girdle`, structural rather than optical.
+//!   exactly fixed; every crown tier moves by [`CrownShift`]'s policy -- by default it
+//!   follows the pavilion's vertical stretch so the stone keeps its silhouette, with a
+//!   fraction of the shift or the critical-angle ratio as opt-ins. A shifted angle
+//!   never crosses the horizontal and stays within 1 to 89.5 degrees (see
+//!   `indicatrix_cut_core::optics_hints::guard_retargeted_angle_deg`). Flat tiers (the
+//!   table, the culet) are never changed: the plan lists them, the proposal does not.
+//!   Girdle tiers are never touched -- not even listed: a tier at (or near)
+//!   plus-or-minus 90 degrees from the girdle plane classifies as `Block::Girdle`,
+//!   structural rather than optical.
 //! - [`RetargetMode::Optimize`] seeds a clone of the design with the `Shift` angles
 //!   above, then runs `optimize_design` unchanged (only the objective material
 //!   differs) over whatever tiers that search already treats as free
 //!   (non-`ScaleReference`). Since an anchored tier's angle can never actually move
 //!   under that search, retargeting a currently-anchored tier via this mode is
-//!   refused up front ([`RetargetError::AnchoredTiers`]) rather than silently
-//!   leaving it at its shifted-but-unoptimized seed -- the dialog tells the user to
-//!   adopt those tiers first.
+//!   refused up front ([`RetargetError::AnchoredTiers`]). Only the web app takes this path
+//!   now; the desktop dialog uses [`search`], which varies pinned tiers too and so never
+//!   returns that refusal.
 //!
 //! # Why `apply` also takes the `Design`
 //!
@@ -38,37 +58,66 @@ use indicatrix::{
 };
 use indicatrix_cut_core::{
     AngleChange, Design, DesignSolveError, Edit, OptimizeConfig, ResolvedMaterial, Risk,
-    SearchHooks, critical_angle_deg, optimize_design, retarget_angle_deg, tier_margin_deg,
-    windowing_risk,
+    SearchHooks, critical_angle_deg, optics_hints::is_horizontal_angle_deg, optimize_design,
 };
 
+pub mod anchors;
+pub mod check;
+pub mod metrics;
+pub mod plan;
+mod refit;
+pub mod search;
 #[cfg(test)]
 mod tests;
+pub mod validity;
 pub mod view;
 
-/// The optimizer's own safety bound: no retarget proposal -- from either mode --
-/// ever proposes an angle steeper than this.
-const OPTIMIZER_SAFETY_BOUND_DEG: f64 = 89.5;
+pub use anchors::{AnchorChange, apply_with_anchors};
+pub use check::GirdleAllowance;
+pub use plan::{PlanRow, RetargetPlan, build_plan};
 
 /// How a crown tier's angle follows the pavilion critical-angle shift.
 ///
-/// By default (`fraction: 0.0`) the crown is left alone. A caller can move it by a
-/// fraction of the same delta every pavilion tier shifts by:
-/// `critical_angle_deg(n_to) - critical_angle_deg(n_from)` is one constant number,
-/// not per-tier, because the margin-preserving shift formula reduces to that
-/// constant added to `theta` regardless of a tier's starting angle.
+/// There are three rules; when more than one is set the precedence is
+/// `scale_by_ratio` > `follow_pavilion` > `fraction`.
 ///
-/// Or, when `scale_by_ratio` is set, scale the raw angle by the ratio of the two
-/// critical angles instead: `theta' = theta * critical_angle_deg(n_to) /
-/// critical_angle_deg(n_from)`. `scale_by_ratio` wins over `fraction` when both are
-/// set away from their defaults.
+/// - **Follow the pavilion** (`follow_pavilion`, the default): the pavilion's steeper or
+///   shallower angle stretches the stone vertically at the girdle edge by
+///   `s = tan(P') / tan(P)` (`P` the representative pavilion angle, `P'` its shifted
+///   one). Every crown angle gets the same stretch, `theta' = atan(s * tan(theta))`, so the
+///   stone keeps its silhouette (crown height against pavilion depth) and its table size.
+///   A design without a pavilion, or one whose pavilion does not move, has `s = 1`.
+/// - **Fraction** (`fraction`): the crown moves by that fraction of the same delta every
+///   pavilion tier shifts by: `critical_angle_deg(n_to) - critical_angle_deg(n_from)` is
+///   one constant number, not per-tier, because the margin-preserving shift formula
+///   reduces to that constant added to `theta` regardless of a tier's starting angle.
+///   `0.0` leaves the crown alone.
+/// - **Ratio** (`scale_by_ratio`): scale the raw angle by the ratio of the two critical
+///   angles: `theta' = theta * critical_angle_deg(n_to) / critical_angle_deg(n_from)`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CrownShift {
-    /// The fraction of the pavilion critical-angle delta a crown tier moves by.
+    /// The fraction of the pavilion critical-angle delta a crown tier moves by (used
+    /// only when neither of the other two rules is set).
     pub fraction: f64,
-    /// Scale the crown angle by the critical-angle ratio instead (wins over
-    /// `fraction`).
+    /// Scale the crown angle by the critical-angle ratio instead (wins over both other
+    /// rules).
     pub scale_by_ratio: bool,
+    /// Let every crown angle follow the pavilion's vertical stretch (wins over
+    /// `fraction`).
+    pub follow_pavilion: bool,
+}
+
+impl CrownShift {
+    /// The policy that leaves every crown angle where it is ("the crown stays"): the
+    /// behaviour before the crown followed the pavilion.
+    #[must_use]
+    pub const fn fixed() -> Self {
+        Self {
+            fraction: 0.0,
+            scale_by_ratio: false,
+            follow_pavilion: false,
+        }
+    }
 }
 
 impl Default for CrownShift {
@@ -76,6 +125,7 @@ impl Default for CrownShift {
         Self {
             fraction: 0.0,
             scale_by_ratio: false,
+            follow_pavilion: true,
         }
     }
 }
@@ -91,8 +141,9 @@ pub enum RetargetMode {
     Optimize(OptimizeConfig),
 }
 
-/// One reviewable row of a [`RetargetProposal`] -- one per pavilion or crown tier
-/// (girdle tiers are never listed, see the module doc comment).
+/// One reviewable row of a [`RetargetProposal`] -- one per pavilion or crown tier that
+/// actually moves (flat tiers and girdle tiers are never listed, see the module doc
+/// comment).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RetargetRow {
     /// This tier's position in `design.tiers`.
@@ -105,9 +156,10 @@ pub struct RetargetRow {
     pub old_angle: f64,
     /// The proposed angle.
     pub new_angle: f64,
-    /// `new_angle`'s margin over the TARGET material's critical angle.
+    /// `new_angle`'s margin in the TARGET material: the critical-angle margin for a
+    /// pavilion row, the crown-window estimate for a crown row.
     pub margin_deg: f64,
-    /// `new_angle`'s windowing risk in the target material.
+    /// `margin_deg`'s windowing risk in the target material.
     pub risk: Risk,
 }
 
@@ -119,7 +171,8 @@ pub struct RetargetProposal {
     pub rows: Vec<RetargetRow>,
     /// The resolved target material the rows were computed against.
     pub target: ResolvedMaterial,
-    /// Caller-facing notes (the material move, the Optimize caveat).
+    /// Caller-facing notes (the material move, rows held at a limit, the Optimize
+    /// caveat).
     pub notes: Vec<String>,
 }
 
@@ -131,7 +184,8 @@ pub enum RetargetError {
     Solve(DesignSolveError),
     /// `RetargetMode::Optimize` was asked to retarget one or more tiers currently
     /// `ScaleReference` (so `optimize_design` can never move them). `(tier_index,
-    /// name)` per anchored tier, in schedule order.
+    /// name)` per anchored tier, in schedule order. The desktop dialog never gets this
+    /// ([`search`] varies pinned tiers about their girdle edges); the web app still does.
     AnchoredTiers(Vec<(usize, String)>),
 }
 
@@ -161,35 +215,10 @@ const fn is_scale_reference(constraint: &MeetConstraint) -> bool {
     matches!(constraint, MeetConstraint::ScaleReference(_))
 }
 
-/// Clamps `angle_deg` to the optimizer's safety bound, preserving sign.
-fn clamp_to_safety_bound(angle_deg: f64) -> f64 {
-    angle_deg.clamp(-OPTIMIZER_SAFETY_BOUND_DEG, OPTIMIZER_SAFETY_BOUND_DEG)
-}
-
-/// The critical-angle shift for one pavilion tier -- `retarget_angle_deg` clamped
-/// to the safety bound. A tier whose shifted angle would sit below the new
-/// critical angle isn't moved back above it: its row simply carries a negative
-/// `margin_deg` and `Risk::Windows`.
-fn shifted_pavilion_angle(old_angle: f64, n_from: f64, n_to: f64) -> f64 {
-    clamp_to_safety_bound(retarget_angle_deg(old_angle, n_from, n_to))
-}
-
-/// The crown-tier counterpart to [`shifted_pavilion_angle`] -- see [`CrownShift`]
-/// for both policies.
-fn shifted_crown_angle(old_angle: f64, n_from: f64, n_to: f64, crown: CrownShift) -> f64 {
-    let new_angle = if crown.scale_by_ratio {
-        old_angle * critical_angle_deg(n_to) / critical_angle_deg(n_from)
-    } else {
-        crown.fraction.mul_add(
-            critical_angle_deg(n_to) - critical_angle_deg(n_from),
-            old_angle,
-        )
-    };
-    clamp_to_safety_bound(new_angle)
-}
-
-/// The shifted angle for tier `index` under its own [`Block`] -- girdle tiers are
-/// never called with this, but the arm exists so this stays a total function.
+/// The guarded shift for tier `index` under its own [`Block`] -- see
+/// [`plan::shift_angle`]. Girdle tiers and flat tiers come back unchanged, so this stays
+/// a total function. `stretch` is the design's [`plan::pavilion_stretch`], which the
+/// caller works out once for all the tiers.
 fn shifted_angle(
     design: &Design,
     index: usize,
@@ -197,18 +226,22 @@ fn shifted_angle(
     n_from: f64,
     n_to: f64,
     crown: CrownShift,
+    stretch: f64,
 ) -> f64 {
-    let old_angle = design.tiers[index].angle_deg;
-    match block {
-        Block::Pavilion => shifted_pavilion_angle(old_angle, n_from, n_to),
-        Block::Crown => shifted_crown_angle(old_angle, n_from, n_to, crown),
-        Block::Girdle => old_angle,
-    }
+    plan::shift_angle(
+        design.tiers[index].angle_deg,
+        block,
+        n_from,
+        n_to,
+        crown,
+        stretch,
+    )
+    .angle_deg
 }
 
-/// Every pavilion/crown tier `build_proposal` operates on (girdle tiers excluded, see the
-/// module doc comment), plus the [`Block`] classification the caller needs to interpret
-/// it.
+/// Every pavilion/crown tier `build_proposal` moves (girdle tiers and flat tiers
+/// excluded, see the module doc comment), plus the [`Block`] classification the caller
+/// needs to interpret it.
 ///
 /// Shared with `callbacks::retarget_actions`'s off-thread `RetargetMode::Optimize` wiring
 /// so that module never reimplements `Block` classification itself.
@@ -221,7 +254,9 @@ fn shifted_angle(
 pub fn retarget_scope(design: &Design) -> (Vec<usize>, Vec<Block>) {
     let blocks = classify_blocks(&design.meet_tier_inputs());
     let scope = (0..design.tiers.len())
-        .filter(|&i| blocks[i] != Block::Girdle)
+        .filter(|&i| {
+            blocks[i] != Block::Girdle && !is_horizontal_angle_deg(design.tiers[i].angle_deg)
+        })
         .collect();
     (scope, blocks)
 }
@@ -258,8 +293,10 @@ pub fn seed_shift_design(
     crown: CrownShift,
 ) -> Design {
     let mut seeded = design.clone();
+    let stretch = plan::pavilion_stretch(design, n_from, n_to);
     for &i in scope {
-        seeded.tiers[i].angle_deg = shifted_angle(design, i, blocks[i], n_from, n_to, crown);
+        seeded.tiers[i].angle_deg =
+            shifted_angle(design, i, blocks[i], n_from, n_to, crown, stretch);
     }
     seeded
 }
@@ -287,25 +324,42 @@ pub fn rows_from_outcome(
             final_angles[slot] = change.to_deg;
         }
     }
-    scope
+    let entries: Vec<(usize, Block, f64)> = scope
         .iter()
         .zip(&final_angles)
-        .map(|(&index, &new_angle)| row_for(original, index, blocks[index], new_angle, n_to))
-        .collect()
+        .map(|(&index, &angle)| (index, blocks[index], angle))
+        .collect();
+    plan::legacy_rows(original, &entries, n_to)
 }
 
 /// A one-line summary of the material move, plus (for `Optimize`) a note that
 /// the search only ever touches free tiers.
 ///
-/// `pub(super)` so
+/// `pub` so
 /// `callbacks::retarget_actions`'s off-thread completion handler can build the
 /// identical notes a synchronous [`build_proposal`] call would have.
+///
+/// `stretch` is the design's [`plan::pavilion_stretch`]; when the crown follows the pavilion
+/// ([`CrownShift::follow_pavilion`], and `scale_by_ratio` is not set) and the stretch is not
+/// `1.0`, a note says so.
 #[must_use]
-pub fn build_notes(mode: RetargetMode, n_from: f64, n_to: f64) -> Vec<String> {
+pub fn build_notes(
+    mode: RetargetMode,
+    n_from: f64,
+    n_to: f64,
+    crown: CrownShift,
+    stretch: f64,
+) -> Vec<String> {
     let delta = critical_angle_deg(n_to) - critical_angle_deg(n_from);
     let mut notes = vec![format!(
         "Retargeting from n_D {n_from:.4} to n_D {n_to:.4}: critical angle moves by {delta:+.3} deg."
     )];
+    // `pavilion_stretch` returns exactly 1.0 when there is nothing to stretch.
+    if crown.follow_pavilion && !crown.scale_by_ratio && stretch.to_bits() != 1.0_f64.to_bits() {
+        notes.push(format!(
+            "Crown tiers follow the pavilion's stretch: every crown angle's tangent is scaled by {stretch:.3}, so the stone keeps its silhouette and its table size."
+        ));
+    }
     if matches!(mode, RetargetMode::Optimize(_)) {
         notes.push(
             "Optimize mode seeds from the critical-angle shift, then searches free tiers only; anchored tiers keep their seeded angle."
@@ -313,19 +367,6 @@ pub fn build_notes(mode: RetargetMode, n_from: f64, n_to: f64) -> Vec<String> {
         );
     }
     notes
-}
-
-/// Builds a [`RetargetRow`] for tier `index`, already-shifted to `new_angle`.
-fn row_for(design: &Design, index: usize, block: Block, new_angle: f64, n_to: f64) -> RetargetRow {
-    RetargetRow {
-        tier_index: index,
-        block,
-        name: design.tiers[index].name.clone(),
-        old_angle: design.tiers[index].angle_deg,
-        new_angle,
-        margin_deg: tier_margin_deg(new_angle, n_to),
-        risk: windowing_risk(new_angle, n_to),
-    }
 }
 
 /// Builds a retarget proposal for `design` against `target`, per `mode` -- see the
@@ -378,33 +419,33 @@ fn build_proposal_impl(
     crown: CrownShift,
     mode: RetargetMode,
 ) -> Result<RetargetProposal, RetargetError> {
-    let n_to = target.n_d;
-
-    // Every pavilion/crown tier, in schedule order. Girdle tiers are never part
-    // of this set -- not filtered out later, never considered in the first place.
-    let (scope, blocks) = retarget_scope(design);
-
-    let final_angles = match mode {
-        RetargetMode::Shift => scope
-            .iter()
-            .map(|&i| shifted_angle(design, i, blocks[i], n_from, n_to, crown))
-            .collect(),
+    match mode {
+        RetargetMode::Shift => Ok(plan::build_plan_from(design, n_from, target, crown).proposal()),
         RetargetMode::Optimize(config) => {
-            build_optimized_angles(design, n_from, target, &scope, crown, &config)?
+            // Every pavilion/crown tier that moves, in schedule order. Girdle tiers and
+            // flat tiers are never part of this set -- not filtered out later, never
+            // considered in the first place.
+            let (scope, blocks) = retarget_scope(design);
+            let final_angles =
+                build_optimized_angles(design, n_from, target, &scope, crown, &config)?;
+            let entries: Vec<(usize, Block, f64)> = scope
+                .iter()
+                .zip(&final_angles)
+                .map(|(&index, &angle)| (index, blocks[index], angle))
+                .collect();
+            Ok(RetargetProposal {
+                rows: plan::legacy_rows(design, &entries, target.n_d),
+                target: target.clone(),
+                notes: build_notes(
+                    mode,
+                    n_from,
+                    target.n_d,
+                    crown,
+                    plan::pavilion_stretch(design, n_from, target.n_d),
+                ),
+            })
         }
-    };
-
-    let rows = scope
-        .iter()
-        .zip(&final_angles)
-        .map(|(&index, &new_angle)| row_for(design, index, blocks[index], new_angle, n_to))
-        .collect();
-
-    Ok(RetargetProposal {
-        rows,
-        target: target.clone(),
-        notes: build_notes(mode, n_from, n_to),
-    })
+    }
 }
 
 /// [`build_proposal`]'s `RetargetMode::Optimize` half, split out to keep
@@ -452,6 +493,9 @@ fn build_optimized_angles(
 
 /// Turns an accepted [`RetargetProposal`] into the one `Edit::RetargetAngles` the
 /// caller pushes through `History::apply`.
+///
+/// This moves angles only; a caller that also wants every facet to keep turning about its
+/// girdle-side edge uses [`apply_with_anchors`] with the masts [`check`] computed.
 ///
 /// See the module doc comment for why `design` (the CURRENT design, not
 /// necessarily the one `build_proposal` was called against) is read here rather

@@ -91,7 +91,9 @@ pub(crate) fn stone_geometry(scene: &SceneState) -> StoneGeometry<'_> {
 pub(crate) fn scene_uses_gpu(scene: &SceneState) -> bool {
     let lighting = match scene.environment {
         indicatrix_net::scene::SceneEnvironment::Studio => scene.lighting_preset,
-        indicatrix_net::scene::SceneEnvironment::Hdr(_) => Default::default(),
+        indicatrix_net::scene::SceneEnvironment::Hdr(_) => {
+            indicatrix::optics::raytracer::LightingPreset::default()
+        }
     };
     scene_routes_to_gpu(
         &scene.material,
@@ -572,7 +574,8 @@ mod tests {
             environment: indicatrix_net::scene::SceneEnvironment::Studio,
             surface_glare: 1.0,
             tools: Vec::new(),
-            fluorescence: Default::default(),
+            fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
+            head_shadow_deg: 16.0,
         }
     }
 

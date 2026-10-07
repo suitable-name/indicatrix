@@ -1,10 +1,35 @@
 import { Theme } from "../../theme.slint";
+import { GuideModel } from "../../models/guide.slint";
+
+// One column heading with a tooltip saying what the column shows. `preferred-width` is the
+// label's own width, so a stretching column (NAME, INDICES) shares extra room the way a bare
+// `Text` did before the tooltip wrapper existed.
+component HeaderCell inherits Rectangle {
+    in property <string> text;
+    in property <string> tip;
+    in property <length> font_size: 11px;
+
+    preferred-width: head.preferred-width;
+    if root.tip != "": Tooltip { text: @markdown("\{root.tip}"); }
+    head := Text {
+        text: root.text;
+        font-size: root.font_size;
+        font-weight: 700;
+        color: Theme.text-muted;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: AccessibleRole.text;
+    }
+}
 
 // `EditorTierTable`'s column header row. Column widths are passed straight
 // through from `EditorTierTable`'s own `col_*_width` properties (see that
 // component's own top doc comment on why they live there, named, rather than
 // as literals repeated in header and row) so this header and `TierTableRow`
 // can never drift out of sync.
+//
+// The Simple interface leaves out the MAST, SOLVE, ORBIT and IMPORTED headings, and the blank
+// columns of the Pin and Detach buttons, exactly the columns `TierTableRow` leaves out.
 export component TierTableHeader inherits Rectangle {
     in property <bool> select_mode: false;
 
@@ -27,77 +52,121 @@ export component TierTableHeader inherits Rectangle {
     in property <length> col_dup_width;
     in property <length> col_remove_width;
 
+    property <bool> advanced: GuideModel.shows_advanced();
+
     height: 26px;
     HorizontalLayout {
         padding-left: 4px;
         padding-right: 4px;
-        Text { width: root.col_hash_width; text: root.select_mode ? "\u{2713}" : "#"; font-size: 11px; font-weight: 700; color: root.select_mode ? Theme.accent-amber : Theme.text-muted; vertical-alignment: center; }
-        Text { width: root.col_warn_width; text: ""; }
-        // The row's block letter (`C`/`P`/`G`), derived from the tier's angle.
-        // 9px so the three-letter label fits the narrow `col_block_width`.
+        // "#" normally; a tick while "Select" mode is on (an icon: the UI font has no
+        // tick symbol).
         Rectangle {
+            width: root.col_hash_width;
+            height: 100%;
+            Tooltip { text: @markdown("The tier's number, in cutting order. While Select is on, this column is where you tick tiers to change several at once."); }
+            if !root.select_mode: Text { text: "#"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; accessible-role: AccessibleRole.text; }
+            if root.select_mode: Image {
+                source: @image-url("../../icons/check.svg");
+                colorize: Theme.accent-amber;
+                width: 11px;
+                height: 11px;
+                y: (parent.height - self.height) / 2;
+                image-fit: contain;
+            }
+        }
+        Rectangle {
+            width: root.col_warn_width;
+            height: 100%;
+            Tooltip { text: @markdown("A warning triangle in this column means the tier has a problem for the cutter. Hover the triangle in the row for details."); }
+        }
+        // The row's code (`P1`, `G1`, `C1`, `T`, `Culet`), numbered in cutting order.
+        // 9px so the label fits the narrow `col_block_width`.
+        HeaderCell {
             width: root.col_block_width;
             height: 100%;
-            Text { text: "C/P/G"; font-size: 9px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
-            Tooltip { text: @markdown("Block classified from the angle: C crown, P pavilion, G girdle (exactly 90 deg)."); }
+            text: "CODE";
+            font_size: 9px;
+            tip: "The tier's label on the cutting sheet: P pavilion, G girdle (exactly 90\u{b0}), C crown, T the table, numbered in the order the tiers are cut. The letter is classified from the angle. See the glossary.";
         }
-        Text { width: root.col_angle_width; text: "ANGLE"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
-        Text { horizontal-stretch: 1; min-width: root.col_name_min_width; overflow: elide; text: "NAME"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
-        Text { horizontal-stretch: 1; min-width: root.col_indices_min_width; overflow: elide; text: "INDICES"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+        HeaderCell {
+            width: root.col_angle_width;
+            height: 100%;
+            text: "ANGLE";
+            tip: "The facet's angle from the girdle plane, in degrees. Double-click it, or press F2, to edit. Scroll with Ctrl held to nudge it.";
+        }
+        HeaderCell {
+            horizontal-stretch: 1;
+            min-width: root.col_name_min_width;
+            height: 100%;
+            text: "NAME";
+            tip: "The facet's name, for example P1 or C2. Other tiers can refer to it. See the glossary.";
+        }
+        HeaderCell {
+            horizontal-stretch: 1;
+            min-width: root.col_indices_min_width;
+            height: 100%;
+            text: "INDICES";
+            tip: "The index-wheel positions this tier is cut at. See the glossary.";
+        }
         // What this tier's constraint actually is -- a scale reference,
         // an unspecified meet, or named facets (`EditorTierItem::
         // constraint_kind`/`constraint_text`).
-        Text { width: root.col_meets_width; text: "MEETS"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+        HeaderCell {
+            width: root.col_meets_width;
+            height: 100%;
+            text: "MEETS";
+            tip: "What decides how deep this facet is cut: where it meets other facets, named facets, an exact scale value (the pin icon) or a size in millimetres. See the glossary.";
+        }
         // Mast figure is in the design's model units (girdle half-width = 1),
         // never millimetres. Named here since header carries no unit.
-        Rectangle {
+        if root.advanced: HeaderCell {
             width: root.col_mast_width;
             height: 100%;
-            Text { text: "MAST"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
-            Tooltip { text: @markdown("Solved mast depth, in the design's own model units (girdle half-width = 1), not millimetres."); }
+            text: "MAST";
+            tip: "Solved mast depth, in the design's own model units (girdle half-width = 1), not millimetres. See the glossary.";
         }
         // Header Tooltips reuse the row-cell wording from below.
-        Rectangle {
+        if root.advanced: HeaderCell {
             width: root.col_solve_width;
             height: 100%;
-            Text { text: "SOLVE"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
-            Tooltip { text: @markdown("How this tier's MAST was derived: a real vertex-derived solve, or a least-squares/uncertain fallback (amber)."); }
+            text: "SOLVE";
+            tip: "How this tier's MAST was derived: a real vertex-derived solve, or a least-squares/uncertain fallback (amber).";
         }
         // Margin over the design's effective critical angle
         // (pavilion tiers only) and the risk band it falls into
         // (`EditorTierItem::margin_text`/`risk_level`).
-        Rectangle {
+        HeaderCell {
             width: root.col_margin_width;
             height: 100%;
-            Text { text: "MARGIN"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
-            Tooltip { text: @markdown("Margin over the design's effective critical angle (pavilion tiers only), and the risk band it falls into."); }
+            text: "MARGIN";
+            tip: "Margin over the design's effective critical angle (pavilion tiers only), and the risk band it falls into. See the glossary.";
         }
         // Whether this row is one orbit, several folded together,
         // or partial/inconsistent (`EditorTierItem::orbit_status`)
         // -- makes "editing this row moves more than one facet"
         // visible before the user clicks Save. Also doubles as the
         // "Complete orbit" action's hit target (see the row's own
-        // `orbit_touch`).
-        Rectangle {
+        // button).
+        if root.advanced: HeaderCell {
             width: root.col_orbit_width;
             height: 100%;
-            Text { text: "ORBIT"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
-            Tooltip { text: @markdown("Whether this row is one orbit, several folded together, or partial/inconsistent. Click an amber badge in the row below to complete it."); }
+            text: "ORBIT";
+            tip: "Whether this row is one orbit, several folded together, or partial/inconsistent. Click an amber badge in the row below to complete it. See the glossary.";
         }
         // What the source file claims this facet meets, when
         // import pinned the tier instead of deriving it
         // (`EditorTierItem::imported_meet_text`).
-        Rectangle {
+        if root.advanced: HeaderCell {
             width: root.col_adopt_width;
             height: 100%;
-            Text { text: "IMPORTED"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
-            Tooltip { text: @markdown("What the source file claims this facet meets, when import pinned the tier instead of deriving it. Click Adopt in the row below to switch to it."); }
+            text: "IMPORTED";
+            tip: "What the source file claims this facet meets, when import pinned the tier instead of deriving it. Click Adopt in the row below to switch to it.";
         }
-        Text { width: root.col_pin_width; text: ""; }
-        Text { width: root.col_detach_width; text: ""; }
-        Text { width: root.col_anchor_width; text: ""; }
-        Text { width: root.col_move_width; text: ""; }
-        Text { width: root.col_dup_width; text: ""; }
-        Text { width: root.col_remove_width; text: ""; }
+        if root.advanced: Rectangle { width: root.col_pin_width; }
+        if root.advanced: Rectangle { width: root.col_detach_width; }
+        Rectangle { width: root.col_anchor_width; }
+        Rectangle { width: root.col_move_width; }
+        Rectangle { width: root.col_dup_width; }
+        Rectangle { width: root.col_remove_width; }
     }
 }

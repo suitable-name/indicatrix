@@ -155,6 +155,39 @@ pub(in crate::db::sqlite) const SAVED_ROUGH_PLANS_TABLE_SQL: &str = "
 /// The `saved_rough_plans` column a table created before list summaries lacks.
 pub(in crate::db::sqlite) const SAVED_ROUGH_PLANS_SUMMARY_COLUMN: &str = "summary";
 
+/// `render_jobs`' full `CREATE TABLE IF NOT EXISTS` text (plus its queue-order index),
+/// shared verbatim between [`crate::db::sqlite::Database::migrate_render_jobs_table`] and
+/// `create_tables_if_not_exist`.
+///
+/// `summary` is the one-line list description written when a job is added, so a list
+/// never reads a snapshot. `snapshot` (the job file as opaque JSON text) is declared
+/// LAST because it is the large column. There is no foreign key: a job outlives its
+/// design.
+pub(in crate::db::sqlite) const RENDER_JOBS_TABLE_SQL: &str = "
+    CREATE TABLE IF NOT EXISTS render_jobs (
+        job_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        position INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('still', 'tilt_video')),
+        label TEXT NOT NULL,
+        summary TEXT NOT NULL DEFAULT '',
+        state TEXT NOT NULL DEFAULT 'queued'
+            CHECK (state IN ('queued', 'running', 'paused', 'done', 'failed', 'cancelled')),
+        frames_done INTEGER NOT NULL DEFAULT 0,
+        frames_total INTEGER NOT NULL,
+        output_path TEXT NOT NULL,
+        result_path TEXT,
+        error_text TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        started_at INTEGER,
+        finished_at INTEGER,
+        snapshot_version INTEGER NOT NULL,
+        snapshot TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_render_jobs_position ON render_jobs (position, job_id);
+";
+
 /// `diagram_planner_exclusions`' full `CREATE TABLE IF NOT EXISTS` text, shared verbatim
 /// between [`crate::db::sqlite::Database::migrate_planner_exclusion_table`] and
 /// `create_tables_if_not_exist`, same convention as [`DIAGRAM_PREVIEWS_TABLE_SQL`].
@@ -168,6 +201,70 @@ pub(in crate::db::sqlite) const DIAGRAM_PLANNER_EXCLUSIONS_TABLE_SQL: &str = "
     CREATE TABLE IF NOT EXISTS diagram_planner_exclusions (
         entry_id INTEGER PRIMARY KEY,
         FOREIGN KEY (entry_id) REFERENCES diagram_entries (id) ON DELETE CASCADE
+    );
+";
+
+/// `design_variants`' full `CREATE TABLE`/`CREATE INDEX IF NOT EXISTS` text, shared
+/// verbatim between [`crate::db::sqlite::Database::migrate_design_variants_table`] and
+/// `create_tables_if_not_exist`, same convention as [`DIAGRAM_PREVIEWS_TABLE_SQL`].
+///
+/// Keyed by the design's UUID (`design_uuid`), NOT by `entry_id`: a design opened from a
+/// file that was never in the catalogue has no entry, and the UUID is the one identity
+/// every design has (see [`crate::model::design_key`]). So there is no `FOREIGN KEY` to
+/// `diagram_entries`, and deleting an entry leaves its variants alone.
+///
+/// `parent_variant_id` points back into this table with `ON DELETE SET NULL`: deleting a
+/// variant detaches its children instead of deleting them. `design_text` is the large
+/// column of a row, so the preview BLOB is declared after it and the columns a list
+/// reads come before both.
+pub(in crate::db::sqlite) const DESIGN_VARIANTS_TABLE_SQL: &str = "
+    CREATE TABLE IF NOT EXISTS design_variants (
+        variant_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        design_uuid TEXT NOT NULL,
+        name TEXT NOT NULL,
+        parent_variant_id INTEGER REFERENCES design_variants (variant_id) ON DELETE SET NULL,
+        created_at INTEGER NOT NULL,
+        note TEXT,
+        design_text TEXT NOT NULL,
+        thumbnail_png BLOB
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_design_variants_design_uuid
+        ON design_variants (design_uuid);
+";
+
+/// `design_cut_progress`' full `CREATE TABLE IF NOT EXISTS` text, shared verbatim between
+/// [`crate::db::sqlite::Database::migrate_design_cut_progress_table`] and
+/// `create_tables_if_not_exist`.
+///
+/// One row per step a cutter marked done, keyed by the design's UUID and the step's key
+/// (a tier id). `step_signature` fingerprints the step's cutting values at the time, so a
+/// screen can show a mark as out of date once the design changed. Like
+/// [`DESIGN_VARIANTS_TABLE_SQL`] it has no `FOREIGN KEY` to `diagram_entries`.
+pub(in crate::db::sqlite) const DESIGN_CUT_PROGRESS_TABLE_SQL: &str = "
+    CREATE TABLE IF NOT EXISTS design_cut_progress (
+        design_uuid TEXT NOT NULL,
+        step_key TEXT NOT NULL,
+        step_signature TEXT NOT NULL,
+        done_at INTEGER NOT NULL,
+        PRIMARY KEY (design_uuid, step_key)
+    );
+";
+
+/// `design_lighting`'s full `CREATE TABLE IF NOT EXISTS` text, shared verbatim between
+/// [`crate::db::sqlite::Database::migrate_design_lighting_table`] and
+/// `create_tables_if_not_exist`.
+///
+/// At most one row per design: the lighting preset it was last shown under. The settings
+/// are an opaque JSON text the application writes (this crate does not know the lighting
+/// model), so a change to that model needs no migration here. Like
+/// [`DESIGN_VARIANTS_TABLE_SQL`] it has no `FOREIGN KEY` to `diagram_entries`.
+pub(in crate::db::sqlite) const DESIGN_LIGHTING_TABLE_SQL: &str = "
+    CREATE TABLE IF NOT EXISTS design_lighting (
+        design_uuid TEXT PRIMARY KEY,
+        preset_name TEXT NOT NULL,
+        settings_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
     );
 ";
 

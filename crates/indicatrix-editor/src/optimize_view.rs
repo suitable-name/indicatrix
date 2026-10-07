@@ -5,14 +5,45 @@
 //! The "Preview" candidate design ([`build_optimize_preview_design`]), the weight-form
 //! parser ([`parse_optimize_weights`]), and the solved design's facet count
 //! ([`facet_count_from_solved`]).
+//!
+//! The front end's pure logic lives in four submodules, re-exported here:
+//! [`plan`] (the tab's state turned into a run, defaults, the time estimate),
+//! [`ranges`] (the per-tier angle ranges), [`ranking`] (the ranked candidate rows and the
+//! run's status sentence) and [`candidate_apply`] (previewing and applying one
+//! candidate, relations included).
 
+mod candidate_apply;
+mod plan;
+mod ranges;
+mod ranking;
+
+pub use candidate_apply::{apply_candidate, build_candidate_preview_design, candidate_edits};
+pub use plan::{
+    CUSTOM_PRESET_INDEX, DEFAULT_BUDGET, DEFAULT_CANDIDATES, DEFAULT_GIRDLE_FRACTION,
+    DEFAULT_STARTS, MAX_CANDIDATES, MAX_STARTS, RunForm, RunPlan, build_run_plan,
+    default_vary_anchored, estimate_run_seconds, estimate_text, fill_anchor_hinges,
+    format_duration, measure_anchor_hinges, measured_ms_per_evaluation, optimize_availability,
+    parse_budget, parse_seed, parse_starts, prepare_anchor_hinges, preset_description,
+    preset_labels, weights_for_preset,
+};
+pub use ranges::{
+    DEFAULT_RANGE_DEG, MIN_RANGE_ANGLE_DEG, RangeInput, RangeRow, default_range,
+    format_range_value, parse_range, range_bounds, range_rows, range_summary,
+};
+pub use ranking::{
+    CandidateLine, baseline_line, candidate_lines, candidate_outcome, optimize_run_status,
+};
+
+use crate::loading::{NumberExprError, eval_number};
 use indicatrix::{
+    color::metrics::ToneIlluminant,
     geometry::meet_solver::{MeetConstraint, SolvedTier},
-    optics::materials::GemMaterial,
+    optics::{LightingPreset, materials::GemMaterial},
 };
 use indicatrix_cut_core::{
-    Design, MaterialSelection, ObjectiveWeights, OptimizeOutcome, free_tier_indices,
-    optimize::SearchStage,
+    Design, MaterialSelection, ObjectiveWeights, OptimizeCandidate, OptimizeOutcome,
+    OptimizeResult, ToneGoal, free_tier_indices,
+    optimize::{CANONICAL_LIGHT_PITCH, CANONICAL_LIGHT_YAW, SearchStage, StartProgress},
 };
 use std::collections::BTreeSet;
 
@@ -40,12 +71,27 @@ pub struct OptimizeChangeLine {
     pub tier_number: String,
     /// The tier's name, `""` for an index the design no longer has.
     pub name: String,
-    /// The starting angle.
+    /// The starting angle, as a magnitude.
     pub from_angle: String,
-    /// The proposed angle.
+    /// The proposed angle, as a magnitude.
     pub to_angle: String,
-    /// The signed difference.
+    /// The signed difference of the two magnitudes: `+` is steeper, `-` is flatter.
     pub delta: String,
+}
+
+/// `1` when a change of `delta` is an improvement, `-1` when it is worse and `0` when it
+/// is lost in rounding. `higher_is_better` is the metric's own polarity.
+///
+/// `delta.abs() < f32::EPSILON` rather than `delta == 0.0`: the figures are already
+/// rounded measurements, and a difference below one ulp is not a change.
+fn direction_of(delta: f32, higher_is_better: bool) -> i32 {
+    if delta.abs() < f32::EPSILON {
+        0
+    } else if (higher_is_better && delta > 0.0) || (!higher_is_better && delta < 0.0) {
+        1
+    } else {
+        -1
+    }
 }
 
 /// Formats one objective component's "after" cell as the raw value plus a signed
@@ -57,16 +103,7 @@ pub struct OptimizeChangeLine {
 #[must_use]
 fn after_with_delta(before: f32, after: f32, higher_is_better: bool, unit: &str) -> (String, i32) {
     let delta = after - before;
-    // `delta.abs() < f32::EPSILON` rather than `delta == 0.0` -- clippy's
-    // `float_cmp` lint (pedantic) flags exact float equality even here, where
-    // `delta` is a plain subtraction of two already-rounded measurements.
-    let direction = if delta.abs() < f32::EPSILON {
-        0
-    } else if (higher_is_better && delta > 0.0) || (!higher_is_better && delta < 0.0) {
-        1
-    } else {
-        -1
-    };
+    let direction = direction_of(delta, higher_is_better);
     let verdict = match direction {
         1 => "better",
         -1 => "worse",
@@ -156,20 +193,8 @@ fn metric_row(
 /// the final score it is responsible for.
 #[must_use]
 pub fn optimize_status_text(outcome: &OptimizeOutcome) -> String {
-    let cancelled_note = if outcome.cancelled {
-        " (cancelled -- showing the best partial result found before the checkpoint \
-         fired)"
-    } else {
-        ""
-    };
-    let polish_note = if outcome.polish_evaluations > 0 {
-        format!(
-            " (polish: +{:.2} in {} evaluation(s))",
-            outcome.polish_improvement, outcome.polish_evaluations
-        )
-    } else {
-        String::new()
-    };
+    let cancelled_note = cancelled_note(outcome);
+    let polish_note = polish_note(outcome);
     if outcome.changes.is_empty() {
         format!(
             "Optimize found no improving move in {} evaluation(s) -- this design's \
@@ -183,6 +208,28 @@ pub fn optimize_status_text(outcome: &OptimizeOutcome) -> String {
             outcome.changes.len(),
             outcome.evaluations
         )
+    }
+}
+
+/// The note a cancelled run's status carries, `""` for a finished one.
+const fn cancelled_note(outcome: &OptimizeOutcome) -> &'static str {
+    if outcome.cancelled {
+        " (cancelled -- showing the best partial result found before the checkpoint \
+         fired)"
+    } else {
+        ""
+    }
+}
+
+/// The note on what the polish stage added, `""` when it did not run.
+fn polish_note(outcome: &OptimizeOutcome) -> String {
+    if outcome.polish_evaluations > 0 {
+        format!(
+            " (polish: +{:.2} in {} evaluation(s))",
+            outcome.polish_improvement, outcome.polish_evaluations
+        )
+    } else {
+        String::new()
     }
 }
 
@@ -204,11 +251,21 @@ pub fn build_optimize_preview_design(design: &Design, outcome: &OptimizeOutcome)
 }
 
 /// Parses the Optimize weight form's three text fields (plus the yield slider's own
-/// already-numeric `0..1` value) into an [`ObjectiveWeights`].
+/// already-numeric `0..1` value and the tone slider's signed `-3..=3` value) into an
+/// [`ObjectiveWeights`].
+///
+/// `tone` is signed: negative asks for a lighter stone face-up ([`ToneGoal::Lighter`]),
+/// positive for a stronger colour ([`ToneGoal::Deeper`]), the magnitude is the weight and
+/// `0` leaves the tone out (bit-identical results). A non-finite value is an error.
 ///
 /// The three text fields
 /// must parse, be finite, and be non-negative: only the RATIOS between them matter,
 /// so a negative one would silently invert that component's polarity.
+///
+/// A field may hold arithmetic (`1 + 0.5`, `4 / 2`) like every number field: text the
+/// plain `f32` parse accepts is read exactly as before (so the weights, and with them
+/// a run's result, stay bit-identical), anything else goes through
+/// [`crate::loading::eval_number`].
 ///
 /// # Errors
 ///
@@ -218,12 +275,24 @@ pub fn parse_optimize_weights(
     extinction: &str,
     tilt_brilliance: &str,
     yield_weight: f32,
+    tone: f32,
 ) -> Result<ObjectiveWeights, String> {
     fn parse_weight(label: &str, text: &str) -> Result<f32, String> {
-        let value: f32 = text
-            .trim()
-            .parse()
-            .map_err(|_| format!("{label} weight must be a number."))?;
+        let trimmed = text.trim();
+        let value: f32 = match trimmed.parse::<f32>() {
+            Ok(value) => value,
+            Err(_) => match eval_number(trimmed, None) {
+                Ok(value) => value as f32,
+                Err(NumberExprError::NotANumber) => {
+                    return Err(format!("{label} weight must be a number."));
+                }
+                Err(NumberExprError::Invalid(reason)) => {
+                    return Err(format!(
+                        "{label} weight '{trimmed}' cannot be calculated: {reason}."
+                    ));
+                }
+            },
+        };
         if !value.is_finite() || value < 0.0 {
             return Err(format!(
                 "{label} weight must be a non-negative, finite number."
@@ -231,15 +300,159 @@ pub fn parse_optimize_weights(
         }
         Ok(value)
     }
+    if !tone.is_finite() {
+        return Err("Tone must be a number.".to_string());
+    }
     Ok(ObjectiveWeights {
         windowing: parse_weight("Windowing", windowing)?,
         extinction: parse_weight("Extinction", extinction)?,
         tilt_brilliance: parse_weight("Tilt brilliance", tilt_brilliance)?,
         yield_weight,
+        tone_weight: tone.abs(),
+        tone_goal: if tone > 0.0 {
+            ToneGoal::Deeper
+        } else {
+            ToneGoal::Lighter
+        },
     })
 }
 
-/// The tier name to show alongside a tier-index reference in a result table.
+/// The signed tone slider value (`-3..=3`) a set of weights stands for.
+///
+/// The inverse of [`parse_optimize_weights`]'s `tone` argument. Negative is [`ToneGoal::Lighter`],
+/// positive is [`ToneGoal::Deeper`], the magnitude is the weight, and `0.0` is "off".
+#[must_use]
+pub fn signed_tone(weights: &ObjectiveWeights) -> f32 {
+    if weights.tone_weight <= 0.0 || !weights.tone_weight.is_finite() {
+        return 0.0;
+    }
+    match weights.tone_goal {
+        ToneGoal::Lighter => -weights.tone_weight,
+        ToneGoal::Deeper => weights.tone_weight,
+    }
+}
+
+/// Whether `material` has any body colour: some absorption band of some set with a peak
+/// above zero. A colourless material gives the tone objective nothing to work on.
+#[must_use]
+pub fn material_has_body_color(material: &GemMaterial) -> bool {
+    let tensor = &material.absorption;
+    let sets = [
+        Some(&tensor.o_ray),
+        Some(&tensor.e_ray),
+        tensor.beta_ray.as_ref(),
+    ];
+    sets.into_iter()
+        .flatten()
+        .any(|bands| bands.iter().any(|band| band.peak > 0.0))
+}
+
+/// The sentence under the tone slider: what the tone objective will and will not do for
+/// this design, material and lighting.
+///
+/// A material without body colour gets a refusal ("nothing to work on"). Otherwise the
+/// note says how the stone is sized (the design's girdle diameter, or the
+/// swatch convention of one model unit per unit of colour strength) and under which light
+/// the tone is measured (the lighting preset's own, or daylight where a UV lamp has no
+/// visible white).
+#[must_use]
+pub fn tone_scale_note(
+    design: &Design,
+    material: &GemMaterial,
+    lighting: LightingPreset,
+) -> String {
+    if !material_has_body_color(material) {
+        return "The material has no body colour, so the tone objective has nothing to work on. \
+                Pick a colour in Design settings."
+            .to_string();
+    }
+    let size = match design.girdle_diameter_mm {
+        Some(mm) if mm > 0.0 && mm.is_finite() => {
+            format!("Face-up colour is worked out for a {mm:.1} mm stone (Design settings)")
+        }
+        _ => "No stone size set: one model unit of path counts as one unit of colour strength, \
+              the swatch convention; set the girdle diameter in Design settings to size it"
+            .to_string(),
+    };
+    let environment = lighting.studio(1.0, CANONICAL_LIGHT_YAW, CANONICAL_LIGHT_PITCH);
+    let light = if ToneIlluminant::for_environment(environment).uses_preset_light() {
+        format!(", under {} (the Live Render's lighting).", lighting.label())
+    } else {
+        ", in daylight (D65): the UV lamp has no visible white, so the tone uses daylight."
+            .to_string()
+    };
+    format!("{size}{light}")
+}
+
+/// The swatch caption for the light the tone was measured under: "under Incandescent
+/// (3200K)", or "in daylight (D65) -- UV lamp" where a UV lamp fell back to daylight.
+#[must_use]
+pub fn tone_lighting_label(lighting: LightingPreset) -> String {
+    let environment = lighting.studio(1.0, CANONICAL_LIGHT_YAW, CANONICAL_LIGHT_PITCH);
+    if ToneIlluminant::for_environment(environment).uses_preset_light() {
+        format!("under {}", lighting.label())
+    } else {
+        "in daylight (D65) -- UV lamp".to_string()
+    }
+}
+
+/// The two face-up tone rows of the result table for `candidate` against the start:
+/// "Face-up lightness L*" and "Face-up colour strength C*".
+///
+/// Only the figure the run's goal pulls on is judged better or worse (lighter: L*, deeper:
+/// C*); the other row, and both rows of a run whose tone was not weighted, show the change
+/// without a verdict (direction `0`). Empty when either tone is missing.
+#[must_use]
+pub fn tone_result_rows(
+    result: &OptimizeResult,
+    candidate: &OptimizeCandidate,
+) -> Vec<OptimizeResultLine> {
+    let (Some(before), Some(after)) = (result.tone_before, candidate.tone) else {
+        return Vec::new();
+    };
+    let (lightness_judged, chroma_judged) = match result.tone_goal {
+        Some(ToneGoal::Lighter) => (Some(true), None),
+        Some(ToneGoal::Deeper) => (None, Some(true)),
+        None => (None, None),
+    };
+    vec![
+        tone_row(
+            "Face-up lightness L*",
+            before.l_star,
+            after.l_star,
+            lightness_judged,
+        ),
+        tone_row(
+            "Face-up colour strength C*",
+            before.chroma,
+            after.chroma,
+            chroma_judged,
+        ),
+    ]
+}
+
+/// One tone row: judged like [`metric_row`] when `higher_is_better` is given, else the
+/// plain figure and signed change with direction `0`.
+fn tone_row(
+    label: &str,
+    before: f32,
+    after: f32,
+    higher_is_better: Option<bool>,
+) -> OptimizeResultLine {
+    higher_is_better.map_or_else(
+        || OptimizeResultLine {
+            label: label.to_string(),
+            before: format!("{before:.2}"),
+            after: format!("{after:.2} ({:+.2})", after - before),
+            direction: 0,
+        },
+        |higher| metric_row(label, before, after, higher, ""),
+    )
+}
+
+/// The tier name to show alongside a tier-index reference in a result table: what the tier
+/// table shows, so the tier's own name, or its standard code (`P1`, `C2`) when the name is
+/// empty or old-style (`1`, `A`).
 ///
 /// The index is a position in `design.tiers`: Optimize's variables are flat tiers only
 /// (a concave tier has no critical-angle margin to optimise), even though its objective
@@ -250,10 +463,9 @@ pub fn parse_optimize_weights(
 /// out from under a stale row.
 #[must_use]
 pub fn tier_name_for_row(design: &Design, tier_index: usize) -> String {
-    design
-        .tiers
-        .get(tier_index)
-        .map(|tier| tier.name.clone())
+    crate::retarget::plan::tier_display_names(design)
+        .into_iter()
+        .nth(tier_index)
         .unwrap_or_default()
 }
 
@@ -261,17 +473,22 @@ pub fn tier_name_for_row(design: &Design, tier_index: usize) -> String {
 ///
 /// The per-tier table behind [`optimize_result_rows`]'s aggregate rows, so a cutter can
 /// see WHICH tiers move, and by how much, before clicking Apply.
+///
+/// Both angles are magnitudes (a pavilion tier stored at -40 reads `40.00°`; the side of the
+/// girdle is the tier's). The change is the difference of those two numbers with an explicit
+/// sign, so `+1.50°` is a tier that got 1.5 degrees steeper whichever side it is on.
 #[must_use]
 pub fn optimize_change_rows(outcome: &OptimizeOutcome, design: &Design) -> Vec<OptimizeChangeLine> {
+    let names = crate::retarget::plan::tier_display_names(design);
     outcome
         .changes
         .iter()
         .map(|change| OptimizeChangeLine {
             tier_number: format!("#{}", change.index + 1),
-            name: tier_name_for_row(design, change.index),
-            from_angle: format!("{:.2}\u{b0}", change.from_deg),
-            to_angle: format!("{:.2}\u{b0}", change.to_deg),
-            delta: format!("{:+.2}\u{b0}", change.to_deg - change.from_deg),
+            name: names.get(change.index).cloned().unwrap_or_default(),
+            from_angle: format!("{:.2}\u{b0}", change.from_deg.abs()),
+            to_angle: format!("{:.2}\u{b0}", change.to_deg.abs()),
+            delta: format!("{:+.2}\u{b0}", change.to_deg.abs() - change.from_deg.abs()),
         })
         .collect()
 }
@@ -383,14 +600,28 @@ pub fn optimize_start_status(defaulted_ri: Option<f64>) -> String {
 /// stage's evaluations climbing does not read as sailing past the run's own stated
 /// budget.
 ///
+/// `start` is the last [`StartProgress`] of a run with several starts (`None` for a single
+/// start): the coordinate and polish lines then read "start 3 of 8, best 12.41, 412 of ~983
+/// evaluations". `max_evaluations` must then be `inclusive_max_evaluations_for`.
+///
 /// Moved from the desktop's `solve_actions::optimize_run`.
 #[must_use]
 pub fn optimize_progress_status(
     stage: SearchStage,
     evaluations: usize,
     max_evaluations: usize,
+    start: Option<StartProgress>,
     elapsed_secs: f32,
 ) -> String {
+    // "start 3 of 8, best 12.41, " -- the start index is zero-based in the search, one-based here.
+    let which = start.map_or_else(String::new, |start| {
+        format!(
+            "start {} of {}, best {:.2}, ",
+            start.index + 1,
+            start.count,
+            start.best_fast_score
+        )
+    });
     match stage {
         SearchStage::BaselineFull => {
             format!(
@@ -398,14 +629,29 @@ pub fn optimize_progress_status(
             )
         }
         SearchStage::Coordinate => format!(
-            "Optimizing... {evaluations} of ~{max_evaluations} evaluations, {elapsed_secs:.1}s elapsed"
+            "Optimizing... {which}{evaluations} of ~{max_evaluations} evaluations, {elapsed_secs:.1}s elapsed"
         ),
         SearchStage::Polish => format!(
-            "Optimizing (polish)... {evaluations} of ~{max_evaluations} evaluations, {elapsed_secs:.1}s elapsed"
+            "Optimizing (polish)... {which}{evaluations} of ~{max_evaluations} evaluations, {elapsed_secs:.1}s elapsed"
         ),
         SearchStage::FinalFull => {
             format!("Optimizing... scoring the result at full fidelity, {elapsed_secs:.1}s elapsed")
         }
+        // The draws are `min(64, 4 * (starts - 1))`; a caller that knows the planned number of
+        // starts passes it as `start.count` to get the "of" form.
+        SearchStage::Screening => start.map_or_else(
+            || {
+                format!(
+                    "Optimizing... screening starting points, {evaluations} drawn, {elapsed_secs:.1}s elapsed"
+                )
+            },
+            |start| {
+                format!(
+                    "Optimizing... screening {evaluations} of {} starting points, {elapsed_secs:.1}s elapsed",
+                    (4 * start.count.saturating_sub(1)).min(64)
+                )
+            },
+        ),
     }
 }
 
@@ -440,7 +686,8 @@ pub fn optimize_hint(design: &Design, max_evaluations: usize) -> (bool, String) 
             true,
             format!(
                 "Coordinate search over {} free tier angle(s), scored on windowing, \
-                 extinction, and tilt brilliance under a FIXED canonical light pose \
+                 extinction, and tilt brilliance, and the face-up tone when a tone \
+                 objective is chosen, under a FIXED canonical light pose \
                  (not necessarily the light you see in the viewport right now -- drag \
                  the light and these figures can disagree with the trace/HUD until you \
                  re-run Optimize). Roughly 7 ms per evaluation on a small design, but \
@@ -448,7 +695,10 @@ pub fn optimize_hint(design: &Design, max_evaluations: usize) -> (bool, String) 
                  {max_evaluations}-evaluation budget can then take minutes) -- plus two \
                  fixed full-fidelity scorings (one before, one after the search) that \
                  can each take over a second on their own, so even a fast run has some \
-                 up-front and trailing wait beyond the quoted per-evaluation cost. Runs \
+                 up-front and trailing wait beyond the quoted per-evaluation cost. With \
+                 several starts the search also tries other starting arrangements inside \
+                 your angle ranges, shares the budget between them, and keeps the best; a \
+                 design or budget too small to afford them uses one start. Runs \
                  off the UI thread and can be cancelled.",
                 free.len()
             ),

@@ -24,6 +24,21 @@
 //!   return fraction, squashed into 0-100, blended 60/40 with the temporal flicker of the
 //!   cells' return status as the camera yaws through +/-3 degrees.
 //!
+//! # Face-up tone
+//!
+//! [`evaluate_gem_optical_metrics_with_tone`] adds the colour of the light the stone returns
+//! to the observer ([`FaceUpTone`]), from the same grid pass. The returned rays' Fresnel
+//! weights are binned by internal path length (128 bins over 12 girdle half-widths), and the
+//! transmittance is the Beer-Lambert *mixture* over those paths, not Beer-Lambert of the mean
+//! path; the pose is meant to be table-up. The colorimetry runs under the lighting preset's
+//! own spectrum and white point ([`ToneIlluminant`]): Lab is relative to that white, so a
+//! colourless stone is neutral under every preset, and the sRGB swatch is adapted to the
+//! screen's D65 the way the Live Render white-balances that preset. UV lamps and HDR maps
+//! have no usable white point and fall back to D65. The stone's size enters only through
+//! `GemMaterial::absorption_path_scale` in the exponent. A head-shadow setting (a separate
+//! lighting plan may add one) enters only the Returned classification, never the tone's
+//! colorimetry.
+//!
 //! # Lighting model
 //!
 //! The metrics take the same [`EnvironmentSource`](crate::optics::raytracer::EnvironmentSource)
@@ -71,6 +86,7 @@ mod profile;
 mod ray_trace;
 mod scintillation;
 mod sweep;
+mod tone;
 mod types;
 mod visibility;
 
@@ -79,7 +95,10 @@ pub use cache::{
     compute_or_reuse_pose_metrics, compute_or_reuse_pose_metrics_geom,
 };
 pub use camera::camera_view_basis;
-pub use evaluate::{evaluate_gem_optical_metrics, evaluate_gem_optical_metrics_geom};
+pub use evaluate::{
+    evaluate_gem_optical_metrics, evaluate_gem_optical_metrics_geom,
+    evaluate_gem_optical_metrics_with_tone, evaluate_gem_optical_metrics_with_tone_geom,
+};
 pub use profile::{
     EVALUATIONS_PER_AXIS, PROFILE_AZIMUTHS_DEG, TILT_ANGLES_DEG, evaluate_angular_profile,
     evaluate_angular_profile_at_azimuth, evaluate_angular_profile_at_azimuth_geom,
@@ -91,4 +110,5 @@ pub use sweep::{
     AxisProfile, SweepProgress, evaluate_all_axes_profiles, evaluate_all_axes_profiles_geom,
     evaluate_all_axes_profiles_stepped, evaluate_all_axes_profiles_stepped_geom, total_evaluations,
 };
+pub use tone::{FaceUpTone, ToneIlluminant};
 pub use types::{GemOpticalMetrics, PROFILE_ANGLES_DEG};

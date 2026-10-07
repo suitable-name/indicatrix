@@ -33,6 +33,8 @@ mod design_meta_tests;
 mod design_paths;
 #[cfg(test)]
 mod design_tests;
+#[cfg(test)]
+mod dispersion_model_tests;
 mod export;
 mod open_commit;
 mod open_native;
@@ -199,6 +201,14 @@ pub(super) fn remember_design_location(
     SUGGESTED_SAVE_DIR.with(|cell| *cell.borrow_mut() = suggested_dir);
 }
 
+/// The `.indicatrix` design file this design was last loaded from or saved to, if any --
+/// what "Edit as Text" compares the text with under "Saved file on disk". `None` for a design
+/// that has no design file of its own yet (see [`CURRENT_NATIVE_PATH`]).
+#[must_use]
+pub(in crate::gui::editor) fn current_design_file() -> Option<PathBuf> {
+    CURRENT_NATIVE_PATH.with(|cell| cell.borrow().clone())
+}
+
 // Every symbol below is re-exported at exactly the visibility the pre-split
 // `native_io.rs` gave it -- see each submodule's own item for why. A re-export
 // can only match or narrow an item's own declared visibility, never widen it, so
@@ -213,4 +223,4 @@ pub(in crate::gui::editor) use open_native::{
     do_open_native, open_recent_native_path, setup_open_native_callback,
 };
 pub(in crate::gui::editor) use save::setup_save_native_callback;
-pub(in crate::gui::editor) use solve::resolve_solved_then;
+pub(in crate::gui::editor) use solve::{SolveFailure, resolve_solve_at, resolve_solved_then};

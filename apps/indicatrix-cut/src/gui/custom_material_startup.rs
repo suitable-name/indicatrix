@@ -46,6 +46,8 @@ mod tests {
             per_axis_dispersion_json: None,
             specific_gravity,
             color_recipe_json: None,
+            dispersion_model_json: None,
+            absorption_bands_json: None,
         }
     }
 

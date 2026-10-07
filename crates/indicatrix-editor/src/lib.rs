@@ -33,34 +33,65 @@
 //!   C/W, P/W, H/W) from their text fields.
 //! - [`snapshot`]: "Compare to snapshot"'s rows -- the tier-by-tier diff of a remembered
 //!   design against the design now.
+//! - [`raw_text`]: the design's cutting instructions as editable `.asc` text -- generating
+//!   it, reading an edited copy back with line-numbered problems, merging it into the design
+//!   as one undoable edit with a summary of what is lost, and a plain line diff.
+//! - [`sweep`]: "Angle Sweep" -- one tier's angle over a range, every angle solved and
+//!   scored, as rows, a chart and CSV text.
+//! - [`cutting_mode`]: the cutting instructions as one page per step -- the steps in sheet
+//!   order with a stable key and a values fingerprint each, the done marks and index ticks
+//!   (a mark whose step changed since reads "changed", not "done"), the page texts and the
+//!   index wheel with a step's indices marked.
+//! - [`slider_ranges`]: the sliders beside the main number fields -- the angle ranges per side
+//!   and material, the marked pavilion band over the critical angle, the "Typical" presets
+//!   with their reasons, the Preform ranges, and the text a slider writes and reads back.
+//! - [`metric_deltas`]: the compare window's optical figures of two stones, the table rows
+//!   beside them and a few plain sentences about what changed, with named noise thresholds
+//!   so a change lost in the measurement noise reads "about the same".
+//! - [`verdict`]: the overall Good / Check / Problem verdict for the open design -- the
+//!   reasons behind it with named thresholds, and a validated one-edit "Fix" for each
+//!   reason where a safe tool exists (snap to the gear, remove cut-away facets, move a tier
+//!   behind the one it meets, steepen a windowing pavilion about its girdle edge, add a
+//!   table).
 //!
-//! No GUI toolkit types, no threads, no clock and no filesystem anywhere in this
-//! crate, so it links unchanged into a `wasm32-unknown-unknown` build. Each UI maps
+//! No GUI toolkit types, no clock and no filesystem anywhere in this crate, and no
+//! threads except the angle sweep's worker threads, which are compiled out of a
+//! `wasm32-unknown-unknown` build (it runs the same loop inline there), so it links
+//! unchanged into that build. Each UI maps
 //! the plain structs to its own row types, and supplies its own clock and threads
 //! (or Workers).
 
 pub mod cut_sheet;
+pub mod cutting_mode;
 pub mod edit_intent;
 pub mod files;
 pub mod guide;
+pub mod lch_color;
 pub mod loading;
 pub mod manipulate;
 pub mod material;
 pub mod material_lookup;
+pub mod metric_deltas;
 pub mod optimize_view;
 pub mod printed_proportions;
+pub mod raw_text;
 pub mod retarget;
 pub mod scratch;
 pub mod session;
+pub mod slider_ranges;
 pub mod snapshot;
 pub mod solve_policy;
 pub mod stale;
+pub mod sweep;
 pub mod templates;
 pub mod tier_save;
+pub mod verdict;
 pub mod view_model;
 
 pub use manipulate::{
     DragStart, DragValue, FacetFrame, HandleKind, HandleLayout, ScreenPoint, ScreenSize, SliceSide,
     SnapMode, SnappedFacet,
 };
-pub use session::{EditChange, EditorSession, NudgeOutcome, PinOutcome};
+pub use session::{
+    EditChange, EditorSession, HistorySnapshot, JumpFailure, JumpOutcome, NudgeOutcome, PinOutcome,
+};

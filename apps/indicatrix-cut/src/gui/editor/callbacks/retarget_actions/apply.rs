@@ -3,14 +3,17 @@
 
 use super::{
     RETARGET_ASYNC,
+    check_run::{ApplyGate, apply_gate, cached_original_solved, reset_check},
     material::{target_display_name, target_material_selection},
+    optimize_run::forget_results,
 };
 use crate::{
     CompareModel, MainWindow, RetargetModel,
     bridge::render_thread::RenderContext,
     gui::{
         editor::{
-            retarget::{self, RetargetProposal},
+            relation_ui::edit_error_text,
+            retarget::{self, AnchorChange, RetargetProposal},
             stale::{self, ResultKind},
             stall_guard::stall_guard,
             state::EditorState,
@@ -21,6 +24,7 @@ use crate::{
         solid_preview::preview_state::SolidPreviewState,
     },
 };
+use indicatrix::geometry::meet_solver::SolvedTier;
 use indicatrix_cut_core::{Edit, EditError, MaterialSelection};
 use slint::ComponentHandle;
 use std::{
@@ -47,21 +51,35 @@ pub(super) enum RetargetApplyError {
 /// tier index can never leave the design half-retargeted), so the whole "Retarget for
 /// material" action is ONE undo step; `None` (the target already matches
 /// `state.design.material`, e.g. a Shift-mode preview the user never actually
-/// retargeted) pushes the plain `Edit::RetargetAngles` alone, exactly as before.
-/// Returns the number of tiers the retarget named on success.
+/// retargeted) pushes the angle edit alone, exactly as before.
+///
+/// `anchors` are the `ScaleReference` masts the validity check re-anchored
+/// ([`retarget::apply_with_anchors`]); they travel in the SAME batch as the angles, so the
+/// angles, the masts and the material are one undo step. Empty keeps the plain
+/// `Edit::RetargetAngles`. Returns the number of tiers the retarget named on success.
 pub(super) fn apply_pending_retarget(
     state: &mut EditorState,
     pending: (RetargetProposal, u64),
     material_change: Option<MaterialSelection>,
+    anchors: &[AnchorChange],
 ) -> Result<usize, RetargetApplyError> {
     let (proposal, started_generation) = pending;
     if state.generation.load(AtomicOrdering::Relaxed) != started_generation {
         return Err(RetargetApplyError::Stale);
     }
-    let angle_edit = retarget::apply(&state.design, &proposal);
+    let angle_edit = retarget::apply_with_anchors(&state.design, &proposal, anchors);
     let applied = proposal.rows.len();
     let edit = match material_change {
-        Some(material) => Edit::Batch(vec![angle_edit, Edit::SetMaterial { material }]),
+        Some(material) => {
+            // Flattened into one batch (angles, masts, material), so the history label
+            // reads "Retarget for <material>" and Undo reverts all of it at once.
+            let mut edits = match angle_edit {
+                Edit::Batch(edits) => edits,
+                single => vec![single],
+            };
+            edits.push(Edit::SetMaterial { material });
+            Edit::Batch(edits)
+        }
         None => angle_edit,
     };
     state
@@ -110,15 +128,35 @@ pub(in crate::gui::editor) fn setup_retarget_apply_callback(
                 return;
             };
             let mut st = state.borrow_mut();
-            // A Shift-mode proposal lives in `EditorState::pending_retarget`; an
-            // Optimize-mode one (built off-thread) lives in `RETARGET_ASYNC::pending`
-            // instead -- see this group's own `mod.rs` doc comment.
-            let pending = st
-                .pending_retarget
-                .take()
-                .or_else(|| RETARGET_ASYNC.with(|cell| cell.borrow_mut().pending.take()));
-            let Some(pending) = pending else {
+            let optimize_mode = ui.global::<RetargetModel>().get_mode_index() == 1;
+            let Some(pending) = take_pending(&ui, &mut st, optimize_mode) else {
                 return;
+            };
+            // Shift mode's validity gate: the Apply button is already disabled while the
+            // check runs or fails, but the Return key and the compare window's "Keep
+            // after" reach this handler too. A refused proposal stays pending.
+            let anchors = match apply_gate(pending.1) {
+                ApplyGate::Open(anchors) => anchors,
+                ApplyGate::Checking => {
+                    keep_pending(&mut st, optimize_mode, pending);
+                    show_toast(
+                        &ui,
+                        "Still checking this change -- try again in a moment.",
+                        "info",
+                    );
+                    return;
+                }
+                ApplyGate::Blocked(headline) => {
+                    keep_pending(&mut st, optimize_mode, pending);
+                    show_toast(
+                        &ui,
+                        &format!(
+                            "{headline} Change the settings, or use Compare to see what goes wrong."
+                        ),
+                        "error",
+                    );
+                    return;
+                }
             };
             // The pending result is being consumed right now (applied, or attempted
             // and refused) either way -- nothing is left to badge as stale.
@@ -147,8 +185,24 @@ pub(in crate::gui::editor) fn setup_retarget_apply_callback(
             let material_change =
                 (material_selection != st.design.material).then_some(material_selection);
 
-            match apply_pending_retarget(&mut st, pending, material_change) {
+            // The design as it is BEFORE the apply, kept as the reference snapshot on
+            // success so the Optimize comparison can offer "Original".
+            let original_design = st.design.clone();
+            // Never the viewport slot: while the dialog is open it can hold the candidate's
+            // ghost solve.
+            let original_solved =
+                original_solve_for_snapshot(cached_original_solved(pending.1), &original_design);
+
+            match apply_pending_retarget(&mut st, pending, material_change, &anchors) {
                 Ok(applied) => {
+                    // Overwrites any earlier held snapshot; no database write.
+                    super::snapshot::hold_original_before_retarget(
+                        &ui,
+                        original_design,
+                        original_solved,
+                        &super::snapshot::original_snapshot_label(&target_name),
+                    );
+                    // (`from_retarget_apply` is set inside `hold_original_before_retarget`.)
                     // `view::
                     // refresh_all` now takes `Rc<RefCell<EditorState>>` under the
                     // name `view::refresh_all_now` (see that function's own doc
@@ -163,6 +217,10 @@ pub(in crate::gui::editor) fn setup_retarget_apply_callback(
                         false,
                     );
                     ui.global::<RetargetModel>().set_is_open(false);
+                    // A late check result must not repaint a dialog that is gone, and the
+                    // options of a finished search are of no use any more.
+                    reset_check(&ui);
+                    forget_results();
                     release_modal_viewport(&ui, &render_ctx);
                     show_toast(
                         &ui,
@@ -179,11 +237,62 @@ pub(in crate::gui::editor) fn setup_retarget_apply_callback(
                     );
                 }
                 Err(RetargetApplyError::Edit(e)) => {
-                    show_toast(&ui, &e.to_string(), "error");
+                    // A tier relation that refused the edit keeps the real reason in the
+                    // session; take it, or fall back to the error's own text.
+                    let text = edit_error_text(&mut st, &e);
+                    show_toast(&ui, &text, "error");
                 }
             }
         });
     });
+}
+
+/// The original design's solve for the "Original" snapshot: the check run's cached solve of
+/// that very design when it matches the tier count, otherwise a fresh solve of `design`,
+/// otherwise `None` (the snapshot then simply has no old masts).
+pub(super) fn original_solve_for_snapshot(
+    cached: Option<Vec<SolvedTier>>,
+    design: &indicatrix_cut_core::Design,
+) -> Option<Vec<SolvedTier>> {
+    cached
+        .filter(|solved| solved.len() == design.tiers.len())
+        .or_else(|| design.solve().ok())
+}
+
+/// Takes the proposal Apply commits. A Shift-mode proposal lives in
+/// `EditorState::pending_retarget`; the Optimize option the cutter picked lives in
+/// `RETARGET_ASYNC::pending` instead -- see this group's own `mod.rs` doc comment. In Optimize
+/// mode only the latter counts: the Shift angles listed before a search are a starting point,
+/// never something to apply, so with nothing picked the cutter is told to search first.
+fn take_pending(
+    ui: &MainWindow,
+    st: &mut EditorState,
+    optimize_mode: bool,
+) -> Option<(RetargetProposal, u64)> {
+    let picked = RETARGET_ASYNC.with(|cell| cell.borrow_mut().pending.take());
+    let pending = if optimize_mode {
+        picked
+    } else {
+        st.pending_retarget.take().or(picked)
+    };
+    if pending.is_none() && optimize_mode {
+        show_toast(
+            ui,
+            "Search for options first, then pick one to apply.",
+            "info",
+        );
+    }
+    pending
+}
+
+/// Puts a refused proposal back where Apply found it, so the cutter can fix the settings and
+/// try again: the Shift proposal on the editor state, an Optimize option in the async slot.
+fn keep_pending(st: &mut EditorState, optimize_mode: bool, pending: (RetargetProposal, u64)) {
+    if optimize_mode {
+        RETARGET_ASYNC.with(|cell| cell.borrow_mut().pending = Some(pending));
+    } else {
+        st.pending_retarget = Some(pending);
+    }
 }
 
 /// Runs after `RetargetModel.is_open` went `false` (Apply, Cancel, the header X,
@@ -222,6 +331,7 @@ pub(in crate::gui::editor) fn setup_retarget_close_callback(
         // dialog must not leave a search running (and later overwriting
         // `RETARGET_ASYNC::pending`) behind an already-dismissed proposal.
         RETARGET_ASYNC.with(|cell| cell.borrow_mut().cancel_and_supersede());
+        reset_check(&ui);
         state.borrow_mut().pending_retarget = None;
         stale::clear(ResultKind::Retarget);
         ui.global::<RetargetModel>().set_is_open(false);

@@ -1,20 +1,78 @@
 import { LineEdit } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { SettingsModel } from "../../models/settings.slint";
+import { SettingLabel } from "setting_label.slint";
+
+// One of the three buttons under the environment map's path field. `kind` 0 is a plain button,
+// 1 the main one (the dialog's cyan). Tab reaches it, Space or Enter presses it.
+component MapButton inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <int> kind: 0;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 26px;
+    border-radius: Theme.radius-sm;
+    opacity: root.enabled ? 1.0 : 0.45;
+    background: root.kind == 1
+        ? (map_touch.has-hover && root.enabled ? Theme.accent-cyan-hover : Theme.accent-cyan)
+        : (map_touch.has-hover && root.enabled ? Theme.surface-raised : Theme.surface-sunken);
+    border-width: map_focus.has-focus ? 2px : (root.kind == 1 ? 0px : 1px);
+    border-color: map_focus.has-focus ? Theme.accent-cyan-hover : Theme.border-dialog;
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.text;
+    accessible-description: root.hint;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    map_focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    Text {
+        text: root.text;
+        font-size: 11px;
+        font-weight: root.kind == 1 ? 700 : 600;
+        color: root.kind == 1 ? Theme.text-on-accent : Theme.text-secondary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    map_touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
+    }
+}
 
 // Environment Map (HDR): loads a Radiance .hdr equirectangular panorama as the
 // render's environment in place of the analytic studio rig (Studio Exposure /
 // Light Azimuth / Light Elevation), superseded while a map is loaded.
 export component EnvironmentMapSection inherits VerticalLayout {
     spacing: 4px;
-    Rectangle {
-        height: env_map_lbl.preferred-height;
-        Tooltip { text: @markdown("Load a Radiance .hdr panorama in place of the studio rig. Very large maps fall back to the CPU."); }
-        env_map_lbl := Text { text: "Environment Map (HDR)"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+    SettingLabel {
+        text: "Environment Map (HDR)";
+        hint: "Environment Map: a Radiance .hdr panorama that lights the stone instead of the studio lights. Very large maps fall back to the processor, which is slower.";
     }
 
     LineEdit {
         placeholder-text: "C:\\path\\to\\studio.hdr";
+        accessible-label: "Environment map file path";
         text <=> SettingsModel.env_map_path;
         accepted => { SettingsModel.load_env_map(SettingsModel.env_map_path); }
     }
@@ -22,48 +80,29 @@ export component EnvironmentMapSection inherits VerticalLayout {
     HorizontalLayout {
         spacing: 6px;
 
-        Rectangle {
+        MapButton {
             width: 76px;
-            height: 26px;
-            border-radius: Theme.radius-sm;
-            background: browse_hdr_touch.has-hover ? #1e293b : #0f172a;
-            border-width: 1px;
-            border-color: #334155;
-
-            browse_hdr_touch := TouchArea {
-                clicked => { SettingsModel.pick_hdr_file(SettingsModel.env_map_path); }
-            }
-
-            Text { text: "Browse..."; font-size: 11px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            text: "Browse...";
+            hint: "Pick a Radiance .hdr file on this computer.";
+            clicked => { SettingsModel.pick_hdr_file(SettingsModel.env_map_path); }
         }
 
-        Rectangle {
+        MapButton {
             horizontal-stretch: 1;
-            height: 26px;
-            border-radius: Theme.radius-sm;
-            background: load_env_touch.has-hover ? #7dd3fc : Theme.accent-cyan;
-
-            load_env_touch := TouchArea {
-                enabled: SettingsModel.env_map_path != "";
-                clicked => { SettingsModel.load_env_map(SettingsModel.env_map_path); }
-            }
-
-            Text { text: "Load"; font-size: 11px; font-weight: 700; color: #0f172a; horizontal-alignment: center; vertical-alignment: center; }
+            kind: 1;
+            text: "Load";
+            hint: SettingsModel.env_map_path != ""
+                ? "Load the file named above as the lighting."
+                : "Type or pick a file path first.";
+            enabled: SettingsModel.env_map_path != "";
+            clicked => { SettingsModel.load_env_map(SettingsModel.env_map_path); }
         }
 
-        if SettingsModel.env_map_loaded: Rectangle {
+        if SettingsModel.env_map_loaded: MapButton {
             width: 60px;
-            height: 26px;
-            border-radius: Theme.radius-sm;
-            background: clear_env_touch.has-hover ? #1e293b : #0f172a;
-            border-width: 1px;
-            border-color: #334155;
-
-            clear_env_touch := TouchArea {
-                clicked => { SettingsModel.clear_env_map(); }
-            }
-
-            Text { text: "Clear"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            text: "Clear";
+            hint: "Unload the environment map and go back to the studio lights.";
+            clicked => { SettingsModel.clear_env_map(); }
         }
     }
 

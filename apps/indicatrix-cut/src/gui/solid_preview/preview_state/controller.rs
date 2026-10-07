@@ -11,6 +11,7 @@ use super::{
     types::{CameraPose, FacetOverlay},
 };
 use glam::Vec3;
+use indicatrix_cut_core::{Design, ManufacturabilityWarning};
 use indicatrix_solid::preview::{Outlines, SharedOutlines, StoneGeometryBuf};
 use std::sync::{
     Arc, Mutex, PoisonError, Weak,
@@ -45,6 +46,10 @@ pub struct SolidPreviewState {
     /// "Show through tier N" slider: `Some(n)` truncates the plane arrangement
     /// to `design.tiers[..=n]`. Cached here for UI access via [`Self::set_tier_cutoff`].
     pub(super) tier_cutoff: Mutex<Option<usize>>,
+    /// The Cut slider: `Some(k)` draws the stone after the first `k` cutting steps
+    /// (`Design::preview_steps`), `Some(0)` being the rough, `None` the finished stone.
+    /// Wins over [`Self::tier_cutoff`] in a replan; set by [`Self::set_cut_steps`].
+    pub(super) cut_steps: Mutex<Option<usize>>,
     /// bumped by `gui::editor::auto_solve::scheduling::
     /// reset_for_new_design` on every wholesale design replacement (New/Load
     /// Selected/Open) via [`Self::bump_generation_floor`] -- lets the
@@ -69,7 +74,37 @@ pub struct SolidPreviewState {
     /// the COMMITTED `RenderContext::active_planes`) keeps showing the provisional
     /// facet instead of snapping back to the committed stone.
     pub(super) planes_override: Mutex<Option<Vec<(Vec3, f32)>>>,
+    /// The manufacturability findings the PLAN worker computed for its latest planned
+    /// designs. The worker writes an entry right AFTER it hands the frame on
+    /// ([`super::plan_worker`]: a frame never waits for the pass) and also delivers the
+    /// findings to the sink as their own update ([`super::PreviewSink::apply_findings`]).
+    /// The render worker looks the entry up when a planned frame reaches it -- it is there
+    /// only when the pass beat the render -- and copies it onto every frame it draws from
+    /// then on (the replan itself, but also the camera-follow reproject and overlay frames
+    /// that carry the last plan's masts forward), so the UI thread only DISPLAYS the
+    /// findings. Check 6 of the pass builds the stone's solid and the tools' polytopes,
+    /// which is far too slow for a UI thread -- see
+    /// `indicatrix_cut_core::manufacturability::concave_tool_warnings`.
+    pub(super) warnings: SharedWarnings,
 }
+
+/// One planned design's manufacturability findings, found again by the very `Arc` the plan
+/// job carried (the planned frame hands the same allocation on), never by generation.
+///
+/// The editor's generation moves only when the design does, so a tier selection, a Cut slider
+/// move or an idle replan plans the same design again under the same generation, with a fresh
+/// `Arc`. Such a plan finds no entry of an earlier plan here, so its frame goes out without
+/// findings unless its own pass beats the render. `gui::solid_sink`'s `LateRows` is what
+/// brings the generation's findings back to its rows, from the copy it keeps.
+pub(super) struct PlanFindings {
+    /// The design the findings were computed for. Held so the allocation cannot be freed and
+    /// reused for another design while this entry can still be looked up.
+    pub(super) design: Arc<Design>,
+    pub(super) warnings: Arc<Vec<ManufacturabilityWarning>>,
+}
+
+/// The few most recent [`PlanFindings`], newest last -- see [`SolidPreviewState::warnings`].
+pub(super) type SharedWarnings = Arc<Mutex<Vec<PlanFindings>>>;
 
 impl SolidPreviewState {
     /// Builds a controller that hands every finished frame to `sink`. No thread is
@@ -84,9 +119,11 @@ impl SolidPreviewState {
             plan_wake: Mutex::new(None),
             self_weak: Mutex::new(Weak::new()),
             tier_cutoff: Mutex::new(None),
+            cut_steps: Mutex::new(None),
             generation_floor: Arc::new(AtomicU64::new(0)),
             outlines: Arc::new(Mutex::new(Outlines::default())),
             planes_override: Mutex::new(None),
+            warnings: Arc::new(Mutex::new(Vec::new())),
         });
         *state
             .self_weak
@@ -185,6 +222,27 @@ impl SolidPreviewState {
         });
     }
 
+    /// [`Self::request_redraw_geometry`] for a viewport that shows the COMMITTED design
+    /// only: the Slice tool's [`Self::set_planes_override`] is not applied. The Live
+    /// Render tab's Solid raster calls this, so the provisional tier -- an Edit-tab
+    /// preview of a slice that has not been kept -- never shows there.
+    pub fn request_redraw_committed_geometry(
+        &self,
+        geometry: StoneGeometryBuf,
+        camera: CameraPose,
+        size: (u32, u32),
+        view_mode: u8,
+        gear: Option<(u32, f32)>,
+    ) {
+        self.submit(RedrawRequest::Reproject {
+            geometry,
+            camera,
+            size,
+            view_mode,
+            gear,
+        });
+    }
+
     /// Submits a facet-id-keyed highlight update ("which facet did I click", multi-
     /// select, hover) -- see `super::types::FacetOverlay`'s doc comment. Re-renders
     /// at whatever camera/planes/size/`view_mode` the worker last used for a
@@ -229,6 +287,10 @@ impl SolidPreviewState {
             .tier_cutoff
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        let cut_steps = *self
+            .cut_steps
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         self.submit_plan(PlanJob {
             design: request.design,
             dirty: request.dirty,
@@ -242,7 +304,20 @@ impl SolidPreviewState {
             show_preform: request.show_preform,
             enlarged_panel: request.enlarged_panel,
             tier_cutoff,
+            cut_steps,
         });
+    }
+
+    /// Sets the Cut slider for the NEXT [`Self::request_replan`]: `Some(k)` draws the
+    /// stone after the first `k` cutting steps (`Design::preview_steps`; `0` is the
+    /// rough, the preform alone), `None` the finished stone. Does NOT redraw; the
+    /// caller submits a replan afterwards, as `gui::editor::view::submit_preview_replan`
+    /// does after reading the slider (`gui::solid_preview::cut_slider`).
+    pub fn set_cut_steps(&self, steps: Option<usize>) {
+        *self
+            .cut_steps
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = steps;
     }
 
     /// Sets the "show through tier N" cutoff: `Some(n)` truncates to

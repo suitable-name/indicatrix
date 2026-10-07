@@ -78,12 +78,15 @@ export struct SavedRoughPlanRow {
 export global RoughPlanModel {
     // state
     in property <bool> running: false;                // a plan is running: the model and the saved-plan actions are locked
+    in property <bool> mesh_busy: false;              // an OBJ file is being read or a mesh scaled in the background: the rough shapes, Fit to weight and Plan are locked
+    in property <string> mesh_busy_text: "";          // what that work is called ("Reading the OBJ file..."), "" when none runs
 
     // inputs (strings parsed in Rust; invalid input -> error_text)
     in-out property <string> rough_x: "";
     in-out property <string> rough_y: "";
     in-out property <string> rough_z: "";
     in-out property <int> count: 1;                 // SpinBox 1..=99, "up to"
+    in-out property <string> time_limit_secs: "120"; // "Scan plan time limit" in seconds, 0 = no limit; shown for a rough with a mesh (`locate_possible`), Rust fills it from the settings file when the window is created
     in property <[string]> materials;               // filled by Rust when the window opens
     in-out property <int> material_index: 0;
     in-out property <bool> losses_open: false;
@@ -166,7 +169,15 @@ export global RoughPlanModel {
     callback select_design(int);                    // entry_id -> Rust calls the LibraryModel select path
 
     callback set_base(int);
-    callback import_obj();                          // pick an OBJ file; a closed mesh (or else its convex outline) becomes the rough
+    in-out property <int> mesh_unit_index: 0;       // unit of a mesh file's numbers: 0 mm, 1 cm, 2 m, 3 inch, 4 um (the order of mesh_io::MeshUnit::ALL); kept for the session
+    callback import_obj();                          // pick an OBJ, STL or PLY file; a closed mesh (or else its convex outline) becomes the rough
+    in property <bool> inclusions_possible: false;  // the rough is an imported mesh, so it takes inclusions; Rust pushes it with every model change
+    in property <[string]> inclusion_rows;          // one line per inclusion of the rough ("Inclusion 1: 4.6 x 4.6 x 4.6 mm, 97.3 mm³"), in the order added
+    in-out property <string> inclusion_margin: "0.3"; // the margin a new inclusion gets, in mm: stones keep this far from it ("" is the default, 0.3)
+    callback add_inclusion();                       // pick a mesh file and add its mesh as an inclusion (the unit is `mesh_unit_index`, the margin `inclusion_margin`)
+    callback remove_inclusion(int);                 // row of `inclusion_rows`
+    in property <bool> locate_possible: false;      // the rough has a mesh, so an inclusion can be located from photos; Rust pushes it with every model change
+    callback locate_inclusion();                    // open "Locate inclusion from photos..."
     callback base_field_committed();               // any base/material/weight field committed
     callback fit_to_weight();                       // Fit to weight: scales the model to the typed carat
     callback add_cut(int);                         // kind

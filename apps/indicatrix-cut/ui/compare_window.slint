@@ -7,54 +7,31 @@
 // (switches, images, overlay, status line) is the shared `CompareView`, and the
 // window adds only the header and its Keep/Discard/Close buttons.
 //
+// Keyboard: Tab walks the switches, the picture, the divider and the buttons; Escape is the Close
+// button (a proposal waiting to be applied stays pending). The "?" button
+// opens the manual: this window's own `HelpModel` hands the topic to the main window
+// (`gui::editor::compare::wiring`).
+//
 // Sizing: the whole content hangs off an x/y-positioned wrapper, so no layout
 // constraint inside it reaches the window (the window's min AND max come from its
 // content tree otherwise -- see `app.slint`'s sizing notes); the window's own
 // `min-width`/`min-height` are the only limits.
+import { ComboBox } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { CompareModel } from "models/compare.slint";
+import { HelpTopics } from "models/help.slint";
 import { CompareView } from "components/compare_view.slint";
-
-// A footer button; `primary` is the accent-filled "Keep after".
-component FooterButton inherits Rectangle {
-    in property <string> label;
-    in property <bool> primary: false;
-    in property <bool> active: true;
-    callback clicked();
-
-    height: 30px;
-    width: max(90px, footer_text.preferred-width + 24px);
-    border-radius: Theme.radius-sm;
-    opacity: root.active ? 1.0 : 0.45;
-    background: root.primary
-        ? (footer_touch.has-hover && root.active ? Theme.accent-cyan-hover : Theme.accent-cyan)
-        : (footer_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control);
-    border-width: root.primary ? 0px : 1px;
-    border-color: Theme.border-dialog;
-
-    footer_touch := TouchArea {
-        enabled: root.active;
-        clicked => { root.clicked(); }
-    }
-
-    footer_text := Text {
-        text: root.label;
-        font-size: 12px;
-        font-weight: 700;
-        color: root.primary ? Theme.text-on-accent : Theme.text-primary;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-}
+import { HelpButton } from "components/help_button.slint";
+import { ActionButton } from "components/chip_toggle.slint";
 
 export component CompareWindow inherits Window {
     title: "Compare — Indicatrix Cut";
     // See `MainWindow`'s `icon` (app.slint) for why every window sets it.
     icon: @image-url("../assets/icon.png");
     preferred-width: 1100px;
-    preferred-height: 640px;
+    preferred-height: 780px;
     min-width: 640px;
-    min-height: 400px;
+    min-height: 480px;
     background: Theme.bg-darkest;
     default-font-family: "Segoe UI";
 
@@ -64,63 +41,118 @@ export component CompareWindow inherits Window {
         width: root.width;
         height: root.height;
 
-        VerticalLayout {
-            padding: 12px;
-            spacing: 8px;
-
-            // Header: what is being compared.
-            HorizontalLayout {
-                height: 22px;
-                spacing: 8px;
-
-                Text {
-                    horizontal-stretch: 1;
-                    text: "Before: " + CompareModel.before_label;
-                    font-size: 13px;
-                    font-weight: 700;
-                    color: Theme.text-primary;
-                    vertical-alignment: center;
-                    overflow: elide;
+        // Escape presses Close; the buttons, the switches and the
+        // picture are inside this scope, so it hears the key from whichever of them has it.
+        window_keys := FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    CompareModel.close();
+                    return accept;
                 }
-
-                Text {
-                    horizontal-stretch: 1;
-                    text: "After: " + CompareModel.after_label;
-                    font-size: 13px;
-                    font-weight: 700;
-                    color: Theme.accent-cyan;
-                    horizontal-alignment: right;
-                    vertical-alignment: center;
-                    overflow: elide;
-                }
+                return reject;
             }
 
-            CompareView {
-                vertical-stretch: 1;
-                show_split: true;
-            }
-
-            // The three actions.
-            HorizontalLayout {
-                height: 30px;
+            VerticalLayout {
+                padding: 12px;
                 spacing: 8px;
-                alignment: end;
 
-                FooterButton {
-                    label: "Close";
-                    clicked => { CompareModel.close(); }
+                // Header: what is being compared.
+                HorizontalLayout {
+                    height: 28px;
+                    spacing: 8px;
+
+                    Text {
+                        horizontal-stretch: 1;
+                        text: "Before: " + CompareModel.before_label;
+                        font-size: 13px;
+                        font-weight: 700;
+                        color: Theme.text-primary;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    if CompareModel.reference_available: HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "Compare against:";
+                            font-size: 12px;
+                            color: Theme.text-secondary;
+                            vertical-alignment: center;
+                        }
+                        ComboBox {
+                            width: 230px;
+                            model: CompareModel.reference_options;
+                            current-index <=> CompareModel.reference_index;
+                            accessible-label: "Compare against";
+                            selected => { CompareModel.reference_changed(self.current-index); }
+                        }
+                    }
+
+                    Text {
+                        horizontal-stretch: 1;
+                        text: "After: " + CompareModel.after_label;
+                        font-size: 13px;
+                        font-weight: 700;
+                        color: Theme.accent-cyan;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    HelpButton {
+                        topic: HelpTopics.compare;
+                        hint: "Open the manual page on the visual before and after comparison";
+                    }
                 }
 
-                if CompareModel.show_keep_discard: FooterButton {
-                    label: "Discard";
-                    clicked => { CompareModel.discard(); }
+                CompareView {
+                    vertical-stretch: 1;
+                    show_split: true;
+                    show_metrics: true;
                 }
 
-                if CompareModel.show_keep_discard: FooterButton {
-                    label: "Keep after";
-                    primary: true;
-                    active: CompareModel.can_keep;
-                    clicked => { CompareModel.keep(); }
+                // The three actions.
+                HorizontalLayout {
+                    height: 30px;
+                    spacing: 8px;
+                    alignment: end;
+
+                    ActionButton {
+                        width: 90px;
+                        text: "Close";
+                        hint: "Close the comparison. A change waiting to be applied stays waiting.";
+                        fill: Theme.surface-control;
+                        hover_fill: Theme.surface-control-hover;
+                        font_size: 12px;
+                        weight: 700;
+                        clicked => { CompareModel.close(); }
+                    }
+
+                    if CompareModel.show_keep_discard: ActionButton {
+                        width: 90px;
+                        text: "Discard";
+                        hint: "Close the comparison and drop the change. The design stays as it is.";
+                        fill: Theme.surface-control;
+                        hover_fill: Theme.surface-control-hover;
+                        font_size: 12px;
+                        weight: 700;
+                        clicked => { CompareModel.discard(); }
+                    }
+
+                    if CompareModel.show_keep_discard: ActionButton {
+                        width: 120px;
+                        text: "Keep after";
+                        hint: CompareModel.can_keep ? "Apply the changed design exactly as the Apply button does, then close." : "Not available: the changed design does not solve, so there is nothing to keep.";
+                        fill: Theme.accent-cyan;
+                        hover_fill: Theme.accent-cyan-hover;
+                        ink: Theme.text-on-accent;
+                        edge: Theme.accent-cyan;
+                        font_size: 12px;
+                        weight: 700;
+                        enabled: CompareModel.can_keep;
+                        clicked => { CompareModel.keep(); }
+                    }
                 }
             }
         }

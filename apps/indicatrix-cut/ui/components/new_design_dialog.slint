@@ -1,50 +1,82 @@
 import { Theme } from "../theme.slint";
-import { LineEdit, ComboBox } from "std-widgets.slint";
+import { LineEdit, ComboBox, ScrollView } from "std-widgets.slint";
 import { EditorModel } from "../models/editor.slint";
 import { GuideModel } from "../models/guide.slint";
+import { HelpTopics } from "../models/help.slint";
+import { TemplateGalleryModel } from "../models/templates.slint";
 import { TemplateGallery } from "template_gallery.slint";
+import { HelpButton } from "help_button.slint";
+import { ActionButton } from "chip_toggle.slint";
+import { ToggleRow } from "toggle_switch.slint";
+import { TipBox } from "tip_box.slint";
 
-// New design dialog replacing the bare "New" action --
-// preform, gear, symmetry, mirror and starting material all named up front,
-// fed straight to indicatrix_cut_core::Design::fresh_from_spec via
-// gui::editor::loading::parse_new_design_form
-// (gui::editor::callbacks::setup_new_design_create_callback).
-//
-// Same full-viewport modal backdrop + centered content-sized card convention as
-// metadata_editor_dialog.slint/material_editor_dialog.slint.
-export component NewDesignDialog inherits Rectangle {
-    // Every "Start from" template (any index >= 1; `0` is Empty) locks
-    // gear/symmetry/mirror to match its built-in tier table (all five are
-    // 96/8/mirror-on) rather than trying to remap the table onto whatever
-    // gear/symmetry the cutter already chose -- a template created on a different
-    // gear would seed indices that no longer mean what the template intended.
-    // `Create` then seeds that template's tiers: `gui::editor::callbacks::
-    // tier_actions::do_new_design_create` indexes
-    // `indicatrix_cut_core::templates::TEMPLATES` at `new_template_index - 1`.
-    property <bool> template_locks_fields: EditorModel.new_template_index >= 1;
+// A small caption above a field, carrying the field's tooltip.
+component FieldCaption inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
 
-    function apply_template_lock() {
-        if root.template_locks_fields {
-            // Index 0 in the Index Gear combo below is "96".
-            EditorModel.new_gear_index = 0;
-            EditorModel.new_symmetry_order_text = "8";
-            EditorModel.new_mirror = true;
-        }
+    height: caption.preferred-height;
+    Tooltip { text: @markdown("\{root.hint}"); }
+    caption := Text {
+        text: root.text;
+        font-size: 9px;
+        color: Theme.text-muted;
+        accessible-role: AccessibleRole.text;
     }
+}
 
-    // Best-effort, Slint-side validity for the four free-text numeric fields --
-    // full parsing (whole-number symmetry order, unparseable-text distinct from a
-    // legitimate zero) still lives in Rust (`gui::editor::loading::parse_preform_form`/
-    // `parse_new_design_form`) and is surfaced there via a toast on Create; these
-    // mirror that crate's own ">0" rule so a cutter sees the offending field
-    // highlighted before clicking Create, without this dialog needing a new
-    // `EditorModel` property to carry per-field error text back from Rust.
+// The red "what is wrong" line under a field. Empty text takes no room beyond one line.
+component FieldError inherits Text {
+    font-size: 8px;
+    color: Theme.danger;
+    accessible-role: AccessibleRole.text;
+}
+
+// New Design dialog, in two modes picked by the gallery:
+//
+// - A template (a card with a picture): the guided mode. Pick a shape, then say what to
+//   cut it from -- material, index gear (only the gears the shape's facets still land
+//   on) and stone width in millimetres. Rust (`gui::editor::callbacks::tier_actions::
+//   new_design`, via `TemplateGalleryModel.create`) builds the template on its own
+//   preform, remaps it to the gear, sets the width and, when the material's refractive
+//   index differs from the one the template was designed for, adapts the facet angles
+//   with the retarget engine -- keeping the template's angles, and saying so, if the
+//   adapted stone would not be valid.
+// - Empty: the full form (preform, gear, symmetry, mirror, material), fed straight to
+//   `indicatrix_cut_core::Design::fresh_from_spec` via
+//   `gui::editor::loading::parse_new_design_form`
+//   (`EditorModel.new_design_create`). The worked-example guide starts here.
+//
+// Same full-viewport modal backdrop + centred card convention as
+// metadata_editor_dialog.slint/material_editor_dialog.slint/export_dialog.slint.
+//
+// The dialog shows every field in Simple mode as well: the Empty form is what the
+// worked-example guide walks through, and a template needs no advanced field.
+export component NewDesignDialog inherits Rectangle {
+    // Whether a template (any index >= 1; `0` is Empty) is selected. Nothing about the
+    // schedule is locked any more: the template is remapped onto the chosen gear.
+    property <bool> from_template: EditorModel.new_template_index >= 1;
+
+    // Slint-side validity for the free-text numeric fields -- full parsing still lives
+    // in Rust (`gui::editor::loading::parse_preform_form`/`parse_new_design_form` for
+    // the Empty form, the create callback for the stone width) and is surfaced there via
+    // a toast on Create; these mirror those rules so a cutter sees the offending field
+    // highlighted before clicking Create.
     property <bool> half_width_valid: EditorModel.new_preform_half_width.to-float() > 0;
     property <bool> length_over_width_valid: EditorModel.new_preform_length_over_width.to-float() > 0;
     property <bool> depth_valid: EditorModel.new_preform_depth.to-float() > 0;
     property <bool> custom_gear_valid: EditorModel.new_gear_index != 6 || EditorModel.new_gear_custom_text.to-float() > 0;
     property <bool> symmetry_valid: EditorModel.new_symmetry_order_text.to-float() >= 1;
-    property <bool> form_valid: root.half_width_valid && root.length_over_width_valid && root.depth_valid && root.custom_gear_valid && root.symmetry_valid;
+    property <bool> empty_form_valid: root.half_width_valid && root.length_over_width_valid && root.depth_valid && root.custom_gear_valid && root.symmetry_valid;
+
+    // The stone width: empty means "not set yet"; otherwise a number above 0 and at
+    // most 200 mm (the same range Rust accepts).
+    property <bool> width_valid: TemplateGalleryModel.width_text == ""
+        || (TemplateGalleryModel.width_text.to-float() > 0 && TemplateGalleryModel.width_text.to-float() <= 200);
+    property <bool> template_form_valid: root.width_valid
+        && TemplateGalleryModel.gear_options.length > 0
+        && TemplateGalleryModel.material_options.length > 0;
+    property <bool> form_valid: root.from_template ? root.template_form_valid : root.empty_form_valid;
 
     function cancel() {
         EditorModel.new_dialog_open = false;
@@ -58,24 +90,37 @@ export component NewDesignDialog inherits Rectangle {
             return;
         }
         // Closes only via the Rust callback's own success path
-        // (`tier_actions::setup_new_design_create_callback`, already unconditional
-        // on success) -- not here -- so a parse error it still catches (a whole-number
-        // symmetry order, for instance) reopens with the typed values intact and the
-        // toast naming the field, rather than a bad field yielding a toast with the
-        // dialog already gone.
-        EditorModel.new_design_create(
-            EditorModel.new_preform_shape_index,
-            EditorModel.new_preform_half_width,
-            EditorModel.new_preform_length_over_width,
-            EditorModel.new_preform_depth,
-            EditorModel.new_gear_index,
-            EditorModel.new_gear_custom_text,
-            EditorModel.new_symmetry_order_text,
-            EditorModel.new_mirror,
-            EditorModel.new_material_index,
-            EditorModel.new_template_index
-        );
+        // (`tier_actions::do_new_design_create`) -- not here -- so a refused form (a
+        // whole-number symmetry order, a gear the template cannot use) reopens with
+        // the typed values intact and the toast naming the field, rather than a bad
+        // field yielding a toast with the dialog already gone.
+        if root.from_template {
+            TemplateGalleryModel.create(
+                EditorModel.new_template_index,
+                TemplateGalleryModel.gear_index,
+                TemplateGalleryModel.material_index,
+                TemplateGalleryModel.width_text
+            );
+        } else {
+            EditorModel.new_design_create(
+                EditorModel.new_preform_shape_index,
+                EditorModel.new_preform_half_width,
+                EditorModel.new_preform_length_over_width,
+                EditorModel.new_preform_depth,
+                EditorModel.new_gear_index,
+                EditorModel.new_gear_custom_text,
+                EditorModel.new_symmetry_order_text,
+                EditorModel.new_mirror,
+                EditorModel.new_material_index,
+                EditorModel.new_template_index
+            );
+        }
     }
+
+    // The dialog is mounted afresh each time it opens (an `if` in
+    // `GlobalDialogsOverlay`), so this runs once per opening: Rust fills the options for
+    // the selected template and starts drawing the thumbnails it has not drawn yet.
+    init => { TemplateGalleryModel.dialog_shown(); }
 
     background: Theme.overlay-backdrop;
 
@@ -114,8 +159,11 @@ export component NewDesignDialog inherits Rectangle {
     }
 
     Rectangle {
-        width: 380px;
-        height: content.preferred-height;
+        width: min(600px, root.width - 40px);
+        // Capped at the backdrop's height less a 20px margin top and bottom: the body
+        // ScrollView below takes the overflow so the title and the Cancel/Create
+        // buttons stay reachable on a short window.
+        height: min(content.preferred-height, root.height - 40px);
         background: Theme.surface-dialog;
         border-radius: Theme.radius-md;
         border-width: root.guide_highlighted ? 2px : 1px;
@@ -130,213 +178,336 @@ export component NewDesignDialog inherits Rectangle {
             padding: 16px;
             spacing: 10px;
 
-            Text {
-                text: "New Design";
-                font-size: 14px;
-                font-weight: 700;
-                color: Theme.text-primary;
-            }
-            Text {
-                // Tells the cutter about the fields below, not the Rust entry point
-                // (`Design::fresh_from_spec`) -- the preform dimensions are in this
-                // codebase's own "mast unit" scale (see `PreformSpec`'s own doc
-                // comment: the same scale a facet's own angle-table offset uses),
-                // not an arbitrary unitless number.
-                text: "A fresh design starts as a rough preform, cut on an index gear with the given symmetry. Preform dimensions are in mast units -- 1.0 is where the finished girdle will sit, so give it some headroom above that.";
-                font-size: 10px;
-                color: Theme.text-muted;
-                wrap: word-wrap;
-            }
-
-            Rectangle {
-                height: template_lbl.preferred-height;
-                Tooltip { text: @markdown("Every template except Empty locks the gear, symmetry and mirror settings below to match its built-in tier table."); }
-                template_lbl := Text { text: "Start From"; font-size: 10px; color: Theme.text-muted; }
-            }
-            TemplateGallery {
-                selected_index <=> EditorModel.new_template_index;
-                selected => { root.apply_template_lock(); }
-            }
-            if root.template_locks_fields: Text {
-                text: "Locks Index Gear to 96, Symmetry Order to 8 and Mirror on, and seeds this template's tiers -- Create yields a design that solves immediately.";
-                font-size: 8px;
-                color: Theme.text-muted;
-                wrap: word-wrap;
-            }
-
-            Rectangle { height: 1px; background: Theme.border-subtle; }
-
-            Text { text: "Preform Shape"; font-size: 10px; color: Theme.text-muted; }
-            ComboBox {
-                model: ["Block", "Cylinder"];
-                current-index <=> EditorModel.new_preform_shape_index;
-            }
             HorizontalLayout {
-                spacing: 6px;
-                VerticalLayout {
+                spacing: 8px;
+                Text {
                     horizontal-stretch: 1;
-                    spacing: 2px;
-                    Rectangle {
-                        height: hw_lbl.preferred-height;
-                        Tooltip { text: @markdown("Half the rough's width, in mast units -- the same scale a facet's own mast offset uses (1.0 = where the finished girdle will sit)."); }
-                        hw_lbl := Text { text: "Half-Width"; font-size: 9px; color: Theme.text-muted; }
-                    }
-                    LineEdit { min-width: 0px; text <=> EditorModel.new_preform_half_width; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
-                    Text { text: root.half_width_valid ? "" : "must be > 0"; font-size: 8px; color: Theme.accent-ruby; }
+                    text: "New Design";
+                    font-size: 14px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                    accessible-role: AccessibleRole.text;
                 }
                 VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 2px;
-                    Rectangle {
-                        height: lw_lbl.preferred-height;
-                        Tooltip { text: @markdown("Ratio of the rough's length to its width -- 1.0 is square/round, higher values give an elongated oval or rectangular rough."); }
-                        lw_lbl := Text { text: "Length / Width"; font-size: 9px; color: Theme.text-muted; }
+                    alignment: center;
+                    HelpButton {
+                        topic: HelpTopics.new-design;
+                        hint: "Open the manual page on starting a new design";
                     }
-                    LineEdit { min-width: 0px; text <=> EditorModel.new_preform_length_over_width; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
-                    Text { text: root.length_over_width_valid ? "" : "must be > 0"; font-size: 8px; color: Theme.accent-ruby; }
-                }
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 2px;
-                    Rectangle {
-                        height: depth_lbl.preferred-height;
-                        Tooltip { text: @markdown("The rough's total top-to-bottom extent (table to culet), in the same mast units as Half-Width."); }
-                        depth_lbl := Text { text: "Depth"; font-size: 9px; color: Theme.text-muted; }
-                    }
-                    LineEdit { min-width: 0px; text <=> EditorModel.new_preform_depth; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
-                    Text { text: root.depth_valid ? "" : "must be > 0"; font-size: 8px; color: Theme.accent-ruby; }
                 }
             }
 
-            Rectangle { height: 1px; background: Theme.border-subtle; }
+            body := ScrollView {
+                vertical-stretch: 1;
+                content-width: self.visible-width;
+                preferred-height: body_col.preferred-height;
 
-            HorizontalLayout {
-                spacing: 6px;
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 2px;
-                    Rectangle {
-                        height: gear_lbl.preferred-height;
-                        Tooltip { text: root.template_locks_fields ? @markdown("Locked to 96 by the selected template.") : @markdown("The index-gear tooth count -- how many positions the wheel that cuts facets around the stone has."); }
-                        gear_lbl := Text { text: "Index Gear"; font-size: 9px; color: Theme.text-muted; }
+                body_col := VerticalLayout {
+                    spacing: 10px;
+                    padding-right: 12px;
+
+                    Text {
+                        text: root.from_template
+                            ? "Pick a shape, then choose what to cut it from. The facet angles are set for the material, and the stone arrives ready to cut."
+                            : "A fresh design starts as a rough preform, cut on an index gear with the given symmetry. Preform dimensions are in mast units -- 1.0 is where the finished girdle will sit, so give it some headroom above that.";
+                        font-size: 10px;
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                        accessible-role: AccessibleRole.text;
                     }
-                    ComboBox {
-                        min-width: 0px;
-                        model: ["96", "80", "77", "72", "64", "120", "Custom"];
-                        current-index <=> EditorModel.new_gear_index;
-                        enabled: !root.template_locks_fields;
+
+                    FieldCaption {
+                        text: "Start From";
+                        hint: "Pick a ready-made stone, or Blank to author the schedule from scratch.";
                     }
-                }
-                if EditorModel.new_gear_index == 6 && !root.template_locks_fields: VerticalLayout {
-                    spacing: 2px;
-                    Text { text: "Custom Teeth"; font-size: 9px; color: Theme.text-muted; }
-                    LineEdit { min-width: 0px; text <=> EditorModel.new_gear_custom_text; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
-                    Text { text: root.custom_gear_valid ? "" : "must be > 0"; font-size: 8px; color: Theme.accent-ruby; }
-                }
-            }
-            HorizontalLayout {
-                spacing: 6px;
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 2px;
-                    Rectangle {
-                        height: sym_lbl.preferred-height;
-                        Tooltip { text: root.template_locks_fields ? @markdown("Locked to 8 by the selected template.") : @markdown("How many repeats the design has around the stone -- an 8-fold design repeats every 45 degrees."); }
-                        sym_lbl := Text { text: "Symmetry Order"; font-size: 9px; color: Theme.text-muted; }
-                    }
-                    LineEdit { text <=> EditorModel.new_symmetry_order_text; enabled: !root.template_locks_fields; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
-                    Text { text: root.symmetry_valid ? "" : "must be a positive whole number"; font-size: 8px; color: Theme.accent-ruby; }
-                }
-                VerticalLayout {
-                    spacing: 2px;
-                    Rectangle {
-                        height: mirror_lbl.preferred-height;
-                        Tooltip { text: root.template_locks_fields ? @markdown("Locked on by the selected template.") : @markdown("Whether each repeat is also mirrored -- most brilliant-style cuts are."); }
-                        mirror_lbl := Text { text: "Mirror"; font-size: 9px; color: Theme.text-muted; }
-                    }
-                    HorizontalLayout {
-                        height: 30px;
-                        alignment: start;
-                        Rectangle {
-                            width: 36px;
-                            height: 20px;
-                            border-radius: 10px;
-                            background: EditorModel.new_mirror ? (root.template_locks_fields ? Theme.border-medium : Theme.accent-cyan) : Theme.border-dialog;
-                            opacity: root.template_locks_fields ? 0.6 : 1.0;
-                            TouchArea {
-                                enabled: !root.template_locks_fields;
-                                clicked => { EditorModel.new_mirror = !EditorModel.new_mirror; }
+                    TemplateGallery {}
+
+                    // ---- Template options ------------------------------------------------
+                    if root.from_template: VerticalLayout {
+                        spacing: 8px;
+
+                        Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                        Text {
+                            text: TemplateGalleryModel.description;
+                            font-size: 10px;
+                            color: Theme.text-secondary;
+                            wrap: word-wrap;
+                            accessible-role: AccessibleRole.text;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 10px;
+                            VerticalLayout {
+                                horizontal-stretch: 2;
+                                spacing: 2px;
+                                FieldCaption {
+                                    text: "Material";
+                                    hint: "The material the stone is cut from. Its refractive index decides the facet angles: a material unlike the one the shape was designed for gets adapted angles. See the glossary.";
+                                }
+                                TipBox {
+                                    hint: "The material the stone is cut from. Pick another to adapt the facet angles to it.";
+                                    ComboBox {
+                                        min-width: 0px;
+                                        accessible-label: "Material";
+                                        model: TemplateGalleryModel.material_options;
+                                        current-index <=> TemplateGalleryModel.material_index;
+                                        selected(value) => { TemplateGalleryModel.material_chosen(self.current-index); }
+                                    }
+                                }
                             }
-                            Rectangle {
-                                width: 16px;
-                                height: 16px;
-                                border-radius: 8px;
-                                // Uses `Theme.text-on-primary`, not a bare `white`
-                                // literal -- `editor_design_settings.slint`'s own
-                                // Mirror toggle knob already uses this token for the
-                                // identical role.
-                                background: Theme.text-on-primary;
-                                x: EditorModel.new_mirror ? parent.width - self.width - 2px : 2px;
-                                y: 2px;
-                                animate x { duration: 120ms; }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 2px;
+                                FieldCaption {
+                                    text: "Index Gear";
+                                    hint: "The index-gear tooth count. Only the gears this shape's facets still land on, symmetrically and on whole teeth, are offered. See the glossary.";
+                                }
+                                TipBox {
+                                    hint: "The number of teeth on the index gear that will cut this stone.";
+                                    ComboBox {
+                                        min-width: 0px;
+                                        accessible-label: "Index gear";
+                                        model: TemplateGalleryModel.gear_options;
+                                        current-index <=> TemplateGalleryModel.gear_index;
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 2px;
+                                FieldCaption {
+                                    text: "Stone Width (mm)";
+                                    hint: "The finished stone's width across the girdle, in millimetres. It scales weights and the cutting instructions; leave it empty to set it later in the Edit tab.";
+                                }
+                                TipBox {
+                                    hint: "The finished stone's width in millimetres. Leave empty to set it later.";
+                                    LineEdit {
+                                        min-width: 0px;
+                                        accessible-label: "Stone width in millimetres";
+                                        text <=> TemplateGalleryModel.width_text;
+                                        changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                                    }
+                                }
+                                FieldError { text: root.width_valid ? "" : "Use a number above 0 and up to 200."; }
+                            }
+                        }
+
+                        Text {
+                            text: TemplateGalleryModel.designed_for;
+                            font-size: 9px;
+                            font-weight: 700;
+                            color: Theme.text-muted;
+                            wrap: word-wrap;
+                            accessible-role: AccessibleRole.text;
+                        }
+                        Text {
+                            text: TemplateGalleryModel.material_note;
+                            font-size: 9px;
+                            color: Theme.text-muted;
+                            wrap: word-wrap;
+                            accessible-role: AccessibleRole.text;
+                        }
+                    }
+
+                    // ---- The full form, for Blank ----------------------------------------
+                    if !root.from_template: VerticalLayout {
+                        spacing: 10px;
+
+                        Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                        FieldCaption {
+                            text: "Preform Shape";
+                            hint: "The rough's shape: a rectangular block or a round rod (cylinder). The preform is the rough the stone is cut from. See the glossary.";
+                        }
+                        TipBox {
+                            hint: "Block is a rectangular rough. Cylinder is a round rod.";
+                            ComboBox {
+                                accessible-label: "Preform shape";
+                                model: ["Block", "Cylinder"];
+                                current-index <=> EditorModel.new_preform_shape_index;
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 2px;
+                                FieldCaption {
+                                    text: "Half-Width";
+                                    hint: "Half the rough's width, in mast units -- the same scale a facet's own mast offset uses (1.0 = where the finished girdle will sit).";
+                                }
+                                TipBox {
+                                    hint: "Half the rough's width, in mast units. 1.0 is where the girdle will sit.";
+                                    LineEdit {
+                                        min-width: 0px;
+                                        accessible-label: "Half-width of the rough";
+                                        text <=> EditorModel.new_preform_half_width;
+                                        changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                                    }
+                                }
+                                FieldError { text: root.half_width_valid ? "" : "Use a number above 0."; }
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 2px;
+                                FieldCaption {
+                                    text: "Length / Width";
+                                    hint: "Ratio of the rough's length to its width -- 1.0 is square or round, higher values give an elongated oval or rectangular rough.";
+                                }
+                                TipBox {
+                                    hint: "The rough's length divided by its width. 1.0 is square or round.";
+                                    LineEdit {
+                                        min-width: 0px;
+                                        accessible-label: "Length over width of the rough";
+                                        text <=> EditorModel.new_preform_length_over_width;
+                                        changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                                    }
+                                }
+                                FieldError { text: root.length_over_width_valid ? "" : "Use a number above 0."; }
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 2px;
+                                FieldCaption {
+                                    text: "Depth";
+                                    hint: "The rough's total top-to-bottom extent (table to culet), in the same mast units as Half-Width.";
+                                }
+                                TipBox {
+                                    hint: "The rough's height from table to culet, in mast units.";
+                                    LineEdit {
+                                        min-width: 0px;
+                                        accessible-label: "Depth of the rough";
+                                        text <=> EditorModel.new_preform_depth;
+                                        changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                                    }
+                                }
+                                FieldError { text: root.depth_valid ? "" : "Use a number above 0."; }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                        HorizontalLayout {
+                            spacing: 6px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 2px;
+                                FieldCaption {
+                                    text: "Index Gear";
+                                    hint: "The index-gear tooth count -- how many positions the wheel that cuts facets around the stone has. See the glossary.";
+                                }
+                                TipBox {
+                                    hint: "The number of teeth on the index gear. 96 is the most common.";
+                                    ComboBox {
+                                        min-width: 0px;
+                                        accessible-label: "Index gear";
+                                        model: ["96", "80", "77", "72", "64", "120", "Custom"];
+                                        current-index <=> EditorModel.new_gear_index;
+                                    }
+                                }
+                            }
+                            if EditorModel.new_gear_index == 6: VerticalLayout {
+                                spacing: 2px;
+                                FieldCaption {
+                                    text: "Custom Teeth";
+                                    hint: "The tooth count of your own index gear.";
+                                }
+                                TipBox {
+                                    hint: "How many teeth your own index gear has.";
+                                    LineEdit {
+                                        min-width: 0px;
+                                        accessible-label: "Teeth on the custom gear";
+                                        text <=> EditorModel.new_gear_custom_text;
+                                        changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                                    }
+                                }
+                                FieldError { text: root.custom_gear_valid ? "" : "Use a number above 0."; }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 2px;
+                                FieldCaption {
+                                    text: "Symmetry Order";
+                                    hint: "How many repeats the design has around the stone -- an 8-fold design repeats every 45 degrees. See the glossary.";
+                                }
+                                TipBox {
+                                    hint: "How many times the pattern repeats around the stone. 8 repeats every 45 degrees.";
+                                    LineEdit {
+                                        accessible-label: "Symmetry order";
+                                        text <=> EditorModel.new_symmetry_order_text;
+                                        changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                                    }
+                                }
+                                FieldError { text: root.symmetry_valid ? "" : "Use a whole number, 1 or more."; }
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: end;
+                                ToggleRow {
+                                    text: "Mirror";
+                                    hint: "Whether each repeat of the pattern is also mirrored. Most brilliant-style cuts are.";
+                                    label_color: Theme.text-secondary;
+                                    checked: EditorModel.new_mirror;
+                                    toggled => { EditorModel.new_mirror = !EditorModel.new_mirror; }
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                        FieldCaption {
+                            text: "Starting Material";
+                            hint: "A starting material -- change it any time afterward in the Edit tab's Design Settings panel, including custom catalogue materials.";
+                        }
+                        TipBox {
+                            hint: "The material the new design starts with. You can change it later in Design Settings.";
+                            ComboBox {
+                                accessible-label: "Starting material";
+                                // `EditorModel.new_material_options` is pushed from
+                                // `gui::editor::state::builtin_preset_names` (built from
+                                // `indicatrix_cut_core::MaterialCatalogue`, so it covers every
+                                // renderer built-in) the same way `view.rs`'s existing
+                                // `design_material_options` already is -- not a hard-coded literal
+                                // that could drift from the real list.
+                                model: EditorModel.new_material_options;
+                                current-index <=> EditorModel.new_material_index;
                             }
                         }
                     }
                 }
-            }
-
-            Rectangle { height: 1px; background: Theme.border-subtle; }
-
-            Rectangle {
-                height: mat_lbl.preferred-height;
-                Tooltip { text: @markdown("A starting material -- change it any time afterward in the Edit tab's Design Settings panel, including custom catalogue materials."); }
-                mat_lbl := Text { text: "Starting Material"; font-size: 9px; color: Theme.text-muted; }
-            }
-            ComboBox {
-                // `EditorModel.new_material_options` is pushed from
-                // `gui::editor::state::builtin_preset_names` (built from
-                // `indicatrix_cut_core::MaterialCatalogue`, so it covers every
-                // renderer built-in) the same way `view.rs`'s existing
-                // `design_material_options` already is -- not a hard-coded literal
-                // that could drift from the real list.
-                model: EditorModel.new_material_options;
-                current-index <=> EditorModel.new_material_index;
             }
 
             HorizontalLayout {
                 spacing: 8px;
                 alignment: end;
-                Rectangle {
-                    width: cancel_txt.preferred-width + 20px;
-                    height: 30px;
-                    border-radius: Theme.radius-sm;
-                    background: cancel_touch.has-hover ? Theme.border-dialog : Theme.surface-raised;
-                    cancel_txt := Text {
-                        text: "Cancel";
-                        color: Theme.text-secondary;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                    cancel_touch := TouchArea { clicked => { root.cancel(); } }
+                ActionButton {
+                    width: 84px;
+                    text: "Cancel";
+                    hint: "Close this dialog without making a design.";
+                    fill: Theme.surface-raised;
+                    hover_fill: Theme.border-dialog;
+                    ink: Theme.text-secondary;
+                    edge: Theme.surface-raised;
+                    clicked => { root.cancel(); }
                 }
-                Rectangle {
-                    width: create_txt.preferred-width + 20px;
-                    height: 30px;
-                    border-radius: Theme.radius-sm;
-                    background: root.form_valid ? Theme.accent-cyan : Theme.border-medium;
-                    create_txt := Text {
-                        text: "Create";
-                        font-weight: 700;
-                        color: root.form_valid ? Theme.text-on-accent : Theme.text-muted;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                    TouchArea {
-                        enabled: root.form_valid;
-                        clicked => {
-                            root.do_create();
-                        }
-                    }
+                ActionButton {
+                    width: 84px;
+                    text: "Create";
+                    hint: root.form_valid
+                        ? "Make the new design from these choices."
+                        : "Fix the fields marked in red to create the design.";
+                    weight: 700;
+                    enabled: root.form_valid;
+                    fill: Theme.accent-cyan;
+                    hover_fill: Theme.accent-cyan-hover;
+                    ink: Theme.text-on-accent;
+                    edge: Theme.accent-cyan;
+                    clicked => { root.do_create(); }
                 }
             }
         }

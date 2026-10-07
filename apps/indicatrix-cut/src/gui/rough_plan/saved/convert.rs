@@ -759,6 +759,8 @@ pub fn rough_to_dto(
         axis: None,
         hull: Vec::new(),
         mesh: None,
+        inclusions: Vec::new(),
+        source_frame: None,
         material: material_name.to_string(),
         specific_gravity,
         weighed_ct,

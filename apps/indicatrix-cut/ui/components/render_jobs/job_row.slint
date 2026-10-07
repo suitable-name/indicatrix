@@ -1,0 +1,186 @@
+import { Theme } from "../../theme.slint";
+import { RenderJobsModel, RenderJobRow } from "../../models/render_jobs.slint";
+import { ActionButton } from "../chip_toggle.slint";
+
+// One button of a job row: small, so up to nine fit in the 760 px window.
+component RowButton inherits ActionButton {
+    width: 74px;
+    height: 26px;
+    font_size: 10px;
+    ink: Theme.text-secondary;
+}
+
+// One render job in the Jobs window: number, name and state, what it renders, its progress,
+// a failure note, and the buttons its state allows (`can_*`, computed by
+// `gui::render_jobs::rows` from the state machine, so a button shows exactly when its
+// command applies). Every text arrives ready from Rust.
+export component JobRowCard inherits Rectangle {
+    in property <RenderJobRow> job;
+
+    // The state colour: running cyan, done green, failed red, waiting and paused in the
+    // quiet text colour, cancelled in the muted one.
+    property <color> state_color: root.job.state_word == "running" ? Theme.accent-cyan
+        : (root.job.state_word == "done" ? Theme.accent-emerald
+        : (root.job.state_word == "failed" ? Theme.danger
+        : (root.job.state_word == "cancelled" ? Theme.text-muted : Theme.text-secondary)));
+
+    height: content.preferred-height;
+    background: Theme.bg-card;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: root.job.state_word == "running" ? Theme.accent-cyan : Theme.border-subtle;
+
+    content := VerticalLayout {
+        padding: 10px;
+        spacing: 6px;
+
+        // Line 1: number, name, state badge.
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: center;
+
+            Text {
+                width: 26px;
+                text: root.job.number_text;
+                font-size: 12px;
+                font-weight: 700;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+                accessible-role: AccessibleRole.text;
+            }
+
+            Text {
+                horizontal-stretch: 1;
+                min-width: 0px;
+                text: root.job.label;
+                font-size: 12px;
+                font-weight: 700;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+                overflow: elide;
+                accessible-role: AccessibleRole.text;
+            }
+
+            Rectangle {
+                width: badge_text.preferred-width + 16px;
+                height: 20px;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: root.state_color;
+                background: Theme.surface-sunken;
+                badge_text := Text {
+                    x: 8px;
+                    height: 100%;
+                    text: root.job.state_text;
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: root.state_color;
+                    vertical-alignment: center;
+                    accessible-role: AccessibleRole.text;
+                    accessible-label: "State: " + root.job.state_text;
+                }
+            }
+        }
+
+        // Line 2: what it renders.
+        Text {
+            text: root.job.kind_text + " \u{b7} " + root.job.summary;
+            font-size: 11px;
+            color: Theme.text-secondary;
+            overflow: elide;
+            accessible-role: AccessibleRole.text;
+        }
+
+        // Line 3: the progress bar and its words.
+        if root.job.progress >= 0 || root.job.progress_text != "": HorizontalLayout {
+            spacing: 8px;
+            alignment: center;
+
+            if root.job.progress >= 0: Rectangle {
+                horizontal-stretch: 1;
+                height: 6px;
+                border-radius: 3px;
+                background: Theme.surface-sunken;
+                Rectangle {
+                    x: 0px;
+                    width: parent.width * max(0.0, min(1.0, root.job.progress));
+                    height: parent.height;
+                    border-radius: 3px;
+                    background: root.state_color;
+                }
+            }
+
+            Text {
+                horizontal-stretch: root.job.progress >= 0 ? 0 : 1;
+                text: root.job.progress_text;
+                font-size: 11px;
+                color: Theme.text-secondary;
+                vertical-alignment: center;
+                overflow: elide;
+                accessible-role: AccessibleRole.text;
+            }
+        }
+
+        // A failure, or the note left when the app closed under the job.
+        if root.job.error_text != "": Text {
+            text: root.job.error_text;
+            font-size: 11px;
+            color: Theme.danger;
+            wrap: word-wrap;
+            accessible-role: AccessibleRole.text;
+        }
+
+        // The buttons its state allows.
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: end;
+
+            if root.job.can_run_next: RowButton {
+                text: "Run Next";
+                hint: "Move this job to the top, so it is the next one to render.";
+                clicked => { RenderJobsModel.run_next(root.job.id); }
+            }
+            if root.job.can_move_up: RowButton {
+                text: "Up";
+                hint: "Move this job one place up.";
+                clicked => { RenderJobsModel.move_job(root.job.id, -1); }
+            }
+            if root.job.can_move_down: RowButton {
+                text: "Down";
+                hint: "Move this job one place down.";
+                clicked => { RenderJobsModel.move_job(root.job.id, 1); }
+            }
+            if root.job.can_pause: RowButton {
+                text: "Pause";
+                hint: "Stop this job. A tilt video keeps its finished frames.";
+                clicked => { RenderJobsModel.pause_job(root.job.id); }
+            }
+            if root.job.can_resume: RowButton {
+                text: "Resume";
+                hint: "Put this job back in line. A tilt video goes on with its first missing frame.";
+                clicked => { RenderJobsModel.resume_job(root.job.id); }
+            }
+            if root.job.can_restart: RowButton {
+                text: "Restart";
+                hint: "Render this job again from the beginning.";
+                clicked => { RenderJobsModel.restart_job(root.job.id); }
+            }
+            if root.job.can_cancel: RowButton {
+                text: "Cancel";
+                hint: "Stop this job for good. Restart can bring it back.";
+                clicked => { RenderJobsModel.cancel_job(root.job.id); }
+            }
+            if root.job.can_show: RowButton {
+                text: "Show";
+                hint: "Open the folder with the finished file.";
+                clicked => { RenderJobsModel.show_result(root.job.id); }
+            }
+            if root.job.can_delete: RowButton {
+                text: "Delete";
+                hint: "Remove this job from the list. Files it already wrote stay on disk.";
+                ink: Theme.danger;
+                clicked => { RenderJobsModel.delete_job(root.job.id); }
+            }
+        }
+    }
+}

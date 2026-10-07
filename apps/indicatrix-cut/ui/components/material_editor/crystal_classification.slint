@@ -1,5 +1,7 @@
 import { ComboBox, Slider } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
+import { GuideModel } from "../../models/guide.slint";
+import { TipBox, FieldCaption } from "../tip_box.slint";
 
 // Crystal Classification (crystal system / optical character / biaxial
 // n-beta-n-alpha) plus the optics-validity and built-in-name-collision
@@ -11,6 +13,10 @@ import { Theme } from "../../theme.slint";
 // `optics_validation_message`/`name_collides_with_builtin`/`mat_name` stay
 // computed/owned there (its own `can_save` needs `optics_valid` too) and are
 // passed in read-only.
+//
+// Simple mode hides the two combos and the biaxial slider (`GuideModel.shows_advanced()`). Their
+// values stay and still apply. The warnings below stay visible in both modes: a Save that is
+// disabled must always say why.
 export component MaterialCrystalClassification inherits VerticalLayout {
     spacing: 14px;
 
@@ -49,25 +55,24 @@ export component MaterialCrystalClassification inherits VerticalLayout {
     // ever getting `GemMaterial::new_custom`'s two-variant inference (Cubic-
     // or-Trigonal, Isotropic-or-Uniaxial+/-). See `gui::crystal_optics` for
     // the Rust-side index<->enum mapping these two combos feed.
-    HorizontalLayout {
+    if GuideModel.shows_advanced() : HorizontalLayout {
         spacing: 10px;
 
         VerticalLayout {
             horizontal-stretch: 1;
             spacing: 4px;
-            Text { text: "Crystal System:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-            Rectangle {
-                height: 32px;
-                background: Theme.surface-raised;
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: Theme.border-dialog;
+            FieldCaption {
+                text: "Crystal System:";
+                hint: "The crystal family of the stone, which decides how many directions it can split light in. Cubic stones are single refracting; the others are doubly refracting. See the glossary.";
+                font_size: 11px;
+            }
+            TipBox {
+                hint: "Pick the crystal system of the material.";
                 ComboBox {
-                    width: 100%;
-                    height: 100%;
                     enabled: !root.locked_by_host;
                     model: root.crystal_system_options;
                     current-index <=> root.selected_crystal_system_idx;
+                    accessible-label: "Crystal system";
                 }
             }
         }
@@ -75,19 +80,18 @@ export component MaterialCrystalClassification inherits VerticalLayout {
         VerticalLayout {
             horizontal-stretch: 1;
             spacing: 4px;
-            Text { text: "Optical Character:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-            Rectangle {
-                height: 32px;
-                background: Theme.surface-raised;
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: Theme.border-dialog;
+            FieldCaption {
+                text: "Optical Character:";
+                hint: "How the stone splits light. Isotropic: it does not. Uniaxial: one special direction. Biaxial: two. The plus or minus sign says which of the two rays is slower. See the glossary.";
+                font_size: 11px;
+            }
+            TipBox {
+                hint: "Pick the optical character of the material.";
                 ComboBox {
-                    width: 100%;
-                    height: 100%;
                     enabled: !root.locked_by_host;
                     model: root.optical_character_options;
                     current-index <=> root.selected_optical_character_idx;
+                    accessible-label: "Optical character";
                 }
             }
         }
@@ -96,17 +100,26 @@ export component MaterialCrystalClassification inherits VerticalLayout {
     // n_beta - n_alpha: only meaningful, so only shown, for a biaxial
     // optical character. Bounded to [0, birefringence] so the slider itself
     // cannot express an unphysical n_alpha <= n_beta <= n_gamma ordering.
-    if root.is_biaxial: VerticalLayout {
+    if GuideModel.shows_advanced() && root.is_biaxial: VerticalLayout {
         spacing: 4px;
         HorizontalLayout {
             alignment: space-between;
-            Text { text: "Biaxial n\u{03b2} \u{2212} n\u{03b1}:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-            Text { text: Math.round(root.biaxial_delta_beta_alpha_val * 10000.0) / 10000.0; font-size: 11px; font-weight: 700; color: Theme.accent-purple; }
+            Rectangle {
+                height: biaxial_caption.preferred-height;
+                Tooltip { text: @markdown("For a biaxial stone: how far the middle refractive index sits above the lowest one. It can be anything from 0 up to the birefringence."); }
+                biaxial_caption := Text { text: "Biaxial n\u{03b2} \u{2212} n\u{03b1}:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+            }
+            Text { text: "" + Math.round(root.biaxial_delta_beta_alpha_val * 10000.0) / 10000.0; font-size: 11px; font-weight: 700; color: Theme.accent-purple; }
         }
-        Slider {
-            minimum: 0.0;
-            maximum: Math.max(root.biref_val, 0.0001);
-            value <=> root.biaxial_delta_beta_alpha_val;
+        TipBox {
+            hint: "From 0 up to the birefringence.";
+            Slider {
+                minimum: 0.0;
+                maximum: Math.max(root.biref_val, 0.0001);
+                step: 0.0005;
+                value <=> root.biaxial_delta_beta_alpha_val;
+                accessible-label: "Biaxial index difference, beta minus alpha";
+            }
         }
         // No GPU consequence to warn about: the `BiaxialIndicatrix` machinery
         // is ported to WGSL and verified at the same Tier 2 / Tier 3 bar as
@@ -127,11 +140,22 @@ export component MaterialCrystalClassification inherits VerticalLayout {
     // Proactive collision warning -- disables Save (see `MaterialEditorDialog.
     // can_save`) rather than letting the cutter find out only from an error
     // toast after clicking.
-    if root.name_collides_with_builtin: Text {
-        text: "\u{26a0} \"" + root.mat_name + "\" is a built-in material name and cannot be used for a custom one.";
-        font-size: 9px;
-        font-weight: 600;
-        color: Theme.accent-ruby;
-        wrap: word-wrap;
+    if root.name_collides_with_builtin: HorizontalLayout {
+        spacing: 4px;
+        Image {
+            source: @image-url("../../icons/warning.svg");
+            colorize: Theme.accent-ruby;
+            width: 11px;
+            height: 11px;
+            vertical-alignment: top;
+        }
+        Text {
+            text: "\"" + root.mat_name + "\" is a built-in material name and cannot be used for a custom one.";
+            font-size: 9px;
+            font-weight: 600;
+            color: Theme.accent-ruby;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+        }
     }
 }

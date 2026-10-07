@@ -1,6 +1,10 @@
-import { Button } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { LibraryModel } from "../models/library.slint";
+import { HelpTopics } from "../models/help.slint";
+import { HelpButton } from "help_button.slint";
+import { IconButton } from "icon_button.slint";
+import { TipButton } from "compact_controls.slint";
+import { ToggleRow } from "toggle_switch.slint";
 
 // "Import" popup: brings the user's own `.asc`/`.gem`/`.gcs` file(s) into the local library.
 // Picking a file or folder runs the import immediately -- there is no path field to
@@ -100,35 +104,52 @@ export component ImportDialog inherits PopupWindow {
         border-width: 1px;
         border-color: Theme.border-medium;
         drop-shadow-blur: 20px;
-        drop-shadow-color: #000000aa;
+        drop-shadow-color: Theme.shadow-medium;
         drop-shadow-offset-y: 6px;
+
+        // Escape closes the panel (an import in progress carries on in the background, so
+        // closing never loses work), and Tab moves between the buttons below.
+        FocusScope {
+            width: 100%;
+            height: 100%;
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.close();
+                    return accept;
+                }
+                return reject;
+            }
 
         layout := VerticalLayout {
             padding: 16px;
             spacing: 10px;
 
             HorizontalLayout {
-                alignment: space-between;
+                spacing: 6px;
                 Text {
+                    horizontal-stretch: 1;
                     text: "Import designs";
                     font-size: 14px;
                     font-weight: 700;
                     color: Theme.text-primary;
+                    vertical-alignment: center;
+                    accessible-role: AccessibleRole.text;
                 }
-                Rectangle {
+                VerticalLayout {
+                    alignment: center;
+                    HelpButton {
+                        topic: HelpTopics.import-designs;
+                        hint: "Open the manual page on bringing designs in";
+                    }
+                }
+                IconButton {
+                    icon: @image-url("../icons/close.svg");
+                    hint: "Close the import panel";
                     width: 26px;
                     height: 26px;
-                    border-radius: Theme.radius-sm;
-                    background: close_touch.has-hover ? Theme.bg-elevated : transparent;
-                    close_touch := TouchArea { clicked => { root.close(); } }
-                    Image {
-                        source: @image-url("../icons/close.svg");
-                        colorize: Theme.text-muted;
-                        width: 12px;
-                        height: 12px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
+                    hover_fill: Theme.bg-elevated;
+                    tint: Theme.text-muted;
+                    clicked => { root.close(); }
                 }
             }
 
@@ -137,6 +158,7 @@ export component ImportDialog inherits PopupWindow {
                 font-size: 11px;
                 color: Theme.text-muted;
                 wrap: word-wrap;
+                accessible-role: AccessibleRole.text;
             }
             // `.gem` (GemCAD) and `.gcs` (Gem Cut Studio) files are converted to
             // `.asc` cutting instructions on import
@@ -147,55 +169,35 @@ export component ImportDialog inherits PopupWindow {
                 font-size: 10px;
                 color: Theme.text-muted;
                 wrap: word-wrap;
+                accessible-role: AccessibleRole.text;
             }
 
             // Must be set BEFORE "Choose folder..." below is clicked -- see
             // `recurse_subfolders`'s own doc comment. Placed above the buttons, in
             // the order the user actually needs to use them, rather than next to
             // "Choose folder..." where it would read as a same-click option.
-            HorizontalLayout {
-                alignment: space-between;
-                Text {
-                    text: "Include subfolders (set this first)";
-                    font-size: 11px;
-                    color: root.importing ? Theme.text-muted : Theme.text-secondary;
-                    vertical-alignment: center;
-                }
-                Rectangle {
-                    width: 36px;
-                    height: 20px;
-                    border-radius: 10px;
-                    background: root.recurse_subfolders ? Theme.accent-cyan : #334155;
-                    opacity: root.importing ? 0.5 : 1.0;
-                    TouchArea {
-                        enabled: !root.importing;
-                        clicked => { root.recurse_subfolders = !root.recurse_subfolders; }
-                    }
-                    Rectangle {
-                        width: 16px;
-                        height: 16px;
-                        border-radius: 8px;
-                        background: white;
-                        x: root.recurse_subfolders ? parent.width - self.width - 2px : 2px;
-                        y: 2px;
-                        animate x { duration: 120ms; }
-                    }
-                }
+            ToggleRow {
+                text: "Include subfolders (set this first)";
+                hint: "Also import the designs in the folders inside the one you pick. Turn this on BEFORE you press Choose folder, because the import starts as soon as you pick.";
+                label_color: root.importing ? Theme.text-muted : Theme.text-secondary;
+                checked: root.recurse_subfolders;
+                enabled: !root.importing;
+                toggled => { root.recurse_subfolders = !root.recurse_subfolders; }
             }
 
             HorizontalLayout {
                 spacing: 6px;
-                Button {
+                TipButton {
                     text: "Choose file...";
+                    hint: "Pick one .asc, .gem or .gcs file. It is imported as soon as you pick it.";
                     icon: @image-url("../icons/page.svg");
-                    colorize-icon: true;
                     enabled: !root.importing;
                     clicked => { root.pick_asc_file(); }
                 }
-                Button {
+                TipButton {
                     text: "Choose folder...";
+                    hint: "Pick a folder. Every .asc, .gem and .gcs file in it is imported as soon as you pick it.";
                     icon: @image-url("../icons/folder.svg");
-                    colorize-icon: true;
                     enabled: !root.importing;
                     clicked => { root.pick_asc_folder(root.recurse_subfolders); }
                 }
@@ -208,6 +210,7 @@ export component ImportDialog inherits PopupWindow {
                     font-size: 11px;
                     font-weight: 600;
                     color: Theme.accent-amber;
+                    accessible-role: AccessibleRole.text;
                 }
 
                 // Only shown for a folder import once the first file has reported in
@@ -223,21 +226,26 @@ export component ImportDialog inherits PopupWindow {
                             text: "file " + root.import_done + " / " + root.import_total;
                             font-size: 10px;
                             color: Theme.text-muted;
+                            accessible-role: AccessibleRole.text;
                         }
                         Text {
                             text: Math.round(root.import_progress * 100) + "%";
                             font-size: 10px;
                             font-weight: 700;
                             color: Theme.accent-cyan;
+                            accessible-role: AccessibleRole.text;
                         }
                     }
                     Rectangle {
                         height: 8px;
                         border-radius: 4px;
-                        background: #0f172a;
+                        background: Theme.surface-sunken;
                         border-width: 1px;
-                        border-color: #334155;
+                        border-color: Theme.border-dialog;
                         clip: true;
+                        accessible-role: AccessibleRole.progress-indicator;
+                        accessible-label: "Import progress";
+                        accessible-value: Math.round(root.import_progress * 100) + " percent";
 
                         Rectangle {
                             x: 0;
@@ -256,7 +264,9 @@ export component ImportDialog inherits PopupWindow {
                 font-size: 11px;
                 color: Theme.text-secondary;
                 wrap: word-wrap;
+                accessible-role: AccessibleRole.text;
             }
+        }
         }
     }
 }

@@ -1,0 +1,384 @@
+import { Theme } from "../theme.slint";
+import { SliderPreset } from "../models/sliders.slint";
+
+// A stateless horizontal slider for a number that also lives in a text field.
+//
+// `value` only ever comes from the parent (the number the field holds); dragging or a key
+// press emits `moved(v)` with the new, already snapped value and the parent writes it into
+// the field. The slider then follows the field, whatever changes it: typing, an undo, a
+// preset. That is why this is not the standard `Slider`: once the user has dragged it, a
+// standard slider stops following its binding (the same reason `PhysSlider` in
+// `material_editor/chromophore_picker.slint` is custom).
+//
+// Mouse: a press on the thumb grabs it and the drag is relative, so it never jumps; a press
+// on the rail jumps there. Values snap to `step`. A drag that passes close to a mark lands
+// on it. Hold Shift for fine mode: the drag moves ten times slower and snaps to `fine_step`.
+// Keyboard (the slider takes focus on a click or Tab): arrows move by `step` (`fine_step`
+// with Shift), Page Up and Page Down by `mark` (ten steps without marks), Home and End jump
+// to the ends. A key press is a whole gesture, so it emits `moved` and then `released`.
+//
+// Marks are drawn every `mark` units (every second or third one when they would crowd).
+// A band (`band_to > band_from`) is drawn behind the rail in green.
+//
+// The slider is also a slider for screen readers: role, label, value in words, range, and
+// the increment and decrement actions.
+export component ValueSlider inherits Rectangle {
+    // The number the field holds.
+    in property <float> value: 0.0;
+    // False while the field holds text the slider cannot show (the thumb is hidden and the
+    // slider does not react).
+    in property <bool> value_valid: true;
+    in property <float> minimum: 0.0;
+    in property <float> maximum: 1.0;
+    // What a plain drag, an arrow key or a click snaps to.
+    in property <float> step: 0.1;
+    // The same with Shift held.
+    in property <float> fine_step: 0.01;
+    // The distance between the marks (also the Page Up and Page Down step); 0 for none.
+    in property <float> mark: 0.0;
+    in property <float> band_from: 0.0;
+    in property <float> band_to: 0.0;
+    in property <bool> enabled: true;
+    // For screen readers: what the slider sets, and its value in words.
+    in property <string> label;
+    in property <string> value_text;
+    // Hover text; none while empty.
+    in property <string> hint;
+    out property <bool> has_focus: keys.has-focus;
+
+    // The user moved the slider: the new value, already snapped to the grid.
+    callback moved(float);
+    // The gesture ended (mouse button up, or a key press): the final value.
+    callback released(float);
+
+    property <bool> live: root.enabled && root.value_valid;
+    property <length> thumb_size: 14px;
+    property <length> rail_y: 9px;
+    property <length> track_width: Math.max(1px, root.width - root.thumb_size);
+    property <float> span: Math.max(0.000001, root.maximum - root.minimum);
+    // Marks closer than 6px are thinned out: every `tick_stride`-th mark is drawn.
+    property <int> tick_stride: root.mark > 0.0
+        ? Math.max(1, Math.ceil(6px / (root.mark / root.span * root.track_width)))
+        : 1;
+    property <int> tick_count: root.mark > 0.0
+        ? Math.floor(root.span / (root.mark * root.tick_stride)) + 1
+        : 0;
+
+    // Drag state. The drag is relative to where it started (or where Shift last changed
+    // its speed): `anchor_value` at `anchor_x`.
+    property <bool> dragging: false;
+    property <bool> fine_mode: false;
+    property <float> anchor_value: 0.0;
+    property <length> anchor_x: 0px;
+
+    pure function fraction(v: float) -> float {
+        return Math.max(0.0, Math.min(1.0, (v - root.minimum) / root.span));
+    }
+
+    // The value under the pointer at `x` (not snapped, not clamped).
+    pure function value_at(x: length) -> float {
+        return root.minimum + (x - root.thumb_size / 2) / root.track_width * root.span;
+    }
+
+    // The point of the grid `grid` (counted from the minimum) nearest to `v`, in range.
+    pure function on_grid(v: float, grid: float) -> float {
+        let unit = Math.max(0.000001, grid);
+        return Math.max(root.minimum, Math.min(root.maximum, root.minimum + Math.round((v - root.minimum) / unit) * unit));
+    }
+
+    // A dragged value snapped to its grid: the fine grid in fine mode, otherwise the step
+    // grid, except that a mark within a fifth of a mark's spacing wins.
+    pure function snap(v: float, fine: bool) -> float {
+        if (fine) {
+            return root.on_grid(v, root.fine_step);
+        }
+        if (root.mark > 0.0) {
+            let marked = root.on_grid(v, root.mark);
+            if (Math.abs(marked - v) <= 0.2 * root.mark) {
+                return marked;
+            }
+        }
+        return root.on_grid(v, root.step);
+    }
+
+    pure function on_thumb(x: length) -> bool {
+        return Math.abs(x - (root.fraction(root.value) * root.track_width + root.thumb_size / 2)) <= root.thumb_size / 2 + 3px;
+    }
+
+    function begin_drag(x: length, fine: bool, jump_to_pointer: bool) {
+        root.fine_mode = fine;
+        root.anchor_x = x;
+        if (jump_to_pointer) {
+            root.anchor_value = root.snap(root.value_at(x), fine);
+            root.moved(root.anchor_value);
+        } else {
+            root.anchor_value = root.value;
+        }
+    }
+
+    function drag_to(x: length) {
+        let scale = root.fine_mode ? 0.1 : 1.0;
+        let raw = root.anchor_value + (x - root.anchor_x) / root.track_width * root.span * scale;
+        root.moved(root.snap(Math.max(root.minimum, Math.min(root.maximum, raw)), root.fine_mode));
+    }
+
+    // One key press or accessibility action: move by `delta` and finish.
+    function nudge(delta: float) {
+        let next = root.on_grid(root.value + delta, root.fine_step);
+        root.moved(next);
+        root.released(next);
+    }
+
+    function go_to(target: float) {
+        root.moved(target);
+        root.released(target);
+    }
+
+    height: 26px;
+    min-width: 80px;
+    horizontal-stretch: 1;
+    opacity: root.live ? 1.0 : 0.5;
+    forward-focus: keys;
+    accessible-role: AccessibleRole.slider;
+    accessible-label: root.label;
+    accessible-value: root.value_text;
+    accessible-value-minimum: root.minimum;
+    accessible-value-maximum: root.maximum;
+    accessible-value-step: root.step;
+    accessible-enabled: root.live;
+    accessible-action-increment => { root.nudge(root.step); }
+    accessible-action-decrement => { root.nudge(-root.step); }
+
+    // The marked band, behind the rail.
+    if root.band_to > root.band_from: Rectangle {
+        x: root.thumb_size / 2 + root.fraction(root.band_from) * root.track_width;
+        y: root.rail_y - 2px;
+        width: (root.fraction(root.band_to) - root.fraction(root.band_from)) * root.track_width;
+        height: 8px;
+        border-radius: 2px;
+        background: Theme.accent-emerald.with-alpha(0.4);
+    }
+    // The rail, and the part of it up to the value.
+    Rectangle {
+        x: root.thumb_size / 2;
+        y: root.rail_y;
+        width: root.track_width;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.surface-sunken;
+        border-width: 1px;
+        border-color: Theme.border-dialog;
+    }
+    if root.value_valid: Rectangle {
+        x: root.thumb_size / 2;
+        y: root.rail_y;
+        width: root.fraction(root.value) * root.track_width;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.accent-cyan;
+    }
+    // The marks under the rail.
+    for tick in root.tick_count: Rectangle {
+        x: root.thumb_size / 2 + tick * root.tick_stride * root.mark / root.span * root.track_width - 0.5px;
+        y: root.rail_y + 10px;
+        width: 1px;
+        height: 4px;
+        background: Theme.text-muted;
+        opacity: 0.7;
+    }
+    if root.value_valid: Rectangle {
+        x: root.fraction(root.value) * root.track_width;
+        y: root.rail_y + 2px - root.thumb_size / 2;
+        width: root.thumb_size;
+        height: root.thumb_size;
+        border-radius: root.thumb_size / 2;
+        background: Theme.toggle-knob;
+        border-width: keys.has-focus ? 2px : 1px;
+        border-color: keys.has-focus ? Theme.border-accent : Theme.accent-cyan;
+    }
+
+    touch := TouchArea {
+        enabled: root.live;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.move) {
+                // Shift pressed or let go in the middle of a drag: carry on from here at the
+                // new speed.
+                if (root.dragging && e.modifiers.shift != root.fine_mode) {
+                    root.begin_drag(self.mouse-x, e.modifiers.shift, false);
+                }
+                return;
+            }
+            if (e.button != PointerEventButton.left) {
+                return;
+            }
+            if (e.kind == PointerEventKind.down) {
+                keys.focus();
+                root.dragging = true;
+                root.begin_drag(self.mouse-x, e.modifiers.shift, !root.on_thumb(self.mouse-x));
+            } else if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) {
+                if (root.dragging) {
+                    root.dragging = false;
+                    root.released(root.value);
+                }
+            }
+        }
+        moved => {
+            if (root.dragging) {
+                root.drag_to(self.mouse-x);
+            }
+        }
+    }
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
+
+    keys := FocusScope {
+        x: 0px;
+        y: 0px;
+        width: 0px;
+        height: 0px;
+        enabled: root.live;
+        key-pressed(event) => {
+            if (!root.live) {
+                return reject;
+            }
+            let small = event.modifiers.shift ? root.fine_step : root.step;
+            let big = root.mark > 0.0 ? root.mark : root.step * 10.0;
+            if (event.text == Key.RightArrow || event.text == Key.UpArrow) {
+                root.nudge(small);
+                return accept;
+            }
+            if (event.text == Key.LeftArrow || event.text == Key.DownArrow) {
+                root.nudge(-small);
+                return accept;
+            }
+            if (event.text == Key.PageUp) {
+                root.nudge(big);
+                return accept;
+            }
+            if (event.text == Key.PageDown) {
+                root.nudge(-big);
+                return accept;
+            }
+            if (event.text == Key.Home) {
+                root.go_to(root.minimum);
+                return accept;
+            }
+            if (event.text == Key.End) {
+                root.go_to(root.maximum);
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+// The "Typical" menu beside a slider: a small button that opens a list of presets, each a
+// label, the value it sets, and a one-line reason. Choosing one emits `chosen(value)`; the
+// parent writes the value into the field like a drag would. The popup closes on any click.
+export component PresetMenu inherits Rectangle {
+    in property <[SliderPreset]> presets;
+    in property <bool> enabled: true;
+    in property <string> label: "Typical";
+    // Hover text; none while empty.
+    in property <string> hint;
+
+    callback chosen(float);
+
+    property <bool> live: root.enabled && root.presets.length > 0;
+    property <length> menu_width: 304px;
+
+    width: 80px;
+    height: 22px;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.border-dialog;
+    background: (touch.has-hover && root.live) ? Theme.surface-control-hover : Theme.surface-control;
+    opacity: root.live ? 1.0 : 0.5;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.label + " values";
+    accessible-enabled: root.live;
+    accessible-action-default => { menu.show(); }
+
+    touch := TouchArea {
+        enabled: root.live;
+        clicked => { menu.show(); }
+    }
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 6px;
+        spacing: 4px;
+        Text {
+            text: root.label;
+            font-size: 10px;
+            font-weight: 600;
+            color: Theme.text-secondary;
+            vertical-alignment: center;
+        }
+        Rectangle { horizontal-stretch: 1; }
+        VerticalLayout {
+            alignment: center;
+            Image {
+                source: @image-url("../icons/chevron-down.svg");
+                colorize: Theme.text-secondary;
+                width: 10px;
+                height: 10px;
+                image-fit: contain;
+            }
+        }
+    }
+
+    menu := PopupWindow {
+        x: root.width - root.menu_width;
+        y: root.height + 2px;
+        width: root.menu_width;
+        Rectangle {
+            background: Theme.surface-raised;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border-dialog;
+            height: rows.preferred-height + 12px;
+            rows := VerticalLayout {
+                padding: 6px;
+                spacing: 2px;
+                for entry in root.presets: Rectangle {
+                    height: entry_col.preferred-height;
+                    border-radius: 3px;
+                    background: entry_touch.has-hover ? Theme.surface-control-hover : transparent;
+                    accessible-role: AccessibleRole.button;
+                    accessible-label: entry.label + ", " + entry.value_text + ". " + entry.reason;
+                    accessible-action-default => { root.chosen(entry.value); }
+                    entry_touch := TouchArea { clicked => { root.chosen(entry.value); } }
+                    entry_col := VerticalLayout {
+                        padding: 4px;
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        spacing: 1px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                horizontal-stretch: 1;
+                                text: entry.label;
+                                font-size: 11px;
+                                color: Theme.text-primary;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: entry.value_text;
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: Theme.accent-cyan;
+                                horizontal-alignment: right;
+                            }
+                        }
+                        Text {
+                            text: entry.reason;
+                            font-size: 9px;
+                            color: Theme.text-muted;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

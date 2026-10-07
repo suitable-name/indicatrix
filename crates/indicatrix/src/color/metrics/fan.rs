@@ -77,6 +77,12 @@ impl FanGeometry {
         }
     }
 
+    /// The measured girdle half-width in model units (the stand-off is a fixed multiple
+    /// of it), the length scale the face-up tone's path histogram is laid out in.
+    pub(super) fn half_width(self) -> f32 {
+        self.standoff / STANDOFF_HALF_WIDTHS
+    }
+
     /// The ray origin for grid cell `(u, v)` (each in `[-1, 1]`) seen along the camera
     /// frame `forward`/`right`/`up`.
     pub(super) fn origin(self, forward: Vec3, right: Vec3, up: Vec3, u: f32, v: f32) -> Vec3 {

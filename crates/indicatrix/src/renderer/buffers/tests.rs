@@ -20,7 +20,7 @@ fn struct_sizes_match_documented_wgsl_layout() {
     assert_eq!(size_of::<DispersionParams>(), 96);
     assert_eq!(size_of::<GpuAbsorptionBand>(), 16);
     assert_eq!(size_of::<GpuGemMaterial>(), 576);
-    assert_eq!(size_of::<GpuTransportParams>(), 80);
+    assert_eq!(size_of::<GpuTransportParams>(), 112);
     assert_eq!(size_of::<GpuWavefrontParams>(), 16);
 }
 
@@ -42,6 +42,60 @@ fn transport_params_surface_glare_slot_defaults_to_one_and_clamps() {
     assert_eq!(
         base.with_surface_glare(9.0).surface_glare.to_bits(),
         1.0f32.to_bits()
+    );
+}
+
+/// The head-shadow cone slots sit at 76 / 80 and default to the 16 degree literals.
+#[test]
+fn transport_params_head_shadow_slots_default_to_the_16_degree_cone() {
+    assert_eq!(offset_of!(GpuTransportParams, head_shadow_outer_cos), 76);
+    assert_eq!(offset_of!(GpuTransportParams, head_shadow_inner_cos), 80);
+    let base = GpuTransportParams::new(1, 1, 0, 1, 0.0, 6500.0, 1.0, 1.0, 0.0, 0.0, [1.0; 3]);
+    assert_eq!(
+        base.head_shadow_outer_cos.to_bits(),
+        0.951_056_5f32.to_bits()
+    );
+    assert_eq!(
+        base.head_shadow_inner_cos.to_bits(),
+        0.970_295_7f32.to_bits()
+    );
+    let wide = base.with_head_shadow([0.5, 0.75]);
+    assert_eq!(wide.head_shadow_outer_cos.to_bits(), 0.5f32.to_bits());
+    assert_eq!(wide.head_shadow_inner_cos.to_bits(), 0.75f32.to_bits());
+}
+
+/// The four light-tent slots sit at 96..112 and default to the light tent's own values
+/// (the identity of the tent formula); `with_tent` / `with_tent_of` carry a preset's.
+#[test]
+fn transport_params_tent_slots_default_to_the_light_tent() {
+    use crate::optics::raytracer::{LightingPreset, TentParams};
+
+    assert_eq!(offset_of!(GpuTransportParams, tent_walls), 96);
+    assert_eq!(offset_of!(GpuTransportParams, tent_cards), 100);
+    assert_eq!(offset_of!(GpuTransportParams, tent_spark), 104);
+    assert_eq!(offset_of!(GpuTransportParams, tent_ground), 108);
+    let base = GpuTransportParams::new(1, 1, 0, 1, 0.0, 6500.0, 1.0, 1.0, 0.0, 0.0, [1.0; 3]);
+    assert_eq!(base.tent_walls.to_bits(), 1.0f32.to_bits());
+    assert_eq!(base.tent_cards.to_bits(), 1.0f32.to_bits());
+    assert_eq!(base.tent_spark.to_bits(), 1.0f32.to_bits());
+    assert_eq!(base.tent_ground.to_bits(), 0.02f32.to_bits());
+    assert_eq!(offset_of!(GpuTransportParams, tent_flat), 84);
+    assert_eq!(base.tent_flat.to_bits(), 0.0f32.to_bits());
+    let tray = base.with_tent_of(LightingPreset::WhiteTray.studio(1.0, 0.0, 0.0));
+    let expected = LightingPreset::WhiteTray.params().tent;
+    assert_eq!(tray.tent_walls.to_bits(), expected.walls.to_bits());
+    assert_eq!(tray.tent_ground.to_bits(), expected.ground.to_bits());
+    assert_eq!(tray.tent_flat.to_bits(), expected.flat.to_bits());
+    // The light tent's own preset keeps the identity.
+    let tent = base.with_tent_of(LightingPreset::LightTent.studio(1.0, 0.0, 0.0));
+    assert_eq!(
+        [
+            tent.tent_walls,
+            tent.tent_cards,
+            tent.tent_spark,
+            tent.tent_ground
+        ],
+        TentParams::DEFAULT.to_array()
     );
 }
 

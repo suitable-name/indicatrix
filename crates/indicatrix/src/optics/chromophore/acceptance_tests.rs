@@ -13,7 +13,7 @@ use std::time::Instant;
 use super::*;
 use crate::{
     color::{
-        body_color::{Bodycolors, Illuminant, body_color, body_colors, delta_e_2000, xyz_to_lab},
+        body_color::{BodyColors, Illuminant, body_color, body_colors, delta_e_2000, xyz_to_lab},
         cie1931::cie_1931_cmf,
     },
     geometry::cuts::StandardGemCuts,
@@ -31,7 +31,7 @@ use crate::{
 
 use super::primary_data_tests::{PPMA_CM3, hue_deg as gia_hue_deg, sigma_lab, table};
 
-const colorLESS: [f64; 3] = [100.0, 0.0, 0.0];
+const COLORLESS: [f64; 3] = [100.0, 0.0, 0.0];
 /// The 5 mm reference path of the plan's "blue recipe".
 const REF_MM: f64 = 5.0;
 
@@ -39,15 +39,15 @@ fn cat() -> &'static ChromophoreCatalogue {
     ChromophoreCatalogue::global()
 }
 
-fn recipe_of(host: &str, entries: &[(&str, f64)]) -> colorRecipe {
-    let mut r = colorRecipe::new(host, cat().data_version);
+fn recipe_of(host: &str, entries: &[(&str, f64)]) -> ColorRecipe {
+    let mut r = ColorRecipe::new(host, cat().data_version);
     for (id, amount) in entries {
         assert!(r.set_amount(id, *amount));
     }
     r
 }
 
-fn colors_of(recipe: &colorRecipe, path_mm: f64, ill: Illuminant) -> Bodycolors {
+fn colors_of(recipe: &ColorRecipe, path_mm: f64, ill: Illuminant) -> BodyColors {
     let (tensor, _) = resolve(recipe, cat()).expect("resolves cleanly");
     body_colors(&tensor, path_mm, ill)
 }
@@ -90,14 +90,14 @@ fn random_recipe(
     rng: &mut Rng,
     max_items: usize,
     max_frac: f64,
-) -> Option<colorRecipe> {
+) -> Option<ColorRecipe> {
     let host = cat().host(host_id)?;
     let mut ids = cat().selectable_elements(host_id);
     if ids.is_empty() {
         return None;
     }
     let k = 1 + rng.below(max_items.min(ids.len()));
-    let mut recipe = colorRecipe::new(host_id, cat().data_version);
+    let mut recipe = ColorRecipe::new(host_id, cat().data_version);
     for _ in 0..k {
         let id = ids.remove(rng.below(ids.len()));
         let amount = host.element_conc_max(&id) * max_frac * (0.02 + 0.98 * rng.unit());
@@ -116,7 +116,7 @@ fn random_recipe(
 }
 
 /// Integrated o-ray absorbance (mm^-1 nm) of a recipe over 380..780 nm.
-fn integrated_alpha(recipe: &colorRecipe) -> f64 {
+fn integrated_alpha(recipe: &ColorRecipe) -> f64 {
     let (t, _) = resolve(recipe, cat()).expect("resolves");
     (380..=780)
         .map(|l| {
@@ -129,7 +129,7 @@ fn integrated_alpha(recipe: &colorRecipe) -> f64 {
 }
 
 /// Share of the integrated absorbance contributed by `id` alone.
-fn alpha_share(recipe: &colorRecipe, id: &str) -> f64 {
+fn alpha_share(recipe: &ColorRecipe, id: &str) -> f64 {
     let alone = recipe_of(&recipe.host, &[(id, recipe.amount(id))]);
     integrated_alpha(&alone) / integrated_alpha(recipe).max(1e-30)
 }
@@ -205,7 +205,7 @@ fn criterion_1_blue_recipe_ti_alone_and_pleochroism() {
         REF_MM,
         Illuminant::D65,
     );
-    let de = delta_e_2000(blue.unpolarised.lab, colorLESS);
+    let de = delta_e_2000(blue.unpolarised.lab, COLORLESS);
     assert!(
         de > 20.0,
         "blue recipe dE from colorless {de:.2} (Lab {:?})",
@@ -224,7 +224,7 @@ fn criterion_1_blue_recipe_ti_alone_and_pleochroism() {
         )
         .unpolarised
         .lab;
-        let de_ti = delta_e_2000(lab, colorLESS);
+        let de_ti = delta_e_2000(lab, COLORLESS);
         assert!(de_ti < 1.0, "Ti {ti} alone: dE from colorless {de_ti:.3}");
     }
 }
@@ -365,7 +365,7 @@ fn criterion_2_pairing_regression_and_pure_host() {
             continue;
         }
         let pure = colors_of(
-            &colorRecipe::new(&host.id, cat().data_version),
+            &ColorRecipe::new(&host.id, cat().data_version),
             10.0,
             Illuminant::D65,
         );
@@ -715,7 +715,7 @@ const BAND_DROP_ALLOW_LIST: &[&str] = &[
 /// All elements of `host` at the middle of their `conc_typical` range, resolved: the band
 /// budget warnings and the tensor.
 fn conc_typical_resolve(host: &HostData) -> (AbsorptionTensor, Vec<ResolveWarning>) {
-    let mut recipe = colorRecipe::new(&host.id, cat().data_version);
+    let mut recipe = ColorRecipe::new(&host.id, cat().data_version);
     for id in cat().selectable_elements(&host.id) {
         let Some(unit) = host.element_unit(&id) else {
             // End member: the middle of its typical range.
@@ -724,7 +724,7 @@ fn conc_typical_resolve(host: &HostData) -> (AbsorptionTensor, Vec<ResolveWarnin
                 .iter()
                 .filter(|c| c.end_member.as_deref() == Some(id.as_str()))
                 .filter_map(|c| c.conc_typical)
-                .map(|t| 0.5 * (t[0] + t[1]))
+                .map(|t| f64::midpoint(t[0], t[1]))
                 .fold(0.0, f64::max);
             recipe.set_amount(&id, typical.min(0.3));
             continue;
@@ -736,7 +736,7 @@ fn conc_typical_resolve(host: &HostData) -> (AbsorptionTensor, Vec<ResolveWarnin
             .filter(|c| c.is_offered() && c.elements.iter().any(|e| e == &id))
             .filter_map(|c| {
                 c.conc_typical
-                    .map(|t| 0.5 * (t[0] + t[1]) * host.n_site_for_unit(&c.conc_unit) / n_in)
+                    .map(|t| f64::midpoint(t[0], t[1]) * host.n_site_for_unit(&c.conc_unit) / n_in)
             })
             .fold(0.0, f64::max);
         recipe.set_amount(&id, typical.min(host.element_conc_max(&id)));
@@ -988,17 +988,17 @@ fn criterion_6_built_in_sanity_at_least_6_of_8() {
 /// `(centre nm, fwhm cm^-1, peak mm^-1)` per mode, sorted by centre.
 const PINNED_DATA_VERSION: u32 = 4;
 const PINNED_O: [(f32, f32, f32); 5] = [
-    (345.0, 3687.4, 0.032346),
+    (345.0, 3687.4, 0.032_346),
     (404.36, 3286.7002, 1.02598),
     (538.39, 2874.5999, 0.41608),
     (559.87, 1583.9, 0.7246),
-    (693.3, 55.0, 0.056016),
+    (693.3, 55.0, 0.056_016),
 ];
 const PINNED_E: [(f32, f32, f32); 4] = [
-    (345.0, 12000.0, 0.021274),
+    (345.0, 12000.0, 0.021_274),
     (400.44, 3257.5, 1.7583),
     (537.81, 2416.0, 0.34726),
-    (693.3, 55.0, 0.00728208),
+    (693.3, 55.0, 0.007_282_08),
 ];
 
 #[test]
@@ -1230,14 +1230,14 @@ fn criterion_13_narrow_lines_ruby_r1() {
 // Criterion 14
 // ---------------------------------------------------------------------------------------------
 
-fn color_change_at(recipe: &colorRecipe, path_mm: f64) -> f64 {
+fn color_change_at(recipe: &ColorRecipe, path_mm: f64) -> f64 {
     let (tensor, _) = resolve(recipe, cat()).expect("resolves");
     let d65 = body_colors(&tensor, path_mm, Illuminant::D65);
     let a = body_colors(&tensor, path_mm, Illuminant::Planckian(3200.0));
     delta_e_2000(d65.unpolarised.lab, a.unpolarised.lab)
 }
 
-fn color_change(recipe: &colorRecipe) -> f64 {
+fn color_change(recipe: &ColorRecipe) -> f64 {
     color_change_at(recipe, REF_MM)
 }
 

@@ -106,6 +106,48 @@ fn encode_places_dispersion_axis_and_class_in_their_slots() {
     assert_eq!(gpu.has_extraordinary_dispersion, 0);
 }
 
+/// A custom material built from a Sellmeier or Cauchy model reaches the GPU buffer as that
+/// model (`model_type` 0, 1 or 2 with its coefficients in `param_a` / `param_b`), not as the
+/// flat Cauchy fit the plain refractive-index path builds.
+#[test]
+fn a_custom_material_with_a_dispersion_model_encodes_that_model() {
+    let three_term = DispersionModel::Sellmeier3 {
+        b: [1.039_612_2, 0.231_792_35, 1.010_469_4],
+        c: [0.006_000_699, 0.020_017_914, 103.560_65],
+    };
+    let gpu = GpuGemMaterial::encode(&GemMaterial::new_custom_with_dispersion(
+        "Probe 3", three_term, 0.0, [0.0; 3],
+    ));
+    assert_eq!(gpu.dispersion.model_type, dispersion_model_type::SELLMEIER3);
+    assert_eq!(
+        gpu.dispersion.param_a,
+        [1.039_612_2, 0.231_792_35, 1.010_469_4, 0.0]
+    );
+    assert_eq!(
+        gpu.dispersion.param_b,
+        [0.006_000_699, 0.020_017_914, 103.560_65, 0.0]
+    );
+
+    let one_term = DispersionModel::Sellmeier1 { b1: 1.2, c1: 0.009 };
+    let gpu = GpuGemMaterial::encode(&GemMaterial::new_custom_with_dispersion(
+        "Probe 1", one_term, 0.0, [0.0; 3],
+    ));
+    assert_eq!(gpu.dispersion.model_type, dispersion_model_type::SELLMEIER1);
+    assert_eq!(gpu.dispersion.param_a[0], 1.2);
+    assert_eq!(gpu.dispersion.param_b[0], 0.009);
+
+    let cauchy = DispersionModel::Cauchy {
+        a: 1.7,
+        b: 0.006,
+        c: 0.0001,
+    };
+    let gpu = GpuGemMaterial::encode(&GemMaterial::new_custom_with_dispersion(
+        "Probe C", cauchy, 0.0, [0.0; 3],
+    ));
+    assert_eq!(gpu.dispersion.model_type, dispersion_model_type::CAUCHY);
+    assert_eq!(gpu.dispersion.param_a, [1.7, 0.006, 0.0001, 0.0]);
+}
+
 /// A band set longer than the GPU capacity is truncated to [`MAX_ABSORPTION_BANDS`]
 /// entries and the stored count never exceeds the array length.
 #[test]

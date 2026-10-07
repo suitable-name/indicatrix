@@ -128,6 +128,9 @@ pub(super) fn apply_reconstructed_planes(
     let resolved_material = if claimed {
         let resolved = apply_catalogue_material(&mut ctx, refractive_index, preview_material);
         ctx.dirty = true;
+        // The viewport now shows a Library row, drawn whole: Live Render drops its
+        // "Cut: ..." pill (the Cut slider belongs to the editor's design).
+        crate::gui::editor::push_viewport_owner(ui, ctx.planes_owner);
         resolved
     } else {
         None

@@ -376,8 +376,12 @@ impl<'s, 'a> AsyncCallInputs<'s, 'a> {
         .with_debug_buffers_disabled()
         .with_studio_use_d65(use_d65)
         .with_studio_model(studio_model)
+        .with_tent_of(scene.environment)
         .with_backdrop(backdrop)
-        .with_surface_glare(scene.environment.surface_glare());
+        .with_surface_glare(scene.environment.surface_glare())
+        .with_head_shadow(crate::optics::raytracer::head_shadow_cosines(
+            scene.environment.head_shadow_deg(),
+        ));
         (camera_params, params)
     }
 }

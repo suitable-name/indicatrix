@@ -1,5 +1,22 @@
 import { Theme } from "../../theme.slint";
 import { ExportModel } from "../../models/export.slint";
+import { SegmentPill } from "../pill_button.slint";
+
+// A caption with a tooltip, above a row of pills.
+component SectionCaption inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+
+    height: caption.preferred-height;
+    Tooltip { text: @markdown("\{root.hint}"); }
+    caption := Text {
+        text: root.text;
+        font-size: 11px;
+        font-weight: 600;
+        color: Theme.text-secondary;
+        accessible-role: AccessibleRole.text;
+    }
+}
 
 // Compute target (Local/Remote/Local+Remote) and Max Ray Bounces -- split out
 // of `export_dialog.slint` to keep that file under its line budget.
@@ -8,6 +25,10 @@ import { ExportModel } from "../../models/export.slint";
 // for why each is a plain, not `in-out`, property there that re-derives from
 // a default UNTIL the user clicks a pill) -- two-way bound here so a click in
 // this component writes straight back to the dialog's own copy.
+//
+// The dialog shows this whole component only in Advanced mode (or while a tutorial step
+// unlocks it): the defaults (local plus remote when a worker is reachable, and the live
+// view's bounce cap) are what most exports want.
 export component ExportComputeAndBounces inherits VerticalLayout {
     spacing: 14px;
 
@@ -22,59 +43,38 @@ export component ExportComputeAndBounces inherits VerticalLayout {
     // always sees WHY those choices aren't offered right now.
     VerticalLayout {
         spacing: 6px;
-        Text { text: "Compute"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+        SectionCaption {
+            text: "Compute";
+            hint: "Which computers draw the export: this one, a remote worker, or both sharing the work.";
+        }
 
         HorizontalLayout {
             spacing: 4px;
 
-            Rectangle {
-                horizontal-stretch: 1;
-                height: 28px;
-                border-radius: Theme.radius-sm;
-                background: root.compute_target == 0 ? Theme.accent-cyan : (ct0_touch.has-hover ? #1e293b : #0f172a);
-                border-width: 1px;
-                border-color: root.compute_target == 0 ? Theme.accent-cyan : #334155;
-
-                ct0_touch := TouchArea {
-                    enabled: !ExportModel.is_exporting;
-                    clicked => { root.compute_target = 0; }
-                }
-
-                Text { text: "Local only"; font-size: 11px; font-weight: 600; color: root.compute_target == 0 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            SegmentPill {
+                text: "Local only";
+                hint: "Draw the picture on this computer only.";
+                selected: root.compute_target == 0;
+                enabled: !ExportModel.is_exporting;
+                picked => { root.compute_target = 0; }
             }
-
-            Rectangle {
-                horizontal-stretch: 1;
-                height: 28px;
-                border-radius: Theme.radius-sm;
-                opacity: ExportModel.remote_available ? 1.0 : 0.45;
-                background: root.compute_target == 1 ? Theme.accent-cyan : (ct1_touch.has-hover ? #1e293b : #0f172a);
-                border-width: 1px;
-                border-color: root.compute_target == 1 ? Theme.accent-cyan : #334155;
-
-                ct1_touch := TouchArea {
-                    enabled: !ExportModel.is_exporting && ExportModel.remote_available;
-                    clicked => { root.compute_target = 1; }
-                }
-
-                Text { text: "Remote only"; font-size: 11px; font-weight: 600; color: root.compute_target == 1 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            SegmentPill {
+                text: "Remote only";
+                hint: ExportModel.remote_available
+                    ? "Draw the picture on the remote worker only."
+                    : "Not available right now. " + ExportModel.remote_unavailable_reason;
+                selected: root.compute_target == 1;
+                enabled: !ExportModel.is_exporting && ExportModel.remote_available;
+                picked => { root.compute_target = 1; }
             }
-
-            Rectangle {
-                horizontal-stretch: 1;
-                height: 28px;
-                border-radius: Theme.radius-sm;
-                opacity: ExportModel.remote_available ? 1.0 : 0.45;
-                background: root.compute_target == 2 ? Theme.accent-cyan : (ct2_touch.has-hover ? #1e293b : #0f172a);
-                border-width: 1px;
-                border-color: root.compute_target == 2 ? Theme.accent-cyan : #334155;
-
-                ct2_touch := TouchArea {
-                    enabled: !ExportModel.is_exporting && ExportModel.remote_available;
-                    clicked => { root.compute_target = 2; }
-                }
-
-                Text { text: "Local + Remote"; font-size: 11px; font-weight: 600; color: root.compute_target == 2 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            SegmentPill {
+                text: "Local + Remote";
+                hint: ExportModel.remote_available
+                    ? "Share the work between this computer and the remote worker."
+                    : "Not available right now. " + ExportModel.remote_unavailable_reason;
+                selected: root.compute_target == 2;
+                enabled: !ExportModel.is_exporting && ExportModel.remote_available;
+                picked => { root.compute_target = 2; }
             }
         }
 
@@ -83,6 +83,7 @@ export component ExportComputeAndBounces inherits VerticalLayout {
             font-size: 11px;
             color: Theme.text-muted;
             wrap: word-wrap;
+            accessible-role: AccessibleRole.text;
         }
     }
 
@@ -91,24 +92,26 @@ export component ExportComputeAndBounces inherits VerticalLayout {
     // "Local only" there is nothing to transfer.
     if ExportModel.remote_available && root.compute_target != 0: VerticalLayout {
         spacing: 6px;
-        Text { text: "Transfer"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+        SectionCaption {
+            text: "Transfer";
+            hint: "How the remote worker's result comes back to this computer.";
+        }
 
         HorizontalLayout {
             spacing: 4px;
-            for label[idx] in ["Full data", "Final picture only"]: Rectangle {
-                horizontal-stretch: 1;
-                height: 28px;
-                border-radius: Theme.radius-sm;
-                background: ExportModel.transfer_index == idx ? Theme.accent-cyan : (tr_touch.has-hover ? #1e293b : #0f172a);
-                border-width: 1px;
-                border-color: ExportModel.transfer_index == idx ? Theme.accent-cyan : #334155;
-
-                tr_touch := TouchArea {
-                    enabled: !ExportModel.is_exporting;
-                    clicked => { ExportModel.transfer_index = idx; }
-                }
-
-                Text { text: label; font-size: 11px; font-weight: 600; color: ExportModel.transfer_index == idx ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            SegmentPill {
+                text: "Full data";
+                hint: "The remote sends its raw light samples, which are merged with this computer's own.";
+                selected: ExportModel.transfer_index == 0;
+                enabled: !ExportModel.is_exporting;
+                picked => { ExportModel.transfer_index = 0; }
+            }
+            SegmentPill {
+                text: "Final picture only";
+                hint: "The remote draws and finishes the whole picture and sends one PNG file. Far less data, but this computer does not help.";
+                selected: ExportModel.transfer_index == 1;
+                enabled: !ExportModel.is_exporting;
+                picked => { ExportModel.transfer_index = 1; }
             }
         }
 
@@ -119,6 +122,7 @@ export component ExportComputeAndBounces inherits VerticalLayout {
             font-size: 11px;
             color: Theme.text-muted;
             wrap: word-wrap;
+            accessible-role: AccessibleRole.text;
         }
     }
 
@@ -131,105 +135,20 @@ export component ExportComputeAndBounces inherits VerticalLayout {
     // the value an export would have used anyway.
     VerticalLayout {
         spacing: 6px;
-        Text { text: "Max Ray Bounces"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+        SectionCaption {
+            text: "Max Ray Bounces";
+            hint: "How many times a ray of light may bounce inside the stone before it is dropped. More bounces follow the light further and take longer.";
+        }
 
         HorizontalLayout {
             spacing: 4px;
 
-            Rectangle {
-                horizontal-stretch: 1;
-                height: 28px;
-                border-radius: Theme.radius-sm;
-                background: root.selected_bounce_index == 0 ? Theme.accent-cyan : (mb0_touch.has-hover ? #1e293b : #0f172a);
-                border-width: 1px;
-                border-color: root.selected_bounce_index == 0 ? Theme.accent-cyan : #334155;
-
-                mb0_touch := TouchArea {
-                    enabled: !ExportModel.is_exporting;
-                    clicked => { root.selected_bounce_index = 0; }
-                }
-
-                Text { text: "4"; font-size: 11px; font-weight: 600; color: root.selected_bounce_index == 0 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-            }
-
-            Rectangle {
-                horizontal-stretch: 1;
-                height: 28px;
-                border-radius: Theme.radius-sm;
-                background: root.selected_bounce_index == 1 ? Theme.accent-cyan : (mb1_touch.has-hover ? #1e293b : #0f172a);
-                border-width: 1px;
-                border-color: root.selected_bounce_index == 1 ? Theme.accent-cyan : #334155;
-
-                mb1_touch := TouchArea {
-                    enabled: !ExportModel.is_exporting;
-                    clicked => { root.selected_bounce_index = 1; }
-                }
-
-                Text { text: "8"; font-size: 11px; font-weight: 600; color: root.selected_bounce_index == 1 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-            }
-
-            Rectangle {
-                horizontal-stretch: 1;
-                height: 28px;
-                border-radius: Theme.radius-sm;
-                background: root.selected_bounce_index == 2 ? Theme.accent-cyan : (mb2_touch.has-hover ? #1e293b : #0f172a);
-                border-width: 1px;
-                border-color: root.selected_bounce_index == 2 ? Theme.accent-cyan : #334155;
-
-                mb2_touch := TouchArea {
-                    enabled: !ExportModel.is_exporting;
-                    clicked => { root.selected_bounce_index = 2; }
-                }
-
-                Text { text: "12"; font-size: 11px; font-weight: 600; color: root.selected_bounce_index == 2 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-            }
-
-            Rectangle {
-                horizontal-stretch: 1;
-                height: 28px;
-                border-radius: Theme.radius-sm;
-                background: root.selected_bounce_index == 3 ? Theme.accent-cyan : (mb3_touch.has-hover ? #1e293b : #0f172a);
-                border-width: 1px;
-                border-color: root.selected_bounce_index == 3 ? Theme.accent-cyan : #334155;
-
-                mb3_touch := TouchArea {
-                    enabled: !ExportModel.is_exporting;
-                    clicked => { root.selected_bounce_index = 3; }
-                }
-
-                Text { text: "24"; font-size: 11px; font-weight: 600; color: root.selected_bounce_index == 3 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-            }
-
-            Rectangle {
-                horizontal-stretch: 1;
-                height: 28px;
-                border-radius: Theme.radius-sm;
-                background: root.selected_bounce_index == 4 ? Theme.accent-cyan : (mb4_touch.has-hover ? #1e293b : #0f172a);
-                border-width: 1px;
-                border-color: root.selected_bounce_index == 4 ? Theme.accent-cyan : #334155;
-
-                mb4_touch := TouchArea {
-                    enabled: !ExportModel.is_exporting;
-                    clicked => { root.selected_bounce_index = 4; }
-                }
-
-                Text { text: "64"; font-size: 11px; font-weight: 600; color: root.selected_bounce_index == 4 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-            }
-
-            Rectangle {
-                horizontal-stretch: 1;
-                height: 28px;
-                border-radius: Theme.radius-sm;
-                background: root.selected_bounce_index == 5 ? Theme.accent-cyan : (mb5_touch.has-hover ? #1e293b : #0f172a);
-                border-width: 1px;
-                border-color: root.selected_bounce_index == 5 ? Theme.accent-cyan : #334155;
-
-                mb5_touch := TouchArea {
-                    enabled: !ExportModel.is_exporting;
-                    clicked => { root.selected_bounce_index = 5; }
-                }
-
-                Text { text: "128"; font-size: 11px; font-weight: 600; color: root.selected_bounce_index == 5 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            for bounces[idx] in ["4", "8", "12", "24", "64", "128"]: SegmentPill {
+                text: bounces;
+                hint: "Allow up to " + bounces + " bounces per ray.";
+                selected: root.selected_bounce_index == idx;
+                enabled: !ExportModel.is_exporting;
+                picked => { root.selected_bounce_index = idx; }
             }
         }
 
@@ -244,6 +163,7 @@ export component ExportComputeAndBounces inherits VerticalLayout {
             font-size: 11px;
             color: Theme.text-muted;
             wrap: word-wrap;
+            accessible-role: AccessibleRole.text;
         }
     }
 }

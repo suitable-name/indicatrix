@@ -4,17 +4,20 @@
 //! `super::tests` exercises it directly.
 
 use crate::gui::{
-    editor::material_lookup::{EditorMaterialLookup, traced_gem_material, traced_material_for},
+    editor::material_lookup::{
+        EditorMaterialLookup, resolved_gem_material, traced_gem_material, traced_material_for,
+    },
     render::camera_lighting::{fit_distance_for_radius, orbit_distance_bounds},
     solid_preview::{
+        cut_slider::cut_geometry,
         mesh_cache::{CachedMesh, MeshCache},
         preview_state::{CameraPose, DEFAULT_MESH_BOUNDING_RADIUS},
     },
 };
-use glam::Vec3;
 use indicatrix::{geometry::meet_solver::SolvedTier, optics::materials::GemMaterial};
 use indicatrix_cut_core::Design;
-use indicatrix_editor::solve_policy::design_to_gpu_planes_from_solved;
+use indicatrix_editor::optimize_view::default_optimize_material_ri;
+use indicatrix_solid::preview::StoneGeometryBuf;
 use std::f32::consts::FRAC_PI_2;
 
 /// Radians of yaw/pitch per logical pixel of drag -- the same rate the main
@@ -37,14 +40,17 @@ pub(super) enum CompareOrigin {
     Optimize,
     /// The held design snapshot against the current design -- view only.
     Snapshot,
+    /// Any two of the current design and its saved variants (the History tab's
+    /// Variants view) -- view only.
+    Variants,
 }
 
 impl CompareOrigin {
-    /// Whether this origin has anything to keep or discard. A snapshot comparison
-    /// only ever looks: the "after" side IS the live design already.
+    /// Whether this origin has anything to keep or discard. A snapshot or variants
+    /// comparison only ever looks: opening a variant is its own button on the list.
     #[must_use]
     pub(super) const fn offers_keep(self) -> bool {
-        !matches!(self, Self::Snapshot)
+        !matches!(self, Self::Snapshot | Self::Variants)
     }
 }
 
@@ -92,6 +98,9 @@ pub(super) struct SideInput {
     /// The material the traced mode renders this side in -- see
     /// [`resolve_side_material`].
     pub(super) material: Result<GemMaterial, String>,
+    /// The material the optical figures are measured in -- see
+    /// [`resolve_metrics_material`].
+    pub(super) metrics_material: GemMaterial,
 }
 
 /// The material a side is traced as: the design's own traced material, resolved by
@@ -116,9 +125,23 @@ pub(super) fn resolve_side_material(
         .ok_or_else(|| format!("'{name}' is not a built-in preset or a saved custom material."))
 }
 
+/// The material a side's optical figures are measured in: the design's own material,
+/// at the design's own refractive index when it names no species -- the defaulting
+/// Optimize and the angle sweep apply, so the figures here agree with theirs.
+///
+/// Unlike [`resolve_side_material`] this never refuses: the figures of a design that
+/// names no material still describe the stone at its refractive index, which is what
+/// the cutter compares, whereas a picture in the wrong species would mislead.
+#[must_use]
+pub(super) fn resolve_metrics_material(design: &Design, custom: &[GemMaterial]) -> GemMaterial {
+    let mut selection = design.material.clone();
+    let _ = default_optimize_material_ri(design, &mut selection, custom);
+    resolved_gem_material(&selection, &EditorMaterialLookup::new(custom))
+}
+
 /// One solved side of the comparison, built ONCE when the window opens. Keeps only
-/// what rendering needs -- the solved masts, the half-space planes both renderers
-/// draw, and the traced material -- not the `Design` itself.
+/// what rendering needs -- the solved masts, the stone (planes plus concave tools) both
+/// renderers draw, and the traced material -- not the `Design` itself.
 pub(super) struct CompareSide {
     /// The header/caption label.
     pub(super) label: String,
@@ -126,53 +149,64 @@ pub(super) struct CompareSide {
     pub(super) solved: Option<Vec<SolvedTier>>,
     /// The solve error, shown in the status line, when `solved` is `None`.
     pub(super) solve_error: Option<String>,
-    /// `(normal, offset)` half-spaces (`n . x <= m`), preform planes first -- the
-    /// exact list `submit_design_ghost_preview` hands the solid worker. Empty when
-    /// the side does not solve.
-    pub(super) planes: Vec<(Vec3, f32)>,
-    /// How many leading entries of `planes` are the rough's own preform planes
+    /// The stone both renderers and the figures use: the half-space planes, preform
+    /// planes first (the exact list `submit_design_ghost_preview` hands the solid
+    /// worker), and the concave tools cut into them. Without concave tiers it is
+    /// bit-identical to the planar stone (`tools` empty). Empty when the side does not
+    /// solve.
+    pub(super) stone: StoneGeometryBuf,
+    /// How many leading entries of `stone.planes` are the rough's own preform planes
     /// (tinted in the solid view, like the Edit tab's Solid view does).
     pub(super) preform_planes: usize,
     /// The traced material, or why there is none.
     pub(super) material: Result<GemMaterial, String>,
+    /// The material the optical figures are measured in.
+    pub(super) metrics_material: GemMaterial,
     /// The solid's bounding radius, `None` when it does not close.
     pub(super) bounding_radius: Option<f64>,
+    /// The design has concave tiers but none of them could be placed (an unresolvable
+    /// set), so the flat stone is shown and measured instead.
+    pub(super) tools_dropped: bool,
 }
 
 impl CompareSide {
-    /// Solves `input.design` and derives its planes. Runs off the UI thread (see
+    /// Solves `input.design` and derives its stone. Runs off the UI thread (see
     /// `super::wiring::open_compare`): a real design can take seconds to solve.
     #[must_use]
     pub(super) fn build(input: SideInput) -> Self {
         let preform_planes = input.design.preform.planes().len();
         match input.design.solve() {
             Ok(solved) => {
-                let planes: Vec<(Vec3, f32)> =
-                    design_to_gpu_planes_from_solved(&input.design, &solved)
-                        .iter()
-                        .map(|p| (Vec3::from(p.normal), -p.d))
-                        .collect();
+                // The one entry every redraw path uses; it reproduces
+                // `design_to_gpu_planes_from_solved` bit for bit and adds the tools.
+                let stone = cut_geometry(&input.design, Some(&solved), None);
+                let tools_dropped =
+                    !input.design.concave_tiers.is_empty() && stone.tools.is_empty();
                 let bounding_radius = MeshCache::default()
-                    .get_or_build(&planes)
+                    .get_or_build_geometry(&stone)
                     .map(CachedMesh::bounding_radius);
                 Self {
                     label: input.label,
                     solved: Some(solved),
                     solve_error: None,
-                    planes,
+                    stone,
                     preform_planes,
                     material: input.material,
+                    metrics_material: input.metrics_material,
                     bounding_radius,
+                    tools_dropped,
                 }
             }
             Err(error) => Self {
                 label: input.label,
                 solved: None,
                 solve_error: Some(error.to_string()),
-                planes: Vec::new(),
+                stone: StoneGeometryBuf::default(),
                 preform_planes,
                 material: input.material,
+                metrics_material: input.metrics_material,
                 bounding_radius: None,
+                tools_dropped: false,
             },
         }
     }
@@ -264,6 +298,20 @@ pub(super) const fn traced_may_start(drag_held: bool) -> bool {
     !drag_held
 }
 
+/// How long a traced pair waits again for a layout switch's new slot size.
+pub(super) const SIZE_SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// How often a traced pair waits for the new slot size after a layout switch before
+/// tracing anyway (a layout that kept the old size sends no size push).
+pub(super) const MAX_SETTLE_POLLS: u8 = 3;
+
+/// Whether the traced pair must wait once more for the slot size of a layout switch
+/// (`size_settling`, with `polls` waits already spent) rather than trace at the old size.
+#[must_use]
+pub(super) const fn traced_waits_for_layout(size_settling: bool, polls: u8) -> bool {
+    size_settling && polls < MAX_SETTLE_POLLS
+}
+
 /// Clamps an orbit pitch to straight down/straight up. Unlike the main viewport
 /// (which wraps over the poles), the compare camera stops at them: two stones
 /// turned upside-down past a pole are harder to compare than two held still.
@@ -338,6 +386,10 @@ pub(super) fn status_text(
             parts.push(format!("{name} does not solve: {error}"));
         } else if renderer == Renderer::Traced && side.material.is_err() {
             parts.push(format!("{name}: material not resolved, nothing to trace"));
+        } else if side.tools_dropped {
+            parts.push(format!(
+                "{name}: its concave tiers could not be placed, so the flat stone is shown"
+            ));
         }
     }
     let mode = match (renderer, traced) {
@@ -350,6 +402,36 @@ pub(super) fn status_text(
     };
     parts.insert(0, mode);
     parts.join("  ·  ")
+}
+
+/// A traced side that took longer than this many seconds gets fewer samples on the next
+/// frame, when the stone carries concave tools (owner decision D2): the tool-aware
+/// tracer is slower than the planar one, and an orbit that waits for it is a bad orbit.
+pub(super) const SLOW_TRACED_SIDE_SECS: f64 = 3.0;
+
+/// The samples per pixel a traced side gets: `full` for a planar stone, and for a stone
+/// with concave tools too unless its previous trace took longer than
+/// [`SLOW_TRACED_SIDE_SECS`], in which case half (never fewer than one).
+#[must_use]
+pub(super) fn traced_spp_for(full: u32, has_tools: bool, last_secs: Option<f64>) -> u32 {
+    match last_secs {
+        Some(secs) if has_tools && secs > SLOW_TRACED_SIDE_SECS => (full / 2).max(1),
+        _ => full,
+    }
+}
+
+/// The status-line addition when a traced side ran with fewer samples than `full`;
+/// `None` when both sides had the full count.
+#[must_use]
+pub(super) fn reduced_spp_note(spp: [u32; 2], full: u32) -> Option<String> {
+    let names = ["Before", "After"];
+    let parts: Vec<String> = names
+        .iter()
+        .zip(spp)
+        .filter(|&(_, used)| used < full)
+        .map(|(name, used)| format!("{name} {used} spp (slow concave stone)"))
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(", "))
 }
 
 /// Which renderer produced a frame.

@@ -177,7 +177,7 @@ whole trace:
   (section 3.1); a material without one has no fluorescence.
 - **Fluorescence** is described in section 3.1.
 - **Physical chromophore mode (`optics::chromophore`).** Custom materials can specify a physical
-  gem recipe (`colorRecipe`) combining a host crystal (24 supported hosts) with real mineralogical
+  gem recipe (`ColorRecipe`) combining a host crystal (24 supported hosts) with real mineralogical
   chromophores (transition metals, intervalence charge-transfer pairs, radiation centres). The CPU
   forward model resolves the recipe into $\le 8$ energy-domain Gaussian bands
   (`BandShape::GaussianEnergy`) per eigenmode (ordinary, extraordinary, and optional beta ray for
@@ -312,9 +312,11 @@ design (the continuation keeps full weight there).
 
 ## 5. Lighting
 
-### 5.1 Four models, nine presets
+### 5.1 Models and presets
 
-`environment/mod.rs::LightingPreset` has nine presets over four
+`environment/mod.rs::LightingPreset` has more presets than the
+table below lists (the table shows the original nine; the light-tent variants, Incandescent A,
+DaylightSun and Aset are described in 5.2) over six
 `LightingModel`s. The CPU radiance is `environment/rig.rs::direction_lighting`; the WGSL
 twins live under `renderer/shaders/` (see [gpu.md](gpu.md)).
 
@@ -327,6 +329,9 @@ twins live under `renderer/shaders/` (see [gpu.md](gpu.md)).
 | IsoHemisphere | IsoHemisphere | tabulated CIE D65 | identity |
 | LightTent | LightTent | Planckian 5000 K | Planckian -> D65 |
 | DaylightDome | DaylightDome | tabulated CIE D65 | identity |
+| DaylightSun | DaylightSun | tabulated CIE D65 | identity |
+| Aset | Aset | three Gaussian bands | identity |
+| WhiteTray, ShopLights, WindowDaylight | LightTent (variants) | tabulated CIE D65 | identity |
 | UvLamp365 | Studio | Gaussian 365 nm, FWHM 10 nm | none (identity) |
 | UvLamp395 | Studio | Gaussian 395 nm, FWHM 12 nm | none (identity) |
 
@@ -361,9 +366,27 @@ rotation sense.
   positions a quarter, half and three quarters of a turn round from the key), an overhead
   softbox `1.4 * spot_mult`, a spark light at the fill direction `5 * spot_mult`, and
   `0.02` black velvet below the horizon.
-- **DaylightDome** (`rig.rs::daylight_dome_lighting`): sky `0.10 + 0.08 (1 - max(y, 0))`,
-  an aureole `0.30 * max(sun_dot, 0)^8`, a sun disc of radiance `10` (full within 2
-  degrees of the key, gone by 4), and `0.04` ground.
+- **DaylightDome** (`rig.rs::daylight_dome_lighting`): sky only, `0.10 + 0.08 (1 - max(y, 0))`,
+  an aureole `0.30 * max(sun_dot, 0)^8`, and `0.04` ground. There is no sun disc.
+- **DaylightSun** (`LightingModel::DaylightSun`): the same sky and aureole plus a
+  hard-edged sun disc of angular diameter 0.27 degrees (`SUN_DISC_COS = 0.9999889`,
+  solid angle about `7.0e-5` sr) at radiance `SUN_RADIANCE = 40 000`, D65 spectrum. At the
+  default key pitch of 72 degrees the sky irradiance on a horizontal plane is `0.577` and the
+  sun's `2.65`, so the sun is about 82 % of the light (74 % at 30 degrees, 88 % at 90).
+  It is sampled analytically: next-event estimation draws a uniform direction in the cone
+  (pdf `1 / solid angle`) and combines with the BSDF by the balance heuristic, on CPU and
+  GPU alike. NEE acts at frosted exteriors; a polished facet is a delta interface, so it
+  finds the sun by its exit direction and flashes whole, with dispersion fringes. The sun
+  follows the horizon blend but is not shadowed by the observer's head.
+- **Aset** (`rig.rs::aset_radiance`, `DirectionLighting::Banded`): zones by elevation
+  (smoothed 2 percent in sin e): green 0-45 degrees, red 45-75, blue 75-90 overhead, black
+  below the horizon, each a 20 nm FWHM Gaussian band at 540, 610 and 460 nm. The
+  wavelength is passed in place of the spectral power. Identity white balance, no head
+  shadow; metrics score it as the Grading tray (`color/metrics/lighting.rs::scoring_preset`).
+- **Light-tent variants** use `TentParams { walls, cards, spark, ground, flat }`:
+  ShopLights walls x3, no cards, ground 0.05; WindowDaylight walls x0.4, no cards or
+  spark, ground 0.03, one broad key; WhiteTray walls x5 with `flat = 1` (uniform
+  `0.9`), ground 0.8, `spot_mult` 0 (key and spark off). LightTent keeps the defaults.
 - **Head shadow.** The three lit models darken every exit direction inside the observer
   cone (dark within 14 degrees of the eye direction, gone by 18;
   `rig.rs::observer_visibility`, `HEAD_SHADOW_*_COS`). The observer is the reverse of the
@@ -399,7 +422,7 @@ scale that maps the preset's illuminant white to D65 at equal luminance
 `LightingPreset::uses_white_balance()` is true only for the presets with a Planckian
 illuminant, so only those four are adapted: Incandescent, RingLights, DarkSpotlight and
 LightTent. The scale is the identity for the presets that sample the tabulated D65 curve
-(`uses_d65`: Daylight, IsoHemisphere, DaylightDome) and for the UV lamps, which have no white
+(`uses_d65`: Daylight, IsoHemisphere, DaylightDome, DaylightSun, Aset and the tent variants) and for the UV lamps, which have no white
 point to adapt from (the stone shows the lamp's own color; `color.rs::illuminant_white_balance`). `HdrMap` skips the transform entirely (the Bradford matrices are not exact
 inverses, so running it at scale one would not be the identity in `f32`).
 

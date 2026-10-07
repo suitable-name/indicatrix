@@ -33,12 +33,12 @@ use std::{
 
 use super::{
     catalogue::{ChromophoreCatalogue, ChromophoreData, HostData, species_element},
-    recipe::{ResolvedBands, colorRecipe},
+    recipe::{ColorRecipe, ResolvedBands},
     resolve::{Removal, apply_treatments, effective_concentration, resolve},
 };
 use crate::{
     color::{
-        body_color::{Bodycolor, Illuminant, body_colors, delta_e_2000_residual, xyz_to_lab},
+        body_color::{BodyColor, Illuminant, body_colors, delta_e_2000_residual, xyz_to_lab},
         cie1931::cie_1931_cmf,
     },
     optics::absorption::{AbsorptionBand, legacy_rgb_bands},
@@ -130,9 +130,9 @@ impl<'a> SolveRequest<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SolveResult {
     /// Solved recipe with amounts (strength = 1.0).
-    pub recipe: colorRecipe,
+    pub recipe: ColorRecipe,
     /// Achieved body color (D65, unpolarised) computed from the budgeted tensor.
-    pub achieved: Bodycolor,
+    pub achieved: BodyColor,
     /// Final color difference Delta E 2000 under D65 from the target pick (budgeted tensor).
     pub delta_e: f64,
     /// Delta E 2000 under 3200 K from the second target, when one was given.
@@ -181,8 +181,8 @@ pub fn solve_physics_with(
 ) -> Result<SolveResult, Cancelled> {
     let Some(host) = catalogue.host(req.host_id) else {
         return Ok(SolveResult {
-            recipe: colorRecipe::new(req.host_id, catalogue.data_version),
-            achieved: Bodycolor {
+            recipe: ColorRecipe::new(req.host_id, catalogue.data_version),
+            achieved: BodyColor {
                 xyz: [0.0; 3],
                 lab: [0.0; 3],
                 srgb: [0; 3],
@@ -748,7 +748,7 @@ impl<'a> Search<'a> {
     fn build_model(&self, ids: &[&String], combo: &[String]) -> Model<'a> {
         let host = self.host;
         let key = combo.join("+");
-        let mut stub = colorRecipe::new(&host.id, self.cat.data_version);
+        let mut stub = ColorRecipe::new(&host.id, self.cat.data_version);
         stub.treatments = combo.to_vec();
         let len = self.modes * N;
 
@@ -956,8 +956,8 @@ impl<'a> Search<'a> {
         Ok(self.candidate(&model, &r, &c, combo.to_vec()))
     }
 
-    fn make_recipe(&self, ids: &[String], c: &[f64], treatments: &[String]) -> colorRecipe {
-        let mut recipe = colorRecipe::new(&self.host.id, self.cat.data_version);
+    fn make_recipe(&self, ids: &[String], c: &[f64], treatments: &[String]) -> ColorRecipe {
+        let mut recipe = ColorRecipe::new(&self.host.id, self.cat.data_version);
         recipe.reference_path_mm = self.req.ref_path_mm;
         recipe.treatments = treatments.to_vec();
         for (id, v) in &self.locked {
@@ -972,7 +972,7 @@ impl<'a> Search<'a> {
     }
 
     /// Exact residual of a recipe through `resolve` and the budgeted tensor.
-    fn exact_residual(&self, recipe: &colorRecipe) -> Option<(Resid, Bodycolor)> {
+    fn exact_residual(&self, recipe: &ColorRecipe) -> Option<(Resid, BodyColor)> {
         let (tensor, _) = resolve(recipe, self.cat).ok()?;
         let path = f64::from(recipe.reference_path_mm);
         let d65 = body_colors(&tensor, path, Illuminant::D65).unpolarised;
@@ -1048,7 +1048,7 @@ impl<'a> Search<'a> {
                 best.de,
                 best.de_a,
                 best.metric,
-                Bodycolor {
+                BodyColor {
                     xyz: [0.0; 3],
                     lab: [0.0; 3],
                     srgb: [0; 3],
@@ -1278,6 +1278,281 @@ pub fn solve_fantasy(target_rgb: [f32; 3]) -> [f32; 3] {
         .peaks
 }
 
+// ---------------------------------------------------------------------------------------------
+// Path-aware L*C*h body colour (seven-band basis)
+// ---------------------------------------------------------------------------------------------
+
+/// The colour a path-aware body-colour solve aims at.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BodyColorTarget {
+    /// CIE L*C*h(ab) under D65: `[L*, C*, h in degrees]`.
+    pub lch: [f64; 3],
+    /// The light path (mm) the colour is seen through: the stone's size.
+    pub path_mm: f64,
+}
+
+/// Result of [`solve_body_color`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BodyColorSolution {
+    /// Peak absorption coefficient per millimetre of each `BODY_COLOR_BASIS_NM` band
+    /// (zero for a band the solution does not use), for `body_color_bands`.
+    pub amplitudes_per_mm: [f32; 7],
+    /// Delta E 2000 (D65) of the solution at `path_mm` from the target.
+    pub delta_e: f64,
+    /// `delta_e <= 1`: the target is reachable with this basis at this path.
+    pub reachable: bool,
+    /// Forward evaluations spent.
+    pub evals: usize,
+}
+
+const BODY_BANDS: usize = 7;
+/// Optical-density bounds (amplitude x path) of one basis band in the solve.
+const BODY_OD_MIN: f64 = 1e-3;
+const BODY_OD_MAX: f64 = 8.0;
+/// Weight of the smoothness residual (`0.01 x` the optical-density step between neighbouring
+/// bands): picks the smoothest of the many spectra that make the same colour, with a
+/// negligible effect on the colour itself.
+const BODY_REG: f64 = 0.01;
+const BODY_LM_ITERS: usize = 60;
+/// Grid points kept as Levenberg-Marquardt starts.
+const BODY_SEEDS: usize = 3;
+
+type BodyResid = [f64; 9];
+
+/// The seven-band forward model in optical-density space `od_b = amplitude_b x path`, so the
+/// solve does not depend on the path at all: only the final conversion to per-millimetre
+/// amplitudes does (Beer-Lambert depends on the product).
+struct BodyModel<'a, 'c> {
+    ctx: &'a Ctx<'c>,
+    /// `BODY_BANDS` rows of `N` samples (on the heap: the table is too big for the stack).
+    spectra: Vec<[f64; N]>,
+}
+
+impl<'a, 'c> BodyModel<'a, 'c> {
+    fn new(ctx: &'a Ctx<'c>) -> Self {
+        let mut spectra = vec![[0.0; N]; BODY_BANDS];
+        for (row, &(centre, width)) in spectra
+            .iter_mut()
+            .zip(crate::optics::absorption::BODY_COLOR_BASIS_NM.iter())
+        {
+            let band = AbsorptionBand::new(centre, width, 1.0);
+            for (i, s) in row.iter_mut().enumerate() {
+                *s = f64::from(band.evaluate((380 + i) as f32));
+            }
+        }
+        Self { ctx, spectra }
+    }
+
+    fn lab(&self, od: &[f64; BODY_BANDS]) -> [f64; 3] {
+        let mut xyz = [0.0; 3];
+        for i in 0..N {
+            let mut a = 0.0;
+            for b in 0..BODY_BANDS {
+                a += od[b] * self.spectra[b][i];
+            }
+            let t = (-a).exp();
+            for k in 0..3 {
+                xyz[k] += t * self.ctx.d65.w[k][i];
+            }
+        }
+        self.ctx.d65.lab(xyz)
+    }
+
+    fn resid(&self, od: &[f64; BODY_BANDS]) -> Result<BodyResid, Cancelled> {
+        self.ctx.tick()?;
+        let d = delta_e_2000_residual(self.ctx.target_d65, self.lab(od));
+        let mut r = [0.0; 9];
+        r[..3].copy_from_slice(&d);
+        for i in 0..BODY_BANDS - 1 {
+            r[3 + i] = BODY_REG * (od[i] - od[i + 1]);
+        }
+        Ok(r)
+    }
+}
+
+fn body_od(u: &[f64; BODY_BANDS]) -> [f64; BODY_BANDS] {
+    u.map(f64::exp)
+}
+
+/// Solves the dense `M x M` system `a x = b` by Gaussian elimination with partial pivoting;
+/// `None` when singular.
+fn solve_dense<const M: usize>(mut a: [[f64; M]; M], mut b: [f64; M]) -> Option<[f64; M]> {
+    for col in 0..M {
+        let piv = (col..M).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs()))?;
+        if a[piv][col].abs() < 1e-300 {
+            return None;
+        }
+        a.swap(col, piv);
+        b.swap(col, piv);
+        for row in (col + 1)..M {
+            let f = a[row][col] / a[col][col];
+            for k in col..M {
+                a[row][k] -= f * a[col][k];
+            }
+            b[row] -= f * b[col];
+        }
+    }
+    let mut x = [0.0; M];
+    for row in (0..M).rev() {
+        let mut s = b[row];
+        for k in (row + 1)..M {
+            s -= a[row][k] * x[k];
+        }
+        x[row] = s / a[row][row];
+    }
+    x.iter().all(|v| v.is_finite()).then_some(x)
+}
+
+/// Projected Levenberg-Marquardt on the log optical densities `u` (the seven-band twin of
+/// [`lm_log`], which is limited to three parameters). Returns the best point and its squared
+/// residual.
+fn lm_body(
+    mut u: [f64; BODY_BANDS],
+    lo: f64,
+    hi: f64,
+    model: &BodyModel<'_, '_>,
+) -> Result<([f64; BODY_BANDS], f64), Cancelled> {
+    const H: f64 = 1e-3;
+    const MAX_STEP: f64 = 2.0;
+    let sumsq = |r: &BodyResid| r.iter().map(|x| x * x).sum::<f64>();
+    let mut r = model.resid(&body_od(&u))?;
+    let mut cost = sumsq(&r);
+    let mut lambda = 1e-2;
+    for _ in 0..BODY_LM_ITERS {
+        if cost < 1e-10 {
+            break;
+        }
+        let mut jac = [[0.0; 9]; BODY_BANDS];
+        for j in 0..BODY_BANDS {
+            let mut up = u;
+            let h = if u[j] + H > hi { -H } else { H };
+            up[j] += h;
+            let rp = model.resid(&body_od(&up))?;
+            for k in 0..9 {
+                jac[j][k] = (rp[k] - r[k]) / h;
+            }
+        }
+        let mut jtj = [[0.0; BODY_BANDS]; BODY_BANDS];
+        let mut jtr = [0.0; BODY_BANDS];
+        for i in 0..BODY_BANDS {
+            for j in 0..BODY_BANDS {
+                jtj[i][j] = (0..9).map(|k| jac[i][k] * jac[j][k]).sum();
+            }
+            jtr[i] = (0..9).map(|k| jac[i][k] * r[k]).sum();
+        }
+        let mut accepted = false;
+        let mut step_norm = 0.0;
+        let mut gain = 0.0;
+        for _ in 0..4 {
+            let mut a = jtj;
+            for i in 0..BODY_BANDS {
+                a[i][i] += lambda * jtj[i][i].max(1e-9);
+            }
+            let rhs = jtr.map(|v| -v);
+            if let Some(delta) = solve_dense(a, rhs) {
+                let mut un = u;
+                for j in 0..BODY_BANDS {
+                    un[j] = (u[j] + delta[j].clamp(-MAX_STEP, MAX_STEP)).clamp(lo, hi);
+                }
+                let rn = model.resid(&body_od(&un))?;
+                let cn = sumsq(&rn);
+                if cn < cost {
+                    step_norm = (0..BODY_BANDS)
+                        .map(|j| (un[j] - u[j]).powi(2))
+                        .sum::<f64>()
+                        .sqrt();
+                    gain = cost - cn;
+                    u = un;
+                    r = rn;
+                    cost = cn;
+                    lambda = (lambda / 3.0).max(1e-7);
+                    accepted = true;
+                    break;
+                }
+            }
+            lambda *= 5.0;
+        }
+        if !accepted || step_norm < 1e-6 || gain < 1e-9 * cost.max(1e-12) {
+            break;
+        }
+    }
+    Ok((u, cost))
+}
+
+/// Solves the seven per-millimetre amplitudes of the `BODY_COLOR_BASIS_NM` bands that make a
+/// stone with light path `target.path_mm` show the L*C*h colour `target.lch` under D65.
+///
+/// Optical density is `amplitude x path`, so the same colour at twice the path needs half the
+/// amplitudes (the solve itself runs in density space and only the last step divides by the
+/// path). Seven Gaussians against a three-number target leave many equivalent spectra: a
+/// small smoothness term ([`BODY_REG`]) picks the smoothest. The search is a fixed 3^7 grid
+/// (about 2 200 evaluations, a few tens of milliseconds) whose three best points each start a
+/// Levenberg-Marquardt refinement in log space; the best refined point wins, ties to the
+/// earlier one. Deterministic: no threads, fixed iteration order, bit-identical for identical
+/// input on one platform. A band below twice the minimum density comes back as exactly 0 (a
+/// colourless target gives seven zeros).
+///
+/// # Errors
+///
+/// [`Cancelled`] if `cancel` was set during the solve.
+pub fn solve_body_color(
+    target: &BodyColorTarget,
+    cancel: &AtomicBool,
+) -> Result<BodyColorSolution, Cancelled> {
+    let path = if target.path_mm.is_finite() && target.path_mm > 0.0 {
+        target.path_mm
+    } else {
+        1.0
+    };
+    let lab = crate::color::body_color::lch_to_lab(target.lch);
+    let ctx = Ctx::new(cancel, lab, None, 1.0, path as f32);
+    let model = BodyModel::new(&ctx);
+    let lo = BODY_OD_MIN.ln();
+    let hi = BODY_OD_MAX.ln();
+    let levels = [lo, 0.5_f64.ln(), 4.0_f64.ln()];
+
+    // Coarse grid, first digit slowest; the best BODY_SEEDS points (earlier wins ties).
+    let mut seeds: Vec<(f64, [f64; BODY_BANDS])> = Vec::with_capacity(BODY_SEEDS + 1);
+    let total = 3_usize.pow(BODY_BANDS as u32);
+    for code in 0..total {
+        let mut u = [0.0; BODY_BANDS];
+        let mut rest = code;
+        for slot in u.iter_mut().rev() {
+            *slot = levels[rest % 3];
+            rest /= 3;
+        }
+        let r = model.resid(&body_od(&u))?;
+        let cost = r.iter().map(|x| x * x).sum::<f64>();
+        if seeds.len() < BODY_SEEDS || cost < seeds[seeds.len() - 1].0 {
+            let at = seeds.iter().position(|s| cost < s.0).unwrap_or(seeds.len());
+            seeds.insert(at, (cost, u));
+            seeds.truncate(BODY_SEEDS);
+        }
+    }
+
+    let mut best: Option<(f64, [f64; BODY_BANDS])> = None;
+    for (_, start) in seeds {
+        let (u, _) = lm_body(start, lo, hi, &model)?;
+        let mut od = body_od(&u);
+        for o in &mut od {
+            if *o < 2.0 * BODY_OD_MIN {
+                *o = 0.0;
+            }
+        }
+        let de = crate::color::body_color::delta_e_2000(lab, model.lab(&od));
+        if best.as_ref().is_none_or(|b| de < b.0) {
+            best = Some((de, od));
+        }
+    }
+    let (delta_e, od) = best.unwrap_or((f64::INFINITY, [0.0; BODY_BANDS]));
+    Ok(BodyColorSolution {
+        amplitudes_per_mm: od.map(|o| (o / path) as f32),
+        delta_e,
+        reachable: delta_e <= 1.0,
+        evals: ctx.evals(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1287,7 +1562,7 @@ mod tests {
         ChromophoreCatalogue::global()
     }
 
-    fn forward(recipe: &colorRecipe) -> [f64; 3] {
+    fn forward(recipe: &ColorRecipe) -> [f64; 3] {
         let (t, _) = resolve(recipe, cat()).expect("resolves");
         body_colors(&t, f64::from(recipe.reference_path_mm), Illuminant::D65)
             .unpolarised
@@ -1315,7 +1590,7 @@ mod tests {
         let mut model = search.build_model(&ids, &[]);
         let amounts = [0.2, 800.0, 150.0, 120.0];
         let r = model.eval(&ctx, &amounts).expect("eval");
-        let mut recipe = colorRecipe::new("corundum", cat().data_version);
+        let mut recipe = ColorRecipe::new("corundum", cat().data_version);
         for (n, a) in names.iter().zip(amounts) {
             recipe.set_amount(n, a);
         }
@@ -1333,7 +1608,7 @@ mod tests {
 
     #[test]
     fn cr_only_target_selects_exactly_cr() {
-        let mut r = colorRecipe::new("corundum", cat().data_version);
+        let mut r = ColorRecipe::new("corundum", cat().data_version);
         r.set_amount("Cr", 0.3);
         let res = solve_physics(cat(), "corundum", forward(&r), None, 5.0, &[]);
         assert!(res.reachable, "dE {}", res.delta_e);
@@ -1344,7 +1619,7 @@ mod tests {
 
     #[test]
     fn solve_is_deterministic_and_cancellable() {
-        let mut r = colorRecipe::new("corundum", cat().data_version);
+        let mut r = ColorRecipe::new("corundum", cat().data_version);
         r.set_amount("Cr", 0.1);
         r.set_amount("V", 300.0);
         let lab = forward(&r);
@@ -1369,13 +1644,13 @@ mod tests {
     fn colorless_target_returns_the_empty_recipe() {
         let res = solve_physics(cat(), "corundum", [100.0, 0.0, 0.0], None, 5.0, &[]);
         assert!(res.reachable);
-        assert!(res.recipe.entries.is_empty());
+        assert_eq!(res.recipe.entries.len(), 0, "no entries");
         assert_eq!(res.evals, 1);
     }
 
     #[test]
     fn garnet_end_members_are_found_and_constrained() {
-        let mut r = colorRecipe::new("garnet_pyralspite", cat().data_version);
+        let mut r = ColorRecipe::new("garnet_pyralspite", cat().data_version);
         r.set_amount("almandine", 0.4);
         let res = solve_physics(cat(), "garnet_pyralspite", forward(&r), None, 5.0, &[]);
         assert!(res.reachable, "dE {}", res.delta_e);
@@ -1400,5 +1675,81 @@ mod tests {
         // A red pick absorbs green/blue much more than red.
         let red = solve_fantasy([0.8, 0.1, 0.1]);
         assert!(red[0] < red[1] && red[0] < red[2], "{red:?}");
+    }
+
+    fn body_target(lch: [f64; 3], path_mm: f64) -> BodyColorTarget {
+        BodyColorTarget { lch, path_mm }
+    }
+
+    fn solve_body(lch: [f64; 3], path_mm: f64) -> BodyColorSolution {
+        let never = AtomicBool::new(false);
+        solve_body_color(&body_target(lch, path_mm), &never).expect("not cancelled")
+    }
+
+    /// The Lab of `amplitudes` at `path_mm` through the public forward model.
+    fn body_lab(amplitudes: [f32; 7], path_mm: f64) -> [f64; 3] {
+        let bands = crate::optics::absorption::body_color_bands(amplitudes);
+        body_color(
+            |l| bands.iter().map(|b| f64::from(b.evaluate(l as f32))).sum(),
+            path_mm,
+            Illuminant::D65,
+        )
+        .lab
+    }
+
+    #[test]
+    fn body_color_round_trips_a_blue_at_5_mm() {
+        // A known blue: absorbs yellow through red.
+        let lab = body_lab([0.0, 0.0, 0.0, 0.05, 0.15, 0.3, 0.2], 5.0);
+        let lch = crate::color::body_color::lab_to_lch(lab);
+        let sol = solve_body(lch, 5.0);
+        assert!(sol.reachable && sol.delta_e < 1.0, "dE {}", sol.delta_e);
+        // The solution, rebuilt through the public bands, lands on the target.
+        let back = body_lab(sol.amplitudes_per_mm, 5.0);
+        assert!(delta_e_2000(lab, back) < 1.0, "{back:?} vs {lab:?}");
+        // A directly typed mid-saturation blue is reachable too.
+        let typed = solve_body([50.0, 30.0, 265.0], 5.0);
+        assert!(typed.reachable, "dE {}", typed.delta_e);
+    }
+
+    #[test]
+    fn body_color_clear_is_all_zero() {
+        let sol = solve_body([100.0, 0.0, 0.0], 5.0);
+        assert_eq!(sol.amplitudes_per_mm, [0.0; 7]);
+        assert!(sol.reachable);
+    }
+
+    #[test]
+    fn body_color_doubling_the_path_halves_the_amplitudes() {
+        let a = solve_body([55.0, 35.0, 140.0], 5.0);
+        let b = solve_body([55.0, 35.0, 140.0], 10.0);
+        for (x, y) in a.amplitudes_per_mm.iter().zip(b.amplitudes_per_mm) {
+            assert!(
+                (x - 2.0 * y).abs() <= 1e-4 * x.abs().max(1e-3),
+                "{x} vs 2*{y}"
+            );
+        }
+        assert!((a.delta_e - b.delta_e).abs() < 1e-6);
+    }
+
+    #[test]
+    fn body_color_solve_is_deterministic() {
+        let a = solve_body([60.0, 45.0, 30.0], 7.5);
+        let b = solve_body([60.0, 45.0, 30.0], 7.5);
+        assert_eq!(
+            a.amplitudes_per_mm.map(f32::to_bits),
+            b.amplitudes_per_mm.map(f32::to_bits)
+        );
+        assert_eq!(a.delta_e.to_bits(), b.delta_e.to_bits());
+        assert_eq!(a.evals, b.evals);
+    }
+
+    #[test]
+    fn body_color_solve_honours_cancellation() {
+        let stop = AtomicBool::new(true);
+        assert_eq!(
+            solve_body_color(&body_target([50.0, 20.0, 90.0], 5.0), &stop),
+            Err(Cancelled)
+        );
     }
 }

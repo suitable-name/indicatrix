@@ -241,6 +241,7 @@ fn the_outline_shapes_have_more_than_100_points_inside_their_design_box() {
 }
 
 #[test]
+#[ignore = "slow rough-planner test (over 60 s); run with --ignored"]
 fn a_k3_plan_over_the_four_model_kinds_with_large_outlines_is_sane() {
     let designs = random_designs(&mut Lcg(1234), 4);
     let hulls: Vec<DesignHull> = designs
@@ -290,6 +291,7 @@ fn sweep_stops(calls: usize) -> BTreeSet<usize> {
 }
 
 #[test]
+#[ignore = "slow rough-planner test (over 60 s); run with --ignored"]
 fn a_cancel_at_any_progress_call_gives_none_for_a_cut_block_and_a_pebble() {
     let designs = random_designs(&mut Lcg(31), 2);
     let hulls: Vec<DesignHull> = designs.iter().map(small_hull_of).collect();

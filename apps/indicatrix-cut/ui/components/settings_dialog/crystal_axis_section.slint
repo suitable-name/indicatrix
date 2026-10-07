@@ -1,6 +1,8 @@
 import { Slider } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { SettingsModel } from "../../models/settings.slint";
+import { ToggleRow } from "../toggle_switch.slint";
+import { SettingLabel } from "setting_label.slint";
 
 // Crystal Axis Orientation: tilt/azimuth of the optic axis relative to the
 // table normal (+Y). Off ("As Cut") by default. `c_axis_override_available`
@@ -9,38 +11,18 @@ import { SettingsModel } from "../../models/settings.slint";
 // nothing.
 export component CrystalAxisSection inherits VerticalLayout {
     spacing: 4px;
-    HorizontalLayout {
-        alignment: space-between;
-        Text {
-            text: "Crystal Axis Orientation";
-            font-size: 11px;
-            font-weight: 600;
-            color: SettingsModel.c_axis_override_available ? Theme.text-muted : Theme.text-disabled;
-        }
-        Rectangle {
-            width: 36px;
-            height: 20px;
-            border-radius: 10px;
-            opacity: SettingsModel.c_axis_override_available ? 1.0 : 0.5;
-            background: SettingsModel.c_axis_override_enabled ? Theme.accent-cyan : #334155;
 
-            axis_toggle_touch := TouchArea {
-                enabled: SettingsModel.c_axis_override_available;
-                clicked => {
-                    SettingsModel.c_axis_override_enabled = !SettingsModel.c_axis_override_enabled;
-                    SettingsModel.c_axis_override_changed(SettingsModel.c_axis_override_enabled);
-                }
-            }
-
-            Rectangle {
-                width: 16px;
-                height: 16px;
-                border-radius: 8px;
-                background: white;
-                x: SettingsModel.c_axis_override_enabled ? parent.width - self.width - 2px : 2px;
-                y: 2px;
-                animate x { duration: 120ms; }
-            }
+    ToggleRow {
+        text: "Crystal Axis Orientation";
+        hint: SettingsModel.c_axis_override_available
+            ? "Turn the crystal's optic axis away from the way it was cut, to see how the stone would look cut at another angle. Off keeps the axis as cut."
+            : "Not available: this material is isotropic and has no crystal axis.";
+        label_color: SettingsModel.c_axis_override_available ? Theme.text-muted : Theme.text-disabled;
+        enabled: SettingsModel.c_axis_override_available;
+        checked: SettingsModel.c_axis_override_enabled;
+        toggled => {
+            SettingsModel.c_axis_override_enabled = !SettingsModel.c_axis_override_enabled;
+            SettingsModel.c_axis_override_changed(SettingsModel.c_axis_override_enabled);
         }
     }
 
@@ -65,12 +47,16 @@ export component CrystalAxisSection inherits VerticalLayout {
             spacing: 2px;
             HorizontalLayout {
                 alignment: space-between;
-                Text { text: "Tilt"; font-size: 10px; color: Theme.text-muted; }
+                SettingLabel {
+                    text: "Tilt";
+                    hint: "Tilt: how far the optic axis leans away from the table normal, from 0 (straight up through the table) to 90 degrees (flat).";
+                }
                 Text { text: Math.round(SettingsModel.c_axis_tilt_deg) + "°"; font-size: 10px; font-weight: 700; color: Theme.accent-cyan; }
             }
             Slider {
                 minimum: 0.0;
                 maximum: 90.0;
+                accessible-label: "Crystal axis tilt in degrees";
                 value <=> SettingsModel.c_axis_tilt_deg;
                 changed(val) => { SettingsModel.c_axis_angles_changed(val, SettingsModel.c_axis_azimuth_deg); }
             }
@@ -80,12 +66,16 @@ export component CrystalAxisSection inherits VerticalLayout {
             spacing: 2px;
             HorizontalLayout {
                 alignment: space-between;
-                Text { text: "Azimuth"; font-size: 10px; color: Theme.text-muted; }
+                SettingLabel {
+                    text: "Azimuth";
+                    hint: "Azimuth: the direction the optic axis leans toward, as an angle around the table normal (0 to 360 degrees). It has no effect while the tilt is 0.";
+                }
                 Text { text: Math.round(SettingsModel.c_axis_azimuth_deg) + "°"; font-size: 10px; font-weight: 700; color: Theme.accent-cyan; }
             }
             Slider {
                 minimum: 0.0;
                 maximum: 360.0;
+                accessible-label: "Crystal axis azimuth in degrees";
                 value <=> SettingsModel.c_axis_azimuth_deg;
                 changed(val) => { SettingsModel.c_axis_angles_changed(SettingsModel.c_axis_tilt_deg, val); }
             }

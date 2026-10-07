@@ -18,6 +18,7 @@
 //! [`yield_report`] (the cut-order row adapter).
 
 mod core;
+mod design_identity;
 mod file_extras;
 mod history;
 mod material;
@@ -32,6 +33,7 @@ pub(super) use core::{
     should_open_anchor_explainer,
 };
 pub(in crate::gui) use core::{AfterSave, EditorState, PendingUnsavedAction};
+pub(super) use design_identity::fresh_design_uuid;
 pub(super) use file_extras::DesignFileExtras;
 // The nudge coalescing key: the desktop's production nudge goes through
 // `EditorState::nudge_angles`, so only the tests (and the identity pins) name it.
@@ -40,20 +42,20 @@ pub(super) use history::coalesce_timestamp;
 pub(super) use indicatrix_editor::material::material_name_from_index;
 #[cfg(test)]
 pub(super) use indicatrix_editor::session::angle_nudge_coalesce_key;
+// The live margin bar reads it through `angle_live_margin`; only the identity pins name it.
+#[cfg(test)]
+pub(super) use indicatrix_editor::view_model::row_format::representative_crown_and_pavilion_angles_deg;
 pub(super) use indicatrix_editor::{
     material::{
-        MaterialComboCache, body_color_from_index, body_color_index_for, body_color_options,
-        builtin_preset_names, design_material_index_from_name, design_material_options,
-        gear_choice_to_teeth, gear_index_from_teeth, parse_design_material_form, parse_yield_form,
-        ri_source_text,
+        MaterialComboCache, body_color_custom_index, body_color_index_for, builtin_preset_names,
+        design_material_index_from_name, design_material_options, gear_choice_to_teeth,
+        gear_index_from_teeth, parse_design_material_form, parse_yield_form, ri_source_text,
+        with_body_color_choice,
     },
     scratch::{PushedScratch, ScratchDelta},
     session::result_is_stale,
     view_model::{
-        row_format::{
-            first_unresolved_meet_name, representative_crown_and_pavilion_angles_deg,
-            tiers_incomplete_under_proposed_symmetry,
-        },
+        row_format::{first_unresolved_meet_name, tiers_incomplete_under_proposed_symmetry},
         solid_status::{
             design_to_gpu_planes, status_text_and_is_problem,
             status_text_and_is_problem_from_solved, tier_matches_filter,
@@ -66,8 +68,9 @@ pub(super) use row_format::{
     push_rows, push_tiers,
 };
 pub(super) use rows::{
-    apply_proposed_angles, manufacturability_warnings_tagged, tier_items, tier_items_from_solved,
-    tier_items_stale_with_last_solved,
+    apply_proposed_angles, manufacturability_warnings_tagged,
+    manufacturability_warnings_tagged_with, tier_items, tier_items_from_solved,
+    tier_items_from_solved_with_warnings, tier_items_stale_with_last_solved,
 };
 pub(super) use yield_report::{
     cutting_instructions_rows, design_label_text, girdle_and_ratio_texts, preform_mm_texts,

@@ -1,13 +1,19 @@
-//! Builds a design's printable cutting sheet as one self-contained HTML string --
-//! the header meta table, an embedded `data:` PNG of its 2D faceting diagram, and one
-//! table row per tier in cutting order.
+//! Builds a design's printable cutting instructions as one self-contained HTML string,
+//! laid out like the owner's fantasy-cut template: a header, Facet Data, Size Data, Design
+//! Data, four views, comments, then a Pavilion and a Crown section of rows in cutting order.
+//!
+//! Every number and row comes from [`SheetLayout`]; this module only writes it as HTML.
 
-use super::diagram::DiagramImage;
+use super::{
+    details::SheetDetails,
+    diagram::{CutViews, DiagramImage},
+    layout::SheetLayout,
+};
 use indicatrix::{
-    geometry::meet_solver::{Block, SolvedTier, classify_blocks},
+    geometry::meet_solver::{Block, SolvedTier},
     optics::materials::GemMaterial,
 };
-use indicatrix_cut_core::{ConcaveRowInfo, CutSheetRow, Design, design::TierRef};
+use indicatrix_cut_core::{ConcaveRowInfo, CutSheetRow, Design, format_sheet_indices};
 use std::fmt::Write as _;
 
 /// The standard (RFC 4648) base64 alphabet, padded -- this crate's own encoder
@@ -76,70 +82,33 @@ pub(super) fn html_escape(s: &str) -> String {
     out
 }
 
-/// [`Block`]'s printable label -- the Crown/Pavilion/Girdle column text.
-const fn block_label(block: Block) -> &'static str {
-    match block {
-        Block::Crown => "Crown",
-        Block::Pavilion => "Pavilion",
-        Block::Girdle => "Girdle",
-    }
+/// What the Views block shows.
+#[derive(Clone, Copy)]
+enum ViewsBlock<'a> {
+    /// The design does not close to a solid: a plain-text notice instead of pictures.
+    Missing,
+    /// One picture, the legacy three-panel diagram ([`cutting_sheet_html`]).
+    Single(&'a DiagramImage),
+    /// The four labelled views of the template.
+    Four(&'a CutViews),
 }
 
-/// [`Block`]'s CSS class suffix (`"block-crown"`/`"block-pavilion"`/
-/// `"block-girdle"`), lowercase to match this module's own stylesheet.
-const fn block_css_class(block: Block) -> &'static str {
-    match block {
-        Block::Crown => "block-crown",
-        Block::Pavilion => "block-pavilion",
-        Block::Girdle => "block-girdle",
-    }
-}
-
-/// Formats one tier's whole index list for the printed sheet: `"-"` for an
-/// empty list (a single facet at azimuth 0), else each position through
-/// [`format_index`] joined with `", "` -- mirrors
-/// `indicatrix_cut_core::cutting_sheet`'s own private formatter exactly (same
-/// whole-tooth-vs-fractional convention), duplicated here rather than exposed
-/// from that crate purely for the print layout to own its own text formatting.
-fn format_indices_html(indices: &[f64]) -> String {
-    if indices.is_empty() {
-        return "-".to_string();
-    }
-    indices
-        .iter()
-        .map(|&i| format_index(i))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// See [`format_indices_html`].
-fn format_index(index: f64) -> String {
-    if (index - index.round()).abs() < 1e-9 {
-        format!("{:.0}", index.round())
-    } else {
-        format!("{index:.2}")
-    }
-}
-
-/// Builds `design`'s printable cutting sheet as a single self-contained HTML string.
+/// Builds `design`'s printable cutting instructions as a single self-contained HTML string,
+/// with the header words from [`SheetDetails::from_design`].
 ///
-/// A header block (material, refractive index, index gear/symmetry, girdle diameter when
-/// set), the 2D diagram embedded as a `data:` PNG when `diagram` is `Some` (build one via
-/// [`super::diagram::render_cut_diagram`]; `None` prints a plain-text notice instead of a
-/// broken image), then one table row per tier in cutting order -- step number, name,
-/// Crown/Pavilion/Girdle label, signed angle, index list, mast (model units, plus mm when
-/// [`Design::girdle_diameter_mm`] is set), and meet note.
+/// `diagram` is one already-rendered picture (build one via
+/// [`super::diagram::render_cut_diagram`]); it is printed in the Views block, and `None`
+/// prints a plain-text notice instead of a broken image. The four labelled views of the
+/// template come from [`cutting_sheet_html_with`].
 ///
 /// Pure: same `design`/`solved`/`diagram`/`custom` in always produces the same
 /// string out, no file/dialog/clock access -- see this module's own doc comment.
 ///
 /// `custom` -- a caller's own resolved catalogue materials, e.g.
-/// `RenderContext::custom_materials` -- is consulted for the printed "Refractive
-/// index" line exactly like [`Design::cutting_sheet_with`]/
-/// [`Design::effective_refractive_index_with`], so a design on a CUSTOM catalogue
-/// material (not one of the built-ins) prints that material's own `n_D` rather than
-/// the legacy schedule RI. Pass `&[]` for a caller with no catalogue on hand (same
-/// built-ins-only behaviour as `Design::cutting_sheet`/`effective_refractive_index`).
+/// `RenderContext::custom_materials` -- is consulted for the printed "RI" line exactly like
+/// [`Design::cutting_sheet_with`]/[`Design::effective_refractive_index_with`], so a design on
+/// a CUSTOM catalogue material (not one of the built-ins) prints that material's own `n_D`
+/// rather than the legacy schedule RI. Pass `&[]` for a caller with no catalogue on hand.
 ///
 /// # Panics
 ///
@@ -152,155 +121,186 @@ pub fn cutting_sheet_html(
     diagram: Option<&DiagramImage>,
     custom: &[GemMaterial],
 ) -> String {
-    let sheet = design.cutting_sheet_with(solved, custom);
-    let blocks = row_blocks(design);
-    let mm_per_unit = design.yield_report(solved).mm_per_unit;
-    let show_mm_column = design.girdle_diameter_mm.is_some();
-    // Shows the cheater-offset column only when some tier actually carries one --
-    // an ordinary design's sheet should not gain a column of dashes for a feature
-    // it does not use.
-    let show_cheater_column = sheet
-        .rows
-        .iter()
-        .any(|row| row.cheater_offset_deg.is_some());
+    let layout = SheetLayout::build(design, solved, custom, &SheetDetails::from_design(design));
+    build_html(
+        &layout,
+        diagram.map_or(ViewsBlock::Missing, ViewsBlock::Single),
+    )
+}
 
-    let has_concave = !design.concave_tiers.is_empty();
+/// Builds `design`'s printable cutting instructions with explicit header `details` and the
+/// four labelled `views` (`None` prints a notice: the design does not close to a solid).
+///
+/// Top to bottom: header (title, subtitle, "by" author, date), Facet Data, Size Data, Design
+/// Data, Views, Comments, a Pavilion section and a Crown section. Each section is a table of
+/// step number, label (the tier's code), angle, index list, instruction, mast (model units,
+/// plus mm when [`Design::girdle_diameter_mm`] is set) and the cheater offset when some tier
+/// has one. The girdle rows are in the Pavilion section; the table is the last row of the
+/// Crown section.
+///
+/// # Panics
+///
+/// Same alignment contract as [`cutting_sheet_html`].
+#[must_use]
+pub fn cutting_sheet_html_with(
+    design: &Design,
+    solved: &[SolvedTier],
+    views: Option<&CutViews>,
+    custom: &[GemMaterial],
+    details: &SheetDetails,
+) -> String {
+    let layout = SheetLayout::build(design, solved, custom, details);
+    build_html(&layout, views.map_or(ViewsBlock::Missing, ViewsBlock::Four))
+}
 
-    let mut out = String::new();
-    out.push_str(HTML_HEAD);
+/// The whole page for `layout`.
+fn build_html(layout: &SheetLayout, views: ViewsBlock<'_>) -> String {
+    let has_concave = layout.sheet.rows.iter().any(|row| row.concave.is_some());
+    let mut out = HTML_HEAD.replacen("{TITLE}", &html_escape(layout.heading()), 1);
     if has_concave {
         // Only a design with concave tiers gains the banding rules, so every planar
-        // sheet stays byte-identical.
+        // sheet stays free of them.
         out = out.replacen("</style>", CONCAVE_STYLE, 1);
     }
-    out.push_str("<h1>Cutting Sheet</h1>\n");
-    push_header_block(&mut out, design, custom);
-    push_carat_weight_row(&mut out, design, solved);
-    push_diagram_block(&mut out, diagram);
-    push_tier_table(
-        &mut out,
-        &sheet.rows,
-        &blocks,
-        TierTableColumns {
-            show_mm: show_mm_column,
-            show_cheater: show_cheater_column,
-            banded: has_concave,
-        },
-        mm_per_unit,
-        design.girdle_diameter_mm,
-    );
+    push_header(&mut out, layout);
+    push_facet_data(&mut out, layout);
+    push_size_data(&mut out, layout);
+    push_design_data(&mut out, layout);
+    push_views(&mut out, views);
+    push_comments(&mut out, layout);
+
+    let columns = TierTableColumns {
+        show_mm: layout.girdle_diameter_mm.is_some(),
+        show_cheater: layout.has_cheater_column(),
+        banded: has_concave,
+    };
+    for (heading, rows) in [
+        ("Pavilion", layout.pavilion_rows()),
+        ("Crown", layout.crown_rows()),
+    ] {
+        push_section(&mut out, heading, &rows, columns, layout);
+    }
     out.push_str(HTML_TAIL);
     out
 }
 
-/// One [`Block`] per row of the cutting sheet, in the sheet's own row order.
-///
-/// A planar design's rows follow its stored tier order, so its blocks are the solver's
-/// own classification as before. With concave tiers the rows follow `cutting_order()`:
-/// a flat row takes its tier's classification, a concave row the side its angle is on
-/// (a concave tier is never a girdle, its angle is strictly inside `(-90, 90)`).
-fn row_blocks(design: &Design) -> Vec<Block> {
-    let blocks = classify_blocks(&design.meet_tier_inputs());
-    if design.concave_tiers.is_empty() {
-        return blocks;
-    }
-    design
-        .cutting_order()
-        .into_iter()
-        .map(|tier_ref| match tier_ref {
-            TierRef::Flat(i) => blocks.get(i).copied().unwrap_or(Block::Girdle),
-            TierRef::Concave(i) => {
-                if design.concave_tiers[i].is_crown_side() {
-                    Block::Crown
-                } else {
-                    Block::Pavilion
-                }
-            }
-        })
-        .collect()
-}
-
-/// [`cutting_sheet_html`]'s header meta table: material, refractive index,
-/// index gear/symmetry, and girdle diameter when set. `custom` -- see
-/// [`cutting_sheet_html`]'s own doc comment -- decides which RI the "Refractive
-/// index" row prints for a CUSTOM catalogue material.
-fn push_header_block(out: &mut String, design: &Design, custom: &[GemMaterial]) {
-    out.push_str("<table class=\"meta\">\n");
-    let n_d = design.effective_refractive_index_with(custom);
-    push_meta_row(out, "Material", &material_header_text(design, n_d));
-    push_meta_row(out, "Refractive index", &format!("{n_d:.4}"));
-    push_meta_row(
-        out,
-        "Index gear",
-        &format!(
-            "{} teeth, symmetry {}{}",
-            design.meta.gear_teeth_abs(),
-            design.meta.symmetry_order,
-            if design.meta.mirror { ", mirrored" } else { "" }
+/// The heading block: the title (or "Cutting instructions"), then subtitle, "by" author and
+/// date, each only when present.
+fn push_header(out: &mut String, layout: &SheetLayout) {
+    let _ = writeln!(out, "<h1>{}</h1>", html_escape(layout.heading()));
+    let details = &layout.details;
+    for (class, text) in [
+        ("subtitle", details.subtitle.trim().to_string()),
+        (
+            "byline",
+            if details.author.trim().is_empty() {
+                String::new()
+            } else {
+                format!("by {}", details.author.trim())
+            },
         ),
-    );
-    if let Some(mm) = design.girdle_diameter_mm {
-        push_meta_row(out, "Girdle diameter", &format!("{mm:.3} mm"));
+        ("date", details.date_text.trim().to_string()),
+    ] {
+        if !text.is_empty() {
+            let _ = writeln!(out, "<p class=\"{class}\">{}</p>", html_escape(&text));
+        }
+    }
+}
+
+/// Facet Data: tiers and facets per block, the crown as `N+1` when there is a table, totals.
+fn push_facet_data(out: &mut String, layout: &SheetLayout) {
+    let facets = &layout.facets;
+    out.push_str("<h2>Facet Data</h2>\n<table class=\"data facets\">\n");
+    out.push_str("<tr><th></th><th>Tiers</th><th>Facets</th></tr>\n");
+    for (name, tiers, count) in [
+        (
+            "Pavilion",
+            facets.pavilion.tiers.to_string(),
+            facets.pavilion.facets.to_string(),
+        ),
+        (
+            "Girdle",
+            facets.girdle.tiers.to_string(),
+            facets.girdle.facets.to_string(),
+        ),
+        (
+            "Crown",
+            facets.crown_tiers_text(),
+            facets.crown_facets_text(),
+        ),
+        (
+            "Total",
+            facets.total_tiers().to_string(),
+            facets.total_facets().to_string(),
+        ),
+    ] {
+        let _ = writeln!(
+            out,
+            "<tr><td class=\"label\">{name}</td><td>{tiers}</td><td>{count}</td></tr>"
+        );
     }
     out.push_str("</table>\n");
 }
 
-/// [`cutting_sheet_html`]'s carat-weight line, when `solved` produces one --
-/// `None` under the same conditions
-/// [`indicatrix_cut_core::YieldReport::carat_weight`] itself is `None` (no
-/// girdle diameter set, or the design does not currently measure). Printed with
-/// the same understated-weight caveat
-/// [`indicatrix_cut_core::design::Design::cutting_sheet`]'s own header line
-/// carries: shown inline next to the number, not left to a doc comment nobody
-/// printing a sheet reads.
-fn push_carat_weight_row(out: &mut String, design: &Design, solved: &[SolvedTier]) {
-    let Some(carat) = design.yield_report(solved).carat_weight else {
-        return;
-    };
-    out.push_str("<table class=\"meta\">\n");
-    push_meta_row(
-        out,
-        "Carat weight (estimate)",
-        &format!("{carat:.3} ct -- assumes the authored facets reach the preform's own walls"),
-    );
+/// Size Data: the six ratios, one header cell and one value cell each.
+fn push_size_data(out: &mut String, layout: &SheetLayout) {
+    out.push_str("<h2>Size Data</h2>\n<table class=\"data sizes\">\n<tr>");
+    let cells = layout.sizes.cells();
+    for (label, _) in &cells {
+        let _ = write!(out, "<th>{label}</th>");
+    }
+    out.push_str("</tr>\n<tr>");
+    for (_, value) in &cells {
+        let _ = write!(out, "<td>{value}</td>");
+    }
+    out.push_str("</tr>\n</table>\n");
+}
+
+/// Design Data, then the girdle diameter and carat estimate lines.
+fn push_design_data(out: &mut String, layout: &SheetLayout) {
+    out.push_str("<h2>Design Data</h2>\n<table class=\"meta\">\n");
+    for (label, value) in layout.design_data.iter().chain(&layout.extras) {
+        push_meta_row(out, label, value);
+    }
     out.push_str("</table>\n");
 }
 
-/// The cut sheet header's "Material" row text -- `design.material.name` when
-/// set, else the SAME nearest-n_D guess the editor's own material-guess badge
-/// shows. Formatted identically ("Sapphire? (from RI 1.76)") so a printed sheet
-/// and the editor never disagree about what is fact versus guess. "(unset)" when
-/// nothing built in is close enough to guess at all. Unlike the editor's badge,
-/// which shows nothing, a printed sheet always needs SOME text in this
-/// cell.
-///
-/// `pub(super)` so this module's own tests can check the wording directly.
-pub(super) fn material_header_text(design: &Design, n_d: f64) -> String {
-    if let Some(name) = design.material.name.as_deref() {
-        return name.to_string();
-    }
-    crate::material_lookup::material_for_refractive_index(n_d).map_or_else(
-        || "(unset)".to_string(),
-        |(name, _)| format!("{name}? (from RI {n_d:.2})"),
-    )
-}
-
-/// Pushes one `<tr>` of [`push_header_block`]'s meta table -- `label` bold in
-/// its own cell, `value` (already caller-formatted, not caller-escaped --
-/// every call site here passes either a fixed string or a `{:.N}`-formatted
-/// number, never free text) in the next.
+/// Pushes one `<tr>` of a meta table: `label` bold in its own cell, `value` in the next.
+/// Both are escaped, since the shape and material text are free text.
 fn push_meta_row(out: &mut String, label: &str, value: &str) {
     let _ = writeln!(
         out,
-        "<tr><td class=\"label\">{label}</td><td>{value}</td></tr>"
+        "<tr><td class=\"label\">{}</td><td>{}</td></tr>",
+        html_escape(label),
+        html_escape(value)
     );
 }
 
-/// [`cutting_sheet_html`]'s diagram section: the embedded `data:` PNG when
-/// `diagram` is `Some`, else the "not a closed solid" notice.
-fn push_diagram_block(out: &mut String, diagram: Option<&DiagramImage>) {
-    match diagram {
-        Some(image) => {
+/// The Views block: four labelled pictures in a 2 x 2 grid, the legacy single picture, or
+/// the "not a closed solid" notice.
+fn push_views(out: &mut String, views: ViewsBlock<'_>) {
+    out.push_str("<h2>Views</h2>\n");
+    match views {
+        ViewsBlock::Four(views) => {
+            out.push_str("<div class=\"views\">\n");
+            for (label, image) in [
+                ("down +Z", &views.top),
+                ("down +X", &views.side),
+                ("down -Y", &views.end),
+                ("down -Z", &views.bottom),
+            ] {
+                let _ = writeln!(
+                    out,
+                    "<figure><img src=\"{}\" width=\"{}\" height=\"{}\" alt=\"{label}\">\
+                     <figcaption>{label}</figcaption></figure>",
+                    png_data_uri(image),
+                    image.width,
+                    image.height
+                );
+            }
+            out.push_str("</div>\n");
+        }
+        ViewsBlock::Single(image) => {
             let _ = writeln!(
                 out,
                 "<div class=\"diagram\"><img src=\"{}\" width=\"{}\" height=\"{}\" \
@@ -310,14 +310,26 @@ fn push_diagram_block(out: &mut String, diagram: Option<&DiagramImage>) {
                 image.height
             );
         }
-        None => out.push_str(
+        ViewsBlock::Missing => out.push_str(
             "<p class=\"diagram-missing\">Diagram unavailable: this design does not \
              currently close to a solid.</p>\n",
         ),
     }
 }
 
-/// Which optional columns this sheet carries. Both are decided once from the whole
+/// The comment lines as a list; nothing at all when there are none.
+fn push_comments(out: &mut String, layout: &SheetLayout) {
+    if layout.details.comments.is_empty() {
+        return;
+    }
+    out.push_str("<h2>Comments</h2>\n<ul class=\"comments\">\n");
+    for comment in &layout.details.comments {
+        let _ = writeln!(out, "<li>{}</li>", html_escape(comment));
+    }
+    out.push_str("</ul>\n");
+}
+
+/// Which optional columns this sheet carries. All are decided once from the whole
 /// schedule rather than per row, so the header and every row agree by construction.
 #[derive(Clone, Copy)]
 struct TierTableColumns {
@@ -332,27 +344,29 @@ struct TierTableColumns {
 }
 
 impl TierTableColumns {
-    /// How many cells a full-width row of the table has.
+    /// How many cells a full-width row of the table has: step, label, angle, indices,
+    /// instruction and mast, plus the optional columns.
     fn width(self) -> usize {
-        7 + usize::from(self.show_mm) + usize::from(self.show_cheater)
+        6 + usize::from(self.show_mm) + usize::from(self.show_cheater)
     }
 }
 
-/// [`cutting_sheet_html`]'s tier table: header row (the "Mast (mm)" column
-/// only when `columns` says so), then one `<tr>` per `rows`/`blocks` pair --
-/// see [`push_tier_row`].
-fn push_tier_table(
+/// One section (`Pavilion` or `Crown`): its heading and its table. Nothing for a section
+/// with no rows.
+fn push_section(
     out: &mut String,
-    rows: &[CutSheetRow],
-    blocks: &[Block],
+    heading: &str,
+    rows: &[(&CutSheetRow, Block)],
     columns: TierTableColumns,
-    mm_per_unit: Option<f64>,
-    girdle_diameter_mm: Option<f64>,
+    layout: &SheetLayout,
 ) {
+    if rows.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "<section class=\"cut-section\">\n<h2>{heading}</h2>");
     out.push_str("<table class=\"tiers\">\n<thead><tr>");
     out.push_str(
-        "<th>#</th><th>Tier</th><th>Block</th><th>Angle</th><th>Indices</th>\
-         <th>Mast</th>",
+        "<th>#</th><th>Label</th><th>Angle</th><th>Indices</th><th>Instruction</th><th>Mast</th>",
     );
     if columns.show_mm {
         out.push_str("<th>Mast (mm)</th>");
@@ -360,36 +374,36 @@ fn push_tier_table(
     if columns.show_cheater {
         out.push_str("<th>Cheater</th>");
     }
-    out.push_str("<th>Meet</th></tr></thead>\n");
-    if !columns.banded {
-        out.push_str("<tbody>\n");
-        for (row, &block) in rows.iter().zip(blocks) {
-            push_tier_row(out, row, block, columns, mm_per_unit);
+    out.push_str("</tr></thead>\n");
+    if columns.banded {
+        // One `<tbody>` per tier, striped per tier rather than per line: a concave
+        // tier's tool line belongs to the same band as its facet line, and
+        // `break-inside: avoid` on the `<tbody>` keeps the pair on one page.
+        for (position, &(row, _)) in rows.iter().enumerate() {
+            let stripe = if position % 2 == 0 {
+                "band-a"
+            } else {
+                "band-b"
+            };
+            let _ = writeln!(out, "<tbody class=\"{stripe}\">");
+            push_tier_row(out, row, columns, layout.mm_per_unit);
+            if let Some(concave) = &row.concave {
+                push_tool_row(out, concave, columns, layout.girdle_diameter_mm);
+            }
+            out.push_str("</tbody>\n");
         }
-        out.push_str("</tbody>\n</table>\n");
-        return;
-    }
-    // One `<tbody>` per tier, striped per tier rather than per line: a concave
-    // tier's tool line belongs to the same band as its facet line, and
-    // `break-inside: avoid` on the `<tbody>` keeps the pair on one page.
-    for (position, (row, &block)) in rows.iter().zip(blocks).enumerate() {
-        let stripe = if position % 2 == 0 {
-            "band-a"
-        } else {
-            "band-b"
-        };
-        let _ = writeln!(out, "<tbody class=\"{stripe}\">");
-        push_tier_row(out, row, block, columns, mm_per_unit);
-        if let Some(concave) = &row.concave {
-            push_tool_row(out, concave, columns, girdle_diameter_mm);
+    } else {
+        out.push_str("<tbody>\n");
+        for &(row, _) in rows {
+            push_tier_row(out, row, columns, layout.mm_per_unit);
         }
         out.push_str("</tbody>\n");
     }
-    out.push_str("</table>\n");
+    out.push_str("</table>\n</section>\n");
 }
 
 /// A concave tier's second `<tr class="tool">`, under the facet line's columns: the
-/// tool code under the tier name, theta under the angle, the displacement under the
+/// tool code under the label, theta under the angle, the displacement under the
 /// indices, and the size and motion spanning the rest. The strings are
 /// [`ConcaveRowInfo::second_line_fields`], the very ones the text sheet prints. With a
 /// girdle diameter set, the diameter and displacement are also given in millimetres
@@ -402,7 +416,7 @@ fn push_tool_row(
 ) {
     let [code, theta, displacement, details] = concave.second_line_fields();
     out.push_str("<tr class=\"tool\"><td></td>");
-    let _ = write!(out, "<td>{}</td><td></td>", html_escape(&code));
+    let _ = write!(out, "<td>{}</td>", html_escape(&code));
     let _ = write!(out, "<td>{}</td>", html_escape(&theta));
     let mut displacement_cell = html_escape(&displacement);
     let mut details_cell = html_escape(&details);
@@ -419,46 +433,42 @@ fn push_tool_row(
         );
     }
     let _ = write!(out, "<td>{displacement_cell}</td>");
-    // Everything after the indices column: mast, the optional columns and the meet.
+    // Everything after the indices column: the instruction, the mast and the optional columns.
     let _ = write!(
         out,
         "<td colspan=\"{}\">{details_cell}</td>",
-        columns.width() - 5
+        columns.width() - 4
     );
     out.push_str("</tr>\n");
 }
 
-/// One `<tr>` of [`push_tier_table`]: step number, tier name, Crown/Pavilion/
-/// Girdle label (from `block`, never the sign of `row.angle_deg` -- see this
-/// module's own doc comment), unsigned positive angle, index list, mast in model units,
-/// mast in mm (only when `columns.show_mm`; `"-"` when `mm_per_unit` itself
-/// could not be resolved), and the meet note.
+/// One `<tr>` of a section table: step number, the tier's code, unsigned positive angle,
+/// index list, the instruction (the tier's name in front of the meet note), mast in model
+/// units, mast in mm (only when `columns.show_mm`; `"-"` when `mm_per_unit` itself could not
+/// be resolved) and the cheater offset (only when `columns.show_cheater`).
+///
+/// A concave tier has no mast, so its mast cells read `-`, as the text sheet's do.
 fn push_tier_row(
     out: &mut String,
     row: &CutSheetRow,
-    block: Block,
     columns: TierTableColumns,
     mm_per_unit: Option<f64>,
 ) {
-    let name = if row.name.is_empty() {
-        "(unnamed)"
-    } else {
-        row.name.as_str()
-    };
     out.push_str("<tr>");
     let _ = write!(out, "<td>{}</td>", row.sequence);
-    let _ = write!(out, "<td>{}</td>", html_escape(name));
-    let _ = write!(
-        out,
-        "<td class=\"{}\">{}</td>",
-        block_css_class(block),
-        block_label(block)
-    );
+    let _ = write!(out, "<td>{}</td>", html_escape(row.label()));
     let _ = write!(out, "<td>{:.2}&deg;</td>", row.angle_deg.abs());
-    let _ = write!(out, "<td>{}</td>", format_indices_html(&row.indices));
-    let _ = write!(out, "<td>{:.4}</td>", row.mast);
+    let _ = write!(out, "<td>{}</td>", format_sheet_indices(&row.indices));
+    let _ = write!(out, "<td>{}</td>", html_escape(&row.instruction()));
+    let has_mast = row.concave.is_none();
+    let mast = if has_mast {
+        format!("{:.4}", row.mast)
+    } else {
+        "-".to_string()
+    };
+    let _ = write!(out, "<td>{mast}</td>");
     if columns.show_mm {
-        let cell = mm_per_unit.map_or_else(
+        let cell = mm_per_unit.filter(|_| has_mast).map_or_else(
             || "-".to_string(),
             |scale| format!("{:.4}", row.mast * scale),
         );
@@ -472,21 +482,20 @@ fn push_tier_row(
             .map_or_else(|| "-".to_string(), |deg| format!("{deg:+.2}&deg;"));
         let _ = write!(out, "<td>{cell}</td>");
     }
-    let _ = write!(out, "<td>{}</td>", html_escape(&row.meet_instruction));
     out.push_str("</tr>\n");
 }
 
-/// [`cutting_sheet_html`]'s opening half: `<!DOCTYPE html>` through the print
-/// stylesheet and `<body>`. A print stylesheet that actually works on paper --
-/// a sane page size, no dark background burning ink on a real printer, and a
-/// tier's row never splitting across a page break (`page-break-inside: avoid`
-/// plus its modern `break-inside` alias, since printer/browser support for the
-/// two still varies).
+/// The opening half of the page: `<!DOCTYPE html>` through the print stylesheet and
+/// `<body>`, with `{TITLE}` standing for the escaped heading. A print stylesheet that
+/// actually works on paper -- a sane page size, no dark background burning ink on a real
+/// printer, a tier's row never splitting across a page break, and no section, table or
+/// view split by one either (`page-break-inside: avoid` plus its modern `break-inside`
+/// alias, since printer/browser support for the two still varies).
 const HTML_HEAD: &str = r#"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Cutting Sheet</title>
+<title>{TITLE}</title>
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
@@ -496,13 +505,35 @@ const HTML_HEAD: &str = r#"<!DOCTYPE html>
     color: #111111;
     margin: 24px;
   }
-  h1 { font-size: 20px; margin: 0 0 12px; }
-  table.meta { border-collapse: collapse; margin-bottom: 16px; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  h2 {
+    font-size: 15px;
+    margin: 16px 0 6px;
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+  p.subtitle, p.byline, p.date { margin: 0 0 3px; font-size: 13px; }
+  table.meta { border-collapse: collapse; margin-bottom: 8px; }
   table.meta td { padding: 2px 12px 2px 0; font-size: 13px; vertical-align: top; }
   table.meta td.label { font-weight: 700; color: #333333; white-space: nowrap; }
+  table.data { border-collapse: collapse; margin-bottom: 8px; }
+  table.data th, table.data td {
+    border: 1px solid #999999;
+    padding: 3px 10px;
+    font-size: 12px;
+    text-align: left;
+  }
+  table.data th { background: #eeeeee; }
+  table.data td.label { font-weight: 700; }
+  .views { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .views figure { margin: 0; text-align: center; break-inside: avoid; page-break-inside: avoid; }
+  .views img { width: 100%; height: auto; }
+  .views figcaption { font-size: 12px; font-weight: 700; margin-top: 2px; }
   .diagram { text-align: center; margin: 8px 0 20px; }
   .diagram img { max-width: 100%; height: auto; }
   .diagram-missing { color: #b91c1c; font-style: italic; }
+  ul.comments { font-size: 13px; margin: 0 0 8px; padding-left: 18px; }
+  section.cut-section { break-inside: avoid; page-break-inside: avoid; }
   table.tiers { border-collapse: collapse; width: 100%; font-size: 12px; }
   table.tiers th, table.tiers td {
     border: 1px solid #999999;
@@ -511,14 +542,11 @@ const HTML_HEAD: &str = r#"<!DOCTYPE html>
   }
   table.tiers thead { background: #eeeeee; }
   table.tiers tr { page-break-inside: avoid; break-inside: avoid; }
-  td.block-crown { color: #92400e; font-weight: 600; }
-  td.block-pavilion { color: #1e3a8a; font-weight: 600; }
-  td.block-girdle { color: #444444; font-weight: 600; }
   @page { size: A4; margin: 14mm; }
   @media print {
     body { margin: 0; background: #ffffff; }
     table.tiers thead { display: table-header-group; }
-    .diagram { break-inside: avoid; page-break-inside: avoid; }
+    .diagram, .views { break-inside: avoid; page-break-inside: avoid; }
   }
 </style>
 </head>
@@ -533,5 +561,5 @@ const CONCAVE_STYLE: &str = r"  tbody.band-b { background: #f4f4f4; }
   tr.tool span.mm { color: #666666; }
 </style>";
 
-/// [`cutting_sheet_html`]'s closing half.
+/// The closing half of the page.
 const HTML_TAIL: &str = "</body>\n</html>\n";

@@ -152,6 +152,16 @@ impl CutField {
             Self::Depth => "Depth",
         }
     }
+
+    /// The unit the field is measured in, as the "must be a number in ..." message names
+    /// it: degrees for the face direction's angles, millimetres for every length.
+    #[must_use]
+    pub(super) const fn unit(self) -> &'static str {
+        match self {
+            Self::Azimuth | Self::Elevation => "degrees",
+            Self::A | Self::B | Self::C | Self::Depth => "mm",
+        }
+    }
 }
 
 /// The message for a field the cut's kind does not have.
@@ -481,6 +491,36 @@ mod tests {
         let mut face = cut_row(&model().cuts[2], None);
         set_field_text(&mut face, CutField::Depth, "2");
         assert_eq!(field_text(&face, CutField::Depth).as_str(), "2");
+    }
+
+    #[test]
+    fn a_field_that_is_not_a_number_names_its_own_unit() {
+        use crate::gui::rough_plan::inputs::parse_with_unit;
+        let message = |field: CutField| {
+            parse_with_unit("abc", field.label(), field.unit()).expect_err("not a number")
+        };
+        assert_eq!(
+            message(CutField::Azimuth),
+            "Azimuth must be a number in degrees."
+        );
+        assert_eq!(
+            message(CutField::Elevation),
+            "Elevation must be a number in degrees."
+        );
+        for (field, text) in [
+            (CutField::A, "Setback A must be a number in mm."),
+            (CutField::B, "Setback B must be a number in mm."),
+            (CutField::C, "Setback C must be a number in mm."),
+            (CutField::Depth, "Depth must be a number in mm."),
+        ] {
+            assert_eq!(message(field), text);
+        }
+        // The decimal comma and the finite check do not depend on the unit.
+        assert_eq!(parse_with_unit("-12,5", "Azimuth", "degrees"), Ok(-12.5));
+        assert_eq!(
+            parse_with_unit("inf", "Elevation", "degrees"),
+            Err("Elevation must be a finite number.".to_string())
+        );
     }
 
     #[test]

@@ -5,10 +5,16 @@
 //! worker thread.
 
 use super::{
-    MeshCache, SolidRasterizer, controller::SolidPreviewState, request::RedrawRequest,
-    sink::PreviewFrame, state::WorkerMemory, to_diagram_pixel_buffer, to_pixel_buffer,
-    types::PickBuffer,
+    MeshCache, SolidRasterizer,
+    controller::SolidPreviewState,
+    plan_worker::{findings_of_plan, survive_panic},
+    request::RedrawRequest,
+    sink::PreviewFrame,
+    state::WorkerMemory,
+    to_diagram_pixel_buffer, to_pixel_buffer,
+    types::{FacetOwners, PickBuffer},
 };
+use indicatrix_cut_core::ManufacturabilityWarning;
 use std::sync::{
     Arc, PoisonError,
     mpsc::{self, Sender},
@@ -91,17 +97,35 @@ pub fn render_request(
         diagram_tooth_pick,
         diagram_panel_pick,
         diagram_hover_text: frame.diagram_hover_text,
-        diagram_facet_tier: frame.diagram_facet_tier,
+        diagram_facet_owners: frame.diagram_facet_tier.map(|flat| FacetOwners {
+            flat,
+            concave: frame.diagram_facet_concave_tier.unwrap_or_default(),
+        }),
         planes: frame.stone.halfspaces(),
         tools: frame.stone.tools,
         placements: frame.stone.placements,
         hover_text: frame.hover_text,
-        facet_tier: frame.facet_tier,
+        facet_owners: FacetOwners {
+            flat: frame.facet_tier,
+            concave: frame.facet_concave_tier,
+        },
         generation: frame.generation,
         planned,
         mesh_bounding_radius: frame.mesh_bounding_radius,
         geometry: frame.geometry,
+        warnings: None,
     })
+}
+
+/// The findings of the last planned frame (`carried`) when a frame drawn at `generation` still
+/// describes that plan, `None` when it does not (or there was no plan with findings).
+pub(super) fn findings_for_frame(
+    carried: Option<&(u64, Arc<Vec<ManufacturabilityWarning>>)>,
+    generation: u64,
+) -> Option<Arc<Vec<ManufacturabilityWarning>>> {
+    carried
+        .filter(|(planned_generation, _)| *planned_generation == generation)
+        .map(|(_, findings)| Arc::clone(findings))
 }
 
 impl SolidPreviewState {
@@ -140,6 +164,7 @@ impl SolidPreviewState {
         let sink = Arc::clone(&self.sink);
         let gate = Arc::clone(&self.gate);
         let outlines = Arc::clone(&self.outlines);
+        let warnings = Arc::clone(&self.warnings);
         std::thread::spawn(move || {
             let mut mesh_cache = MeshCache::default();
             let mut rasterizer = SolidRasterizer::new(1, 1);
@@ -150,6 +175,8 @@ impl SolidPreviewState {
                 outlines: Some(outlines),
                 ..WorkerMemory::default()
             };
+            // The last planned frame's `(generation, findings)` -- see below.
+            let mut carried: Option<(u64, Arc<Vec<ManufacturabilityWarning>>)> = None;
             for () in rx {
                 // May be newer than the request that caused this wake-up, if more
                 // `submit` calls arrived while this thread was rendering the
@@ -157,17 +184,31 @@ impl SolidPreviewState {
                 let Some(request) = gate.take() else {
                     continue;
                 };
+                // A planned frame brings its own findings (the plan worker stored them
+                // under the design it planned); every frame drawn after it -- the camera
+                // follow-ups carry its masts forward -- shows the same ones, so rows and
+                // banner always describe the masts the frame holds. A plan without
+                // findings (stale, unsolvable, or a panic) clears them.
+                if let RedrawRequest::Planned(planned) = &request {
+                    carried = findings_of_plan(&warnings, &planned.design)
+                        .map(|findings| (planned.generation, findings));
+                }
                 // `None` means an `UpdateFacetOverlay` arrived before the first
                 // real frame; nothing is pushed to the sink.
-                let Some(frame) = render_request(
-                    &mut mesh_cache,
-                    &mut rasterizer,
-                    &mut edges_rasterizer,
-                    &mut memory,
-                    request,
-                ) else {
+                // A panic costs this one frame, not the thread (see `survive_panic`).
+                let Some(mut frame) = survive_panic("a redraw", || {
+                    render_request(
+                        &mut mesh_cache,
+                        &mut rasterizer,
+                        &mut edges_rasterizer,
+                        &mut memory,
+                        request,
+                    )
+                })
+                .flatten() else {
                     continue;
                 };
+                frame.warnings = findings_for_frame(carried.as_ref(), frame.generation);
                 sink.apply(frame);
             }
         });

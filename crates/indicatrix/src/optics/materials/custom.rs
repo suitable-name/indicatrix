@@ -3,7 +3,7 @@
 
 use super::{CrystalSystem, GemMaterial, OpticalCharacter};
 use crate::optics::{
-    absorption::{AbsorptionTensor, legacy_rgb_bands},
+    absorption::{AbsorptionBand, AbsorptionTensor, legacy_rgb_bands},
     dispersion::DispersionModel,
 };
 use glam::Vec3;
@@ -104,6 +104,36 @@ impl GemMaterial {
             absorption_path_scale: 1.0,
             uniaxial_extraordinary_dispersion: None,
         }
+    }
+
+    /// Creates a custom gemstone material from a full dispersion model (Sellmeier with one
+    /// or three terms, or Cauchy) instead of [`Self::new_custom`]'s refractive index plus
+    /// `n_F - n_C` pair.
+    ///
+    /// The mean refractive index is the model's own [`DispersionModel::n_d`]. Everything
+    /// else (crystal system and optical character from the sign of `birefringence_delta`,
+    /// the isotropic absorption bands of `absorption_rgb`, no scattering) is exactly what
+    /// `new_custom` builds for the same values, so the two constructors differ only in the
+    /// dispersion curve.
+    ///
+    /// The model is used as given. Call [`DispersionModel::validate`] first: an unchecked
+    /// curve is floored at an index of 1 rather than rejected, which renders a clear block.
+    #[must_use]
+    pub fn new_custom_with_dispersion(
+        name: &str,
+        dispersion: DispersionModel,
+        birefringence_delta: f32,
+        absorption_rgb: [f32; 3],
+    ) -> Self {
+        let mut material = Self::new_custom(
+            name,
+            dispersion.n_d(),
+            0.0,
+            birefringence_delta,
+            absorption_rgb,
+        );
+        material.dispersion = dispersion;
+        material
     }
 
     /// Inclusion/subsurface scattering: opts an existing material into a
@@ -274,7 +304,7 @@ impl GemMaterial {
 
     /// Body-color variant: replaces this material's absorption with the isotropic
     /// band set `absorption_rgb` expands to (the same `[R, G, B]` triple
-    /// [`Self::new_custom`] takes -- see [`super::body_color::BODY_color_PRESETS`]
+    /// [`Self::new_custom`] takes -- see [`super::body_color::BODY_COLOR_PRESETS`]
     /// for the fixed presets), leaving every other field -- dispersion,
     /// birefringence, c-axis, biaxial data, scattering, edge rounding, path scale --
     /// untouched. `GemMaterial::sapphire().with_body_color(yellow)` is a yellow
@@ -289,6 +319,27 @@ impl GemMaterial {
     #[must_use]
     pub fn with_body_color(mut self, absorption_rgb: [f32; 3]) -> Self {
         self.absorption = AbsorptionTensor::isotropic(legacy_rgb_bands(absorption_rgb));
+        self
+    }
+
+    /// N-band body-color variant (the path-aware L*C*h editor): like
+    /// [`Self::with_body_color`] but the isotropic absorption is the explicit band list
+    /// `rows` (`[centre_nm, width_nm, amplitude_per_mm]` each, see
+    /// `absorption::body_color_bands`) and [`Self::absorption_path_scale`] becomes
+    /// `path_scale` (millimetres per model unit), so the stone's colour is the one the
+    /// solver predicted for its real size. Rows with a non-positive or non-finite
+    /// amplitude, width or centre are dropped; an empty result is a colourless stone.
+    #[must_use]
+    pub fn with_body_color_bands(mut self, rows: &[[f32; 3]], path_scale: f32) -> Self {
+        let bands = rows
+            .iter()
+            .filter(|r| r.iter().all(|v| v.is_finite()) && r[1] > 0.0 && r[2] > 0.0)
+            .map(|r| AbsorptionBand::new(r[0], r[1], r[2]))
+            .collect();
+        self.absorption = AbsorptionTensor::isotropic(bands);
+        if path_scale.is_finite() && path_scale > 0.0 {
+            self.absorption_path_scale = path_scale;
+        }
         self
     }
 

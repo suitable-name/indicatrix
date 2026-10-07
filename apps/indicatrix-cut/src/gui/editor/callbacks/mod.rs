@@ -16,9 +16,9 @@ mod tier_actions;
 
 pub(in crate::gui::editor) use retarget_actions::{
     RetargetCompareInputs, RetargetKeepGuard, current_retarget_guard, discard_retarget_preview,
-    retarget_compare_inputs, setup_retarget_apply_callback, setup_retarget_close_callback,
-    setup_retarget_open_callback, setup_retarget_proposal_changed_callback,
-    setup_snapshot_callbacks, snapshot_for_compare,
+    hold_reference_snapshot, original_for_compare, retarget_compare_inputs,
+    setup_retarget_apply_callback, setup_retarget_close_callback, setup_retarget_open_callback,
+    setup_retarget_proposal_changed_callback, setup_snapshot_callbacks, snapshot_for_compare,
 };
 pub(in crate::gui::editor) use solve_actions::{
     clear_analysis_results, setup_adopt_meet_callback, setup_batch_tilt_for_open_design_callback,
@@ -27,9 +27,12 @@ pub(in crate::gui::editor) use solve_actions::{
     setup_optimize_preview_callback,
 };
 #[cfg(test)]
-pub(in crate::gui::editor) use tier_actions::{letterbox_margin, logical_to_pick_pixels};
 pub(in crate::gui::editor) use tier_actions::{
-    map_to_pick_coordinates, pick_margin, pick_pixels_to_logical, resubmit_facet_overlay,
+    FIXED_CYLINDER_PREFORM_SIDES, letterbox_margin, logical_to_pick_pixels,
+};
+pub(in crate::gui::editor) use tier_actions::{
+    HistoryMove, map_to_pick_coordinates, pick_margin, pick_pixels_to_logical,
+    refresh_after_history_move, refresh_after_renumbering_move, resubmit_facet_overlay,
     selected_facet_id, setup_anchor_explainer_dismiss_callback, setup_angle_live_preview_callback,
     setup_apply_cheater_offset_callback, setup_apply_design_material_callback,
     setup_apply_design_meta_callback, setup_apply_preform_callback,

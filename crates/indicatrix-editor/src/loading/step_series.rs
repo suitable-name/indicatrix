@@ -1,5 +1,6 @@
 //! The tier table's "Generate steps" form: parsing and validating its numeric fields.
 
+use super::number_expr::{NumberExprError, eval_number};
 use indicatrix::geometry::meet_solver::MeetConstraint;
 use indicatrix_cut_core::ConstraintTier;
 use std::fmt;
@@ -44,6 +45,16 @@ pub enum StepSeriesError {
     AnchorNotANumber(String),
     /// The anchor is infinite or NaN.
     AnchorNotFinite,
+    /// A field holds a calculation (`40 + 2`) that cannot be read or done.
+    CannotCalculate {
+        /// The field's name as the message shows it ("Start angle", "Angle step",
+        /// "Anchor").
+        field: &'static str,
+        /// What was typed, trimmed.
+        text: String,
+        /// Why it cannot be done, as a phrase without a final full stop.
+        reason: String,
+    },
 }
 
 impl fmt::Display for StepSeriesError {
@@ -57,19 +68,29 @@ impl fmt::Display for StepSeriesError {
                 "Tier count {count} is out of range -- enter a whole number from 1 to {}.",
                 ConstraintTier::MAX_STEP_SERIES
             ),
+            // Angles in a message are magnitudes: the side of the girdle is the block's, never
+            // a sign (the stored `angle_deg` stays signed).
             Self::AngleOutOfRange { tier, angle_deg } => write!(
                 f,
-                "Tier {tier} of the ladder would sit at {angle_deg:.2}\u{b0} -- every generated \
+                "Tier {tier} of the ladder would sit at {:.2}\u{b0} -- every generated \
                  angle must be more than 0\u{b0} and at most {MAX_ANGLE_DEG}\u{b0} from the \
-                 girdle plane."
+                 girdle plane.",
+                angle_deg.abs()
             ),
             Self::CrossesBlock { tier, angle_deg } => write!(
                 f,
-                "Tier {tier} of the ladder would sit at {angle_deg:.2}\u{b0}, across the girdle \
-                 from the start angle -- a ladder stays within one block (crown or pavilion)."
+                "Tier {tier} of the ladder would cross the girdle (it would sit at {:.2}\u{b0} \
+                 on the other side of the start angle's block) -- a ladder stays within one \
+                 block (crown or pavilion).",
+                angle_deg.abs()
             ),
             Self::AnchorNotANumber(text) => write!(f, "Anchor '{text}' is not a number."),
             Self::AnchorNotFinite => f.write_str("Anchor must be a finite number."),
+            Self::CannotCalculate {
+                field,
+                text,
+                reason,
+            } => write!(f, "{field} '{text}' cannot be calculated: {reason}."),
         }
     }
 }
@@ -110,14 +131,16 @@ pub fn parse_step_series_form(
     count: i32,
     anchor_text: &str,
 ) -> Result<(f64, f64, usize, MeetConstraint), StepSeriesError> {
-    let start_angle: f64 = start_angle_text
-        .trim()
-        .parse()
-        .map_err(|_| StepSeriesError::StartNotANumber(start_angle_text.to_string()))?;
-    let angle_step: f64 = angle_step_text
-        .trim()
-        .parse()
-        .map_err(|_| StepSeriesError::StepNotANumber(angle_step_text.to_string()))?;
+    let start_angle = read_field(
+        "Start angle",
+        start_angle_text,
+        StepSeriesError::StartNotANumber,
+    )?;
+    let angle_step = read_field(
+        "Angle step",
+        angle_step_text,
+        StepSeriesError::StepNotANumber,
+    )?;
     if !start_angle.is_finite() || !angle_step.is_finite() {
         return Err(StepSeriesError::NotFinite);
     }
@@ -129,9 +152,7 @@ pub fn parse_step_series_form(
     let first_constraint = if anchor_text.is_empty() {
         MeetConstraint::MeetExisting
     } else {
-        let anchor: f64 = anchor_text
-            .parse()
-            .map_err(|_| StepSeriesError::AnchorNotANumber(anchor_text.to_string()))?;
+        let anchor = read_field("Anchor", anchor_text, StepSeriesError::AnchorNotANumber)?;
         if !anchor.is_finite() {
             return Err(StepSeriesError::AnchorNotFinite);
         }
@@ -139,6 +160,25 @@ pub fn parse_step_series_form(
     };
     check_ladder_angles(start_angle, angle_step, ladder_len)?;
     Ok((start_angle, angle_step, ladder_len, first_constraint))
+}
+
+/// Reads one numeric field of the form, which may be arithmetic (`40 + 2`). Text that
+/// is not a number and holds no calculation becomes the field's historical
+/// "not a number" error (`not_a_number`); a calculation that cannot be done becomes
+/// [`StepSeriesError::CannotCalculate`].
+fn read_field(
+    label: &'static str,
+    text: &str,
+    not_a_number: fn(String) -> StepSeriesError,
+) -> Result<f64, StepSeriesError> {
+    eval_number(text, None).map_err(|error| match error {
+        NumberExprError::NotANumber => not_a_number(text.to_string()),
+        NumberExprError::Invalid(reason) => StepSeriesError::CannotCalculate {
+            field: label,
+            text: text.trim().to_string(),
+            reason,
+        },
+    })
 }
 
 /// Checks every angle of a `len`-tier ladder from `start_angle` by `angle_step`: each
@@ -305,6 +345,55 @@ mod tests {
                 tier: 2,
                 angle_deg: -5.0
             }
+        );
+    }
+
+    #[test]
+    fn the_refusal_messages_show_angles_as_positive_numbers() {
+        // The error keeps the stored angle (-100); the message a person reads does not.
+        let past_the_girdle = parse_step_series_form("-40", "-20", 4, "").unwrap_err();
+        assert_eq!(
+            past_the_girdle.to_string(),
+            "Tier 4 of the ladder would sit at 100.00\u{b0} -- every generated angle must be \
+             more than 0\u{b0} and at most 90\u{b0} from the girdle plane."
+        );
+        let across = parse_step_series_form("10", "-15", 2, "").unwrap_err();
+        assert_eq!(
+            across.to_string(),
+            "Tier 2 of the ladder would cross the girdle (it would sit at 5.00\u{b0} on the \
+             other side of the start angle's block) -- a ladder stays within one block (crown \
+             or pavilion)."
+        );
+    }
+
+    #[test]
+    fn the_numeric_fields_take_arithmetic() {
+        let (start, step, count, constraint) =
+            parse_step_series_form("40 + 2", " -(1 / 2) ", 3, "0.3 + 0.02").expect("parses");
+        assert_eq!(start.to_bits(), 42.0_f64.to_bits());
+        assert_eq!(step.to_bits(), (-0.5_f64).to_bits());
+        assert_eq!(count, 3);
+        assert_eq!(constraint, MeetConstraint::ScaleReference(0.32));
+    }
+
+    #[test]
+    fn a_calculation_that_fails_names_its_field() {
+        let error = parse_step_series_form("40", "1 / 0", 3, "").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Angle step '1 / 0' cannot be calculated: it divides by zero."
+        );
+        let error = parse_step_series_form("40", "1", 3, "(2").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("Anchor '(2' cannot be calculated:"),
+            "{error}"
+        );
+        let error = parse_step_series_form("4 0 +", "1", 3, "").unwrap_err();
+        assert!(
+            error.to_string().starts_with("Start angle '4 0 +'"),
+            "{error}"
         );
     }
 

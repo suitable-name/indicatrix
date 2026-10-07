@@ -8,6 +8,7 @@ mod materials;
 pub mod scene_identity;
 #[cfg(test)]
 mod tests;
+mod view_color;
 
 pub use frame::load_env_map;
 pub(super) use frame::{FrameInputs, snapshot_frame_inputs};
@@ -17,6 +18,7 @@ pub use materials::{
     resolve_material_with_override,
 };
 use scene_identity::SceneIdentity;
+pub use view_color::ColorTarget;
 
 use crate::{
     bridge::sample_cursor::LiveEpoch,
@@ -67,6 +69,17 @@ pub struct RenderContext {
     /// `gui::editor::view::inspector::sync_viewport_material_link`. `None` (default)
     /// reproduces by-name-only resolution.
     pub material_override: Option<GemMaterial>,
+    /// The Live Render toolbar's view-only body colour (an absorption triple, see
+    /// `GemMaterial::with_body_color`); `None` is "Material default". Only applies while
+    /// the view is NOT showing the linked open design -- there the design's own colour
+    /// override rides in [`Self::material_override`] and this stays dormant. Never written
+    /// to a design. Read through [`Self::effective_view_body_color`] and
+    /// [`Self::tinted_material_override`]; written by `gui::render::render_body_color`.
+    pub view_body_color: Option<[f32; 3]>,
+    /// Mirror of `ViewportModel.viewport_material_linked` ("Linked to design"), kept by
+    /// `gui::render::render_body_color` so the render pipeline can tell a design-driven
+    /// view from a free one without reading the UI. `true` is the toggle's default.
+    pub material_linked: bool,
     /// Lighting preset the render uses.
     pub lighting_preset: LightingPreset,
     /// What the camera sees behind the stone -- `AppSettings::backdrop`.
@@ -76,6 +89,11 @@ pub struct RenderContext {
     /// surface event only). Analytic presets only -- an HDR map ignores it. Scene
     /// identity includes it, so a change restarts accumulation (local and remote).
     pub surface_glare: f32,
+    /// Head-shadow radius in degrees, `0.0..=30.0` (`AppSettings::head_shadow_deg`, `0.0` = off,
+    /// default `16.0`): the viewer's head hiding the sky on the lit presets. An HDR map and the
+    /// product-photography presets ignore it. Scene identity includes it, so a change restarts
+    /// accumulation (local and remote).
+    pub head_shadow_deg: f32,
     /// Progressive-accumulation target -- the single global target for the live image:
     /// the render loop stops once local plus (while combining) the live epoch's remote
     /// samples reach this, and a settled epoch's shared cursor covers exactly
@@ -192,7 +210,7 @@ pub struct RenderContext {
     /// the native-file restore. Read through [`Self::physics_color`].
     pub custom_material_physics: Arc<Vec<String>>,
     /// The fluorescent emitters of the custom materials whose active color mode is Physics,
-    /// resolved from their recipes (`colorMode::fluorescence`): a side channel beside
+    /// resolved from their recipes (`ColorMode::fluorescence`): a side channel beside
     /// [`Self::custom_material_physics`], never inside `GemMaterial`, so every non-fluorescent
     /// material (and every fantasy one, which has no entry) renders bit-identically to a build
     /// without it. Only materials with at least one emitter are listed. Kept in lock-step with
@@ -638,9 +656,12 @@ impl Default for RenderContext {
             light_pitch: 0.95, // ~54 degrees elevation
             material_name: "Diamond".to_string(),
             material_override: None,
+            view_body_color: None,
+            material_linked: true,
             lighting_preset: LightingPreset::RingLights,
             backdrop: crate::settings::model::Backdrop::default(),
             surface_glare: 1.0,
+            head_shadow_deg: indicatrix::optics::raytracer::DEFAULT_HEAD_SHADOW_DEG,
             target_samples: 256,
             max_bounces: DEFAULT_MAX_BOUNCES,
             exposure: 1.0,

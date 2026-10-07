@@ -1,0 +1,67 @@
+import { Theme } from "../../theme.slint";
+import { CmChip } from "../../models/cutting_mode.slint";
+
+// The indices of a step as big chips, six to a row, each a tick box: a click ticks the index
+// off (or takes the tick back). A ticked chip is green with a check mark.
+//
+// The chips share the width of the row equally, so nothing here depends on how the page is
+// laid out around it; the height follows from how many rows the chips need, so a long list
+// simply makes the page taller (the page scrolls).
+export component CmChips inherits Rectangle {
+    in property <[CmChip]> chips;
+
+    // A click on chip `i`.
+    callback toggled(int);
+
+    property <int> cols: 6;
+    property <length> gap: 10px;
+    property <length> chip_h: 60px;
+    property <length> chip_w: (root.width - (root.cols - 1) * root.gap) / root.cols;
+    property <int> rows: Math.ceil(root.chips.length / root.cols);
+
+    height: root.rows <= 0 ? 0px : root.rows * (root.chip_h + root.gap) - root.gap;
+
+    for chip[i] in root.chips: Rectangle {
+        x: Math.mod(i, root.cols) * (root.chip_w + root.gap);
+        y: Math.floor(i / root.cols) * (root.chip_h + root.gap);
+        width: root.chip_w;
+        height: root.chip_h;
+        border-radius: Theme.radius-md;
+        border-width: chip.ticked ? 2px : 1px;
+        border-color: chip.ticked ? Theme.success : (touch.has-hover ? Theme.border-accent : Theme.border-medium);
+        background: chip.ticked ? Theme.badge-emerald-bg : (touch.has-hover ? Theme.bg-card-hover : Theme.surface-chip);
+
+        accessible-role: AccessibleRole.checkbox;
+        accessible-label: "Index " + chip.text;
+        accessible-description: "Tick this index off once you have cut it. Activate again to take the tick back.";
+        accessible-checkable: true;
+        accessible-checked: chip.ticked;
+        accessible-action-default => { root.toggled(i); }
+
+        Tooltip { text: @markdown("Tick this index off once you have cut it. Click again to take the tick back. Space or D marks the whole step done."); }
+
+        touch := TouchArea {
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { root.toggled(i); }
+        }
+
+        Text {
+            text: chip.text;
+            color: Theme.text-primary;
+            font-size: 24px;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            width: parent.width;
+            height: parent.height;
+        }
+        if chip.ticked: Image {
+            source: @image-url("../../icons/check.svg");
+            colorize: Theme.success;
+            x: parent.width - self.width - 6px;
+            y: 6px;
+            width: 16px;
+            height: 16px;
+        }
+    }
+}

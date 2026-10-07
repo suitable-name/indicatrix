@@ -10,6 +10,29 @@
 //! dominator on any piece, and the mixed DP may run on the front alone. The
 //! argument holds bit for bit under IEEE arithmetic, because division,
 //! `min` and multiplication of non-negative numbers are all monotone.
+//!
+//! # With a mesh rough
+//!
+//! A piece clipped by a non-convex mesh is solved by a heuristic, `solve_in_mesh` of the
+//! shaped `PartialSolver` (the LP of the convex region plus up to six rounds of cutting
+//! planes), so the argument above needs a second look. It holds for the TRUE problem: if a dominated
+//! design `d` has a stone of width `s` at a centre `t` that the mesh accepts (no triangle
+//! meets its caliper box, the centre is in the material), the dominator `e` has, for the
+//! same assignment, a caliper box that is no larger on any axis (`l_e <= l_d`, `h_e <= h_d`,
+//! the width is the same `s`), so its box at `t` lies inside `d`'s box: no triangle meets it
+//! either, the centre is the same point, and its volume `f_e s^3 >= f_d s^3`. The feasible
+//! set of the dominator contains the dominated design's, so pruning never discards the
+//! optimum.
+//!
+//! What it can cost is the heuristic's miss: near a notch the solver may fail for `e`
+//! (it starts from the convex optimum of `e`, which can press into the notch beyond what
+//! six rounds clear) where it would have succeeded for `d`, and `d` is no longer in the pool
+//! to try. The loss is a smaller or missing stone in one piece, never a wrong placement
+//! (every accepted stone is checked against the mesh), and it is the "near a notch it can be
+//! a little more cautious" the manual states. Keeping the dominated designs of a mesh rough
+//! instead would multiply the pool (the front is tens of designs, the catalogue thousands),
+//! and every table, DP and shortlist cost with it, to recover a few stones the refinement
+//! recovers in part anyway.
 
 use std::cmp::Ordering;
 

@@ -1,0 +1,167 @@
+// The in-app help: the manual viewer window (`components/help_window.slint`), the glossary
+// dialog (`components/glossary_dialog.slint`) and the topic ids the small "?" buttons open
+// (`components/help_button.slint`).
+//
+// Rust is `gui::help`. It embeds the whole manual, parses a chapter into the blocks below
+// when the viewer opens it, and fills the viewer's lists. A global exists once per window:
+// the main window's `HelpModel` carries the glossary dialog and the "open this topic"
+// requests from panels; the help window has its own instance that carries the page.
+
+// One row of the chapter list on the left of the viewer. A chapter row is level 0; the
+// sections of the open chapter follow it at levels 1 and 2.
+export struct HelpNavItem {
+    label: string,
+    // The topic id the row opens ("04-editing-tiers" or "04-editing-tiers#the-tier-form").
+    topic: string,
+    level: int,
+    // The row's chapter is the open one.
+    open: bool,
+    // The row is the part of the manual on screen.
+    current: bool,
+}
+
+// One block of the page. `kind`: 0 paragraph, 1 heading, 2 list item, 3 quote, 4 code,
+// 5 table row, 6 figure, 7 rule (`gui::help::markdown::BlockKind::code`).
+export struct HelpBlock {
+    kind: int,
+    // A heading's level, 1 to 6.
+    level: int,
+    // How many list levels the block sits inside.
+    indent: int,
+    // A list item's bullet or number.
+    marker: string,
+    // The text of a paragraph, list item or quote, with its bold, links and code.
+    text: styled-text,
+    // A heading's words, a code block's lines, a figure's description.
+    plain: string,
+    // The cells of a table row, and the relative width of each column.
+    cells: [styled-text],
+    weights: [float],
+    // The row is a table's header row.
+    header: bool,
+    // The index of the section the block belongs to (`HelpModel.scroll_section`).
+    section: int,
+}
+
+// One search result: a section of the manual.
+export struct HelpSearchHit {
+    topic: string,
+    chapter: string,
+    section: string,
+    snippet: string,
+}
+
+// One term of the glossary dialog.
+export struct GlossaryRow {
+    term: string,
+    text: styled-text,
+}
+
+// The places the "?" buttons open: `HelpButton { topic: HelpTopics.tier-form }`. The list is
+// the same as `gui::help::topics::TOPICS`; a test keeps them equal and another checks
+// that every id still names a heading of the manual.
+export global HelpTopics {
+    out property <string> contents: "README";
+    out property <string> tier-form: "04-editing-tiers#the-tier-form";
+    out property <string> concave-tier: "16-concave-tiers#adding-a-concave-tier";
+    out property <string> preform-tab: "04-editing-tiers#preform-proportions-and-yield";
+    out property <string> optimize-tab: "08-deep-solve-optimize-adopt#optimize";
+    out property <string> schedule-tab: "03-loading-and-tier-list#the-inspectors-schedule-tab";
+    out property <string> tier-table: "03-loading-and-tier-list#reading-the-tier-list";
+    out property <string> design-settings: "06-materials-and-refractive-index#ri-override-vs-material";
+    out property <string> solid-view: "13-solid-inspection-view#the-four-view-modes";
+    out property <string> diagram-view: "13-solid-inspection-view#diagram-view";
+    out property <string> live-render: "02-catalogue-and-viewing#the-3d-viewport";
+    out property <string> render-settings: "02-catalogue-and-viewing#quality-resolution-and-gpu-options";
+    out property <string> retarget: "14-retarget-snapshot-compare-tilt-curves#retarget";
+    out property <string> compare: "14-retarget-snapshot-compare-tilt-curves#visual-beforeafter-comparison";
+    out property <string> material-editor: "06-materials-and-refractive-index#custom-materials";
+    out property <string> export-dialog: "09-rendering-and-export#opening-the-export-dialog";
+    out property <string> rough-planner: "15-planning-a-rough";
+    out property <string> preferences: "17-preferences-and-accessibility";
+    out property <string> cutting-mode: "20-cutting-mode";
+    out property <string> sweep: "21-angle-sweeps";
+    out property <string> history: "18-history-and-variants";
+    out property <string> command-palette: "19-command-palette-and-keyboard";
+    out property <string> solve: "05-solving#what-solve-does";
+    out property <string> deep-solve: "08-deep-solve-optimize-adopt#deep-solve";
+    out property <string> tilt-curves: "02-catalogue-and-viewing#reading-the-tilt-performance-graph";
+    out property <string> saving: "11-saving-and-file-formats";
+    out property <string> remote-worker: "10-remote-worker-setup";
+    out property <string> new-design: "07-new-design-worked-example#step-1-the-new-design-dialog";
+    out property <string> import-designs: "01-getting-started#bringing-your-own-designs-in";
+    out property <string> edit-as-text: "11-saving-and-file-formats#editing-the-instructions-as-text";
+    out property <string> tutorials: "22-tutorials";
+    out property <string> anchors: "03-loading-and-tier-list#anchors-and-blocks";
+    out property <string> library-details: "02-catalogue-and-viewing#selecting-and-inspecting-a-design";
+    out property <string> verdict: "05-solving#the-overall-verdict";
+    out property <string> command-bar: "03-loading-and-tier-list#the-editors-toolbar";
+    out property <string> status-strip: "05-solving#reading-the-status-strip-after-solve";
+    out property <string> library: "02-catalogue-and-viewing#searching-and-filtering";
+    out property <string> filters: "02-catalogue-and-viewing#advanced-filters-panel";
+    out property <string> empty-state: "01-getting-started#starting-from-nothing-the-empty-state";
+    out property <string> cutting-table: "02-catalogue-and-viewing#the-cutting-instructions-tab";
+    out property <string> simple-advanced: "17-preferences-and-accessibility#simple-and-advanced";
+    out property <string> shortcuts: "appendix-b-keyboard-shortcuts";
+    out property <string> glossary: "appendix-a-glossary";
+    out property <string> render-jobs: "23-render-jobs";
+}
+
+export global HelpModel {
+    // --- Opening the manual (every window) -------------------------------------------
+
+    // Open the manual at a topic id (see `HelpTopics`). The help window opens, or comes to
+    // the front, and shows the topic.
+    callback open_topic(string);
+    // Open the manual at the page for what is on screen (F1, "Help for This Screen" in the
+    // command palette). Rust reads the open tabs and picks the topic (`gui::help::context`).
+    callback open_context_help();
+
+    // --- The viewer (the help window's own instance) ---------------------------------
+
+    // The title of the open chapter, shown in the window title.
+    in property <string> chapter_title: "Contents";
+    // The chapter list, with the sections of the open chapter under it.
+    in property <[HelpNavItem]> nav: [];
+    // The open chapter, block by block.
+    in property <[HelpBlock]> blocks: [];
+    // The section to bring into view, and whether that is still to be done: the page sets
+    // `scroll_pending` back to false once its layout has placed the heading.
+    in-out property <int> scroll_section: 0;
+    in-out property <bool> scroll_pending: false;
+    // Whether Back and Forward have somewhere to go.
+    in property <bool> can_back: false;
+    in property <bool> can_forward: false;
+    // The words in the search box, and the sections they match. While `searching` the
+    // page shows the results instead of the chapter.
+    in-out property <string> search_text: "";
+    in property <bool> searching: false;
+    in property <[HelpSearchHit]> hits: [];
+    // A line under the toolbar: a link that did not open, missing manual files.
+    in property <string> status: "";
+
+    // A link in the page was clicked.
+    callback link_clicked(string);
+    callback back();
+    callback forward();
+    // The search box changed.
+    callback search(string);
+    // Open the folder with the manual's plain files.
+    callback open_manual_files();
+    // Close the help window.
+    callback close_window();
+
+    // --- The glossary dialog (the main window's instance) ----------------------------
+
+    in-out property <bool> glossary_open: false;
+    // The words in the dialog's search box.
+    in-out property <string> glossary_query: "";
+    // The terms that match the query.
+    in property <[GlossaryRow]> glossary_rows: [];
+    // How many terms the glossary has.
+    in property <int> glossary_total: 0;
+    // Open the dialog, filtered to a term ("" lists every term).
+    callback open_glossary(string);
+    // The dialog's search box changed.
+    callback glossary_search(string);
+}

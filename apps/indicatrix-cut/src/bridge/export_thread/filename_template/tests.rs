@@ -345,6 +345,36 @@ fn a_colliding_template_appends_a_numbered_suffix_rather_than_overwriting() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// J4-T4: the queue names a job with `resolve_export_name`, the immediate export with
+/// `resolve_export_path`; in an empty folder they must give the same file name.
+#[test]
+fn resolve_export_name_equals_the_file_name_of_resolve_export_path_in_an_empty_folder() {
+    let dir = scratch_dir("export-name-parity");
+    let mut c = ctx();
+    c.design = "Ashoka / \"Cut\"".to_string();
+    // No `{date}`, `{time}` or `{timestamp}`: two calls could straddle a second.
+    for template in [
+        "{design}_{material}_{width}x{height}",
+        "{design}",
+        "",
+        "CON",
+    ] {
+        let name = resolve_export_name(template, &c);
+        let path = resolve_export_path(&dir, template, &c);
+        assert_eq!(
+            path.file_name().unwrap().to_string_lossy(),
+            name,
+            "template {template:?}"
+        );
+        assert!(
+            std::path::Path::new(&name)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_default_template_is_unique_enough_that_two_calls_do_not_collide() {
     let dir = scratch_dir("default-template-uniqueness");

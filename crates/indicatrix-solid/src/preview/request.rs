@@ -88,6 +88,23 @@ pub struct PlanJob {
     pub enlarged_panel: i32,
     /// "Show through tier N": `Some(n)` truncates to `design.tiers[..=n]`.
     pub tier_cutoff: Option<usize>,
+    /// The desktop's Cut slider: `Some(k)` draws the stone after the first `k` cutting
+    /// steps (`Design::preview_steps`), `0` being the rough. Wins over
+    /// [`Self::tier_cutoff`] when set; `None` leaves `tier_cutoff` in charge, which is
+    /// all the web app uses.
+    pub cut_steps: Option<usize>,
+}
+
+impl PlanJob {
+    /// The [`crate::live_update::CutLimit`] this job asks for: `cut_steps` first, then
+    /// `tier_cutoff`, else the finished stone.
+    #[must_use]
+    pub fn cut_limit(&self) -> crate::live_update::CutLimit {
+        self.cut_steps.map_or_else(
+            || crate::live_update::CutLimit::from_tier_cutoff(self.tier_cutoff),
+            crate::live_update::CutLimit::Steps,
+        )
+    }
 }
 
 /// [`super::build_planned_frame`]'s result: everything
@@ -108,9 +125,11 @@ pub struct PlannedFrame {
     pub placements: Vec<(usize, usize)>,
     /// The facet-level style (flagged/pending/selected, preform handling).
     pub style: SolidStyle,
-    /// The mast list to chain forward as the next call's `last_solved` -- already
-    /// resolved to "the fresh result" or "the old masts chained forward
-    /// unchanged" (an `Unsolvable` frame must not wipe this cache with `None`).
+    /// The masts this frame solved, to chain forward as the next call's `last_solved`.
+    /// `None` when nothing solved -- an `Unsolvable` frame in particular carries none: the
+    /// previous masts do not describe this frame's design, and a caller that files a
+    /// frame's masts under its generation must not be handed them. A caller keeps its
+    /// own cache as it is when this is `None`.
     pub solved: Option<Vec<SolvedTier>>,
     /// `live_update::Freshness::Stale`: the planes are the previous solve's.
     pub stale: bool,
@@ -130,4 +149,9 @@ pub struct PlannedFrame {
     pub n_d: f64,
     /// The job's raw enlarged-panel index.
     pub enlarged_panel: i32,
+    /// Which flat tiers (indexed like `design.tiers`) `planes` contains: `None` for the
+    /// finished stone, `Some` for a partly cut one (the Cut slider). The facet-id
+    /// tables of the frame ([`crate::facet_map::FacetMap::from_design_cut`]) number the
+    /// facets the way these planes are numbered.
+    pub visible_tiers: Option<Vec<bool>>,
 }

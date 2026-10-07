@@ -1,4 +1,5 @@
 import { LightingPresetItem } from "../types.slint";
+import { PhysicscolorModel } from "physics_color.slint";
 
 // Shared state for the 3D viewport interactions (`GemViewportView`'s camera/lighting/
 // material controls and the read-only optical-metrics readout), plus
@@ -60,6 +61,13 @@ export global ViewportModel {
     in property <bool> trace_stale: false;
     callback viewport_material_linked_changed(bool);
 
+    // Whether the live viewport shows the Edit tab's own design (true) or something else: a
+    // Library row opened in Live Render, or the built-in placeholder (false). Live Render
+    // follows the Edit tab's Cut slider, so it shows its "Cut: ..." pill only while this is
+    // true -- a Library row is always drawn whole. Pushed from Rust wherever the plane slot
+    // is claimed (`gui::editor::push_viewport_owner`).
+    in property <bool> shows_editor_design: true;
+
     // Surfaces a lost GPU device instead of leaving the viewport silently frozen with
     // no explanation. Set by the render thread's own `update_gpu_status` push (see
     // `bridge::render_thread::gpu_backend::ViewportGpu::status_message`'s own doc
@@ -81,12 +89,20 @@ export global ViewportModel {
     in property <string> trace_refusal: "";
 
     // This list is what actually reaches the ComboBox. ORDER is load-bearing: must
-    // match `LightingPreset::ALL` (`Daylight`, `Incandescent`, `RingLights`,
-    // `DarkSpotlight`, `IsoHemisphere`, `LightTent`, `DaylightDome`, `UvLamp365`,
-    // `UvLamp395`) exactly, since
+    // match `LightingPreset::ALL` (`LightTent`, `IsoHemisphere`, `WhiteTray`, `ShopLights`,
+    // `WindowDaylight`, `DaylightDome`, `DaylightSun`, `Daylight`, `Incandescent`,
+    // `IlluminantA`, `RingLights`, `DarkSpotlight`, `Aset`, `UvLamp365`, `UvLamp395`) exactly, since
     // `lighting_changed` below carries the selected INDEX, not the label text.
-    in property <[string]> lighting_options: ["D65 Daylight (6500K)", "Incandescent (3200K)", "Gem Studio Ring Lights", "Dramatic Dark Spotlight", "ISO hemisphere", "Light tent + black cards", "Daylight sky + sun", "UV lamp 365 nm", "UV lamp 395 nm"];
+    // The two UV lamps come last and are offered only in a `physical-color` build
+    // (`PhysicscolorModel.ui_enabled`), so every other index is the same either way.
+    in property <[string]> lighting_options: PhysicscolorModel.ui_enabled
+        ? ["Light tent + black cards", "Grading tray (D65 hemisphere + head shadow)", "White tray (lit from below)", "Jewellery shop (diffuse + spots)", "Window daylight", "Daylight sky (no sun)", "Daylight sky + direct sun", "D65 Daylight (6500K)", "Incandescent (3200K)", "Incandescent A (2856K)", "Gem Studio Ring Lights", "Dramatic Dark Spotlight", "Contrast view (ASET-style)", "UV lamp 365 nm", "UV lamp 395 nm"]
+        : ["Light tent + black cards", "Grading tray (D65 hemisphere + head shadow)", "White tray (lit from below)", "Jewellery shop (diffuse + spots)", "Window daylight", "Daylight sky (no sun)", "Daylight sky + direct sun", "D65 Daylight (6500K)", "Incandescent (3200K)", "Incandescent A (2856K)", "Gem Studio Ring Lights", "Dramatic Dark Spotlight", "Contrast view (ASET-style)"];
     in-out property <int> selected_lighting_index: 0;
+    // Parallel to `lighting_options`: whether that preset is a Studio rig (pinpoint
+    // sources), set once at startup from `LightingPreset::ALL`. The Optimize tab shows its
+    // "measured against this rig's light sources" note when the selected one is.
+    in property <[bool]> lighting_is_studio: [];
     in property <[LightingPresetItem]> lighting_presets: [];
 
     in property <float> brilliance_pct: 0.0;
@@ -192,4 +208,48 @@ export global ViewportModel {
     // catalogue: the toolbar shows a "color data updated" badge (it keeps rendering from its
     // stored bands until the user updates it in the editor).
     in property <bool> selected_material_color_outdated: false;
+
+    // ---- The Live Render toolbar's "Color" control -------------------------------------
+    // (`ui/components/gem_viewport/render_color_picker.slint`; Rust side:
+    // `gui::render::render_body_color`.) A quick colour change that needs no custom
+    // material. While the view shows the editor's open design with the render material
+    // linked, a pick is that design's own colour override (the same undoable edit as the
+    // Edit tab's color box); otherwise it is a view-only setting that is remembered but
+    // never written to a design. Everything below is pushed from Rust.
+    //
+    // The 9 body-colour presets: names and swatch colours, in the editor's own order.
+    // Choice index 0 is "Material default", `i + 1` is preset `i`, and
+    // `render_color_custom_index` is "Custom color...".
+    in property <[string]> render_color_preset_labels: [];
+    in property <[color]> render_color_preset_swatches: [];
+    in property <int> render_color_custom_index: 10;
+    // The selected choice (see above) and its name for the popup's heading.
+    in property <int> render_color_index: 0;
+    in property <string> render_color_summary: "Material default";
+    // The colour the selection renders in, for the pill's dot and the picker's start colour;
+    // `render_color_has_swatch` is false for "Material default" (the dot is drawn hollow).
+    in property <bool> render_color_has_swatch: false;
+    in property <color> render_color_current: transparent;
+    // False for a material that defines its own colour (a physics recipe): the control is
+    // greyed out and says why.
+    in property <bool> render_color_enabled: true;
+    in property <bool> render_color_physics: false;
+    // True while a pick edits the open design, false while it only changes the view.
+    in property <bool> render_color_targets_design: false;
+    // A custom colour is being matched to the closest colour the material model can
+    // reach (a short background job): the control says so instead of looking ignored.
+    in property <bool> render_color_busy: false;
+    // A choice row (0 = Material default, 1..=9 = a preset) was clicked.
+    callback render_color_chosen(int);
+    // Rust to Rust: the background job for a custom colour finished (absorption triple).
+    callback render_color_custom_solved(float, float, float);
+    // The picker's Apply for "Custom color...".
+    callback render_color_custom_picked(color);
+    // Asks Rust to recompute everything above; the control calls it when it appears and
+    // when a design, material or link change could have moved the answer.
+    callback render_color_refresh();
+    // "Linked to design" changed (from either toggle, or the dropdown unlinking it): the
+    // render pipeline mirrors it so it can tell a design-driven view from a free one.
+    callback render_color_context_changed();
+    changed viewport_material_linked => { render_color_context_changed(); }
 }

@@ -135,19 +135,21 @@ impl GemMaterial {
                     c: 0.0,
                 },
                 birefringence_delta: 0.047,
-                // PLEOCHROISM: benitoite is famously STRONGLY dichroic -- a deep
-                // sapphire-blue o-ray (E-perp-c) against a near-colorless e-ray
-                // (E-parallel-c), the standard gemological description of this
-                // species (Ti/Fe-related blue chromophore spanning roughly
-                // 380-500nm). Modelled as one broad band (width 60nm, centred 440nm
-                // to span that range) present strongly in the o-ray and only weakly
-                // in the e-ray -- peaks (2.0 vs 0.4, a 5x dichroic ratio) TUNED for a
-                // clearly, strongly dichroic stone; the qualitative "blue one
-                // direction, near-colorless the other" pattern and the 380-500nm
-                // span are the cited, non-tuned features.
+                // PLEOCHROISM: benitoite is famously STRONGLY dichroic -- an intensely
+                // blue e-ray (E-parallel-c) against a near-colourless o-ray
+                // (E-perp-c). The blue is the transmission window left by a Fe2+-Ti4+
+                // intervalence charge-transfer band in the orange-red, polarised along
+                // c (docs/chromophores/garnet_peridot_zircon_benitoite.md section 7:
+                // centre 635 nm, FWHM 4500 cm^-1, pol {o 0.05, e 1.0}; Fe-Ti IVCT sits
+                // at ~580-620 nm per the general Fe-Ti CT literature, transmitting
+                // 420-500 nm; LibreTexts Benitoite / gemdat 624). Modelled as one band
+                // at 635 nm, sigma 60 nm (~FWHM 140 nm, i.e. ~560-710 nm), so blue and
+                // violet stay transmitted. Peaks (2.0 e-ray vs 0.1 o-ray, 0.05 pol
+                // ratio from the dataset) are TUNED for visible saturation. The
+                // earlier 440 nm band removed blue and gave a yellow-white stone.
                 absorption: AbsorptionTensor::uniaxial(
-                    vec![AbsorptionBand::new(440.0, 60.0, 2.0)], // o-ray (E-perp-c)
-                    vec![AbsorptionBand::new(440.0, 60.0, 0.4)], // e-ray (E-parallel-c)
+                    vec![AbsorptionBand::new(635.0, 60.0, 0.1)], // o-ray (E-perp-c)
+                    vec![AbsorptionBand::new(635.0, 60.0, 2.0)], // e-ray (E-parallel-c)
                 ),
                 c_axis: Vec3::Y,
                 biaxial_delta_beta_alpha: None,

@@ -1,5 +1,5 @@
-//! Opening the bundled user manual, catalogue links and the Edit tab's last-saved
-//! folder through the platform's own file/URL opener.
+//! Opening the user manual (in the in-app help window), the manual's folder, catalogue
+//! links and the Edit tab's last-saved folder through the platform's own file/URL opener.
 //!
 //! Every launch goes through [`open_external_url`] or [`open_local_path`], which hand
 //! the target to the opener as ONE argument of a directly spawned program -- never
@@ -55,22 +55,24 @@ fn locate_user_manual() -> Option<std::path::PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// Help menu: opens the bundled `docs/manual/README.md` through [`open_local_path`].
-/// The path itself is resolved at runtime by [`locate_user_manual`] (see its doc
-/// comment for the candidate search order). If none of those candidates exist on disk,
-/// or the opener cannot be started, this shows an error toast instead of silently doing
-/// nothing.
+/// The folder with the manual's plain `.md` files, when the program is installed next to
+/// them (see [`locate_user_manual`] for the search order). The manual itself is built into
+/// the program (`gui::help`), so a missing folder costs nothing but the help window's
+/// "Open manual folder" button, which is for reading the files in an editor.
+pub(super) fn locate_manual_folder() -> Option<PathBuf> {
+    locate_user_manual().and_then(|readme| readme.parent().map(Path::to_path_buf))
+}
+
+/// Help menu: opens the in-app help window at the manual's contents (`gui::help`). The
+/// manual is compiled into the program, so this works in an installed build whether or
+/// not the plain files are there; if the window cannot be created, an error toast says so.
 pub(super) fn setup_user_manual_callback(ui: &MainWindow) {
     let ui_weak = ui.as_weak();
     ui.on_open_user_manual(move || {
         let Some(ui) = ui_weak.upgrade() else {
             return;
         };
-        let Some(manual_path) = locate_user_manual() else {
-            show_toast(&ui, "User manual not found", "error");
-            return;
-        };
-        if let Err(message) = open_local_path(&manual_path) {
+        if let Err(message) = super::help::open_topic(&ui, super::help::topics::CONTENTS) {
             warn!("{message}");
             show_toast(&ui, &message, "error");
         }
@@ -213,8 +215,19 @@ pub(super) fn setup_reveal_last_saved_callback(ui: &MainWindow) {
 
 #[cfg(test)]
 mod tests {
-    use super::{opener_command, user_manual_candidates, validated_local_path, validated_url};
+    use super::{
+        locate_manual_folder, opener_command, user_manual_candidates, validated_local_path,
+        validated_url,
+    };
     use std::{ffi::OsStr, path::Path};
+
+    /// From a checkout the manual's folder is always found (the last candidate is the
+    /// source tree), and it is the folder that holds the contents page.
+    #[test]
+    fn the_manual_folder_is_found_in_a_checkout() {
+        let folder = locate_manual_folder().expect("the checkout's manual folder");
+        assert!(folder.join("README.md").is_file());
+    }
 
     /// The candidate list is built entirely from the given base directory (plus one
     /// fixed dev-only `CARGO_MANIFEST_DIR` fallback) -- no hidden dependence on the

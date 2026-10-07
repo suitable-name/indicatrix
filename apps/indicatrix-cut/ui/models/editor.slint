@@ -134,11 +134,13 @@ export global EditorModel {
     in property <string> ri_source_text: "";
     in property <string> critical_angle_text: "";
     // Body-color variant of the design's material: "Material default" (index 0,
-    // no override) then the fixed presets, pushed from Rust
-    // (`indicatrix_editor::material::body_color_options`); index `i >= 1` is
-    // preset `i - 1`.
+    // no override), then the fixed presets, then the last entry "Custom..." (the
+    // picker), pushed from Rust (`indicatrix_editor::material::body_color_options`);
+    // index `i >= 1` is preset `i - 1`.
     in property <[string]> body_color_options: ["Material default"];
     in-out property <int> body_color_index: 0;
+    // The Design settings colour editor (the combo's last entry, "Custom...") keeps its
+    // state in `BodyColorEditorModel` (`models/body_color_editor.slint`).
     // The linked viewport's material name with its color (`Sapphire (Yellow)`),
     // empty while the design has no color override or the viewport is unlinked.
     // Shown beside the Live Render tab's Render Material dropdown.
@@ -213,8 +215,9 @@ export global EditorModel {
     // "Start from" template choice (0 empty, 1 standard round brilliant). On the
     // model rather than local to the dialog because both the Create button and
     // the Return-key handler need to read it; a dialog-local value would be
-    // invisible to the second call site.
-    in-out property <int> new_template_index: 0;
+    // invisible to the second call site. Starts at 1: the dialog opens on the
+    // round brilliant; the guides set it to 0 so their first step sees Empty.
+    in-out property <int> new_template_index: 1;
 
     callback new_design_create(int, string, string, string, int, string, string, bool, int, int);
 
@@ -457,13 +460,16 @@ export global EditorModel {
     // Optical weights above are free-form text (any positive number); yield is a
     // bounded 0..1 slider where 0.0 is the default (reproduces previous runs).
     in-out property <float> optimize_weight_yield: 0.0;
+    // Face-up colour weight, signed, -3..3: negative favours a lighter stone, positive a
+    // deeper and stronger colour, 0 leaves the colour out of the score.
+    in-out property <float> optimize_weight_tone: 0.0;
     // Evaluation budget, seed, and polish settings. `optimize_only_selected`
     // restricts the run to the tier table's multi-selection.
-    in-out property <string> optimize_budget_text: "200";
+    in-out property <string> optimize_budget_text: "800";
     in-out property <string> optimize_seed_text: "0";
     in-out property <bool> optimize_polish_enabled: true;
     in-out property <bool> optimize_only_selected: false;
-    callback optimize(string, string, string, float);
+    callback optimize(string, string, string, float, float);
     callback optimize_cancel();
     callback optimize_apply();
     // "Preview" toggle showing the pending result's candidate geometry in the

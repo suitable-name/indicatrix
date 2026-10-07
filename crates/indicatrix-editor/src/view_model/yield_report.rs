@@ -477,9 +477,9 @@ pub fn design_label_text(asc_filename: Option<&str>) -> String {
 
 /// `design`'s current cut order as the Edit tab's own schedule rows.
 ///
-/// Angle, facet name, index positions and notes, in cut order -- so the cutter can see
-/// the design actually being edited rather than only ever the catalogue's original
-/// schedule.
+/// Angle, facet name, index positions and notes, in cut order ([`Design::cutting_order`], for
+/// planar designs as well as concave ones) -- so the cutter can see the design actually being
+/// edited rather than only ever the catalogue's original schedule.
 ///
 /// Built from
 /// [`Design::try_to_asc_schedule_from_solved`], the same conversion "Export Edited
@@ -510,7 +510,8 @@ pub fn cutting_instructions_rows(design: &Design, solved: &[SolvedTier]) -> Vec<
     };
     // `tier_index` is the tier's stored position (what `tier_blocks` is indexed by),
     // `order_idx` its position in the cutting sequence (what the row and an unnamed
-    // tier's placeholder label show). A planar design's two are the same number.
+    // tier's placeholder label show). The two differ whenever the stored order is not the
+    // cutting order, which is the usual case.
     let flat_row =
         |tier_index: usize, order_idx: usize, tier: indicatrix_formats::asc::AscTier| CuttingRow {
             order_idx: order_idx as i32,
@@ -538,21 +539,12 @@ pub fn cutting_instructions_rows(design: &Design, solved: &[SolvedTier]) -> Vec<
             notes: tier.notes,
             second_line: None,
         };
-    if design.concave_tiers.is_empty() {
-        // Planar designs keep the schedule's own (stored) order, byte for byte.
-        return schedule
-            .tiers
-            .into_iter()
-            .enumerate()
-            .map(|(order_idx, tier)| flat_row(order_idx, order_idx, tier))
-            .collect();
-    }
-    // With concave tiers the schedule is read in `cutting_order()`: each tool line
-    // sits at the end of its section, the crown's directly above the table. A flat
-    // row's `side` still comes from its own stored position, so the lookup keeps
-    // `flat_row`'s index (the tier's position in `design.tiers`) apart from the
-    // row's `order_idx` (its position in the cutting sequence, which also numbers an
-    // unnamed tier's placeholder label).
+    // Every design is read in `cutting_order()`, the order the printed sheet, cutting mode
+    // and the Cut slider use: the pavilion and girdle tiers, each concave tool line at the end
+    // of its section, the crown tiers, and the table last. A flat row's `side` still comes from
+    // its own stored position, so the lookup keeps `flat_row`'s index (the tier's position in
+    // `design.tiers`) apart from the row's `order_idx` (its position in the cutting sequence,
+    // which also numbers an unnamed tier's placeholder label).
     let mut flat_tiers: Vec<Option<indicatrix_formats::asc::AscTier>> =
         schedule.tiers.into_iter().map(Some).collect();
     design

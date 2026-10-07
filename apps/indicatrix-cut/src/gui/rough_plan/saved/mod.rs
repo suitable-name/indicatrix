@@ -103,7 +103,7 @@ pub(super) fn setup_saved_callbacks(host: &Rc<Host>) {
 }
 
 /// A readable message for a `catch_unwind` payload.
-fn panic_message(payload: &(dyn Any + Send)) -> String {
+pub(in crate::gui::rough_plan) fn panic_message(payload: &(dyn Any + Send)) -> String {
     payload
         .downcast_ref::<&str>()
         .map(|message| (*message).to_string())

@@ -23,7 +23,7 @@ use crate::{
         },
         render::camera_lighting::contained_request_size,
         show_toast,
-        solid_preview::preview_state::CameraPose,
+        solid_preview::{cut_slider, preview_state::CameraPose},
     },
 };
 use indicatrix::geometry::{GpuFacetPlane, ToolPrimitive, meet_solver::SolvedTier};
@@ -330,6 +330,7 @@ pub(super) fn apply_background_solve_result(
         },
         result.gear,
         result.solved,
+        &result.design,
     ) {
         dispatch_pending(ui, render_ctx, pending);
         return;
@@ -346,6 +347,11 @@ pub(super) fn apply_background_solve_result(
 /// already ran should have caught this, so this is only the belt to that
 /// braces), in which case the caller must treat this result as stale and skip
 /// the rest of the pipeline rather than push a redraw/cache write for it.
+///
+/// `stone` is the finished design's geometry, built on the worker thread; while the Cut
+/// slider has the design cut back, the stone at that cut is pushed in its place
+/// ([`cut_slider::stone_at_cut`]), to the path tracer and the solid raster alike. Pushing
+/// the finished stone here used to overwrite the cut after every edit's background solve.
 fn push_viewport_after_background_solve(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
@@ -353,7 +359,14 @@ fn push_viewport_after_background_solve(
     stone: StoneGeometryBuf,
     gear: (u32, f32),
     solved: Option<Vec<SolvedTier>>,
+    design: &Design,
 ) -> bool {
+    let stone = cut_slider::stone_at_cut(
+        stone,
+        design,
+        solved.as_deref(),
+        cut_slider::sync_model(ui, design),
+    );
     let planes = Arc::new(stone.planes);
     let mut ctx = render_ctx.lock().unwrap_or_else(PoisonError::into_inner);
     // `started_generation` rather than the live counter: a
@@ -373,6 +386,8 @@ fn push_viewport_after_background_solve(
     }
     ctx.dirty = true;
     let design_gear = ctx.design_gear;
+    // Live Render shows a "Cut: ..." pill only while the picture is the editor's design.
+    crate::gui::editor::push_viewport_owner(ui, ctx.planes_owner);
     let camera = CameraPose {
         yaw: ctx.yaw,
         pitch: ctx.pitch,

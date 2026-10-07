@@ -38,9 +38,13 @@
 
 pub mod concave;
 mod construct;
+pub mod cutting_order;
 mod export;
+pub mod girdle_band;
+pub mod hinge;
 pub mod labelling;
 mod missing_anchor;
+mod relation;
 mod solve;
 mod solve_error;
 mod targets;
@@ -53,20 +57,32 @@ pub use concave::{
     ConcaveTier, ConcaveTierError, ConcaveTool, TierRef, ToolMotion, UnknownToolCode,
 };
 pub use construct::FreshDesignSpec;
-pub use export::{ConcaveResolveError, FlatAndTools, ToolPlacements, concave_frame};
+pub use export::{
+    CONCAVE_FOOTNOTE_MARKER, ConcaveResolveError, FlatAndTools, ToolPlacements,
+    concave_facet_footnote, concave_frame, concave_tool_footnote,
+};
 pub(crate) use export::{meet_name_is_asc_safe, strip_generated_concave_footnotes};
+pub use girdle_band::{GirdleBand, KNIFE_EDGE_GAP, girdle_band_in};
+pub use hinge::{
+    FacetSide, SolidFacets, TierFacets, TierHinge, mast_through, solid_facets_in,
+    tier_hinge_points, tier_hinges, tier_hinges_in, tier_plane_ranges,
+};
 pub use labelling::{
-    TierLabelInfo, compute_tier_labels, convert_legacy_facet_name, is_legacy_123_abc,
-    name_indicates_pavilion,
+    DesignTierCodes, TierLabelInfo, compute_tier_labels, convert_legacy_facet_name,
+    is_legacy_123_abc, name_indicates_pavilion,
 };
 pub use missing_anchor::MissingAnchor;
+pub use relation::{
+    Expr, ExprError, MAX_RELATION_CHARS, RawName, RelationError, RelationExpr, TierRelation,
+    TierRelationMap, snap_noise,
+};
 pub use solve_error::{DesignSolveError, SolveMismatch};
 pub use targets::{TargetResolveError, TierTarget};
 pub use tier::{ConstraintTier, ScheduleMeta};
 pub use tier_id::TierId;
 
-use crate::{material::MaterialSelection, preform::PreformSpec};
-use std::collections::BTreeMap;
+use crate::{material::MaterialSelection, native::UnknownFileKeys, preform::PreformSpec};
+use std::{collections::BTreeMap, sync::Arc};
 use targets::TierTargetMap;
 
 /// A preform plus the cutting instructions being edited against it.
@@ -261,6 +277,24 @@ pub struct Design {
     /// so notes, selection and diffs can address either kind. Bookkeeping, so
     /// excluded from `PartialEq` like `tier_ids`.
     pub concave_tier_ids: Vec<TierId>,
+    /// Parametric relations, keyed by the DRIVEN tier's [`TierId`]: tier `P2`'s angle
+    /// "is" `P1 - 2`, recomputed whenever `P1` changes -- see [`TierRelation`] and
+    /// [`Self::evaluate_relations`]. Keyed by id (like [`Self::tier_targets`]) so a
+    /// relation survives add, remove, move and undo, and a rename never breaks one.
+    /// Empty for every design that has none, which keeps such a design's behavior (and
+    /// its file's bytes) unchanged. Real authored content, so it participates in
+    /// `PartialEq`, by tier position.
+    ///
+    /// Only [`crate::edit::Edit::SetTierRelation`] changes it (plus `RemoveTier`,
+    /// which drops the removed tier's own relation). The angles themselves stay
+    /// stored on the tiers; a session keeps them equal to what the relations give
+    /// (see `indicatrix_editor::session`).
+    pub tier_relations: TierRelationMap,
+    /// Keys of a design file this build does not claim (written by a newer build),
+    /// kept so an Open followed by a Save does not drop them. `None` for a design
+    /// that did not come from a file or whose file had none. Opaque bookkeeping:
+    /// excluded from `PartialEq`, and cheap to clone.
+    pub file_extras: Option<Arc<UnknownFileKeys>>,
 }
 
 impl Design {
@@ -360,5 +394,6 @@ impl PartialEq for Design {
             && self.tier_notes == other.tier_notes
             && self.material == other.material
             && self.tier_targets_by_position() == other.tier_targets_by_position()
+            && self.tier_relations_eq(other)
     }
 }

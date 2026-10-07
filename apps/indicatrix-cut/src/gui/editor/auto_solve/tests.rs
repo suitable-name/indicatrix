@@ -372,6 +372,27 @@ fn take_matching_design_only_matches_once_per_stash() {
     );
 }
 
+/// F3-19: two replans of ONE generation submitted before the first frame lands (a tier click
+/// or a second Cut slider move) stash twice, and the first frame to land takes the stash. The
+/// second frame therefore pushes no rows -- which `apply_matching_preview_frame` reports as
+/// `false` (it returns `true` exactly when this claim matches), and the sink then must not
+/// record that frame as having shown anything.
+#[test]
+fn a_second_frame_of_the_same_generation_finds_the_stash_taken() {
+    stash_current_design(9, Arc::new(fixture_design()), BTreeSet::new());
+    stash_current_design(9, Arc::new(fixture_design()), BTreeSet::from([1]));
+    let (_, multi_selected) = take_matching_design(9).expect("the first frame lands");
+    assert_eq!(
+        multi_selected,
+        BTreeSet::from([1]),
+        "the later stash overwrote the earlier one"
+    );
+    assert!(
+        take_matching_design(9).is_none(),
+        "the second frame of the generation claims nothing, so it pushes no rows"
+    );
+}
+
 #[test]
 fn take_matching_design_rejects_a_superseded_generation() {
     stash_current_design(5, Arc::new(fixture_design()), BTreeSet::new());

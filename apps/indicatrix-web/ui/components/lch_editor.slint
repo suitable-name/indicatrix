@@ -1,0 +1,164 @@
+import { Button, Slider } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { ColorPicker } from "color_picker.slint";
+
+// One labelled slider with a readout. `moved` fires when the slider is let go (the web solves
+// on the UI thread, so it does not solve at every step of a drag).
+component LchRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value-text;
+    in property <float> minimum;
+    in property <float> maximum;
+    in property <bool> enabled: true;
+    in-out property <float> value;
+    callback moved();
+
+    spacing: 6px;
+    Text {
+        width: 64px;
+        text: root.label;
+        font-size: 10px;
+        color: Theme.text-muted;
+        vertical-alignment: center;
+    }
+    Slider {
+        horizontal-stretch: 1;
+        enabled: root.enabled;
+        minimum: root.minimum;
+        maximum: root.maximum;
+        value <=> root.value;
+        accessible-label: root.label;
+        released(v) => { root.moved(); }
+    }
+    Text {
+        width: 34px;
+        text: root.value-text;
+        font-size: 10px;
+        color: Theme.text-secondary;
+        vertical-alignment: center;
+        horizontal-alignment: right;
+    }
+}
+
+// The path-aware body-colour editor (port of the desktop's
+// `apps/indicatrix-cut/ui/components/material_editor/lch_editor.slint`): Tone (L*), Saturation
+// (C*) and Hue (h) sliders, the hue/saturation/brightness picker as an alternative input, a
+// reachability badge and swatches of the solved colour at 3 mm, 5 mm, 10 mm and the open
+// stone's own path. The caller owns the state (`DesignSettingsModel.lch-*`) and does the
+// solving; this component only shows it and reports `edited` (a slider was let go),
+// `picked` (the picker's colour), `applied` and `cancelled`.
+export component LchEditor inherits Rectangle {
+    in property <bool> enabled: true;
+    in-out property <float> tone: 55.0;
+    in-out property <float> chroma: 40.0;
+    in-out property <float> hue: 260.0;
+    in property <[color]> swatches: [];
+    in property <[string]> swatch-labels: [];
+    in property <string> badge-text: "";
+    in property <bool> reachable: true;
+    in property <bool> has-solution: false;
+    callback edited(float, float, float);
+    callback picked(color);
+    callback applied();
+    callback cancelled();
+
+    property <bool> picker-open: false;
+
+    background: Theme.bg-input;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.border-medium;
+    height: content.preferred-height;
+
+    content := VerticalLayout {
+        padding: 8px;
+        spacing: 6px;
+
+        LchRow {
+            enabled: root.enabled;
+            label: "Tone";
+            minimum: 0.0;
+            maximum: 100.0;
+            value <=> root.tone;
+            value-text: "" + Math.round(root.tone);
+            moved => { root.edited(root.tone, root.chroma, root.hue); }
+        }
+        LchRow {
+            enabled: root.enabled;
+            label: "Saturation";
+            minimum: 0.0;
+            maximum: 130.0;
+            value <=> root.chroma;
+            value-text: "" + Math.round(root.chroma);
+            moved => { root.edited(root.tone, root.chroma, root.hue); }
+        }
+        LchRow {
+            enabled: root.enabled;
+            label: "Hue";
+            minimum: 0.0;
+            maximum: 360.0;
+            value <=> root.hue;
+            value-text: "" + Math.round(root.hue) + "\u{b0}";
+            moved => { root.edited(root.tone, root.chroma, root.hue); }
+        }
+
+        HorizontalLayout {
+            spacing: 6px;
+            for swatch[index] in root.swatches: VerticalLayout {
+                spacing: 2px;
+                width: 58px;
+                Rectangle {
+                    height: 24px;
+                    border-radius: 3px;
+                    background: swatch;
+                    border-width: 1px;
+                    border-color: Theme.border-medium;
+                    accessible-role: AccessibleRole.image;
+                    accessible-label: "Colour at " + root.swatch-labels[index];
+                }
+                Text {
+                    text: root.swatch-labels[index];
+                    font-size: 9px;
+                    color: Theme.text-muted;
+                    horizontal-alignment: center;
+                    overflow: elide;
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        Text {
+            text: root.badge-text;
+            font-size: 10px;
+            color: root.reachable ? Theme.text-secondary : Theme.accent-amber;
+            wrap: word-wrap;
+        }
+
+        if root.picker-open: ColorPicker {
+            apply-label: "Use";
+            applied(c) => {
+                root.picker-open = false;
+                root.picked(c);
+            }
+            cancelled => { root.picker-open = false; }
+        }
+
+        HorizontalLayout {
+            spacing: 6px;
+            Button {
+                text: root.picker-open ? "Hide picker" : "Use picker...";
+                clicked => { root.picker-open = !root.picker-open; }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: "Cancel";
+                clicked => { root.cancelled(); }
+            }
+            Button {
+                text: "Apply colour";
+                primary: true;
+                enabled: root.enabled && root.has-solution;
+                clicked => { root.applied(); }
+            }
+        }
+    }
+}

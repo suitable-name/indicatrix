@@ -639,14 +639,212 @@ fn balance_heuristic_handles_degenerate_zero_densities() {
 }
 
 /// [`sample_environment_for_nee`]/[`environment_nee_pdf`] must both decline for
-/// [`EnvironmentSource::Studio`] -- NEE is HDR-map-only (see
-/// [`NeeContext`](super::NeeContext)'s doc comment): the analytic rig has no
-/// importance distribution to draw a light sample from.
+/// the `Studio` rig -- NEE is HDR-map-only apart from the `DaylightSun` model's analytic
+/// disc (see [`NeeContext`](super::NeeContext)'s doc comment and the sun tests below): the
+/// studio rig has no importance distribution to draw a light sample from.
 #[test]
 fn nee_sampling_is_a_no_op_for_the_studio_rig() {
     let studio = LightingPreset::Daylight.studio(1.0, 0.4, 0.35);
     assert!(sample_environment_for_nee(studio, 0.3, 0.7).is_none());
     assert_eq!(environment_nee_pdf(studio, Vec3::Y), 0.0);
+}
+
+/// Sun environment used by the analytic-NEE tests: `DaylightSun` at a high key (cosine at
+/// the horizontal plane about 0.93), exposure 1.3.
+fn sun_environment() -> (EnvironmentSource<'static>, Vec3) {
+    let (yaw, pitch) = (0.4f32, 1.2f32);
+    let key_dir = crate::optics::studio_rig::StudioRig::new(yaw, pitch).key_dir;
+    (LightingPreset::DaylightSun.studio(1.3, yaw, pitch), key_dir)
+}
+
+/// Only `DaylightSun` offers a light-sampling technique among the analytic rigs, and its
+/// draws are uniform over the 0.27 degree disc with the matching constant pdf: every
+/// sampled direction is a unit vector inside the disc, its pdf is `1 / solid angle`, the
+/// independently evaluated `environment_nee_pdf` agrees there and is `0` outside, and the
+/// radial distribution is uniform in solid angle (half the draws inside the half-area
+/// radius).
+#[test]
+fn sun_nee_draws_are_uniform_over_the_disc_with_the_matching_pdf() {
+    let (environment, key_dir) = sun_environment();
+    // cos(0.27 deg) as the rig stores it, and the disc's solid angle `2 pi (1 - cos)`.
+    let disc_cos = 0.999_988_9f32;
+    let omega = std::f32::consts::TAU * (1.0 - disc_cos);
+    let grid = 64u32;
+    let mut inner_half = 0u32;
+    for i in 0..grid {
+        for j in 0..grid {
+            let u0 = (i as f32 + 0.5) / grid as f32;
+            let u1 = (j as f32 + 0.5) / grid as f32;
+            let sample = sample_environment_for_nee(environment, u0, u1)
+                .expect("the sun always offers a draw");
+            assert!((sample.dir.length() - 1.0).abs() < 1e-5, "unit direction");
+            assert!(
+                sample.dir.dot(key_dir) >= disc_cos - 2e-7,
+                "draw ({u0}, {u1}) left the disc: cos {}",
+                sample.dir.dot(key_dir)
+            );
+            assert!(
+                sample.pdf.mul_add(omega, -1.0).abs() < 1e-3,
+                "pdf {} vs 1 / solid angle {}",
+                sample.pdf,
+                1.0 / omega
+            );
+            assert_eq!(
+                environment_nee_pdf(environment, sample.dir).to_bits(),
+                sample.pdf.to_bits(),
+                "the independent pdf must equal the draw's pdf"
+            );
+            // Half of the area is inside radius theta_max / sqrt(2): 1 - cos <= (1 - disc_cos) / 2.
+            if sample.dir.dot(key_dir) >= (1.0 - disc_cos).mul_add(-0.5, 1.0) {
+                inner_half += 1;
+            }
+        }
+    }
+    let fraction = inner_half as f32 / (grid * grid) as f32;
+    assert!(
+        (fraction - 0.5).abs() < 0.04,
+        "uniform in solid angle: {fraction} of the draws inside the half-area radius"
+    );
+    // Outside the disc the independent pdf is zero (0.4 degrees off the key).
+    let (sin_a, cos_a) = 0.4f32.to_radians().sin_cos();
+    let outside = (key_dir * cos_a + key_dir.any_orthonormal_vector() * sin_a).normalize();
+    assert_eq!(environment_nee_pdf(environment, outside), 0.0);
+    // The other analytic rigs have no technique at all.
+    for preset in [
+        LightingPreset::LightTent,
+        LightingPreset::DaylightDome,
+        LightingPreset::IsoHemisphere,
+        LightingPreset::RingLights,
+    ] {
+        let rig = preset.studio(1.0, 0.4, 1.2);
+        assert!(
+            sample_environment_for_nee(rig, 0.3, 0.7).is_none(),
+            "{preset:?}"
+        );
+        assert_eq!(environment_nee_pdf(rig, key_dir), 0.0, "{preset:?}");
+    }
+}
+
+/// Energy conservation of the sun's two techniques over a diffuse surface, as a furnace
+/// check on the estimator algebra (cheap, deterministic, no trace needed).
+///
+/// Take a Lambertian reflector of albedo 1 (`f = 1 / pi`) whose normal faces the sun at
+/// cosine `c`. The reflected radiance toward any one viewer is `L_sun * Omega * c / pi`.
+/// The two techniques estimate it as
+///   NEE:  `w_nee(d) * f c L / pdf_light`            (one draw from the disc, `pdf = 1/Omega`)
+///   BSDF: `w_bsdf(d) * f c L / pdf_bsdf` if the cosine-sampled `d` hits the disc,
+/// with balance weights `w_nee = p_l / (p_l + p_b)`, `w_bsdf = p_b / (p_l + p_b)`. The NEE
+/// expectation is `Omega * E_disc[w_nee f c L]`; the BSDF expectation is
+/// `integral_disc w_bsdf f c L dw = Omega * E_disc[w_bsdf f c L]`. Their sum is
+/// `Omega * E_disc[(w_nee + w_bsdf) f c L] = Omega f c L`, i.e. exactly the target: no
+/// energy is lost to the weights and none is counted twice. Both expectations are
+/// evaluated here over a stratified disc grid, and the weights must sum to one pointwise.
+#[test]
+fn sun_mis_weights_sum_to_one_and_the_two_techniques_conserve_energy() {
+    let (environment, key_dir) = sun_environment();
+    let normal = key_dir;
+    let radiance = 40_000.0f64;
+    let grid = 64u32;
+    let (mut nee_mean, mut bsdf_mean, mut count) = (0.0f64, 0.0f64, 0.0f64);
+    let mut omega = 0.0f64;
+    for i in 0..grid {
+        for j in 0..grid {
+            let u0 = (i as f32 + 0.5) / grid as f32;
+            let u1 = (j as f32 + 0.5) / grid as f32;
+            let sample = sample_environment_for_nee(environment, u0, u1).expect("sun draw");
+            omega = 1.0 / f64::from(sample.pdf);
+            let cos = sample.dir.dot(normal);
+            assert!(cos > 0.0);
+            let p_light = sample.pdf;
+            let p_bsdf = cos / std::f32::consts::PI;
+            let w_nee = balance_heuristic(p_light, p_bsdf);
+            let w_bsdf = balance_heuristic(p_bsdf, p_light);
+            assert!(
+                (w_nee + w_bsdf - 1.0).abs() < 1e-6,
+                "weights at ({u0}, {u1}): {w_nee} + {w_bsdf}"
+            );
+            let f_cos_l = f64::from(p_bsdf) * radiance;
+            nee_mean = f64::from(w_nee).mul_add(f_cos_l, nee_mean);
+            bsdf_mean = f64::from(w_bsdf).mul_add(f_cos_l, bsdf_mean);
+            count += 1.0;
+        }
+    }
+    // NEE sample value is w f c L / pdf_light, so its expectation over the disc draw is
+    // mean(w_nee f c L); the BSDF technique's is Omega * mean(w_bsdf f c L / pdf_light)
+    // * pdf_light = mean over the disc of (w_bsdf f c L) times Omega / Omega.
+    let nee_expectation = nee_mean / count; // E_light[ w_nee f c L / pdf ] * pdf = mean(w f c L)
+    let bsdf_expectation = bsdf_mean / count;
+    let total = (nee_expectation + bsdf_expectation) * omega;
+    let target =
+        f64::from(sample_cos(normal, key_dir)) / f64::from(std::f32::consts::PI) * omega * radiance;
+    assert!(
+        (total / target - 1.0).abs() < 1e-3,
+        "NEE + BSDF expectation {total} vs analytic {target}"
+    );
+    // The BSDF share is vanishingly small: the surface would have to hit a 0.27 degree
+    // disc by chance, which is why NEE exists.
+    assert!(bsdf_expectation / nee_expectation < 1e-3);
+}
+
+/// `n . d`, spelled out so the test reads like its formula.
+fn sample_cos(n: Vec3, d: Vec3) -> f32 {
+    n.dot(d)
+}
+
+/// The frosted-exterior NEE deposit of an analytic-sun draw equals the analytic direct-light
+/// value `(cos / pi) * Omega * L_sun(lambda)` per channel -- the light sample's radiance
+/// is the sun's `factor * (spd * exposure)`, the same expression the BSDF-sampled lookup
+/// evaluates inside the disc -- and a surface facing away gets none.
+#[test]
+fn frosted_exterior_nee_deposits_the_analytic_sun_value() {
+    let (environment, key_dir) = sun_environment();
+    let planes = StandardGemCuts::standard_round_brilliant();
+    let plane_soa = super::super::intersect::build_plane_soa(&planes);
+    let nee = super::NeeContext {
+        environment,
+        plane_soa: &plane_soa,
+        tools: &[],
+        enabled: true,
+    };
+    let lambdas: [f32; NUM_CHANNELS] = std::array::from_fn(|k| 40.0_f32.mul_add(k as f32, 420.0));
+    let stokes = [StokesVector::unpolarized(1.0); NUM_CHANNELS];
+    let omega = f64::from(std::f32::consts::TAU * (1.0 - 0.999_988_9f32));
+    for seed in 0..32u32 {
+        let mut deposit = [0.0f32; NUM_CHANNELS];
+        super::frosted::nee_contribution_frosted_exterior(
+            nee,
+            Vec3::ZERO,
+            &lambdas,
+            key_dir,
+            hash_u32(seed),
+            3,
+            &stokes,
+            &mut deposit,
+        );
+        for k in 0..NUM_CHANNELS {
+            let spd = f64::from(LightingPreset::DaylightSun.spectral_power(lambdas[k]));
+            // cos is 1 - O(1e-5) over the disc; the horizon blend at this key is 1.
+            let expected = std::f64::consts::FRAC_1_PI * omega * 40_000.0 * spd * 1.3;
+            assert!(
+                (f64::from(deposit[k]) / expected - 1.0).abs() < 2e-3,
+                "seed {seed} channel {k}: deposit {} vs analytic {expected}",
+                deposit[k]
+            );
+        }
+    }
+    // A surface facing away from the sun gets no light sample.
+    let mut dark = [0.0f32; NUM_CHANNELS];
+    super::frosted::nee_contribution_frosted_exterior(
+        nee,
+        Vec3::ZERO,
+        &lambdas,
+        -key_dir,
+        7,
+        3,
+        &stokes,
+        &mut dark,
+    );
+    assert_eq!(dark, [0.0; NUM_CHANNELS]);
 }
 
 // The decisive NEE-on-vs-off unbiasedness measurement lives in `transport.rs`'s own

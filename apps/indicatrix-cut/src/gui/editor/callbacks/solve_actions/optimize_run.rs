@@ -1,24 +1,24 @@
-//! "Optimize"'s dispatch: parses the weight form, builds the run's material/config
-//! prelude, and spawns the off-thread coordinate search.
+//! "Optimize"'s dispatch: builds the run from the Optimize tab (objective, what may
+//! change, angle ranges, budget, seed, candidates), builds its material prelude, and
+//! spawns the off-thread search.
 
 use super::{OPTIMIZE_ACTIVITY_ID, RunProvenance, optimize_outcome::handle_optimize_outcome};
 use crate::{
-    EditorModel, MainWindow, OptimizeResultRow, ViewportModel,
+    EditorModel, MainWindow, OptimizeChangeRow, OptimizeModel, OptimizeResultRow,
     bridge::render_thread::RenderContext,
     gui::{
         editor::{
-            auto_solve, optimize_solve,
+            auto_solve,
+            optimize_panel::{self, WeightBoxes},
+            optimize_solve::{self, OptimizeRunRequest},
             stall_guard::stall_guard,
             state::EditorState,
-            view::{configured_optimize_max_evaluations, parse_optimize_weights},
         },
         show_toast,
     },
 };
-use indicatrix::optics::{LightingPreset, materials::GemMaterial};
-use indicatrix_cut_core::{
-    Design, MaterialSelection, ObjectiveWeights, OptimizeConfig, OptimizeOutcome, free_tier_indices,
-};
+use indicatrix::optics::materials::GemMaterial;
+use indicatrix_cut_core::{Design, MaterialSelection, OptimizeOutcome};
 // The RI defaulting, the "only selected tiers" pinning and the start status line moved to
 // `indicatrix_editor::optimize_view` (shared with the web Optimize tab); imported at
 // their old names, which this module's tests exercise through `super::*`.
@@ -33,17 +33,19 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering as AtomicOrdering},
     },
+    time::Instant,
 };
 
-/// "Optimize": the explicit, off-thread, cancellable coordinate search over the
-/// design's free tier angles -- see `optimize_solve`'s module doc comment for the
-/// threading/cancellation/progress machinery. Guarded by `editor_optimize_running`
-/// (not `EditorState::optimize` being `Some`), the same non-`Send` completion-handler
-/// reasoning [`super::deep_solve_run::setup_deep_solve_callback`] documents.
+/// "Optimize": the explicit, off-thread, cancellable search over the design's tier angles --
+/// see `optimize_solve`'s module doc comment for the threading/cancellation/progress
+/// machinery. Guarded by `editor_optimize_running` (not `EditorState::optimize` being
+/// `Some`), the same non-`Send` completion-handler reasoning
+/// [`super::deep_solve_run::setup_deep_solve_callback`] documents.
 ///
-/// Unlike Deep Solve, a completed/cancelled run's result is not merely displayed: it
-/// is stashed in `EditorState::pending_optimize` (paired with the design generation
-/// it ran against) so [`super::optimize_outcome::setup_optimize_apply_callback`] can commit it later -- this
+/// Unlike Deep Solve, a completed/cancelled run's result is not merely displayed: its
+/// candidates are kept by `optimize_panel` and the picked one is stashed in
+/// `EditorState::pending_optimize` (paired with the design generation it ran against) so
+/// [`super::optimize_outcome::setup_optimize_apply_callback`] can commit it later -- this
 /// callback itself never touches `design`/`history`.
 ///
 /// `run_epoch` guards against the same superseded-run race
@@ -53,6 +55,10 @@ use std::{
 /// cancel-then-immediately-restart click is still possible, and its stale `on_done`
 /// would otherwise be free to overwrite a genuinely running new search's live status
 /// or stash the WRONG result into `pending_optimize`.
+///
+/// The five arguments are the weight boxes, the yield slider and the signed tone slider; the
+/// command bar's Optimize button and the tab's own pass them, and a preset other than
+/// "Custom" ignores them.
 ///
 /// When `design.material` names no preset and carries no RI override (a brand-new
 /// design, or an untouched `.asc` import), this resolves a `refractive_index_override`
@@ -74,7 +80,8 @@ pub(in crate::gui::editor) fn setup_optimize_callback(
         move |windowing: SharedString,
               extinction: SharedString,
               tilt_brilliance: SharedString,
-              yield_weight: f32| {
+              yield_weight: f32,
+              tone: f32| {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
@@ -84,11 +91,12 @@ pub(in crate::gui::editor) fn setup_optimize_callback(
                     &state,
                     &render_ctx,
                     &run_epoch,
-                    OptimizeWeightForm {
+                    WeightBoxes {
                         windowing: &windowing,
                         extinction: &extinction,
                         tilt_brilliance: &tilt_brilliance,
                         yield_weight,
+                        tone,
                     },
                 );
             });
@@ -96,27 +104,27 @@ pub(in crate::gui::editor) fn setup_optimize_callback(
     );
 }
 
-/// The `on_optimize` handler's actual body, pulled out of
-/// [`setup_optimize_callback`] purely to keep that function under clippy's
-/// function-length lint -- see its own doc comment for the material-RI-defaulting
-/// and "only selected tiers" behaviour implemented here.
-///
-/// Named distinctly from `retarget_actions::start_optimize_run` (a different,
-/// retarget-specific Optimize entry point in a sibling module) purely to avoid two
-/// same-named private functions reading as one shared thing when they aren't --
-/// Rust itself has no conflict either way, since each is module-scoped.
-/// Everything [`begin_tier_optimize_run`] needs to build before dispatching the
-/// worker, beyond the target `design` itself -- pulled into its own
-/// struct/function purely to keep that function under clippy's function-length
-/// lint. See each field's own former inline comment (now on this struct).
+/// Everything [`begin_tier_optimize_run`] reads from the editor state before it
+/// dispatches the worker, beyond the target `design` and the plan itself. It is its
+/// own struct, built by [`prepare_optimize_run`], to keep that function under clippy's
+/// function-length lint.
 struct OptimizeRunPrep {
+    /// The design's material, with an RI filled in when it names no preset.
     material_selection: MaterialSelection,
+    /// The catalogue materials the worker resolves `material_selection` against: its
+    /// own owned copy.
     custom_materials: Vec<GemMaterial>,
+    /// The RI that was filled in, if any, for the start status line.
     defaulted_ri: Option<f64>,
-    config: OptimizeConfig,
+    /// The design generation and epoch the run started against, so the completion
+    /// handler can tell a stale or replaced design.
     provenance: RunProvenance,
+    /// The slot the outcome waits in until the cutter picks a candidate and applies it.
     pending_optimize: Arc<Mutex<Option<(OptimizeOutcome, u64)>>>,
+    /// This run's number from `run_epoch`.
     this_run: u64,
+    /// The shared epoch counter; a finishing run whose `this_run` is no longer the
+    /// latest has been superseded.
     run_epoch_done: Arc<AtomicU64>,
 }
 
@@ -125,14 +133,12 @@ struct OptimizeRunPrep {
 /// mutates it); `run_epoch` is bumped here, the one side effect this otherwise
 /// pure capture has.
 fn prepare_optimize_run(
-    ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
     st: &EditorState,
-    weights: ObjectiveWeights,
     run_epoch: &Arc<AtomicU64>,
 ) -> OptimizeRunPrep {
     let mut material_selection = st.design.material.clone();
-    // `OptimizeJob::custom_materials` (see `optimize_solve::spawn_optimize_solve`)
+    // `OptimizeRunRequest::custom_materials` (see `optimize_solve::spawn_optimize_run`)
     // is a plain `Vec` -- a one-shot worker's own owned copy, not
     // `RenderContext`'s hot-path per-frame snapshot -- so this is the one actual
     // deep copy on this path, same as before `RenderContext::custom_materials`
@@ -147,36 +153,11 @@ fn prepare_optimize_run(
         .clone();
     let defaulted_ri =
         default_optimize_material_ri(&st.design, &mut material_selection, &custom_materials);
-    // Budget/seed/polish are all real
-    // `OptimizeConfig` fields already (`crates/indicatrix-cut-core/src/
-    // optimize/search.rs`) that nothing on the GUI side ever set to
-    // anything but their defaults -- read here from `EditorModel`
-    // properties `editor_inspector.slint` still needs a form for.
-    let seed = ui
-        .global::<EditorModel>()
-        .get_optimize_seed_text()
-        .trim()
-        .parse::<u64>()
-        .unwrap_or(0);
-    let max_evaluations = configured_optimize_max_evaluations(ui);
-    let mut config = OptimizeConfig {
-        weights,
-        seed,
-        max_evaluations,
-        lighting: LightingPreset::from_index(
-            ui.global::<ViewportModel>().get_selected_lighting_index(),
-        ),
-        ..OptimizeConfig::default()
-    };
-    if !ui.global::<EditorModel>().get_optimize_polish_enabled() {
-        config.polish_start_step_deg = None;
-    }
     let this_run = run_epoch.fetch_add(1, AtomicOrdering::Relaxed) + 1;
     OptimizeRunPrep {
         material_selection,
         custom_materials,
         defaulted_ri,
-        config,
         provenance: RunProvenance::capture(st),
         pending_optimize: Arc::clone(&st.pending_optimize),
         this_run,
@@ -184,65 +165,67 @@ fn prepare_optimize_run(
     }
 }
 
-/// The Optimize tab's four weight-form inputs, bundled purely to keep
-/// [`begin_tier_optimize_run`] under clippy's `too_many_arguments` lint. `Copy`:
-/// every field already is (a `&str`/an `f32`), so passing this by value is a plain
-/// copy, never a move clippy's `needless_pass_by_value` would rather see taken
-/// by reference.
-#[derive(Clone, Copy)]
-struct OptimizeWeightForm<'a> {
-    windowing: &'a str,
-    extinction: &'a str,
-    tilt_brilliance: &'a str,
-    yield_weight: f32,
+/// The share of the search's evaluation budget done, `0.0` to `1.0`, for the progress bar.
+fn progress_fraction(progress: &optimize_solve::OptimizeSolveProgress) -> f32 {
+    (progress.evaluations as f32 / progress.max_evaluations.max(1) as f32).clamp(0.0, 1.0)
 }
 
-/// [`begin_tier_optimize_run`]'s own weight-form parsing, split out purely to
-/// keep that function under clippy's function-length lint -- toasts and returns
-/// `None` on a malformed field, exactly like the inline version this replaces.
-fn parse_weights_or_toast(
-    ui: &MainWindow,
-    weight_form: OptimizeWeightForm<'_>,
-) -> Option<ObjectiveWeights> {
-    match parse_optimize_weights(
-        weight_form.windowing,
-        weight_form.extinction,
-        weight_form.tilt_brilliance,
-        weight_form.yield_weight,
-    ) {
-        Ok(weights) => Some(weights),
-        Err(e) => {
-            show_toast(ui, &e, "error");
-            None
-        }
-    }
+/// The panel the moment a run starts: busy, the start status, and nothing left of the
+/// previous run -- its candidates may not be applied or compared while the search is
+/// going, and its pending outcome is dropped with them.
+fn mark_run_started(ui: &MainWindow, st: &EditorState, defaulted_ri: Option<f64>) {
+    let editor = ui.global::<EditorModel>();
+    editor.set_optimize_running(true);
+    editor.set_optimize_status(optimize_start_status(defaulted_ri).into());
+    editor.set_optimize_status_is_problem(false);
+    editor.set_optimize_can_apply(false);
+    editor.set_optimize_result_rows(ModelRc::new(
+        VecModel::from(Vec::<OptimizeResultRow>::new()),
+    ));
+    editor.set_optimize_change_rows(ModelRc::new(
+        VecModel::from(Vec::<OptimizeChangeRow>::new()),
+    ));
+    optimize_panel::clear_results(ui);
+    *st.pending_optimize
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 }
 
+/// Starts one Optimize run from the Optimize tab: reads the tab, marks the panel busy,
+/// registers the status-strip activity and spawns the off-thread search. The run's
+/// outcome goes to [`handle_optimize_outcome`]; `run_epoch` is explained on
+/// [`setup_optimize_callback`].
 fn begin_tier_optimize_run(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
     render_ctx: &Arc<Mutex<RenderContext>>,
     run_epoch: &Arc<AtomicU64>,
-    weight_form: OptimizeWeightForm<'_>,
+    boxes: WeightBoxes<'_>,
 ) {
-    // Also guards against Solve or Deep Solve
-    // already running -- see `setup_deep_solve_callback`'s own doc
-    // comment above for why.
+    // Also guards against Solve or Deep Solve already running -- see
+    // `super::deep_solve_run::setup_deep_solve_callback`'s doc comment for why.
     let model = ui.global::<EditorModel>();
     if model.get_optimize_running() || model.get_solve_running() || model.get_deep_solve_running() {
         return;
     }
-    let Some(weights) = parse_weights_or_toast(ui, weight_form) else {
-        return;
-    };
     let mut st = state.borrow_mut();
-    if free_tier_indices(&st.design).is_empty() {
+    // The tab's whole state in one read: objective, what may change, the ranges, budget,
+    // seed, candidates. A field that cannot be read is refused by name before anything runs.
+    let plan = match optimize_panel::plan_from_ui(ui, &st.design, boxes) {
+        Ok(plan) => plan,
+        Err(message) => {
+            show_toast(ui, &message, "error");
+            return;
+        }
+    };
+    if plan.movable_tiers == 0 {
         // `EditorView` only shows this button enabled when `optimize_available`
         // is true -- this only guards a race with a concurrent edit disabling
         // it out from under a stale click, not the common path.
         show_toast(
             ui,
-            "Optimize has nothing free to move on this design right now.",
+            "Optimize has no tier it may change right now. Tick \"Vary anchored tiers\" in the \
+             Optimize tab, or adopt a tier first.",
             "error",
         );
         return;
@@ -253,46 +236,33 @@ fn begin_tier_optimize_run(
     let design_snapshot = st.design.clone();
     // When `EditorModel.optimize_only_selected` is on and at
     // least one tier is multi-selected, every OTHER free tier is pinned to
-    // its own current mast before the search ever sees it, so
-    // `free_tier_indices` inside `optimize_design` only ever finds the
-    // tiers the cutter actually asked it to touch. `AngleChange::index`
+    // its own current mast before the search ever sees it, so the free tiers
+    // are only the ones the cutter actually asked it to touch. `AngleChange::index`
     // stays valid against `design_snapshot`/the real `st.design` either
-    // way -- see `pin_non_selected_free_tiers`'s own doc comment.
+    // way -- see `pin_non_selected_free_tiers`'s own doc comment. The same selection
+    // limits which anchored tiers may vary.
     let only_selected = ui.global::<EditorModel>().get_optimize_only_selected();
     let Some(design) = optimize_target_design(ui, &st, only_selected) else {
         return;
     };
+    let only_tiers =
+        (only_selected && !st.multi_selected.is_empty()).then(|| st.multi_selected.clone());
     let OptimizeRunPrep {
         material_selection,
         custom_materials,
         defaulted_ri,
-        config,
         provenance,
         pending_optimize,
         this_run,
         run_epoch_done,
-    } = prepare_optimize_run(ui, render_ctx, &st, weights, run_epoch);
+    } = prepare_optimize_run(render_ctx, &st, run_epoch);
 
-    ui.global::<EditorModel>().set_optimize_running(true);
-    ui.global::<EditorModel>()
-        .set_optimize_status(optimize_start_status(defaulted_ri).into());
-    ui.global::<EditorModel>()
-        .set_optimize_status_is_problem(false);
-    ui.global::<EditorModel>().set_optimize_can_apply(false);
-    ui.global::<EditorModel>()
-        .set_optimize_result_rows(ModelRc::new(
-            VecModel::from(Vec::<OptimizeResultRow>::new()),
-        ));
-    ui.global::<EditorModel>()
-        .set_optimize_change_rows(ModelRc::new(VecModel::from(
-            Vec::<crate::OptimizeChangeRow>::new(),
-        )));
+    mark_run_started(ui, &st, defaulted_ri);
 
-    // See
-    // `setup_deep_solve_callback`'s matching comment for why this reaches the
-    // shared registry through `auto_solve::activity()` rather than a new
-    // parameter, and why `cancel` reaches back through `state` rather than
-    // `handle` (which does not exist yet at this point).
+    // See `super::deep_solve_run::begin_deep_solve_run`'s matching comment for why this
+    // reaches the shared registry through `auto_solve::activity()` rather than a new
+    // parameter, and why `cancel` reaches back through `state` rather than `handle`
+    // (which does not exist yet at this point).
     let activity = auto_solve::activity();
     let activity_id = activity.as_ref().map(|a| {
         a.start(
@@ -312,21 +282,29 @@ fn begin_tier_optimize_run(
         OPTIMIZE_ACTIVITY_ID.with(|cell| *cell.borrow_mut() = activity_id);
     }
 
+    let started = Instant::now();
     let ui_weak = ui.as_weak();
-    let handle = optimize_solve::spawn_optimize_solve(
+    let handle = optimize_solve::spawn_optimize_run(
         ui_weak,
-        design,
-        material_selection,
-        custom_materials,
-        config,
+        OptimizeRunRequest {
+            design,
+            material_selection,
+            custom_materials,
+            config: plan.config,
+            options: plan.options,
+            only_tiers,
+        },
         |ui: &MainWindow, progress: optimize_solve::OptimizeSolveProgress| {
             ui.global::<EditorModel>()
                 .set_optimize_status(optimize_progress_status(&progress).into());
+            ui.global::<OptimizeModel>()
+                .set_progress(progress_fraction(&progress));
         },
-        move |ui: &MainWindow, outcome: optimize_solve::OptimizeSolveOutcome| {
-            // This run is finishing on its own -- see `setup_deep_solve_callback`'s
-            // matching comment for why an already-finished id is a harmless no-op.
-            // Fetched on the UI thread, not captured -- this closure must be `Send`.
+        move |ui: &MainWindow, outcome: optimize_solve::OptimizeRunOutcome| {
+            // This run is finishing on its own -- see
+            // `super::deep_solve_run::begin_deep_solve_run`'s matching comment for why an
+            // already-finished id is a harmless no-op. Fetched on the UI thread, not
+            // captured -- this closure must be `Send`.
             if let (Some(activity), Some(id)) = (auto_solve::activity(), activity_id) {
                 activity.finish(id);
             }
@@ -335,7 +313,8 @@ fn begin_tier_optimize_run(
                     *cell.borrow_mut() = None;
                 }
             });
-            // A superseded run -- see this function's own doc comment.
+            // A superseded run -- see [`setup_optimize_callback`]'s doc comment on
+            // `run_epoch`.
             if run_epoch_done.load(AtomicOrdering::Relaxed) != this_run {
                 return;
             }
@@ -345,13 +324,14 @@ fn begin_tier_optimize_run(
                 &provenance,
                 &pending_optimize,
                 &design_snapshot,
+                started.elapsed().as_secs_f32(),
             );
         },
     );
     st.optimize = Some(handle);
 }
 
-/// The design [`begin_tier_optimize_run`] actually hands to `optimize_design` --
+/// The design [`begin_tier_optimize_run`] actually hands to the search --
 /// `st.design` unchanged, or (when multi-selection is active)
 /// [`pin_non_selected_free_tiers`]'s restricted clone. Pulled out purely to keep
 /// `begin_tier_optimize_run` under clippy's function-length lint.
@@ -402,6 +382,7 @@ fn optimize_progress_status(progress: &optimize_solve::OptimizeSolveProgress) ->
         progress.stage,
         progress.evaluations,
         progress.max_evaluations,
+        progress.start,
         progress.elapsed.as_secs_f32(),
     )
 }
@@ -410,7 +391,40 @@ fn optimize_progress_status(progress: &optimize_solve::OptimizeSolveProgress) ->
 mod tests {
     use super::*;
     use indicatrix::geometry::meet_solver::MeetConstraint;
-    use std::collections::BTreeSet;
+    use indicatrix_cut_core::optimize::SearchStage;
+    use std::{collections::BTreeSet, time::Duration};
+
+    // --- progress_fraction ---
+
+    fn progress(
+        evaluations: usize,
+        max_evaluations: usize,
+    ) -> optimize_solve::OptimizeSolveProgress {
+        optimize_solve::OptimizeSolveProgress {
+            evaluations,
+            max_evaluations,
+            stage: SearchStage::Coordinate,
+            start: None,
+            elapsed: Duration::from_secs(1),
+        }
+    }
+
+    #[test]
+    fn the_progress_bar_is_the_share_of_the_budget_done() {
+        assert!((progress_fraction(&progress(50, 200)) - 0.25).abs() < 1e-6);
+        assert_eq!(progress_fraction(&progress(0, 200)), 0.0);
+    }
+
+    #[test]
+    fn the_progress_bar_never_leaves_zero_to_one() {
+        assert_eq!(progress_fraction(&progress(300, 200)), 1.0);
+        assert_eq!(
+            progress_fraction(&progress(5, 0)),
+            1.0,
+            "no budget known yet"
+        );
+        assert_eq!(progress_fraction(&progress(0, 0)), 0.0);
+    }
 
     // --- default_optimize_material_ri (must resolve a CUSTOM catalogue
     // material's own RI, not just a built-in's) ---
@@ -428,6 +442,8 @@ mod tests {
             specific_gravity_override: None,
             refractive_index_override: None,
             body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
         };
         assert_eq!(
             default_optimize_material_ri(&design, &mut selection, &[]),

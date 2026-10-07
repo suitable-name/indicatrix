@@ -97,6 +97,21 @@ pub struct SceneState {
     /// the worker (`Fluorescence::validate`).
     #[serde(default)]
     pub fluorescence: Fluorescence,
+    /// Angular radius in degrees of the viewer's head shadow on the lit presets (v21),
+    /// `0.0..=30.0`; `0.0` is off, `16.0` the default --
+    /// `EnvironmentSource::Studio::head_shadow_deg`. Ignored by the product-photography
+    /// presets and for an HDR environment. Appended last for the postcard reason of
+    /// [`Self::tools`]; `#[serde(default = "default_head_shadow_deg")]` for the
+    /// `scene.json` reason.
+    #[serde(default = "default_head_shadow_deg")]
+    pub head_shadow_deg: f32,
+}
+
+/// The default head-shadow radius (`16.0` degrees), the serde default of
+/// [`SceneState::head_shadow_deg`].
+#[must_use]
+pub const fn default_head_shadow_deg() -> f32 {
+    indicatrix::optics::raytracer::DEFAULT_HEAD_SHADOW_DEG
 }
 
 /// The unscaled surface-glare value (`1.0`), the serde default of

@@ -62,10 +62,15 @@ indicatrix-solid = { workspace = true }
 # types, and re-exports the rest at the old module paths; see
 # `indicatrix-editor`'s README.
 indicatrix-editor = { workspace = true }
+# The render job file, state machine and progress types (`gui::render_jobs`): shared with
+# `indicatrix-cli render` / `tilt-video`, which run the same executor.
+indicatrix-render-jobs = { workspace = true }
 glam = { workspace = true }
 # "gif" added alongside the pre-existing "png" for `gui::tilt::video_export::encode`'s
 # animated-GIF fallback when no `ffmpeg` executable is found on PATH to mux an MP4.
-image = { workspace = true, features = ["png", "gif"] }
+# "jpeg" for the photos of "Locate inclusion from photos" (`gui::rough_plan::locate::photo`):
+# the decoder (`zune-jpeg`) is already in the lock file through Slint's own image loading.
+image = { workspace = true, features = ["png", "gif", "jpeg"] }
 # Local import ("Import" button) and export ("Export .asc" -- see `gui::library`) of
 # the user's own `.asc` files.
 indicatrix-formats = { workspace = true }
@@ -148,6 +153,15 @@ default = []
 # needs no `wgpu`/`pollster` dependency tree, so an ordinary build stays exactly as lean
 # as it was. See `bridge::render_thread::GpuBackend`.
 gpu = ["indicatrix/gpu"]
+# Shows the physics-based color editor in the Gem Material Editor: the "Color Mode:
+# Fantasy | Physics" toggle and the whole host-crystal / element-recipe section
+# (`ChromophorePicker`), plus the "color changed by an older version" question and the
+# "color data updated" badge. UI only: the data layer is compiled and active in EVERY
+# build -- a material's stored color mode and recipe (vault `color_recipe_json`, the
+# design file's `color_recipe`) are kept byte-for-byte and still render as before. Off by
+# default (and left out of the shipped/PGO feature sets) because the physical color mode is
+# out of focus; see `gui::optics::physics_state::PHYSICS_COLOR_UI`.
+physical-color = []
 
 [build-dependencies]
 slint-build = { workspace = true }

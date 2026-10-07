@@ -13,7 +13,7 @@ use crate::{
     preform::PreformSpec,
 };
 use glam::DVec3;
-use indicatrix::geometry::tool::{MAX_TOOL_PRIMITIVES, ToolKind, ToolSweep};
+use indicatrix::geometry::tool::{MAX_TOOL_PRIMITIVES, ToolKind, ToolPrimitive, ToolSweep};
 use indicatrix_formats::native::design::CONCAVE_FRAME_V0;
 
 fn close(a: DVec3, b: DVec3, tol: f64) -> bool {
@@ -291,7 +291,7 @@ fn a_design_without_concave_tiers_resolves_to_no_tools_and_the_same_planes() {
     let (through, _) = design
         .concave_tools_through_tier(&solved, TierRef::Flat(0))
         .expect("no tiers");
-    assert!(through.is_empty());
+    assert_eq!(through, [] as [ToolPrimitive; 0]);
 }
 
 #[test]
@@ -370,7 +370,7 @@ fn facet_geometry_of_a_planar_design_is_its_facet_planes_alone() {
     );
     let solved = design.solve().expect("every tier is pinned");
     let (facets, tools) = design.facet_geometry_from_solved(&solved).expect("planar");
-    assert!(tools.is_empty());
+    assert_eq!(tools, [] as [ToolPrimitive; 0]);
     assert_eq!(
         facets,
         design.planes_from_solved(&solved)[design.preform.planes().len()..]
@@ -386,7 +386,7 @@ fn facet_geometry_of_an_open_facet_stone_has_no_tools_but_bad_tiers_still_fail()
     let (_, tools) = design
         .facet_geometry_from_solved(&solved)
         .expect("an open stone is not an error");
-    assert!(tools.is_empty());
+    assert_eq!(tools, [] as [ToolPrimitive; 0]);
 
     design.concave_tiers[0].diameter_ratio = 0.0;
     assert!(matches!(

@@ -176,6 +176,166 @@ fn observer_head_shadow_darkens_only_the_lit_models() {
     }
 }
 
+/// The default 16 degree cone is the pair of literals, bit for bit; `0` is off; the
+/// width grows the cone; NaN and out-of-range inputs are sanitised.
+#[test]
+fn head_shadow_cosines_default_is_the_literal_pair() {
+    let [outer, inner] = head_shadow_cosines(16.0);
+    assert_eq!(outer.to_bits(), 0.951_056_5f32.to_bits());
+    assert_eq!(inner.to_bits(), 0.970_295_7f32.to_bits());
+    assert_eq!(
+        head_shadow_cosines(DEFAULT_HEAD_SHADOW_DEG),
+        DEFAULT_HEAD_SHADOW_COSINES
+    );
+    assert_eq!(head_shadow_cosines(f32::NAN), DEFAULT_HEAD_SHADOW_COSINES);
+    // Off: a pair no dot product reaches, so the smoothstep is exactly 0.
+    let [off_outer, off_inner] = head_shadow_cosines(0.0);
+    assert!(off_outer > 1.0 && off_inner > off_outer);
+    assert_eq!(head_shadow_cosines(-5.0), [off_outer, off_inner]);
+    // Wider shadow -> smaller cosines, still ordered outer < inner.
+    let [wide_outer, wide_inner] = head_shadow_cosines(25.0);
+    assert!(wide_outer < outer && wide_inner < inner && wide_outer < wide_inner);
+    // Clamped to a sane range: a tiny width behaves as 3 degrees, a huge one as 88.
+    assert_eq!(head_shadow_cosines(1.0), head_shadow_cosines(3.0));
+    assert_eq!(head_shadow_cosines(500.0), head_shadow_cosines(88.0));
+}
+
+/// `with_head_shadow` stores a sanitised width and leaves everything else alone.
+#[test]
+fn with_head_shadow_stores_a_sanitised_width() {
+    let base = LightingPreset::LightTent.studio(1.0, 0.4, 0.35);
+    assert_eq!(base.head_shadow_deg().to_bits(), 16.0f32.to_bits());
+    assert_eq!(base.with_head_shadow(25.0).head_shadow_deg(), 25.0);
+    assert_eq!(base.with_head_shadow(0.0).head_shadow_deg(), 0.0);
+    assert_eq!(base.with_head_shadow(-3.0).head_shadow_deg(), 0.0);
+    assert_eq!(base.with_head_shadow(f32::NAN).head_shadow_deg(), 16.0);
+    assert_eq!(base.with_head_shadow(1.0).head_shadow_deg(), 3.0);
+    assert_eq!(base.with_head_shadow(200.0).head_shadow_deg(), 88.0);
+    assert_eq!(
+        base.with_head_shadow(25.0)
+            .with_backdrop(0.5)
+            .head_shadow_deg(),
+        25.0,
+        "with_backdrop must keep the head shadow"
+    );
+    assert_eq!(
+        base.with_head_shadow(25.0)
+            .with_surface_glare(0.5)
+            .head_shadow_deg(),
+        25.0,
+        "with_surface_glare must keep the head shadow"
+    );
+}
+
+/// Off removes the darkening; a wider shadow darkens a direction the default leaves lit;
+/// far outside both cones nothing changes.
+#[test]
+fn head_shadow_width_off_default_and_wide() {
+    let observer = Vec3::new(0.2, 0.9, -0.3).normalize();
+    let perp = observer.cross(Vec3::X).normalize();
+    let at = |degrees: f32| {
+        let (sin_a, cos_a) = degrees.to_radians().sin_cos();
+        observer.mul_add(Vec3::splat(cos_a), perp * sin_a)
+    };
+    let rig = crate::optics::studio_rig::StudioRig::new(0.4, 0.35);
+    let sample = |dir: Vec3, preset: LightingPreset, deg: f32| {
+        sample_studio_environment_with_rig_shadow(
+            dir,
+            560.0,
+            preset,
+            1.0,
+            &rig,
+            observer,
+            head_shadow_cosines(deg),
+        )
+    };
+    for preset in [
+        LightingPreset::IsoHemisphere,
+        LightingPreset::LightTent,
+        LightingPreset::DaylightDome,
+    ] {
+        let unobserved = sample_studio_environment(at(0.0), 560.0, preset, 1.0, 0.4, 0.35);
+        assert_eq!(
+            sample(at(0.0), preset, 0.0).to_bits(),
+            unobserved.to_bits(),
+            "{preset:?}: head shadow 0 must not darken the eye direction"
+        );
+        assert_eq!(sample(at(0.0), preset, 16.0), 0.0, "{preset:?}: default");
+        assert_eq!(sample(at(0.0), preset, 25.0), 0.0, "{preset:?}: wide");
+        // 20 degrees: outside the default cone, inside the 25 degree one.
+        let default_20 = sample(at(20.0), preset, 16.0);
+        assert!(
+            default_20 > 0.0,
+            "{preset:?}: default leaves 20 degrees lit"
+        );
+        assert_eq!(
+            sample(at(20.0), preset, 25.0),
+            0.0,
+            "{preset:?}: the wide shadow covers 20 degrees"
+        );
+        // 40 degrees: outside every cone, the shadow width must not matter.
+        let far = sample_studio_environment(at(40.0), 560.0, preset, 1.0, 0.4, 0.35);
+        for deg in [0.0, 16.0, 25.0] {
+            assert_eq!(sample(at(40.0), preset, deg).to_bits(), far.to_bits());
+        }
+    }
+    // The Studio arm ignores the observer and so the width.
+    let studio = sample(at(0.0), LightingPreset::RingLights, 25.0);
+    let studio_default = sample(at(0.0), LightingPreset::RingLights, 16.0);
+    assert_eq!(studio.to_bits(), studio_default.to_bits());
+}
+
+/// The default-width path is bit-identical to the unparameterised one: the same 192
+/// (direction, wavelength) pairs per preset the Studio golden uses, through the public
+/// rig sampler, the explicit-cone sampler and the `EnvironmentSource` entry points
+/// (`with_head_shadow(16.0)` included).
+#[test]
+fn default_head_shadow_is_bit_identical_to_the_unparameterised_call() {
+    let observer = Vec3::new(0.2, 0.9, -0.3).normalize();
+    let rig = crate::optics::studio_rig::StudioRig::new(0.4, 0.35);
+    for preset in LightingPreset::ALL {
+        let plain = preset.studio(1.2, 0.4, 0.35);
+        let explicit = plain.with_head_shadow(16.0);
+        let lambdas = baseline_lambdas(preset);
+        for k in 0..64 {
+            let phi = (k as f32 + 0.5) * (std::f32::consts::PI * (3.0 - 5.0f32.sqrt()));
+            let y = (k as f32 + 0.5).mul_add(-(2.0 / 64.0), 1.0);
+            let r = y.mul_add(-y, 1.0).max(0.0).sqrt();
+            let dir = Vec3::new(r * phi.cos(), y, r * phi.sin());
+            for observer in [Vec3::ZERO, observer, dir] {
+                for &lambda in &lambdas {
+                    let reference = sample_studio_environment_with_rig(
+                        dir, lambda, preset, 1.2, &rig, observer,
+                    );
+                    let shadowed = sample_studio_environment_with_rig_shadow(
+                        dir,
+                        lambda,
+                        preset,
+                        1.2,
+                        &rig,
+                        observer,
+                        head_shadow_cosines(16.0),
+                    );
+                    assert_eq!(reference.to_bits(), shadowed.to_bits(), "{preset:?} k={k}");
+                    for source in [plain, explicit] {
+                        let channel =
+                            sample_environment_channel(source, dir, lambda, Some(&rig), observer);
+                        assert_eq!(reference.to_bits(), channel.to_bits(), "{preset:?} k={k}");
+                    }
+                }
+                let channels =
+                    sample_environment_channels(explicit, dir, &lambdas, Some(&rig), observer);
+                for (&lambda, &value) in lambdas.iter().zip(&channels) {
+                    let reference = sample_studio_environment_with_rig(
+                        dir, lambda, preset, 1.2, &rig, observer,
+                    );
+                    assert_eq!(reference.to_bits(), value.to_bits(), "{preset:?} k={k}");
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn legacy_lit_model_labels_resolve_to_the_renamed_presets() {
     assert_eq!(
@@ -189,12 +349,43 @@ fn legacy_lit_model_labels_resolve_to_the_renamed_presets() {
          load as IsoHemisphere"
     );
     assert_eq!(
+        LightingPreset::from_label("Grading tray (D65 hemisphere + head shadow)"),
+        LightingPreset::IsoHemisphere
+    );
+    assert_eq!(LightingPreset::default(), LightingPreset::LightTent);
+    assert_eq!(
+        LightingPreset::from_label("D65 Daylight (5500K)"),
+        LightingPreset::Daylight
+    );
+    assert_eq!(
+        LightingPreset::from_label("no such rig"),
+        LightingPreset::LightTent
+    );
+    assert_eq!(
+        LightingPreset::from_label("D65 Daylight (6500K)"),
+        LightingPreset::Daylight
+    );
+    assert_eq!(
         LightingPreset::from_label("Soft dome + ring lights"),
         LightingPreset::LightTent
     );
     assert_eq!(
         LightingPreset::from_label("Daylight dome + sun"),
         LightingPreset::DaylightDome
+    );
+    // The dome was relabelled; the old label is what saved settings meant: the dome.
+    assert_eq!(
+        LightingPreset::from_label("Daylight sky + sun"),
+        LightingPreset::DaylightDome,
+        "a settings file saved with the old dome label must still load as the dome"
+    );
+    assert_eq!(
+        LightingPreset::from_label("Daylight sky (no sun)"),
+        LightingPreset::DaylightDome
+    );
+    assert_eq!(
+        LightingPreset::from_label("Daylight sky + direct sun"),
+        LightingPreset::DaylightSun
     );
 }
 
@@ -232,11 +423,350 @@ fn new_models_never_exceed_their_documented_peak() {
         max_soft <= 5.5,
         "Light tent peak must not exceed 5.5, got {max_soft}"
     );
-    // Sun (10.0) + aureole (0.30) + sky (<= 0.18) at the sun centre.
+    // The dome is sky only now: aureole (0.30, at the key direction) + sky (<= 0.18, the
+    // horizon value; 0.08 less at the zenith) at most, and the D65 power at 560 nm is 1.0.
+    // 0.18 + 0.30 = 0.48 bounds it analytically; the old cap of 10.5 included the sun (10.0).
     assert!(
-        max_daylight <= 10.5,
-        "Daylight dome peak must not exceed 10.5, got {max_daylight}"
+        max_daylight <= 0.5,
+        "Daylight dome peak must not exceed 0.5, got {max_daylight}"
     );
+}
+
+/// A unit direction `degrees` away from `key`, in an arbitrary but fixed plane.
+fn tilted_from(key: Vec3, degrees: f32) -> Vec3 {
+    let (sin_a, cos_a) = degrees.to_radians().sin_cos();
+    (key * cos_a + key.any_orthonormal_vector() * sin_a).normalize()
+}
+
+/// The sky-only dome has no sun disc: at and around the key direction its radiance is
+/// the sky plus the aureole and nothing else, at every pose.
+#[test]
+fn daylight_dome_has_no_sun_disc() {
+    for (yaw, pitch) in [(0.3f32, 0.6f32), (0.85, 0.95), (-0.5, 1.2), (0.4, 0.35)] {
+        let rig = crate::optics::studio_rig::StudioRig::new(yaw, pitch);
+        for degrees in [0.0f32, 0.1, 0.2, 0.5, 1.0, 2.0, 3.0] {
+            let dir = tilted_from(rig.key_dir, degrees);
+            let value = sample_studio_environment_with_rig(
+                dir,
+                560.0,
+                LightingPreset::DaylightDome,
+                1.0,
+                &rig,
+                Vec3::ZERO,
+            );
+            // sky + aureole, horizon 1 above 3 degrees, no head shadow, no ground.
+            let sky = 0.08f32.mul_add(1.0 - dir.y.max(0.0), 0.10);
+            let aureole = dir.dot(rig.key_dir).max(0.0).powi(8) * 0.30;
+            let expected = (sky + aureole) * d65_relative_spectral_power(560.0);
+            assert!(
+                (value - expected).abs() <= 1e-4,
+                "dome at {degrees} deg from the key (pose {yaw}, {pitch}): {value} vs sky+aureole {expected}"
+            );
+            assert!(value <= 0.5, "no sun: {value}");
+        }
+    }
+}
+
+/// The NEE entry points compute the key direction without building a `StudioRig`; the result
+/// must be bit-identical to the rig's own.
+#[test]
+fn nee_key_dir_is_bit_identical_to_the_studio_rig() {
+    for (yaw, pitch) in [(0.0f32, 1.2f32), (0.84, 0.94), (-2.1, 0.3), (3.0, -0.2)] {
+        let a = rig::key_dir_only_for_test(yaw, pitch);
+        let b = crate::optics::studio_rig::StudioRig::new(yaw, pitch).key_dir;
+        assert_eq!(
+            a.to_array().map(f32::to_bits),
+            b.to_array().map(f32::to_bits)
+        );
+    }
+}
+
+/// The sun disc: radius 0.27 degrees, its f32 solid angle, the radiance the sky lacks
+/// exactly inside it and nowhere outside, and the documented ~82 % direct share of the
+/// horizontal irradiance at the default 72 degree key elevation.
+#[test]
+fn daylight_sun_disc_radiance_and_solid_angle() {
+    use rig::{SUN_DISC_COS, SUN_ONE_MINUS_COS, SUN_RADIANCE, SUN_SOLID_ANGLE};
+
+    let radius_deg = SUN_DISC_COS.acos().to_degrees();
+    assert!(
+        (radius_deg - 0.27).abs() < 0.005,
+        "sun radius {radius_deg} deg should be 0.27"
+    );
+    // The two literals are exactly consistent with the cosine literal and each other.
+    assert_eq!(SUN_ONE_MINUS_COS, 1.0 - SUN_DISC_COS);
+    let omega = std::f32::consts::TAU * (1.0 - SUN_DISC_COS);
+    assert!(
+        (SUN_SOLID_ANGLE / omega - 1.0).abs() < 1e-4,
+        "SUN_SOLID_ANGLE {SUN_SOLID_ANGLE} vs 2 pi (1 - cos) {omega}"
+    );
+    // Within 0.5 % of the analytic small-angle value pi r^2 for r = 0.27 degrees.
+    let small_angle = std::f32::consts::PI * 0.27f32.to_radians().powi(2);
+    assert!((SUN_SOLID_ANGLE / small_angle - 1.0).abs() < 5e-3);
+
+    let exposure = 1.3f32;
+    let spd = d65_relative_spectral_power(560.0);
+    for (yaw, pitch) in [(0.3f32, 0.6f32), (0.85, 1.2566), (-0.5, 1.2)] {
+        let rig = crate::optics::studio_rig::StudioRig::new(yaw, pitch);
+        let sample = |preset: LightingPreset, dir: Vec3| {
+            sample_studio_environment_with_rig(dir, 560.0, preset, exposure, &rig, Vec3::ZERO)
+        };
+        for degrees in [0.0f32, 0.1, 0.2] {
+            let dir = tilted_from(rig.key_dir, degrees);
+            let with_sun = sample(LightingPreset::DaylightSun, dir);
+            let sky_only = sample(LightingPreset::DaylightDome, dir);
+            let sun = with_sun - sky_only;
+            let expected = SUN_RADIANCE * (spd * exposure);
+            assert!(
+                (sun / expected - 1.0).abs() < 1e-4,
+                "{degrees} deg from the key: sun term {sun} vs {expected}"
+            );
+        }
+        // Outside the disc the sun preset is the dome, bit for bit.
+        for degrees in [0.3f32, 0.5, 2.0, 30.0, 120.0] {
+            let dir = tilted_from(rig.key_dir, degrees);
+            assert_eq!(
+                sample(LightingPreset::DaylightSun, dir).to_bits(),
+                sample(LightingPreset::DaylightDome, dir).to_bits(),
+                "{degrees} deg from the key must carry no sun"
+            );
+        }
+    }
+
+    // Direct share of the horizontal irradiance at the default 72 degree key elevation:
+    // E_sky = 2 pi (0.09 - 0.08 / 3) + 0.30 sin(e) 2 pi / 10, E_sun = L Omega sin(e).
+    let sin_e = 72.0f32.to_radians().sin();
+    let e_sky = std::f32::consts::TAU.mul_add(
+        0.09 - 0.08 / 3.0,
+        0.30 * sin_e * std::f32::consts::TAU / 10.0,
+    );
+    let e_sun = SUN_RADIANCE * SUN_SOLID_ANGLE * sin_e;
+    let share = e_sun / (e_sun + e_sky);
+    assert!(
+        (0.80..=0.85).contains(&share),
+        "direct sun share of the horizontal irradiance at 72 deg is {share}, documented ~82 %"
+    );
+}
+
+/// The sun's radiance is faded by the horizon at the key direction and not by the head
+/// shadow (the NEE draw has no observer): a key below the horizon switches it off, and an
+/// observer sitting on the sun leaves the disc lit.
+#[test]
+fn daylight_sun_follows_the_horizon_but_not_the_head_shadow() {
+    let high = crate::optics::studio_rig::StudioRig::new(0.3, 1.0);
+    let at_sun = |rig: &crate::optics::studio_rig::StudioRig, observer: Vec3| {
+        sample_studio_environment_with_rig(
+            rig.key_dir,
+            560.0,
+            LightingPreset::DaylightSun,
+            1.0,
+            rig,
+            observer,
+        )
+    };
+    let lit = at_sun(&high, Vec3::ZERO);
+    let observed = at_sun(&high, high.key_dir);
+    assert!(
+        observed > 0.99 * rig::SUN_RADIANCE,
+        "head shadow must not dim the sun: {observed} (unobserved {lit})"
+    );
+    let below = crate::optics::studio_rig::StudioRig::new(0.3, -0.3);
+    // Only the dim ground term (0.04) is left at a direction below the horizon.
+    assert!(
+        at_sun(&below, Vec3::ZERO) < 0.1,
+        "a sun below the horizon must not shine"
+    );
+}
+
+/// The unit direction `k` of `n` on a golden-angle spiral over the sphere.
+fn spiral_dir(k: u32, n: u32) -> Vec3 {
+    let phi = (k as f32 + 0.5) * (std::f32::consts::PI * (3.0 - 5.0f32.sqrt()));
+    let y = (k as f32 + 0.5).mul_add(-(2.0 / n as f32), 1.0);
+    let r = y.mul_add(-y, 1.0).max(0.0).sqrt();
+    Vec3::new(r * phi.cos(), y, r * phi.sin())
+}
+
+/// Peak caps of the three tent variants (D65 SPD, so `spectral_power(560)` is about 1).
+/// Shop: walls <= 0.66 + key 1.4 + spark 5.0 (the key and the spark never coincide, but the
+/// cap is the sum's bound, 7.1). Window: key 1.4 + walls <= 0.088. Tray: walls <= 0.99
+/// (key and spark are off through `spot_mult` 0) over the ground 0.8 below the horizon.
+#[test]
+fn tent_variants_never_exceed_their_documented_peak() {
+    let mut max = [0.0f32; 3];
+    let presets = [
+        LightingPreset::ShopLights,
+        LightingPreset::WindowDaylight,
+        LightingPreset::WhiteTray,
+    ];
+    for i in 0..2000 {
+        let dir = spiral_dir(i, 2000);
+        for (slot, preset) in presets.into_iter().enumerate() {
+            let v = sample_studio_environment(dir, 560.0, preset, 1.0, 0.4, 0.35);
+            max[slot] = max[slot].max(v);
+        }
+    }
+    let spd = LightingPreset::ShopLights.spectral_power(560.0);
+    assert!(max[0] <= 7.1 * spd, "shop peak {}", max[0]);
+    assert!(max[1] <= 1.5 * spd, "window peak {}", max[1]);
+    assert!(max[2] <= 1.0 * spd, "tray peak {}", max[2]);
+}
+
+/// The light tent's parameters are the identity values the formula had as literals, and
+/// the three variants differ from them (so the harness can tell them apart by params).
+#[test]
+fn tent_params_default_to_the_light_tent_and_variants_are_distinct() {
+    let tent = LightingPreset::LightTent.params();
+    assert_eq!(tent.tent, TentParams::DEFAULT);
+    assert_eq!(tent.tent.walls.to_bits(), 1.0f32.to_bits());
+    assert_eq!(tent.tent.cards.to_bits(), 1.0f32.to_bits());
+    assert_eq!(tent.tent.spark.to_bits(), 1.0f32.to_bits());
+    assert_eq!(tent.tent.ground.to_bits(), 0.02f32.to_bits());
+    assert_eq!(tent.tent.flat.to_bits(), 0.0f32.to_bits());
+    let variants = [
+        LightingPreset::ShopLights,
+        LightingPreset::WindowDaylight,
+        LightingPreset::WhiteTray,
+    ];
+    for (i, a) in variants.into_iter().enumerate() {
+        assert_ne!(a.params().tent, TentParams::DEFAULT, "{a:?}");
+        assert_eq!(
+            a.params().tent.cards.to_bits(),
+            0.0f32.to_bits(),
+            "{a:?} has no cards"
+        );
+        for b in variants.into_iter().skip(i + 1) {
+            assert_ne!(a.params().tent, b.params().tent, "{a:?} vs {b:?}");
+        }
+    }
+    // Only the light tent model reads the knobs; every other preset keeps the default.
+    for preset in LightingPreset::ALL {
+        if !variants.contains(&preset) {
+            assert_eq!(preset.params().tent, TentParams::DEFAULT, "{preset:?}");
+        }
+    }
+}
+
+/// Wall brightness ordering at the zenith (away from the key, the spark and the cards, no
+/// observer): white tray > jewellery shop > window daylight, all under the same D65 SPD.
+/// The window room is dim (0.05-0.09), the shop about 0.5, the tray close to 1.
+#[test]
+fn tent_variant_walls_are_ordered_tray_shop_window() {
+    let up = Vec3::Y;
+    let at = |preset| sample_studio_environment(up, 560.0, preset, 1.0, 0.4, 0.35);
+    let spd = LightingPreset::ShopLights.spectral_power(560.0);
+    let (tray, shop, window) = (
+        at(LightingPreset::WhiteTray) / spd,
+        at(LightingPreset::ShopLights) / spd,
+        at(LightingPreset::WindowDaylight) / spd,
+    );
+    assert!(tray > shop && shop > window, "{tray} {shop} {window}");
+    assert!((0.05..=0.09).contains(&window), "window walls {window}");
+    assert!((0.4..=0.7).contains(&shop), "shop walls {shop}");
+    assert!((0.89..=1.0).contains(&tray), "tray walls {tray}");
+}
+
+/// No cards, spark on or off, and the tray's bright ground, measured against the rig's own
+/// directions: a card centre is as bright as the open wall; the spark exists only in the
+/// shop; the key is on in the shop and the window and off in the tray; below the horizon
+/// the tray shows its 0.8 ground, the window and the shop their dim floors.
+#[test]
+fn tent_variants_have_no_cards_and_the_right_spark_key_and_ground() {
+    let (yaw, pitch) = (0.4f32, 0.35f32);
+    let rig = crate::optics::studio_rig::StudioRig::new(yaw, pitch);
+    let spd = LightingPreset::ShopLights.spectral_power(560.0);
+    let at =
+        |dir: Vec3, preset| sample_studio_environment(dir, 560.0, preset, 1.0, yaw, pitch) / spd;
+    let wall = |dir: Vec3, scale: f32| scale * 0.08f32.mul_add(dir.y.max(0.0), 0.14);
+
+    // A card centre (ring slot 4): the variants show the open wall, the tent does not.
+    // (The tray's walls are flat: 0.18 * 5.0 at every elevation.)
+    let card = rig.ring_dirs[4];
+    for (preset, scale, flat) in [
+        (LightingPreset::ShopLights, 3.0, false),
+        (LightingPreset::WindowDaylight, 0.4, false),
+        (LightingPreset::WhiteTray, 5.0, true),
+    ] {
+        let expected = if flat {
+            0.18 * scale
+        } else {
+            wall(card, scale)
+        };
+        assert!(
+            (at(card, preset) - expected).abs() < 1e-4,
+            "{preset:?}: card centre {} vs open wall {expected}",
+            at(card, preset)
+        );
+    }
+
+    // Spark: the shop has its bare bulb at the fill position, the others do not.
+    assert!(at(rig.fill_dir, LightingPreset::ShopLights) >= 5.0);
+    assert!(at(rig.fill_dir, LightingPreset::WindowDaylight) < 0.2);
+    assert!(at(rig.fill_dir, LightingPreset::WhiteTray) < 1.1);
+
+    // Key: on in the shop and the window, off in the tray.
+    assert!(at(rig.key_dir, LightingPreset::ShopLights) >= 1.4);
+    assert!(at(rig.key_dir, LightingPreset::WindowDaylight) >= 1.4);
+    assert!(at(rig.key_dir, LightingPreset::WhiteTray) < 1.1);
+
+    // Ground (straight down, fully below the horizon blend).
+    let down = -Vec3::Y;
+    assert!((at(down, LightingPreset::WhiteTray) - 0.8).abs() < 1e-4);
+    assert!((at(down, LightingPreset::WindowDaylight) - 0.03).abs() < 1e-4);
+    assert!((at(down, LightingPreset::ShopLights) - 0.05).abs() < 1e-4);
+}
+
+/// `flat == 0` keeps the wall gradient bit for bit: every preset except the tray has
+/// `flat == 0`, and the walls it shows (read off a direction away from the key, spark, cards
+/// and horizon blend, so only the walls contribute) equal the old closed form exactly.
+#[test]
+fn tent_flat_zero_is_bit_identical_to_the_old_wall_values() {
+    for preset in LightingPreset::ALL {
+        if preset != LightingPreset::WhiteTray {
+            assert_eq!(preset.params().tent.flat.to_bits(), 0.0f32.to_bits());
+        }
+    }
+    // The light tent at the zenith (no card, key or spark there): the old formula
+    // `(0.08 * 1 + 0.14) * 1.0` times the card factor 1 (card mask 0), times the horizon
+    // blend and spectral power the lighting adds.
+    let (yaw, pitch) = (0.4f32, 0.35f32);
+    let up = Vec3::Y;
+    let got = sample_studio_environment(up, 560.0, LightingPreset::LightTent, 1.0, yaw, pitch);
+    let spd = LightingPreset::LightTent.spectral_power(560.0);
+    let walls_old = 0.08f32.mul_add(1.0, 0.14) * 1.0;
+    let rig = crate::optics::studio_rig::StudioRig::new(yaw, pitch);
+    let key = (up.dot(rig.key_dir) > 0.9) || (up.dot(rig.fill_dir) > 0.9);
+    if !key {
+        let expected = walls_old * spd;
+        assert!(
+            (got - expected).abs() <= expected * 1e-5,
+            "light tent zenith {got} vs {expected}"
+        );
+    }
+    // The pinned `BASELINE_BITS` LightTent row (unchanged) is the bit-exact check.
+}
+
+/// The white tray's walls do not depend on the elevation: every direction above the horizon,
+/// away from the observer's head shadow, sees the same wall value (about 0.9).
+#[test]
+fn white_tray_walls_are_uniform() {
+    let tray = LightingPreset::WhiteTray.params().tent;
+    assert!((tray.flat - 1.0).abs() < f32::EPSILON);
+    let spd = LightingPreset::WhiteTray.spectral_power(560.0);
+    let mut seen = Vec::new();
+    for y in [0.3f32, 0.5, 0.7, 0.9, 1.0] {
+        let x = y.mul_add(-y, 1.0).max(0.0).sqrt();
+        let dir = Vec3::new(x, y, 0.0).normalize();
+        let v =
+            sample_studio_environment(dir, 560.0, LightingPreset::WhiteTray, 1.0, 0.4, 0.35) / spd;
+        seen.push(v);
+    }
+    for v in &seen {
+        assert!(
+            (v - 0.9).abs() < 0.02,
+            "tray wall {v} not near 0.9 ({seen:?})"
+        );
+        assert!((v - seen[0]).abs() < 0.01, "tray walls vary: {seen:?}");
+    }
 }
 
 /// Largest tolerated bit-pattern distance between a freshly computed value and
@@ -246,9 +776,16 @@ fn new_models_never_exceed_their_documented_peak() {
 /// distance, no separate distance function needed. See the doc comment above
 /// for why this must stay tight rather than a wider, looser bound.
 const MAX_ULP_DIFF: i64 = 2;
-// One row per [`LightingPreset::ALL`] entry, in that order (Daylight, Incandescent,
+// One row per preset in the order the table was recorded (the declaration order, not
+// the combo order of [`LightingPreset::ALL`]): Daylight, Incandescent,
 // RingLights, DarkSpotlight, IsoHemisphere, LightTent, DaylightDome, UvLamp365,
 // UvLamp395) -- the first seven rows are unchanged since the table was first recorded;
+// NOTE (lane SUN, 2026-10-07): the DaylightDome row (index 6) needs NO re-pin even though the
+// dome lost its sun disc: the removed term was `smoothstep(cos 4 deg, cos 2 deg, key_dot) *
+// 10`, exactly `0.0` for every probe direction here (the nearest of the 64 Fibonacci
+// directions is 8.8 degrees from the pose-(0.4, 0.35) key, outside the 4 degree cone) and
+// `x + 0.0 == x`. Checked numerically with a script, not by running the suite; if this test
+// does fail on the dome row, // RE-PIN: that row (it was the only row the change could touch);
 // the two UV-lamp rows were recorded from their implementation at the lamp's own
 // wavelengths (see `baseline_lambdas`), since a UV line is exactly zero at 450-650 nm. See
 // "Regenerating the baseline" above. IsoHemisphere's row is legitimately full of
@@ -590,7 +1127,20 @@ fn baseline_lambdas(preset: LightingPreset) -> [f32; 3] {
 
 #[test]
 fn studio_presets_are_unchanged_by_the_split() {
-    for (preset_idx, &preset) in LightingPreset::ALL.iter().enumerate() {
+    // The baseline table keeps the order it was recorded in (the declaration order), not
+    // the combo order of `LightingPreset::ALL`.
+    const BASELINE_ORDER: [LightingPreset; 9] = [
+        LightingPreset::Daylight,
+        LightingPreset::Incandescent,
+        LightingPreset::RingLights,
+        LightingPreset::DarkSpotlight,
+        LightingPreset::IsoHemisphere,
+        LightingPreset::LightTent,
+        LightingPreset::DaylightDome,
+        LightingPreset::UvLamp365,
+        LightingPreset::UvLamp395,
+    ];
+    for (preset_idx, &preset) in BASELINE_ORDER.iter().enumerate() {
         let mut idx = 0;
         for k in 0..64 {
             let phi = (k as f32 + 0.5) * (std::f32::consts::PI * (3.0 - 5.0f32.sqrt()));
@@ -625,15 +1175,15 @@ fn studio_presets_are_unchanged_by_the_split() {
     }
 }
 
-/// The white-balance rule is explicit: only the four Planckian presets are adapted; the
-/// D65 presets and the UV lamps (no white point at all) are the identity.
+/// The white-balance rule is explicit: only the five Planckian presets are adapted; the
+/// D65 presets, the contrast view and the UV lamps (no white point at all) are the identity.
 #[test]
 fn white_balance_rule_is_explicit_per_preset() {
     use LightingPreset::*;
     for preset in LightingPreset::ALL {
         let expected = matches!(
             preset,
-            Incandescent | RingLights | DarkSpotlight | LightTent
+            Incandescent | IlluminantA | RingLights | DarkSpotlight | LightTent
         );
         assert_eq!(preset.uses_white_balance(), expected, "{preset:?}");
         if expected {
@@ -644,15 +1194,26 @@ fn white_balance_rule_is_explicit_per_preset() {
     assert!(UvLamp365.is_uv_lamp() && UvLamp395.is_uv_lamp());
     assert!(!UvLamp365.uses_d65() && !UvLamp395.uses_d65());
     assert!(!Daylight.is_uv_lamp() && Daylight.uses_d65());
+    // The new presets: the tent variants, the sun and the contrast view are unadapted;
+    // Illuminant A is a 2856 K Planckian Studio preset with the Bradford adaptation.
+    for preset in [DaylightSun, Aset, ShopLights, WindowDaylight, WhiteTray] {
+        assert!(!preset.uses_white_balance(), "{preset:?}");
+    }
+    assert!(IlluminantA.uses_white_balance() && !IlluminantA.uses_d65());
+    assert_eq!(IlluminantA.params().temp_k.to_bits(), 2856.0f32.to_bits());
+    assert_eq!(IlluminantA.params().spot_mult.to_bits(), 1.2f32.to_bits());
+    assert_eq!(IlluminantA.model(), LightingModel::Studio);
+    assert_eq!(Aset.model().gpu_id(), 4);
+    assert_eq!(DaylightSun.model().gpu_id(), 5);
 }
 
-/// The new presets are appended, keep every earlier index, parse from their labels and
-/// fall back to Daylight for anything an older build would not know.
+/// The UV presets come last in the combo, parse from their labels and fall back to the
+/// default (light tent) for anything an older build would not know.
 #[test]
 fn uv_lamp_presets_are_appended_and_parse() {
-    assert_eq!(LightingPreset::DaylightDome.index(), 6);
-    assert_eq!(LightingPreset::UvLamp365.index(), 7);
-    assert_eq!(LightingPreset::UvLamp395.index(), 8);
+    assert_eq!(LightingPreset::DarkSpotlight.index(), 11);
+    assert_eq!(LightingPreset::UvLamp365.index(), 13);
+    assert_eq!(LightingPreset::UvLamp395.index(), 14);
     assert_eq!(LightingPreset::UvLamp365.label(), "UV lamp 365 nm");
     assert_eq!(LightingPreset::UvLamp395.label(), "UV lamp 395 nm");
     assert_eq!(
@@ -663,8 +1224,39 @@ fn uv_lamp_presets_are_appended_and_parse() {
         LightingPreset::from_label("UV lamp 395 nm"),
         LightingPreset::UvLamp395
     );
-    assert_eq!(LightingPreset::from_index(9), LightingPreset::Daylight);
-    assert_eq!(LightingPreset::ALL.len(), 9);
+    assert_eq!(LightingPreset::from_index(15), LightingPreset::LightTent);
+    assert_eq!(LightingPreset::from_index(-1), LightingPreset::LightTent);
+    assert_eq!(LightingPreset::from_index(0), LightingPreset::LightTent);
+    assert_eq!(LightingPreset::ALL.len(), 15);
+}
+
+/// The combo order: light tent (the default), grading tray, the tent variants, the daylight
+/// models, the product-photography rigs, the contrast view, then the UV lamps. The
+/// declaration order (the postcard variant index) is not the combo order.
+#[test]
+fn the_combo_lists_the_lit_models_first() {
+    assert_eq!(
+        LightingPreset::ALL,
+        [
+            LightingPreset::LightTent,
+            LightingPreset::IsoHemisphere,
+            LightingPreset::WhiteTray,
+            LightingPreset::ShopLights,
+            LightingPreset::WindowDaylight,
+            LightingPreset::DaylightDome,
+            LightingPreset::DaylightSun,
+            LightingPreset::Daylight,
+            LightingPreset::Incandescent,
+            LightingPreset::IlluminantA,
+            LightingPreset::RingLights,
+            LightingPreset::DarkSpotlight,
+            LightingPreset::Aset,
+            LightingPreset::UvLamp365,
+            LightingPreset::UvLamp395,
+        ]
+    );
+    assert_eq!(LightingPreset::default().index(), 0);
+    assert_eq!(LightingPreset::from_index(0), LightingPreset::default());
 }
 
 /// The lamp spectra are unit-peak Gaussians of the specified FWHM: 365 nm / 10 nm and
@@ -724,4 +1316,76 @@ fn uv_lamps_have_no_ambient_backdrop() {
         Vec3::ZERO,
     );
     assert!(lit > 1.0, "the key softbox must light the lamp line: {lit}");
+}
+
+/// Radiance of the ASET view at elevation `elevation_deg` and wavelength `lambda_nm`.
+fn aset_at(elevation_deg: f32, lambda_nm: f32) -> f32 {
+    let rig = crate::optics::studio_rig::StudioRig::new(0.4, 0.35);
+    let e = elevation_deg.to_radians();
+    sample_studio_environment_with_rig(
+        Vec3::new(e.cos(), e.sin(), 0.0),
+        lambda_nm,
+        LightingPreset::Aset,
+        1.0,
+        &rig,
+        Vec3::ZERO,
+    )
+}
+
+/// Each elevation zone lights only its own band: green 0-45 degrees, red 45-75, blue 75-90.
+#[test]
+fn aset_zones_are_classified_by_elevation() {
+    const RED: f32 = 610.0;
+    const GREEN: f32 = 540.0;
+    const BLUE: f32 = 460.0;
+    for (elevation, lit, dark) in [
+        (20.0, GREEN, [RED, BLUE]),
+        (60.0, RED, [GREEN, BLUE]),
+        (82.0, BLUE, [RED, GREEN]),
+        (89.0, BLUE, [RED, GREEN]),
+    ] {
+        let on = aset_at(elevation, lit);
+        assert!(on > 0.5, "{elevation} deg at {lit} nm: {on}");
+        for other in dark {
+            let off = aset_at(elevation, other);
+            assert!(
+                off < on * 1e-3,
+                "{elevation} deg leaks into {other} nm: {off}"
+            );
+        }
+    }
+}
+
+/// Each band is a 20 nm FWHM Gaussian peaking at its zone's centre wavelength.
+#[test]
+fn aset_bands_peak_at_their_centre_wavelengths() {
+    for (elevation, centre) in [(20.0f32, 540.0f32), (60.0, 610.0), (82.0, 460.0)] {
+        let peak = aset_at(elevation, centre);
+        for step in 1..40 {
+            let offset = step as f32 * 0.5;
+            assert!(aset_at(elevation, centre + offset) < peak);
+            assert!(aset_at(elevation, centre - offset) < peak);
+        }
+        // Half the peak at +-10 nm (FWHM 20 nm).
+        for side in [-10.0f32, 10.0] {
+            let half = aset_at(elevation, centre + side) / peak;
+            assert!((half - 0.5).abs() < 5e-3, "{elevation} deg: {half}");
+        }
+        // Dark far from the band.
+        assert!(aset_at(elevation, centre + 80.0) < peak * 1e-6);
+    }
+}
+
+/// Below the horizon the ASET view is black at every wavelength.
+#[test]
+fn aset_is_black_below_the_horizon() {
+    for elevation in [-90.0f32, -45.0, -10.0, -6.0] {
+        for lambda in [460.0f32, 540.0, 610.0, 550.0] {
+            assert_eq!(
+                aset_at(elevation, lambda),
+                0.0,
+                "{elevation} deg {lambda} nm"
+            );
+        }
+    }
 }

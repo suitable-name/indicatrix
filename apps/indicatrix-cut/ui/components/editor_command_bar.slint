@@ -3,10 +3,15 @@ import { Theme } from "../theme.slint";
 import { EditorModel } from "../models/editor.slint";
 import { RetargetModel } from "../models/retarget.slint";
 import { GuideModel } from "../models/guide.slint";
+import { CuttingModeModel } from "../models/cutting_mode.slint";
 import { GuideLockTip } from "guide_lock.slint";
+import { WarningLine } from "warning_line.slint";
 // Mounted by `FileActionsGroup` below, next to Save; see that file's own
 // doc comment.
 import { ExportSplitButton } from "export_split_button.slint";
+// The "?" at the right end of the first row opens the manual page on this bar.
+import { HelpButton } from "help_button.slint";
+import { HelpTopics } from "../models/help.slint";
 
 // A cutter-facing summary of what Ctrl+Z/Ctrl+Y will actually do, from
 // `Edit::describe` (`crates/indicatrix-cut-core/src/edit/edit_type.rs`) via
@@ -79,6 +84,7 @@ component NewLoadUndoRedoGroup inherits HorizontalLayout {
         changed has-hover => { if self.has-hover { root.set_hint("Start a new design from a preform."); } else { root.clear_hint("Start a new design from a preform."); } }
         new_btn := Button {
             text: "New Design...";
+            accessible-description: "Start a new design from a shape or a blank preform. Asks first if the open design has unsaved changes.";
             enabled: GuideModel.allows_new_design();
             clicked => { EditorModel.new_dialog_open = true; }
         }
@@ -95,8 +101,15 @@ component NewLoadUndoRedoGroup inherits HorizontalLayout {
         changed has-hover => { if self.has-hover { root.set_hint("Load the selected catalogue design into the editor."); } else { root.clear_hint("Load the selected catalogue design into the editor."); } }
         load_btn := Button {
             text: "Load Selected";
+            accessible-description: "Open the design selected in the library list so you can edit it here.";
             enabled: GuideModel.allows_file_ops();
             clicked => { EditorModel.load_selected(); }
+        }
+        // The library tutorial's "Load it" step outlines this button.
+        if GuideModel.highlight_target == "load_button": Rectangle {
+            border-width: 2px;
+            border-color: Theme.accent-cyan;
+            border-radius: Theme.radius-sm;
         }
         GuideLockTip { locked: !GuideModel.allows_file_ops(); }
     }
@@ -106,6 +119,7 @@ component NewLoadUndoRedoGroup inherits HorizontalLayout {
         changed has-hover => { if self.has-hover { root.set_hint(root.undo_hint()); } else { root.clear_hint(root.undo_hint()); } }
         undo_btn := Button {
             text: "Undo";
+            accessible-description: root.undo_hint();
             enabled: EditorModel.can_undo && GuideModel.allows_history();
             clicked => { EditorModel.undo(); }
         }
@@ -117,6 +131,7 @@ component NewLoadUndoRedoGroup inherits HorizontalLayout {
         changed has-hover => { if self.has-hover { root.set_hint(root.redo_hint()); } else { root.clear_hint(root.redo_hint()); } }
         redo_btn := Button {
             text: "Redo";
+            accessible-description: root.redo_hint();
             enabled: EditorModel.can_redo && GuideModel.allows_history();
             clicked => { EditorModel.redo(); }
         }
@@ -158,6 +173,7 @@ component SolveGroup inherits HorizontalLayout {
         changed has-hover => { if self.has-hover { root.set_hint(root.solve_hint()); } else { root.clear_hint(root.solve_hint()); } }
         solve_btn := Button {
             text: EditorModel.solve_running ? "Solving..." : "Solve";
+            accessible-description: root.solve_hint();
             // `busy_action` (`EditorModel`, derived from all three `*_running`
             // flags) is "" only when none of Solve/Deep Solve/Optimize is
             // running -- every launcher cross-disables on it, not only its own
@@ -193,6 +209,7 @@ component SolveGroup inherits HorizontalLayout {
     // its result being applied, and the editor staying locked until it lands.
     if EditorModel.solve_running: Button {
         text: "Abandon Solve";
+        accessible-description: "Stop waiting for the running solve and ignore its result. The calculation itself finishes in the background.";
         clicked => { EditorModel.solve_cancel(); }
     }
 
@@ -215,7 +232,7 @@ component SolveGroup inherits HorizontalLayout {
     TouchArea {
         width: auto_solve_label.preferred-width + 4px + root.combo_width;
         height: auto_solve_combo.preferred-height;
-        changed has-hover => { if self.has-hover { root.set_hint("After an edit, automatically re-solve (debounced) once this design's own last solve took less than the selected budget. \"Off\" only marks the panel stale."); } else { root.clear_hint("After an edit, automatically re-solve (debounced) once this design's own last solve took less than the selected budget. \"Off\" only marks the panel stale."); } }
+        changed has-hover => { if self.has-hover { root.set_hint("Auto-solve: after an edit, solve again by itself when this design's last solve was quicker than the chosen time (a short pause lets you finish typing first). Off only marks the panel out of date until you press Solve."); } else { root.clear_hint("Auto-solve: after an edit, solve again by itself when this design's last solve was quicker than the chosen time (a short pause lets you finish typing first). Off only marks the panel out of date until you press Solve."); } }
         HorizontalLayout {
             spacing: 4px;
             auto_solve_label := Text {
@@ -230,6 +247,8 @@ component SolveGroup inherits HorizontalLayout {
                 // the Solve button.
                 width: root.combo_width;
                 enabled: GuideModel.allows_solve();
+                accessible-label: "Auto-solve";
+                accessible-description: "After an edit, solve again by itself when the last solve was quicker than this time. Off only marks the panel out of date.";
                 model: ["Off", "150 ms", "300 ms", "1 s", "3 s"];
                 current-index: EditorModel.auto_solve_budget_ms == 0 ? 0
                     : EditorModel.auto_solve_budget_ms == 150 ? 1
@@ -242,8 +261,20 @@ component SolveGroup inherits HorizontalLayout {
                         : val == "300 ms" ? 300
                         : val == "1 s" ? 1000
                         : 3000;
+                    // The guide's auto-solve lesson waits for the choice, off or on.
+                    if val == "Off" {
+                        GuideModel.event("auto_solve_off");
+                    } else {
+                        GuideModel.event("auto_solve_on");
+                    }
                 }
             }
+        }
+        // The guide's auto-solve lesson outlines the label and the combo.
+        if GuideModel.highlight_target == "auto_solve": Rectangle {
+            border-width: 2px;
+            border-color: Theme.accent-cyan;
+            border-radius: Theme.radius-sm;
         }
         GuideLockTip { locked: !GuideModel.allows_solve(); }
     }
@@ -281,6 +312,7 @@ component TierGroup inherits HorizontalLayout {
         changed has-hover => { if self.has-hover { root.set_hint("Open the Tier tab in Add mode to author a new tier."); } else { root.clear_hint("Open the Tier tab in Add mode to author a new tier."); } }
         add_tier_btn := Button {
             text: "+ Add Tier";
+            accessible-description: "Open the Tier tab to write a new tier: its angle, what it meets and its index positions.";
             enabled: GuideModel.allows_tier_form();
             clicked => {
                 EditorModel.selected_tier_index = -1;
@@ -290,12 +322,15 @@ component TierGroup inherits HorizontalLayout {
         }
         GuideLockTip { locked: !GuideModel.allows_tier_form(); }
     }
-    TouchArea {
+    // Concave tiers are an advanced feature: the Simple interface leaves the button out (the
+    // Tier tab still opens a concave tier that is already in the design).
+    if GuideModel.shows_advanced(): TouchArea {
         width: add_concave_btn.preferred-width;
         height: add_concave_btn.preferred-height;
-        changed has-hover => { if self.has-hover { root.set_hint("Open the Tier tab in Add mode for a concave (tool-cut) tier."); } else { root.clear_hint("Open the Tier tab in Add mode for a concave (tool-cut) tier."); } }
+        changed has-hover => { if self.has-hover { root.set_hint("Open the Tier tab to write a concave tier: a curved facet cut with a rounded tool instead of a flat lap."); } else { root.clear_hint("Open the Tier tab to write a concave tier: a curved facet cut with a rounded tool instead of a flat lap."); } }
         add_concave_btn := Button {
             text: "+ Concave";
+            accessible-description: "Open the Tier tab to write a concave tier: a curved facet cut with a rounded tool instead of a flat lap.";
             enabled: GuideModel.allows_concave_tier();
             clicked => { EditorModel.add_concave_tier(); }
         }
@@ -307,6 +342,7 @@ component TierGroup inherits HorizontalLayout {
         changed has-hover => { if self.has-hover { root.set_hint("Duplicate the selected tier, inserted right after it (Ctrl+D)."); } else { root.clear_hint("Duplicate the selected tier, inserted right after it (Ctrl+D)."); } }
         duplicate_tier_btn := Button {
             text: "Duplicate";
+            accessible-description: "Copy the selected tier and insert the copy right after it. Select a tier first.";
             enabled: root.has_selection && GuideModel.allows_tier_table();
             clicked => { EditorModel.duplicate_tier(EditorModel.selected_tier_index); }
         }
@@ -318,6 +354,7 @@ component TierGroup inherits HorizontalLayout {
         changed has-hover => { if self.has-hover { root.set_hint("Remove the selected tier (Delete)."); } else { root.clear_hint("Remove the selected tier (Delete)."); } }
         delete_tier_btn := Button {
             text: "Delete";
+            accessible-description: "Remove the selected tier from the design. You can undo it. Select a tier first.";
             enabled: root.has_selection && GuideModel.allows_tier_table();
             clicked => { EditorModel.remove_tier(EditorModel.selected_tier_index); }
         }
@@ -328,7 +365,11 @@ component TierGroup inherits HorizontalLayout {
         height: move_up_btn.preferred-height;
         changed has-hover => { if self.has-hover { root.set_hint("Move the selected tier earlier in cutting order (Alt+Up)."); } else { root.clear_hint("Move the selected tier earlier in cutting order (Alt+Up)."); } }
         move_up_btn := Button {
-            text: "\u{25B2}";
+            // Icon-only; the hover hint above says what it does.
+            icon: @image-url("../icons/chevron-up.svg");
+            colorize-icon: true;
+            accessible-label: "Move tier up";
+            accessible-description: "Move the selected tier earlier in the cutting order. Select a tier first.";
             enabled: root.has_selection && GuideModel.allows_tier_table();
             clicked => { EditorModel.move_tier(EditorModel.selected_tier_index, -1); }
         }
@@ -339,7 +380,11 @@ component TierGroup inherits HorizontalLayout {
         height: move_down_btn.preferred-height;
         changed has-hover => { if self.has-hover { root.set_hint("Move the selected tier later in cutting order (Alt+Down)."); } else { root.clear_hint("Move the selected tier later in cutting order (Alt+Down)."); } }
         move_down_btn := Button {
-            text: "\u{25BC}";
+            // Icon-only; the hover hint above says what it does.
+            icon: @image-url("../icons/chevron-down.svg");
+            colorize-icon: true;
+            accessible-label: "Move tier down";
+            accessible-description: "Move the selected tier later in the cutting order. Select a tier first.";
             enabled: root.has_selection && GuideModel.allows_tier_table();
             clicked => { EditorModel.move_tier(EditorModel.selected_tier_index, 1); }
         }
@@ -394,10 +439,11 @@ component AnalysisGroup inherits HorizontalLayout {
     // Disabled (with the reason surfaced in `EditorStatusStrip`'s log)
     // rather than hidden, so a design with nothing to verify against reads
     // as "not applicable right now," not "missing."
-    if !EditorModel.deep_solve_running: TouchArea {
+    // Advanced: the Simple interface leaves it out (a running Deep Solve keeps its Cancel button).
+    if !EditorModel.deep_solve_running && GuideModel.shows_advanced(): TouchArea {
         width: deep_solve_btn.preferred-width;
         height: deep_solve_btn.preferred-height;
-        changed has-hover => { if self.has-hover { root.set_hint("Slow check against the catalogue's printed proportions. Never changes the design."); } else { root.clear_hint("Slow check against the catalogue's printed proportions. Never changes the design."); } }
+        changed has-hover => { if self.has-hover { root.set_hint("Deep Solve: a slow check of the solved stone against the proportions printed for this design. It never changes the design. See the glossary."); } else { root.clear_hint("Deep Solve: a slow check of the solved stone against the proportions printed for this design. It never changes the design. See the glossary."); } }
         // The always-present explanation of why Deep Solve is (or isn't) available
         // right now (`view::deep_solve_hint`) lives here, on hover, rather than
         // in `EditorStatusStrip`, so it never occupies that strip's one message
@@ -409,14 +455,22 @@ component AnalysisGroup inherits HorizontalLayout {
         Tooltip { text: @markdown("\{deep_solve_tooltip_text}"); }
         deep_solve_btn := Button {
             text: "Deep Solve";
+            accessible-description: parent.deep_solve_tooltip_text;
             // Cross-disabled on `busy_action`, not only `deep_solve_available`
             // -- see the Solve button's own doc comment on `busy_action`.
             enabled: EditorModel.deep_solve_available && EditorModel.busy_action == "" && GuideModel.allows_advanced();
             clicked => { EditorModel.deep_solve(); }
         }
+        // The guide's Deep Solve lesson outlines this button.
+        if GuideModel.highlight_target == "deep_solve_button": Rectangle {
+            border-width: 2px;
+            border-color: Theme.accent-cyan;
+            border-radius: Theme.radius-sm;
+        }
     }
     if EditorModel.deep_solve_running: Button {
         text: "Cancel Deep Solve";
+        accessible-description: "Stop the running Deep Solve. The design is not changed.";
         clicked => { EditorModel.deep_solve_cancel(); }
     }
 
@@ -425,7 +479,7 @@ component AnalysisGroup inherits HorizontalLayout {
     if !EditorModel.optimize_running: TouchArea {
         width: optimize_btn.preferred-width;
         height: optimize_btn.preferred-height;
-        changed has-hover => { if self.has-hover { root.set_hint("Search free (unpinned) tiers for better optics. Adopt a tier first if disabled."); } else { root.clear_hint("Search free (unpinned) tiers for better optics. Adopt a tier first if disabled."); } }
+        changed has-hover => { if self.has-hover { root.set_hint("Optimize: search the angles of the tiers that are free to move for a brighter stone, then preview the best results before applying one. See the glossary."); } else { root.clear_hint("Optimize: search the angles of the tiers that are free to move for a brighter stone, then preview the best results before applying one. See the glossary."); } }
         // Same reasoning as the Deep Solve button's own `Tooltip` above --
         // `view::optimize_hint`'s always-present explanation lives here instead of
         // permanently occupying a shared status line; see the Deep Solve button's
@@ -434,10 +488,11 @@ component AnalysisGroup inherits HorizontalLayout {
         Tooltip { text: @markdown("\{optimize_tooltip_text}"); }
         optimize_btn := Button {
             text: "Optimize";
+            accessible-description: parent.optimize_tooltip_text;
             // See the Deep Solve button's own comment above.
             enabled: EditorModel.optimize_available && EditorModel.busy_action == "" && GuideModel.allows_advanced();
             clicked => {
-                EditorModel.optimize(EditorModel.optimize_weight_windowing, EditorModel.optimize_weight_extinction, EditorModel.optimize_weight_tilt_brilliance, EditorModel.optimize_weight_yield);
+                EditorModel.optimize(EditorModel.optimize_weight_windowing, EditorModel.optimize_weight_extinction, EditorModel.optimize_weight_tilt_brilliance, EditorModel.optimize_weight_yield, EditorModel.optimize_weight_tone);
             }
         }
     }
@@ -447,6 +502,7 @@ component AnalysisGroup inherits HorizontalLayout {
     // and a cutter who sees no reaction clicks again.
     if EditorModel.optimize_running: Button {
         text: root.optimize_cancel_requested ? "Cancelling..." : "Cancel Optimize";
+        accessible-description: "Stop the running search. It finishes the step it is on first.";
         enabled: !root.optimize_cancel_requested;
         clicked => {
             root.optimize_cancel_requested = true;
@@ -459,11 +515,18 @@ component AnalysisGroup inherits HorizontalLayout {
     TouchArea {
         width: retarget_btn.preferred-width;
         height: retarget_btn.preferred-height;
-        changed has-hover => { if self.has-hover { root.set_hint("Propose new facet angles for a different material, reviewed before applying."); } else { root.clear_hint("Propose new facet angles for a different material, reviewed before applying."); } }
+        changed has-hover => { if self.has-hover { root.set_hint("Retarget: propose new facet angles so the design works in a different material, and review them before anything changes. See the glossary."); } else { root.clear_hint("Retarget: propose new facet angles so the design works in a different material, and review them before anything changes. See the glossary."); } }
         retarget_btn := Button {
             text: "Retarget...";
+            accessible-description: "Propose new facet angles so the design works in a different material. You review them before anything changes.";
             enabled: GuideModel.allows_advanced();
             clicked => { RetargetModel.open(); }
+        }
+        // The guide's Retarget lessons outline this button.
+        if GuideModel.highlight_target == "retarget_button": Rectangle {
+            border-width: 2px;
+            border-color: Theme.accent-cyan;
+            border-radius: Theme.radius-sm;
         }
         GuideLockTip { locked: !GuideModel.allows_advanced(); }
     }
@@ -472,36 +535,53 @@ component AnalysisGroup inherits HorizontalLayout {
     // `callbacks::retarget_actions::setup_snapshot_callbacks`. Placed next to
     // Retarget since both reuse the same comparison-table dialog shell
     // (`retarget_dialog.slint`'s `RetargetModel.compare_open` branch).
-    TouchArea {
+    // Snapshot, Compare and Tilt Curves are advanced: the Simple interface leaves them out.
+    if GuideModel.shows_advanced(): TouchArea {
         width: snapshot_btn.preferred-width;
         height: snapshot_btn.preferred-height;
-        changed has-hover => { if self.has-hover { root.set_hint("Capture the current design and its solved masts, to compare against later."); } else { root.clear_hint("Capture the current design and its solved masts, to compare against later."); } }
+        changed has-hover => { if self.has-hover { root.set_hint("Snapshot: keep a copy of the design as it is now, to compare with a later version. The copy lives only in this session and is not saved to disk. See the glossary."); } else { root.clear_hint("Snapshot: keep a copy of the design as it is now, to compare with a later version. The copy lives only in this session and is not saved to disk. See the glossary."); } }
         snapshot_btn := Button {
             text: "Snapshot";
+            accessible-description: "Keep a copy of the design as it is now, to compare with a later version. Not saved to disk.";
             enabled: GuideModel.allows_advanced();
             clicked => { EditorModel.snapshot_design(); }
+        }
+        // The guide's Snapshot lessons outline this button.
+        if GuideModel.highlight_target == "snapshot_button": Rectangle {
+            border-width: 2px;
+            border-color: Theme.accent-cyan;
+            border-radius: Theme.radius-sm;
         }
         GuideLockTip { locked: !GuideModel.allows_advanced(); }
     }
     // Gated on a snapshot existing: `EditorModel.has_snapshot` is pushed `true`
     // by `callbacks::retarget_actions::setup_snapshot_callbacks` the moment a
     // snapshot is taken; the hover hint explains the greyed state before that.
-    TouchArea {
+    if GuideModel.shows_advanced(): TouchArea {
         width: compare_snapshot_btn.preferred-width;
         height: compare_snapshot_btn.preferred-height;
         changed has-hover => {
             if self.has-hover {
                 root.set_hint(EditorModel.has_snapshot
-                    ? "Diff the current design against the last snapshot."
-                    : "Diff the current design against the last snapshot -- click Snapshot Design first if you haven't yet this session.");
+                    ? "Compare the current design with the last snapshot, side by side."
+                    : "Compare the current design with the last snapshot. Press Snapshot first: no snapshot has been taken this session.");
             } else {
-                root.clear_hint("Diff the current design against the last snapshot.");
+                root.clear_hint("Compare the current design with the last snapshot, side by side.");
             }
         }
         compare_snapshot_btn := Button {
             text: "Compare";
+            accessible-description: EditorModel.has_snapshot
+                ? "Compare the current design with the last snapshot, side by side."
+                : "Compare the current design with the last snapshot. Not available until you take a snapshot.";
             enabled: EditorModel.has_snapshot && GuideModel.allows_advanced();
             clicked => { EditorModel.compare_to_snapshot(); }
+        }
+        // The guide's Snapshot and Compare lesson outlines this button.
+        if GuideModel.highlight_target == "compare_button": Rectangle {
+            border-width: 2px;
+            border-color: Theme.accent-cyan;
+            border-radius: Theme.radius-sm;
         }
         GuideLockTip { locked: !GuideModel.allows_advanced(); }
     }
@@ -511,16 +591,44 @@ component AnalysisGroup inherits HorizontalLayout {
     // compute_tilt_curves_for_open_design`'s own doc comment for what happens
     // once it starts (roughly 1.36s, off the UI thread; only saved once this
     // design has already been saved to the catalogue).
-    TouchArea {
+    if GuideModel.shows_advanced(): TouchArea {
         width: compute_tilt_btn.preferred-width;
         height: compute_tilt_btn.preferred-height;
-        changed has-hover => { if self.has-hover { root.set_hint("Compute this design's tilt-performance curves (brilliance/extinction/windowing vs. tilt)."); } else { root.clear_hint("Compute this design's tilt-performance curves (brilliance/extinction/windowing vs. tilt)."); } }
+        changed has-hover => { if self.has-hover { root.set_hint("Tilt Curves: work out how bright, dark or see-through this stone looks as it is tilted, from table-up to a steep angle. Takes a few seconds. See the glossary."); } else { root.clear_hint("Tilt Curves: work out how bright, dark or see-through this stone looks as it is tilted, from table-up to a steep angle. Takes a few seconds. See the glossary."); } }
         compute_tilt_btn := Button {
             text: "Tilt Curves";
+            accessible-description: "Work out how bright, dark or see-through this stone looks as it is tilted. Takes a few seconds.";
             enabled: GuideModel.allows_advanced();
             clicked => { EditorModel.compute_tilt_curves_for_open_design(); }
         }
         GuideLockTip { locked: !GuideModel.allows_advanced(); }
+    }
+
+    // Cutting mode (`models/cutting_mode.slint`, `gui::editor::cutting_mode`): the cutting
+    // steps one page at a time over the whole window. Dim, with the reason in the hint, while
+    // there is nothing to cut (no design, no tiers, a design that does not solve). The same
+    // hover-hint and tooltip treatment as Deep Solve above.
+    TouchArea {
+        width: cut_mode_btn.preferred-width;
+        height: cut_mode_btn.preferred-height;
+        property <string> cut_mode_hint: CuttingModeModel.unavailable_reason() == ""
+            ? "Walk through the cutting steps one page at a time, with done marks that are kept for this design (Edit menu, Cutting Mode...)."
+            : CuttingModeModel.unavailable_reason();
+        property <string> cut_mode_tooltip_text: GuideModel.allows_advanced() ? self.cut_mode_hint : GuideModel.locked_hint;
+        changed has-hover => { if self.has-hover { root.set_hint(self.cut_mode_tooltip_text); } else { root.clear_hint(self.cut_mode_tooltip_text); } }
+        Tooltip { text: @markdown("\{cut_mode_tooltip_text}"); }
+        cut_mode_btn := Button {
+            text: "Cut Mode";
+            accessible-description: parent.cut_mode_tooltip_text;
+            enabled: GuideModel.allows_advanced() && !CuttingModeModel.open && CuttingModeModel.unavailable_reason() == "";
+            clicked => { CuttingModeModel.open_cutting_mode(); }
+        }
+        // The cutting-mode tutorial outlines this button.
+        if GuideModel.highlight_target == "cutting_mode_button": Rectangle {
+            border-width: 2px;
+            border-color: Theme.accent-cyan;
+            border-radius: Theme.radius-sm;
+        }
     }
 }
 
@@ -555,8 +663,15 @@ component FileActionsGroup inherits HorizontalLayout {
         changed has-hover => { if self.has-hover { root.set_hint("Export the design as edited in this tab to disk; your library is not updated."); } else { root.clear_hint("Export the design as edited in this tab to disk; your library is not updated."); } }
         export_btn := Button {
             text: "Export .asc";
+            accessible-description: "Write the design as edited in this tab to an .asc file on disk. Your library is not updated.";
             enabled: GuideModel.allows_file_ops();
             clicked => { EditorModel.export_asc(); }
+        }
+        // The output and library tutorials outline this button.
+        if GuideModel.highlight_target == "export_asc_button": Rectangle {
+            border-width: 2px;
+            border-color: Theme.accent-cyan;
+            border-radius: Theme.radius-sm;
         }
         GuideLockTip { locked: !GuideModel.allows_file_ops(); }
     }
@@ -570,8 +685,15 @@ component FileActionsGroup inherits HorizontalLayout {
         changed has-hover => { if self.has-hover { root.set_hint("Save the whole design to its .indicatrix file, and update this design's catalogue entry."); } else { root.clear_hint("Save the whole design to its .indicatrix file, and update this design's catalogue entry."); } }
         save_native_btn := Button {
             text: "Save";
+            accessible-description: "Save the whole design to its .indicatrix file and update this design's library entry (Ctrl+S).";
             enabled: GuideModel.allows_file_ops();
             clicked => { EditorModel.save_native(); }
+        }
+        // The Save and Open tutorials outline this button.
+        if GuideModel.highlight_target == "save_button": Rectangle {
+            border-width: 2px;
+            border-color: Theme.accent-cyan;
+            border-radius: Theme.radius-sm;
         }
         GuideLockTip { locked: !GuideModel.allows_file_ops(); }
     }
@@ -585,12 +707,14 @@ component FileActionsGroup inherits HorizontalLayout {
     if EditorModel.status_is_problem && EditorModel.status_text != "": Rectangle {
         width: save_warning_text.preferred-width;
         height: 34px;
-        save_warning_text := Text {
-            text: "\u{26A0} Will ask before saving";
-            font-size: 10px;
-            font-weight: 600;
-            color: Theme.accent-amber;
-            vertical-alignment: center;
+        accessible-role: AccessibleRole.text;
+        accessible-label: "Will ask before saving";
+        accessible-description: EditorModel.status_text + ". Saving or exporting still works, but you are asked to confirm first.";
+        save_warning_text := WarningLine {
+            text: "Will ask before saving";
+            font_weight: 600;
+            wrap_text: false;
+            centered: true;
         }
         Tooltip { text: @markdown("**\{EditorModel.status_text}**\n\nSaving or exporting will still work -- you'll be asked to confirm first (\"Save as draft\"), and the written file notes this in its own header."); }
     }
@@ -603,8 +727,15 @@ component FileActionsGroup inherits HorizontalLayout {
         changed has-hover => { if self.has-hover { root.set_hint("Open a .indicatrix design file, or a .asc, .gem or .gcs file."); } else { root.clear_hint("Open a .indicatrix design file, or a .asc, .gem or .gcs file."); } }
         open_native_btn := Button {
             text: "Open";
+            accessible-description: "Open a .indicatrix design file, or an .asc, .gem or .gcs file (Ctrl+O).";
             enabled: GuideModel.allows_file_ops();
             clicked => { EditorModel.open_native(); }
+        }
+        // The Open tutorial outlines this button.
+        if GuideModel.highlight_target == "open_button": Rectangle {
+            border-width: 2px;
+            border-color: Theme.accent-cyan;
+            border-radius: Theme.radius-sm;
         }
         GuideLockTip { locked: !GuideModel.allows_file_ops(); }
     }
@@ -688,13 +819,30 @@ export component EditorCommandBar inherits Rectangle {
         // around -- `overflow: clip` on the rare hint long enough to need a
         // third line, rather than `elide`, which only ever elides a single line
         // and would leave the wrapped second line's tail truncated mid-word.
-        Text {
-            text: EditorModel.hover_hint;
-            font-size: 11px;
-            color: Theme.text-muted;
+        // The "?" sits at the right end of this line, so it takes no room from the buttons above.
+        HorizontalLayout {
             height: 28px;
-            wrap: word-wrap;
-            overflow: clip;
+            spacing: 6px;
+            Text {
+                horizontal-stretch: 1;
+                text: EditorModel.hover_hint;
+                font-size: 11px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+                overflow: clip;
+                // The hint is a tooltip for the buttons (they are plain buttons, which have none
+                // of their own); a screen reader gets the same words from each button's
+                // description, so this line is not read twice.
+                accessible-role: AccessibleRole.none;
+            }
+            VerticalLayout {
+                alignment: start;
+                padding-top: 2px;
+                HelpButton {
+                    topic: HelpTopics.command-bar;
+                    hint: "Open the manual page on the command bar";
+                }
+            }
         }
     }
 }

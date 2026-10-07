@@ -2,7 +2,10 @@
 //! [`super::super::SearchStage`]'s code round-trip and
 //! [`super::super::inclusive_max_evaluations`].
 
-use super::super::{OptimizeConfig, SearchStage, inclusive_max_evaluations, search};
+use super::super::{
+    OptimizeConfig, SearchStage, effective_starts, inclusive_max_evaluations,
+    inclusive_max_evaluations_for, search,
+};
 
 // --- seeded_permutation ---
 
@@ -38,6 +41,7 @@ fn search_stage_code_round_trips_every_variant() {
         SearchStage::Coordinate,
         SearchStage::Polish,
         SearchStage::FinalFull,
+        SearchStage::Screening,
     ] {
         assert_eq!(SearchStage::from_code(stage.to_code()), stage);
     }
@@ -81,4 +85,40 @@ fn inclusive_max_evaluations_honors_an_explicit_polish_cap() {
         ..OptimizeConfig::default()
     };
     assert_eq!(inclusive_max_evaluations(&config, 10), 250);
+}
+
+#[test]
+fn inclusive_max_evaluations_adds_screening_and_one_polish_per_polished_start() {
+    let config = OptimizeConfig {
+        max_evaluations: 800,
+        polish_start_step_deg: Some(0.5),
+        polish_max_evaluations: Some(50),
+        starts: 8,
+        ..OptimizeConfig::default()
+    };
+    // 10 free tiers afford 800 / 80 = 10 starts, so all 8 run: 4 * 7 = 28 screening draws.
+    assert_eq!(inclusive_max_evaluations(&config, 10), 800 + 28 + 50);
+    assert_eq!(
+        inclusive_max_evaluations_for(&config, 3, 10),
+        800 + 28 + 3 * 50
+    );
+    // Never more polish budgets than starts.
+    assert_eq!(
+        inclusive_max_evaluations_for(&config, 20, 10),
+        800 + 28 + 8 * 50
+    );
+}
+
+#[test]
+fn inclusive_max_evaluations_ignores_starts_the_budget_cannot_afford() {
+    let config = OptimizeConfig {
+        max_evaluations: 70,
+        polish_start_step_deg: Some(0.5),
+        polish_max_evaluations: Some(50),
+        starts: 8,
+        ..OptimizeConfig::default()
+    };
+    // 10 free tiers need 80 evaluations per start: one start, today's figure.
+    assert_eq!(effective_starts(&config, 10), 1);
+    assert_eq!(inclusive_max_evaluations_for(&config, 3, 10), 70 + 50);
 }

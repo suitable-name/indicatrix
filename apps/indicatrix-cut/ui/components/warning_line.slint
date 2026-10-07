@@ -1,0 +1,42 @@
+import { Theme } from "../theme.slint";
+
+// A line of text led by the warning triangle icon.
+//
+// The UI font (Segoe UI, no bundled font) has no warning-sign glyph, so a warning
+// symbol typed into a `Text` shows as a box. This draws `icons/warning.svg`
+// instead and tints icon and text with the same colour. The icon is sized from
+// the text, so one component serves a 9px note and a 12px banner.
+export component WarningLine inherits HorizontalLayout {
+    in property <string> text;
+    // Colour of both the icon and the text.
+    in property <color> tint: Theme.accent-amber;
+    in property <length> font_size: 10px;
+    in property <int> font_weight: 700;
+    // `false` keeps the text on one line.
+    in property <bool> wrap_text: true;
+    // `true` centres the icon vertically in a row taller than the text; `false`
+    // keeps it level with the first line of wrapped text.
+    in property <bool> centered: false;
+
+    spacing: 4px;
+    VerticalLayout {
+        alignment: root.centered ? LayoutAlignment.center : LayoutAlignment.start;
+        padding-top: root.centered ? 0px : 1px;
+        Image {
+            source: @image-url("../icons/warning.svg");
+            colorize: root.tint;
+            width: root.font_size + 3px;
+            height: root.font_size + 3px;
+            image-fit: contain;
+        }
+    }
+    Text {
+        horizontal-stretch: 1;
+        text: root.text;
+        font-size: root.font_size;
+        font-weight: root.font_weight;
+        color: root.tint;
+        wrap: root.wrap_text ? TextWrap.word-wrap : TextWrap.no-wrap;
+        vertical-alignment: center;
+    }
+}

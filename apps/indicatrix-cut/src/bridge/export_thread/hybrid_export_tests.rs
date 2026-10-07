@@ -39,10 +39,11 @@ fn export_completes_via_hybrid_or_cpu_path() {
         backdrop: 0.0,
         active_planes: StandardGemCuts::standard_round_brilliant(),
         tools: Vec::new(),
-        fluorescence: Default::default(),
+        fluorescence: std::sync::Arc::default(),
         facet_finishes: Vec::new(),
         env_map: None,
         surface_glare: 1.0,
+        head_shadow_deg: 16.0,
     };
     let params = ExportParams {
         width: 48,

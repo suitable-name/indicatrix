@@ -5,19 +5,33 @@
 // `gui::editor::shortcuts::SHORTCUTS` table that feeds the generated section of
 // `docs/manual/appendix-b-keyboard-shortcuts.md` -- see that module's own doc
 // comment for how the two are kept from drifting apart.
+import { GuideModel } from "guide.slint";
+
 export struct ShortcutItem {
     /// The key combination, exactly as shown in the manual (e.g. "Ctrl+Shift+S").
     keys: string,
     /// What the shortcut does.
     action: string,
-    /// The display heading for this shortcut's group -- "Global" or "The tier
-    /// list" today (`gui::editor::shortcuts::Context::heading`).
+    /// The display heading for this shortcut's group -- "Global", "The tier list",
+    /// "The Solid viewport" or "Angle fields" today
+    /// (`gui::editor::shortcuts::Context::heading`). Rows of one group are adjacent.
     context: string,
+    /// A short hint shown after the group's heading, e.g. "click into it first"; empty
+    /// for none (`gui::editor::shortcuts::Context::note`).
+    context_note: string,
 }
 
 export global ShortcutsModel {
     in-out property <bool> open: false;
     in property <[ShortcutItem]> shortcuts: [];
+
+    // The list opening is reported to the open tutorial (the Help menu, the `?` key and the
+    // command palette all end in this property), whichever way it was set.
+    changed open => {
+        if (root.open) {
+            GuideModel.event("shortcuts_opened");
+        }
+    }
 
     callback close();
     close => {

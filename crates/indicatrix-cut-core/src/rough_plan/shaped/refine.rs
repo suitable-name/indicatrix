@@ -18,7 +18,7 @@ use super::{
 };
 use crate::rough_plan::{
     CandidateDesign, FitMesh, PASSES, PlanSettings, REL_TOL, RoughLayout,
-    piece::{ASSIGNMENTS, Norm, stone_value},
+    piece::{ASSIGNMENTS, Norm, min_width_floor, stone_value},
     refine::{KinkFrame, optimise_boundary_samples},
     tree::{Bar, Leaf, Slab, Tree, orient_of_pose, to_canonical},
 };
@@ -96,7 +96,7 @@ impl LeafEval<'_> {
                     .solver
                     .solve_with(&region, caliper_extents(norm, orient), self.mesh)
                 {
-                    Some((k, _)) if k >= self.min_width => norm.f * (k * k * k),
+                    Some((k, _)) if k >= min_width_floor(self.min_width) => norm.f * (k * k * k),
                     _ => 0.0,
                 }
             }

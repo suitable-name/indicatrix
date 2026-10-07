@@ -29,18 +29,25 @@
 //! | `[source]` | Printed Vol/W^3, L/W, C/W, P/W, H/W of a catalogue row ([`SourceTable`]). |
 //! | `[history]` | Bounded trail of edit descriptions ([`HistoryTable`]). |
 //! | `[[tiers]]` | Every tier in full, in cutting order ([`TierTable`]). |
-//! | `[[concave_tiers]]` | Concave (fantasy-cut) tiers with their tool lines, only when present; the file is then `version = 2` and carries `concave_frame = "v0"` ([`ConcaveTierTable`]). |
+//! | `[[concave_tiers]]` | Concave (fantasy-cut) tiers with their tool lines, only when present; the file is then `version = 2` and carries `concave_frame = "v0"`; each record may carry a stable `concave_tier_id` ([`ConcaveTierTable`]). |
 //! | `[[attachments]]` | Files that cannot be recomputed, as base64 with size and SHA-256 ([`AttachmentTable`]). |
 //!
 //! # Tiers
 //!
 //! Every `[[tiers]]` entry is self-describing: its name, meet constraint, detached
 //! values, angle, index-wheel positions, imported meet, original notes, free-text
-//! note, cheater offset, authoring target and its stable `tier_id`. Nothing about a
+//! note, cheater offset, authoring target, optional angle relation and its stable
+//! `tier_id`. Nothing about a
 //! tier lives anywhere else in the file, so no value is ever matched to a tier by its
 //! array position: reordering the entries moves each tier's note, offset and target
 //! with it. `angle_deg` and `indices` are required; `tier_id` is expected and unique
 //! (a missing id is assigned on load, a repeated one is refused).
+//!
+//! `angle_relation` is canonical relation text such as `"@3 - 2"`: the tier's angle is
+//! that expression over other tiers' angle magnitudes, named by `tier_id`. The text
+//! is interpreted by `indicatrix-cut-core`; this crate stores it. `angle_deg` still
+//! holds the resulting angle. A file in which any tier has an `angle_relation` is
+//! `version = 3` ([`DESIGN_VERSION_RELATIONS`]); every other file keeps its version.
 //!
 //! # Metadata and attachments: what is stored, what is recomputed
 //!
@@ -187,6 +194,17 @@ pub const DESIGN_VERSION: u32 = 1;
 /// the stone without its concave cuts (plan §6.1, decision Q5).
 pub const DESIGN_VERSION_CONCAVE: u32 = 2;
 
+/// The schema version of a file in which at least one tier carries an
+/// `angle_relation` (its angle is driven by an expression over other tiers' angles).
+///
+/// Written only when a relation exists, exactly like [`DESIGN_VERSION_CONCAVE`]: a
+/// design without relations stays version 1 (or 2 with concave tiers) and
+/// byte-identical, and a build that predates relations refuses a version 3 file with
+/// `UnsupportedVersion` instead of opening it and losing the relations on the next
+/// save. A version 3 file may also hold concave tiers (and then carries
+/// `concave_frame` as usual).
+pub const DESIGN_VERSION_RELATIONS: u32 = 3;
+
 /// The concave-tier frame convention this build writes and reads (plan §11a).
 ///
 /// It fixes where X, Y, Z are measured from and what θ is relative to. Stored next to the
@@ -245,8 +263,10 @@ pub struct DesignFile {
     /// The format name; always [`DESIGN_FORMAT`] for a file this build writes.
     #[serde(default = "default_format")]
     pub format: String,
-    /// The major schema version: [`DESIGN_VERSION`], or [`DESIGN_VERSION_CONCAVE`] for a
-    /// file with concave tiers (see [`DesignFile::with_concave_tiers`]).
+    /// The major schema version: [`DESIGN_VERSION`], [`DESIGN_VERSION_CONCAVE`] for a
+    /// file with concave tiers (see [`DesignFile::with_concave_tiers`]), or
+    /// [`DESIGN_VERSION_RELATIONS`] for a file in which a tier has an `angle_relation`
+    /// (see [`DesignFile::needed_version`]).
     #[serde(default = "default_version")]
     pub version: u32,
     /// Real-world girdle diameter in millimetres, when the design is anchored.
@@ -303,7 +323,7 @@ impl DesignFile {
         girdle_diameter_mm: Option<f64>,
         tiers: Vec<TierTable>,
     ) -> Self {
-        Self {
+        let mut file = Self {
             format: DESIGN_FORMAT.to_string(),
             version: DESIGN_VERSION,
             girdle_diameter_mm,
@@ -319,6 +339,23 @@ impl DesignFile {
             concave_frame: String::new(),
             attachments: Vec::new(),
             unknown: toml::Table::new(),
+        };
+        file.version = file.needed_version();
+        file
+    }
+
+    /// The lowest version that can hold this document: [`DESIGN_VERSION_RELATIONS`]
+    /// when any tier has an `angle_relation`, else [`DESIGN_VERSION_CONCAVE`] when
+    /// there are concave tiers, else [`DESIGN_VERSION`]. A planar document without
+    /// relations is therefore always version 1.
+    #[must_use]
+    pub fn needed_version(&self) -> u32 {
+        if self.tiers.iter().any(|tier| tier.angle_relation.is_some()) {
+            DESIGN_VERSION_RELATIONS
+        } else if self.concave_tiers.is_empty() {
+            DESIGN_VERSION
+        } else {
+            DESIGN_VERSION_CONCAVE
         }
     }
 
@@ -355,17 +392,17 @@ impl DesignFile {
     /// consistent: a non-empty list makes the file [`DESIGN_VERSION_CONCAVE`] with
     /// [`CONCAVE_FRAME_V0`]; an empty one restores the planar header (version
     /// [`DESIGN_VERSION`], no frame), so a planar design can never be written as
-    /// version 2.
+    /// version 2. A document whose tiers carry relations stays
+    /// [`DESIGN_VERSION_RELATIONS`] either way (see [`Self::needed_version`]).
     #[must_use]
     pub fn with_concave_tiers(mut self, concave_tiers: Vec<ConcaveTierTable>) -> Self {
-        if concave_tiers.is_empty() {
-            self.version = DESIGN_VERSION;
-            self.concave_frame = String::new();
+        self.concave_frame = if concave_tiers.is_empty() {
+            String::new()
         } else {
-            self.version = DESIGN_VERSION_CONCAVE;
-            self.concave_frame = CONCAVE_FRAME_V0.to_string();
-        }
+            CONCAVE_FRAME_V0.to_string()
+        };
         self.concave_tiers = concave_tiers;
+        self.version = self.needed_version();
         self
     }
 

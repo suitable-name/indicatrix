@@ -1,9 +1,12 @@
 import { Theme } from "../../theme.slint";
 import { SettingsModel } from "../../models/settings.slint";
 import { TiltModel } from "../../models/tilt.slint";
+import { IconButton } from "../icon_button.slint";
+import { SettingLabel } from "setting_label.slint";
 
 // Performance Curve over Tilt Angles (Extinction & Brilliance Graph), plus the
-// button that opens the full `PerformanceGraphDialog`.
+// button that opens the full `PerformanceGraphDialog`. Advanced: Simple mode hides it
+// (`settings_dialog.slint`).
 export component PerformanceCurvePanel inherits VerticalLayout {
     // Forwarded to `SettingsDialog.open_performance_graph()` -- see that
     // callback's own doc comment for why it must go through `TiltModel.
@@ -18,17 +21,20 @@ export component PerformanceCurvePanel inherits VerticalLayout {
         alignment: space-between;
         HorizontalLayout {
             spacing: 6px;
-            Image { source: @image-url("../../icons/trend-up.svg"); colorize: Theme.text-muted; width: 11px; height: 11px; vertical-alignment: center; }
-            Text { text: "Tilt Performance Curve"; font-size: 11px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; }
-            Rectangle {
-                width: 18px;
-                height: 18px;
-                border-radius: 3px;
-                background: exp_touch.has-hover ? #334155 : transparent;
-                exp_touch := TouchArea {
-                    clicked => { root.open_performance_graph(); }
-                }
-                Image { source: @image-url("../../icons/arrow-up-right.svg"); colorize: Theme.accent-cyan; width: 11px; height: 11px; horizontal-alignment: center; vertical-alignment: center; }
+            SettingLabel {
+                icon: @image-url("../../icons/trend-up.svg");
+                text: "Tilt Performance Curve";
+                hint: "Tilt Performance Curve: how bright the stone looks (brilliance) and how dark (extinction) as it is tilted from 0 to 90 degrees. The open button shows the full graph.";
+            }
+            IconButton {
+                width: 20px;
+                height: 20px;
+                icon: @image-url("../../icons/arrow-up-right.svg");
+                glyph: 11px;
+                hint: "Open the full tilt performance graph";
+                tint: Theme.accent-cyan;
+                hover_fill: Theme.border-dialog;
+                clicked => { root.open_performance_graph(); }
             }
         }
         HorizontalLayout {
@@ -42,8 +48,8 @@ export component PerformanceCurvePanel inherits VerticalLayout {
             HorizontalLayout {
                 spacing: 3px;
                 alignment: center;
-                Rectangle { width: 7px; height: 7px; border-radius: 3px; background: #ef4444; }
-                Text { text: "Extinction"; font-size: 11px; color: #ef4444; vertical-alignment: center; }
+                Rectangle { width: 7px; height: 7px; border-radius: 3px; background: Theme.chart-extinction; }
+                Text { text: "Extinction"; font-size: 11px; color: Theme.chart-extinction; vertical-alignment: center; }
             }
         }
     }
@@ -51,11 +57,14 @@ export component PerformanceCurvePanel inherits VerticalLayout {
     // Interactive Mini Graph Canvas / Bar Columns
     Rectangle {
         height: 72px;
-        background: #090d16;
+        background: Theme.chart-bg;
         border-radius: Theme.radius-sm;
         border-width: 1px;
-        border-color: #334155;
+        border-color: Theme.border-dialog;
         clip: true;
+
+        accessible-role: AccessibleRole.image;
+        accessible-label: "Tilt performance curve, brilliance and extinction at 19 tilt angles from 0 to 90 degrees. Open the full graph for the values.";
 
         // 19 Elevation Angle Columns (0° to 90° in 5° steps)
         HorizontalLayout {
@@ -84,7 +93,7 @@ export component PerformanceCurvePanel inherits VerticalLayout {
                     Rectangle {
                         width: 3.5px;
                         height: max(2px, min(48px, TiltModel.graph_extinction[idx] * 0.48px));
-                        background: #ef4444;
+                        background: Theme.chart-extinction;
                         border-radius: 1px;
                     }
                 }
@@ -93,7 +102,7 @@ export component PerformanceCurvePanel inherits VerticalLayout {
                 Text {
                     text: (Math.mod(idx, 3) == 0 || idx == 18) ? root.graph_angles[idx] + "°" : "·";
                     font-size: 11px;
-                    color: Math.abs(SettingsModel.light_pitch_deg - root.graph_angles_num[idx]) < 2.6 ? Theme.accent-cyan : #64748b;
+                    color: Math.abs(SettingsModel.light_pitch_deg - root.graph_angles_num[idx]) < 2.6 ? Theme.accent-cyan : Theme.text-muted;
                     font-weight: Math.abs(SettingsModel.light_pitch_deg - root.graph_angles_num[idx]) < 2.6 ? 700 : 400;
                     horizontal-alignment: center;
                 }

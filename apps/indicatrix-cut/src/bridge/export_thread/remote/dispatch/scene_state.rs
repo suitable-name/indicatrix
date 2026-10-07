@@ -47,6 +47,7 @@ pub(in crate::bridge::export_thread) fn scene_state_from_snapshot(
         environment: crate::bridge::remote::hdr_asset::scene_environment(snapshot.env_map.as_ref()),
         // The material's emitters, so the worker traces the same glow as the local tracer.
         fluorescence: snapshot.fluorescence.as_ref().clone(),
+        head_shadow_deg: snapshot.head_shadow_deg,
     }
 }
 
@@ -74,6 +75,49 @@ mod tests {
 
     #[test]
     fn a_planar_remote_scene_sends_no_tools() {
-        assert!(state_for(Vec::new()).tools.is_empty());
+        assert_eq!(
+            state_for(Vec::new()).tools.len(),
+            0,
+            "no tools in the scene"
+        );
+    }
+
+    /// A custom material's dispersion curve (Sellmeier or Cauchy coefficients) is part of the
+    /// `GemMaterial` the scene carries, so a remote worker traces the colour play the cutter
+    /// set rather than Diamond's. Guards the whole path: the context's material override, the
+    /// snapshot, the `SceneState`, and the wire (postcard) the worker reads it from.
+    #[test]
+    fn a_remote_scene_carries_a_custom_materials_dispersion_model() {
+        use indicatrix::optics::{dispersion::DispersionModel, materials::GemMaterial};
+        let models = [
+            DispersionModel::Sellmeier1 { b1: 1.4, c1: 0.012 },
+            DispersionModel::Sellmeier3 {
+                b: [1.0, 0.25, 0.5],
+                c: [0.006, 0.02, 100.0],
+            },
+            DispersionModel::Cauchy {
+                a: 1.72,
+                b: 0.0121,
+                c: 0.000_2,
+            },
+        ];
+        for model in models {
+            let custom = GemMaterial::new_custom_with_dispersion("Custom", model, 0.0, [0.0; 3]);
+            let ctx = Mutex::new(RenderContext {
+                material_override: Some(custom),
+                ..RenderContext::default()
+            });
+            let snapshot = SceneSnapshot::capture(&ctx).expect("the custom material resolves");
+            let state = scene_state_from_snapshot(&snapshot, 32, 24, snapshot.yaw, snapshot.pitch);
+            assert_eq!(state.material.dispersion, model);
+            assert_ne!(
+                state.material.dispersion,
+                GemMaterial::diamond().dispersion,
+                "the scene must not fall back to the default material's curve"
+            );
+            let bytes = postcard::to_allocvec(&state).expect("the scene encodes");
+            let decoded: SceneState = postcard::from_bytes(&bytes).expect("the scene decodes");
+            assert_eq!(decoded.material.dispersion, model);
+        }
     }
 }

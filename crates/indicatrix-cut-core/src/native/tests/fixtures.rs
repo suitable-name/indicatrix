@@ -44,6 +44,8 @@ pub(super) fn simple_design() -> Design {
         // `to_asc_schedule` exports for an otherwise-untouched design.
         refractive_index_override: Some(1.62),
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     design.tiers[1].constraint = MeetConstraint::MeetExisting;
     design.tiers[1].detached = vec![0.0, 2.0];
@@ -68,6 +70,8 @@ pub(super) fn fully_anchored_design() -> Design {
         // See `simple_design`'s comment on this field.
         refractive_index_override: Some(1.62),
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     design
 }

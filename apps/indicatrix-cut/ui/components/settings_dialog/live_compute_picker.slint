@@ -1,10 +1,14 @@
 import { Theme } from "../../theme.slint";
 import { SettingsModel } from "../../models/settings.slint";
 import { RemoteWorkerModel } from "../../models/remote_worker.slint";
+import { SegmentPill } from "../pill_button.slint";
+import { ToggleRow } from "../toggle_switch.slint";
+import { SettingLabel } from "setting_label.slint";
 
 // Live Compute: which engine(s) trace the settled viewport image. Same
 // segmented-pill idiom, and the same disabled-with-a-reason treatment, as
-// `export_dialog.slint`'s "Compute" section.
+// `export_dialog.slint`'s "Compute" section. Advanced: Simple mode hides it
+// (`settings_dialog.slint`).
 export component LiveComputePicker inherits VerticalLayout {
     // Explanatory text shown when no remote worker is available; empty falls
     // back to a generic "No remote worker is configured." message below.
@@ -13,67 +17,48 @@ export component LiveComputePicker inherits VerticalLayout {
     property <bool> transfer_enabled: RemoteWorkerModel.live_remote_available && SettingsModel.live_compute_target_index != 0;
 
     spacing: 6px;
-    Text { text: "Live Compute"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+    SettingLabel {
+        text: "Live Compute";
+        hint: "Live Compute: which computer traces the settled picture in the Live Render view. Local only uses this computer, Remote only hands the picture to the remote worker, and Local + Remote uses both.";
+    }
 
     HorizontalLayout {
         spacing: 4px;
 
-        Rectangle {
-            horizontal-stretch: 1;
-            height: 28px;
-            border-radius: Theme.radius-sm;
-            background: SettingsModel.live_compute_target_index == 0 ? Theme.accent-cyan : (lct0_touch.has-hover ? #1e293b : #0f172a);
-            border-width: 1px;
-            border-color: SettingsModel.live_compute_target_index == 0 ? Theme.accent-cyan : #334155;
-
-            lct0_touch := TouchArea {
-                clicked => {
-                    SettingsModel.live_compute_target_index = 0;
-                    SettingsModel.live_compute_target_changed(0);
-                }
+        SegmentPill {
+            text: "Local only";
+            hint: "Trace the live picture on this computer only.";
+            selected: SettingsModel.live_compute_target_index == 0;
+            picked => {
+                SettingsModel.live_compute_target_index = 0;
+                SettingsModel.live_compute_target_changed(0);
             }
-
-            Text { text: "Local only"; font-size: 11px; font-weight: 600; color: SettingsModel.live_compute_target_index == 0 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
         }
 
-        Rectangle {
-            horizontal-stretch: 1;
-            height: 28px;
-            border-radius: Theme.radius-sm;
-            opacity: RemoteWorkerModel.live_remote_available ? 1.0 : 0.45;
-            background: SettingsModel.live_compute_target_index == 1 ? Theme.accent-cyan : (lct1_touch.has-hover ? #1e293b : #0f172a);
-            border-width: 1px;
-            border-color: SettingsModel.live_compute_target_index == 1 ? Theme.accent-cyan : #334155;
-
-            lct1_touch := TouchArea {
-                enabled: RemoteWorkerModel.live_remote_available;
-                clicked => {
-                    SettingsModel.live_compute_target_index = 1;
-                    SettingsModel.live_compute_target_changed(1);
-                }
+        SegmentPill {
+            text: "Remote only";
+            hint: RemoteWorkerModel.live_remote_available
+                ? "Hand the whole live picture to the remote worker."
+                : "Needs a remote worker. None is available right now.";
+            enabled: RemoteWorkerModel.live_remote_available;
+            selected: SettingsModel.live_compute_target_index == 1;
+            picked => {
+                SettingsModel.live_compute_target_index = 1;
+                SettingsModel.live_compute_target_changed(1);
             }
-
-            Text { text: "Remote only"; font-size: 11px; font-weight: 600; color: SettingsModel.live_compute_target_index == 1 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
         }
 
-        Rectangle {
-            horizontal-stretch: 1;
-            height: 28px;
-            border-radius: Theme.radius-sm;
-            opacity: RemoteWorkerModel.live_remote_available ? 1.0 : 0.45;
-            background: SettingsModel.live_compute_target_index == 2 ? Theme.accent-cyan : (lct2_touch.has-hover ? #1e293b : #0f172a);
-            border-width: 1px;
-            border-color: SettingsModel.live_compute_target_index == 2 ? Theme.accent-cyan : #334155;
-
-            lct2_touch := TouchArea {
-                enabled: RemoteWorkerModel.live_remote_available;
-                clicked => {
-                    SettingsModel.live_compute_target_index = 2;
-                    SettingsModel.live_compute_target_changed(2);
-                }
+        SegmentPill {
+            text: "Local + Remote";
+            hint: RemoteWorkerModel.live_remote_available
+                ? "Trace the live picture on this computer and on the remote worker together."
+                : "Needs a remote worker. None is available right now.";
+            enabled: RemoteWorkerModel.live_remote_available;
+            selected: SettingsModel.live_compute_target_index == 2;
+            picked => {
+                SettingsModel.live_compute_target_index = 2;
+                SettingsModel.live_compute_target_changed(2);
             }
-
-            Text { text: "Local + Remote"; font-size: 11px; font-weight: 600; color: SettingsModel.live_compute_target_index == 2 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
         }
     }
 
@@ -94,28 +79,24 @@ export component LiveComputePicker inherits VerticalLayout {
     // Live transfer: how the remote's contribution comes home.
     // Meaningless for "Local only" and without a remote, so disabled (not hidden)
     // then, the same treatment the Remote pills above get.
-    Text { text: "Live Transfer"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+    SettingLabel {
+        text: "Live Transfer";
+        hint: "Live Transfer: how the remote worker sends its share back. Full data sends the raw samples, which combine with your own. Final picture sends only finished, denoised frames.";
+    }
 
     HorizontalLayout {
         spacing: 4px;
-        for label[idx] in ["Full data", "Final picture"]: Rectangle {
-            horizontal-stretch: 1;
-            height: 28px;
-            border-radius: Theme.radius-sm;
-            opacity: root.transfer_enabled ? 1.0 : 0.45;
-            background: SettingsModel.live_transfer_index == idx ? Theme.accent-cyan : (lt_touch.has-hover ? #1e293b : #0f172a);
-            border-width: 1px;
-            border-color: SettingsModel.live_transfer_index == idx ? Theme.accent-cyan : #334155;
-
-            lt_touch := TouchArea {
-                enabled: root.transfer_enabled;
-                clicked => {
-                    SettingsModel.live_transfer_index = idx;
-                    SettingsModel.live_transfer_changed(idx);
-                }
+        for label[idx] in ["Full data", "Final picture"]: SegmentPill {
+            text: label;
+            hint: idx == 0
+                ? "The remote sends its raw samples, so they combine with the ones traced here."
+                : "The remote sends finished, denoised frames. Less data travels, but this computer pauses its own tracing after the handoff.";
+            enabled: root.transfer_enabled;
+            selected: SettingsModel.live_transfer_index == idx;
+            picked => {
+                SettingsModel.live_transfer_index = idx;
+                SettingsModel.live_transfer_changed(idx);
             }
-
-            Text { text: label; font-size: 11px; font-weight: 600; color: SettingsModel.live_transfer_index == idx ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
         }
     }
 
@@ -129,43 +110,14 @@ export component LiveComputePicker inherits VerticalLayout {
     // v16: final-picture EXPORTS (the still export and tilt videos, not the live
     // viewport above) can fold this machine's own idle samples into the remote's --
     // same switch idiom as `settings_dialog.slint`'s "Frosted Girdle" toggle.
-    HorizontalLayout {
-        alignment: space-between;
-        Rectangle {
-            height: contribute_lbl.preferred-height;
-            Tooltip { text: @markdown("Your GPU/CPU traces part of the samples and uploads them; the coordinator merges them before tone-mapping."); }
-            contribute_lbl := Text {
-                text: "Final-picture exports: this machine renders a share too";
-                font-size: 11px;
-                font-weight: 600;
-                color: Theme.text-muted;
-                wrap: word-wrap;
-            }
-        }
-        Rectangle {
-            width: 36px;
-            height: 20px;
-            border-radius: 10px;
-            opacity: RemoteWorkerModel.live_remote_available ? 1.0 : 0.45;
-            background: SettingsModel.contribute_to_final_picture ? Theme.accent-cyan : #334155;
-
-            TouchArea {
-                enabled: RemoteWorkerModel.live_remote_available;
-                clicked => {
-                    SettingsModel.contribute_to_final_picture = !SettingsModel.contribute_to_final_picture;
-                    SettingsModel.contribute_to_final_picture_changed(SettingsModel.contribute_to_final_picture);
-                }
-            }
-
-            Rectangle {
-                width: 16px;
-                height: 16px;
-                border-radius: 8px;
-                background: white;
-                x: SettingsModel.contribute_to_final_picture ? parent.width - self.width - 2px : 2px;
-                y: 2px;
-                animate x { duration: 120ms; }
-            }
+    ToggleRow {
+        text: "Final-picture exports: this machine renders a share too";
+        hint: "Your GPU or CPU traces part of the samples and uploads them; the coordinator merges them before tone-mapping.";
+        enabled: RemoteWorkerModel.live_remote_available;
+        checked: SettingsModel.contribute_to_final_picture;
+        toggled => {
+            SettingsModel.contribute_to_final_picture = !SettingsModel.contribute_to_final_picture;
+            SettingsModel.contribute_to_final_picture_changed(SettingsModel.contribute_to_final_picture);
         }
     }
 }

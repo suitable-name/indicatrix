@@ -14,7 +14,7 @@ use super::{
     types::{CameraPose, FrameGeometry, PickBuffer, StoneGeometryBuf},
 };
 use crate::{
-    diagram2d::{self, DiagramConfig, DiagramFrame},
+    diagram2d::{self, DiagramConfig, DiagramFrame, DiagramStyle},
     edges_layer::render_edges_layer,
     mesh_cache::{CachedMesh, MeshCache},
     raster::SolidRasterizer,
@@ -23,7 +23,7 @@ use indicatrix::{
     geometry::{meet_solver::SolvedTier, stone_metrics::SolidMesh},
     optics::raytracer::{Camera, DEFAULT_FOV_DEG},
 };
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 /// [`RenderedFrame::mesh_bounding_radius`]'s fallback before any arrangement has
 /// ever closed.
@@ -57,6 +57,10 @@ pub struct RenderedFrame {
     pub diagram_hover_text: Option<Vec<String>>,
     /// Facet id -> owning tier for a Diagram-mode frame (`None` in other modes).
     pub diagram_facet_tier: Option<Vec<Option<usize>>>,
+    /// Facet id -> owning concave tier (an index into `Design::concave_tiers`) for a
+    /// Diagram-mode frame (`None` in other modes). Parallel to
+    /// [`Self::diagram_facet_tier`], which holds `None` for tool facets.
+    pub diagram_facet_concave_tier: Option<Vec<Option<usize>>>,
     /// The stone (planes plus concave tools) this frame was rendered from. Named
     /// `stone` rather than `geometry` because [`Self::geometry`] is the mesh-derived
     /// [`FrameGeometry`] the manipulation handles use.
@@ -65,6 +69,10 @@ pub struct RenderedFrame {
     pub hover_text: Vec<String>,
     /// Facet id -> owning tier, valid in every view mode.
     pub facet_tier: Vec<Option<usize>>,
+    /// Facet id -> owning concave tier (an index into `Design::concave_tiers`; `None`
+    /// for a flat facet), valid in every view mode. The concave tier's tier-table
+    /// position is `design.tiers.len() + index`; `facet_tier` itself is unchanged.
+    pub facet_concave_tier: Vec<Option<usize>>,
     /// The design generation this frame reflects.
     pub generation: u64,
     /// The shown solid's bounding radius, or [`DEFAULT_MESH_BOUNDING_RADIUS`].
@@ -83,6 +91,8 @@ fn frame_geometry(cached: &CachedMesh, camera: CameraPose, size: (u32, u32)) -> 
         bounding_radius: cached.bounding_radius(),
         camera,
         size,
+        diagram: None,
+        visible_tiers: None,
     }
 }
 
@@ -90,12 +100,25 @@ fn frame_geometry(cached: &CachedMesh, camera: CameraPose, size: (u32, u32)) -> 
 /// panel) at `size` from the pipeline's `last_diagram` memory, or `None` when the
 /// arrangement does not close. Camera-independent. Builds nothing in any other
 /// view mode.
+///
+/// `moved` is the app-owned set of drag-follower facet ids (see
+/// [`super::state::Outlines`]): like the solid view, the diagram outlines it from the
+/// newest value at draw time, not from the style the last replan remembered.
 fn build_diagram(
     mesh_cache: &mut MeshCache,
     stone: &StoneGeometryBuf,
     size: (u32, u32),
     last_diagram: &DiagramMemory,
+    moved: &[u32],
 ) -> Option<DiagramFrame> {
+    let style = if last_diagram.style.moved == moved {
+        Cow::Borrowed(&last_diagram.style)
+    } else {
+        Cow::Owned(DiagramStyle {
+            moved: moved.to_vec(),
+            ..last_diagram.style.clone()
+        })
+    };
     mesh_cache.get_or_build_geometry(stone).map(|cached| {
         let config = DiagramConfig {
             width: size.0,
@@ -108,15 +131,8 @@ fn build_diagram(
         // The "enlarge this panel" mode: draw just that one panel filling the
         // whole frame instead of the ordinary three-column layout.
         last_diagram.enlarged_panel.map_or_else(
-            || diagram2d::render_diagram(&cached.mesh, &config, &last_diagram.style),
-            |panel| {
-                diagram2d::render_diagram_single_panel(
-                    &cached.mesh,
-                    &config,
-                    &last_diagram.style,
-                    panel,
-                )
-            },
+            || diagram2d::render_diagram(&cached.mesh, &config, &style),
+            |panel| diagram2d::render_diagram_single_panel(&cached.mesh, &config, &style, panel),
         )
     })
 }
@@ -190,20 +206,23 @@ pub fn render_request(
                 true
             });
 
-    let (diagram, diagram_hover_text, diagram_facet_tier) = if view_mode == 3 {
-        (
-            build_diagram(mesh_cache, &stone, size, &memory.diagram),
-            Some(memory.diagram.hover_text.clone()),
-            Some(memory.diagram.facet_tier.clone()),
-        )
-    } else {
-        (None, None, None)
-    };
+    let (diagram, diagram_hover_text, diagram_facet_tier, diagram_facet_concave_tier) =
+        if view_mode == 3 {
+            (
+                build_diagram(mesh_cache, &stone, size, &memory.diagram, &style.moved),
+                Some(memory.diagram.hover_text.clone()),
+                Some(memory.diagram.facet_tier.clone()),
+                Some(memory.diagram.facet_concave_tier.clone()),
+            )
+        } else {
+            (None, None, None, None)
+        };
     // The Solid view's own hover/tier tables -- the SAME ones the diagram's
     // carry, handed out unconditionally since every view mode's facet ids come
     // from the same `FacetMap`.
     let hover_text = memory.diagram.hover_text.clone();
     let facet_tier = memory.diagram.facet_tier.clone();
+    let facet_concave_tier = memory.diagram.facet_concave_tier.clone();
 
     // Mirrors the `get_or_build(..).or_else(last_closed)` fallback chain the image
     // was rendered from, so the distance clamp (and the manipulation handles) always
@@ -217,6 +236,14 @@ pub fn render_request(
                 .last_closed()
                 .map(|cached| frame_geometry(cached, camera_pose, size))
         });
+    // The Diagram view's panel layout rides on the same geometry value, so the sink
+    // stores both together and a handle never pairs a layout with a stale mesh.
+    let diagram_layout = diagram.as_ref().map(|drawn| Arc::new(drawn.layout.clone()));
+    let geometry = geometry.map(|shown| FrameGeometry {
+        diagram: diagram_layout,
+        visible_tiers: memory.visible_tiers.clone(),
+        ..shown
+    });
     let mesh_bounding_radius = geometry
         .as_ref()
         .map_or(DEFAULT_MESH_BOUNDING_RADIUS, |shown| shown.bounding_radius);
@@ -231,9 +258,11 @@ pub fn render_request(
         diagram,
         diagram_hover_text,
         diagram_facet_tier,
+        diagram_facet_concave_tier,
         stone,
         hover_text,
         facet_tier,
+        facet_concave_tier,
         generation,
         mesh_bounding_radius,
         geometry,

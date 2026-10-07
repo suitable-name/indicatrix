@@ -1,0 +1,13 @@
+import { AngleItem } from "../types.slint";
+
+// One question the library's cutting-instructions table asks Rust, for its keyboard cursor. The
+// table (`components/cutting_table.slint`) hides the rows a Pavilion or Crown filter leaves out,
+// and Slint has no loop to find the next row that is still shown. The rule and its tests are in
+// Rust: `gui::library::detail::row_cursor`.
+export global CuttingTableModel {
+    // The `order_idx` the cursor moves to. In this order: the table's rows, the `order_idx` the
+    // cursor is on now (-1 for none), how far to move (1 = down, -1 = up, a very large number
+    // = End, a very large negative number = Home), and the filter (0 = All, 1 = Pavilion,
+    // 2 = Crown). Stops at the first and last shown row. -1 when no row is shown.
+    pure callback step_row([AngleItem], int, int, int) -> int;
+}

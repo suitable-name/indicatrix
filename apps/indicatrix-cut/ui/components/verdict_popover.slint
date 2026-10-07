@@ -1,0 +1,269 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { EditorModel } from "../models/editor.slint";
+import { GuideModel } from "../models/guide.slint";
+import { VerdictModel } from "../models/verdict.slint";
+import { HelpTopics } from "../models/help.slint";
+import { HelpButton } from "help_button.slint";
+
+// A small text button for the popover's "Show" and "Fix". It takes keyboard focus (Tab)
+// and answers Space and Enter like a button; an inactive one is dimmed, ignores clicks and
+// says why in its tooltip.
+component VerdictAction inherits Rectangle {
+    in property <string> label;
+    // What a screen reader says when `label` alone is ambiguous (every reason has a "Show").
+    // Empty: the label.
+    in property <string> reader_label;
+    in property <bool> active: true;
+    in property <bool> primary: false;
+    // The tooltip: what the button does, or why it waits.
+    in property <string> hint;
+    callback clicked();
+
+    height: 22px;
+    width: max(44px, action_label.preferred-width + 18px);
+    border-radius: Theme.radius-sm;
+    opacity: root.active ? 1.0 : 0.45;
+    background: root.primary
+        ? (action_touch.has-hover && root.active ? Theme.accent-cyan-hover : Theme.accent-cyan)
+        : (action_touch.has-hover && root.active ? Theme.surface-control-hover : Theme.surface-control);
+    border-width: action_focus.has-focus ? 2px : 1px;
+    border-color: action_focus.has-focus ? Theme.border-accent : (root.primary ? Theme.accent-cyan : Theme.border-control);
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.reader_label != "" ? root.reader_label : root.label;
+    accessible-description: root.hint;
+    accessible-enabled: root.active;
+    accessible-action-default => {
+        if root.active {
+            root.clicked();
+        }
+    }
+
+    action_focus := FocusScope {
+        enabled: root.active;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    action_label := Text {
+        text: root.label;
+        font-size: 10px;
+        font-weight: 700;
+        color: root.primary ? Theme.text-on-accent : Theme.text-primary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    action_touch := TouchArea {
+        enabled: root.active;
+        mouse-cursor: root.active ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
+}
+
+// The popover the status strip's verdict badge opens: the verdict as one sentence, then
+// every reason with a "Show" (select the tier it is about) and a "Fix" (the safe tool, one
+// undo step). Escape closes it; Tab walks the buttons.
+export component VerdictPopover inherits PopupWindow {
+    // `close-on-click-outside` gives the popup real click-outside-to-close.
+    close-policy: PopupClosePolicy.close-on-click-outside;
+    width: 400px;
+    height: outer.preferred-height;
+
+    // Popup height is capped so it does not grow past the top of the window; bound from
+    // the status strip's `window_height`, like `EditorLogPopup`.
+    in property <length> window_height: 900px;
+
+    // Grabs keyboard focus every time the popup opens so Escape works at once. A counter,
+    // not a flag, so `changed` fires on every open.
+    in property <int> open_pulse: 0;
+    changed open_pulse => {
+        popup_focus.focus();
+    }
+
+    // Why a Fix waits, for the tooltip of a dimmed button; "" when it may run.
+    property <string> fix_wait_hint: !GuideModel.allows_tier_table()
+        ? GuideModel.locked_hint
+        : (VerdictModel.stale
+            ? "The design changed since this was checked. The verdict updates when the solve finishes."
+            : (VerdictModel.busy ? "Another fix is still running." : ""));
+    property <bool> fix_ready: root.fix_wait_hint == "";
+
+    Rectangle {
+        background: Theme.popup-surface;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-dialog;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.modal-shadow;
+        drop-shadow-offset-y: 6px;
+        clip: true;
+
+        popup_focus := FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.close();
+                    return accept;
+                }
+                reject
+            }
+
+            outer := VerticalLayout {
+                padding: 16px;
+                spacing: 10px;
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    spacing: 8px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: "Overall verdict"; font-size: 13px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
+                        Text {
+                            text: VerdictModel.word;
+                            font-size: 12px;
+                            font-weight: 700;
+                            color: VerdictModel.level_color(VerdictModel.level);
+                            vertical-alignment: center;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        // The manual page on the verdict.
+                        VerticalLayout {
+                            alignment: center;
+                            HelpButton {
+                                topic: HelpTopics.verdict;
+                                hint: "Open the manual page on the overall verdict";
+                            }
+                        }
+                        Rectangle {
+                            width: 24px;
+                            height: 24px;
+                            border-radius: 12px;
+                            background: close_touch.has-hover ? Theme.bg-card-hover : transparent;
+                            border-width: close_focus.has-focus ? 2px : 0px;
+                            border-color: Theme.accent-cyan-hover;
+                            accessible-role: AccessibleRole.button;
+                            accessible-label: "Close the verdict";
+                            accessible-action-default => { root.close(); }
+                            close_focus := FocusScope {
+                                key-pressed(event) => {
+                                    if event.text == Key.Space || event.text == Key.Return {
+                                        root.close();
+                                        return accept;
+                                    }
+                                    return reject;
+                                }
+                            }
+                            close_touch := TouchArea { clicked => { root.close(); } }
+                            Tooltip { text: @markdown("Close (Esc)"); }
+                            Image { source: @image-url("../icons/close.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+                }
+
+                // The verdict as one plain sentence. Dot-free: the word beside the title
+                // already carries the level.
+                Text {
+                    text: VerdictModel.headline;
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: Theme.text-primary;
+                    wrap: word-wrap;
+                }
+
+                if VerdictModel.stale: Text {
+                    text: "Out of date: the design changed. This updates when the solve finishes.";
+                    font-size: 10px;
+                    color: Theme.accent-amber;
+                    wrap: word-wrap;
+                }
+
+                // The reasons scroll once they would exceed roughly 60% of the window.
+                body_scroll := ScrollView {
+                    height: min(body.preferred-height, root.window_height * 0.6);
+
+                    body := VerticalLayout {
+                        spacing: 10px;
+
+                        if VerdictModel.reasons.length == 0: Text {
+                            text: "Nothing to fix.";
+                            font-size: 11px;
+                            color: Theme.text-muted;
+                        }
+
+                        for r[idx] in VerdictModel.reasons: VerticalLayout {
+                            spacing: 4px;
+
+                            // Dot and wrapped text are placed by hand inside a Rectangle
+                            // sized to the text's wrapped height (a wrapped Text in a
+                            // HorizontalLayout reports a one-line height).
+                            Rectangle {
+                                height: reason_text.preferred-height;
+                                // The dot's colour carries the level, so a screen reader is told it.
+                                accessible-role: AccessibleRole.text;
+                                accessible-label: (r.level >= 2 ? "Problem: " : (r.level == 1 ? "Check: " : "Good: ")) + r.text;
+                                Rectangle {
+                                    x: 0px;
+                                    y: 3px;
+                                    width: 8px;
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: VerdictModel.level_color(r.level);
+                                }
+                                reason_text := Text {
+                                    x: 14px;
+                                    y: 0px;
+                                    width: parent.width - 14px;
+                                    text: r.text;
+                                    font-size: 11px;
+                                    color: Theme.text-primary;
+                                    wrap: word-wrap;
+                                }
+                            }
+
+                            if r.tier >= 0 || r.fix_label != "": HorizontalLayout {
+                                padding-left: 14px;
+                                spacing: 6px;
+                                alignment: start;
+
+                                if r.tier >= 0: VerdictAction {
+                                    label: "Show";
+                                    reader_label: "Show the tier for reason " + (idx + 1);
+                                    hint: "Select this tier in the tier table.";
+                                    clicked => {
+                                        EditorModel.selected_tier_index = r.tier;
+                                        EditorModel.inspector_tab = 0;
+                                        EditorModel.inspector_collapsed = false;
+                                        root.close();
+                                    }
+                                }
+
+                                if r.fix_label != "": VerdictAction {
+                                    label: r.fix_label;
+                                    reader_label: r.fix_label + " for reason " + (idx + 1);
+                                    primary: root.fix_ready;
+                                    active: root.fix_ready;
+                                    hint: root.fix_ready ? (r.fix_hint + " One undo step.") : root.fix_wait_hint;
+                                    clicked => {
+                                        root.close();
+                                        VerdictModel.fix_reason(idx);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

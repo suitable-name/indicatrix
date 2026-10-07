@@ -1,45 +1,105 @@
+// The colour palette and design tokens.
+//
+// HIGH CONTRAST. `high-contrast` switches every colour token between the normal dark
+// palette (the second value of each `high-contrast ? <hc> : <normal>` pair, unchanged
+// from before the switch existed) and a high-contrast one. Rust sets the flag on each
+// window's own `Theme` instance (a global exists once per window): `gui::preferences`
+// does it at start-up, on the Preferences toggle, and when the compare and rough-planner
+// windows are created.
+//
+// The high-contrast palette is near-black surfaces, white primary text, light (never
+// dim) secondary text, clearly visible borders and bright accents. Ratios targeted,
+// WCAG relative luminance, against the surface the token sits on:
+//   - text-primary / text-secondary / text-muted on any bg-* or surface-* step:
+//     white 15:1 or more, #e6e6e6 12:1, #c4c4c4 8.6:1 (bg-card-hover is the lightest
+//     surface, so these are the worst cases);
+//   - text-disabled #9a9a9a: 5.4:1 on bg-card-hover, 4.8:1 on surface-disabled, so even
+//     disabled text stays readable and only differs from muted by being dimmer;
+//   - borders and icons 3:1 or more: border-subtle #8c8c8c 4.5:1 on bg-card-hover and
+//     5.6:1 on bg-card, border-medium / border-dialog / border-control #b0b0b0 7:1,
+//     border-accent (the focus colour) yellow 14:1 on black;
+//   - accents used as text on dark surfaces 5:1 or more (accent-cyan 9.4:1 on
+//     bg-card-hover, accent-amber 8.4:1, accent-purple 6.4:1, accent-ruby 5.1:1,
+//     danger 5.4:1);
+//   - ink on a bright fill (text-on-accent, text-on-amber) is black, 11:1 or more;
+//   - white text on `primary` (#1a66ff) 4.8:1 and on `primary-hover` 7.2:1. `primary` is a
+//     FILL colour: as a stroke or icon it is 3.9:1 on bg-card and 4.4:1 on black. A
+//     colour cannot be both text-bright on black and carry white text at 4.5:1, so text
+//     that must be bright uses accent-cyan instead;
+//   - selected / info / warning surfaces keep white 9:1 and muted text 5:1 or more.
+//
+// STANDARD WIDGETS (Button, LineEdit, ComboBox, Slider, SpinBox, CheckBox, ScrollView)
+// draw themselves from the Slint style palette, not from these tokens. The app is dark only,
+// in normal mode and in high contrast, so the widgets are dark whatever the system theme is.
+// Two things make that so: `build.rs` compiles the UI with the `fluent-dark` style (the
+// compiler then fixes the colour scheme to dark for every window from the first frame), and
+// the `changed high-contrast` handler below sets `Palette.color-scheme` to dark again each
+// time the switch flips, as a second line of defence. The style's own control borders stay
+// subtle in high contrast, which cannot be changed from here; the custom controls draw their
+// own strong borders from the tokens.
+//
+// COLOURS THAT CARRY MEANING (`chart-extinction`, `compare-removed`, `compare-added`, the
+// gem colours that Rust pushes into swatches) keep their own value in both palettes; only
+// the surfaces and labels around them change.
+//
+// New code uses a token from this file, never a hex literal, so this switch reaches it.
+import { Palette } from "std-widgets.slint";
+
 export global Theme {
+    /// Whether the high-contrast palette is on. Set from Rust, per window.
+    in-out property <bool> high-contrast: false;
+
+    // Pins the standard widgets' style palette to dark (see the header). It is dark in both
+    // palettes; the handler never hands the choice back to the system. A `changed` handler on a
+    // global does not run at start-up (the `fluent-dark` style in `build.rs` covers that) and
+    // runs on the next event-loop pass, like the ones on the `*Model` globals.
+    changed high-contrast => {
+        Palette.color-scheme = ColorScheme.dark;
+    }
+
     // Dark Theme Palette
-    out property <color> bg-darkest: #0f1117;
-    out property <color> bg-dark: #161922;
-    out property <color> bg-card: #1c202c;
-    out property <color> bg-card-hover: #252b3b;
-    out property <color> bg-input: #12141c;
-    out property <color> bg-elevated: #262c3d;
+    out property <color> bg-darkest: root.high-contrast ? #000000 : #0f1117;
+    out property <color> bg-dark: root.high-contrast ? #0a0a0a : #161922;
+    out property <color> bg-card: root.high-contrast ? #121212 : #1c202c;
+    out property <color> bg-card-hover: root.high-contrast ? #262626 : #252b3b;
+    out property <color> bg-input: root.high-contrast ? #000000 : #12141c;
+    out property <color> bg-elevated: root.high-contrast ? #1e1e1e : #262c3d;
 
     // Borders & Dividers
-    out property <color> border-subtle: #252b3b;
-    out property <color> border-medium: #333b50;
-    out property <color> border-accent: #3b82f6;
+    out property <color> border-subtle: root.high-contrast ? #8c8c8c : #252b3b;
+    out property <color> border-medium: root.high-contrast ? #b0b0b0 : #333b50;
+    out property <color> border-accent: root.high-contrast ? #ffd400 : #3b82f6;
 
     // Accent & Highlights
-    out property <color> primary: #3b82f6;
-    out property <color> primary-hover: #60a5fa;
-    out property <color> primary-glow: #3b82f633;
-    out property <color> accent-cyan: #38bdf8;
+    out property <color> primary: root.high-contrast ? #1a66ff : #3b82f6;
+    out property <color> primary-hover: root.high-contrast ? #0b4bd0 : #60a5fa;
+    out property <color> primary-glow: root.high-contrast ? #1a66ff66 : #3b82f633;
+    out property <color> accent-cyan: root.high-contrast ? #00e0ff : #38bdf8;
     /// `accent-cyan`'s hovered state, mirroring `primary-hover` above -- named
     /// so `material_editor_dialog.slint`'s "Save & Apply" button uses the same
     /// token as the other colors on its line, rather than a bare hex literal.
-    out property <color> accent-cyan-hover: #7dd3fc;
+    out property <color> accent-cyan-hover: root.high-contrast ? #80efff : #7dd3fc;
     /// The dark surface that carries `accent-cyan` content -- named so
     /// `header.slint`'s remote-library pill (paired with an `accent-cyan`
     /// border) and its "local" branch (`bg-elevated`) share a token for the
     /// same role instead of mixing a hex code and a token on one line.
-    out property <color> accent-cyan-surface: #164e63;
-    out property <color> accent-emerald: #10b981;
-    out property <color> accent-amber: #f59e0b;
-    out property <color> accent-ruby: #f43f5e;
-    out property <color> accent-purple: #a855f7;
+    out property <color> accent-cyan-surface: root.high-contrast ? #003844 : #164e63;
+    out property <color> accent-emerald: root.high-contrast ? #00e676 : #10b981;
+    out property <color> accent-amber: root.high-contrast ? #ffb300 : #f59e0b;
+    out property <color> accent-ruby: root.high-contrast ? #ff5c7a : #f43f5e;
+    out property <color> accent-purple: root.high-contrast ? #d28bff : #a855f7;
     /// `accent-amber` at low opacity, the same "-glow" convention `primary-glow`
     /// already established -- names the tier table's multi-selected-row
     /// highlight (`editor_tier_table.slint`) so it stays tied to `accent-amber`
     /// for a future palette change.
-    out property <color> accent-amber-glow: #f59e0b33;
+    out property <color> accent-amber-glow: root.high-contrast ? #ffb30066 : #f59e0b33;
 
     // Text & Typography
-    out property <color> text-primary: #f1f5f9;
-    out property <color> text-secondary: #94a3b8;
-    out property <color> text-muted: #64748b;
+    out property <color> text-primary: root.high-contrast ? #ffffff : #f1f5f9;
+    out property <color> text-secondary: root.high-contrast ? #e6e6e6 : #94a3b8;
+    out property <color> text-muted: root.high-contrast ? #c4c4c4 : #64748b;
+    // Already white, the highest contrast there is: the same in both palettes. The
+    // high-contrast `primary` was chosen dark enough to carry it at 4.5:1.
     out property <color> text-on-primary: #ffffff;
     /// Text that is present but not currently actionable -- a disabled label, or a
     /// chart's own axis tick labels, which must recede behind the plotted data.
@@ -47,12 +107,12 @@ export global Theme {
     /// separately because the two roles would not move together in a re-palette.
     /// Shared by `performance_graph_dialog.slint` (7 axis labels) and
     /// `settings_dialog.slint` (a disabled override label).
-    out property <color> text-disabled: #475569;
+    out property <color> text-disabled: root.high-contrast ? #9a9a9a : #475569;
     /// Dark text/icon color for content sitting directly on an `accent-amber`
     /// fill (a toggle button's own "on" state, e.g. `header.slint`'s Filters
     /// button) -- the amber-background counterpart to `text-on-primary`,
     /// naming the role so it stays tied together across every call site.
-    out property <color> text-on-amber: #0f172a;
+    out property <color> text-on-amber: root.high-contrast ? #000000 : #0f172a;
 
     /// Ink drawn on a LIGHT or saturated fill -- the counterpart to
     /// `text-on-primary` (white, for dark saturated fills) and the general form of
@@ -60,7 +120,7 @@ export global Theme {
     /// Names the role shared by `material_editor_dialog.slint`'s light "Clear"
     /// swatch label and the check icon + label on its accent-cyan "Save & Apply"
     /// button.
-    out property <color> text-on-accent: #0f172a;
+    out property <color> text-on-accent: root.high-contrast ? #000000 : #0f172a;
 
     // Control surfaces inside a dialog. Distinct from the
     // `bg-*` scale above, which describes the main window's panels: a dialog sits
@@ -69,33 +129,33 @@ export global Theme {
     /// A field, hairline divider, or hovered secondary button inside a dialog --
     /// one step ABOVE the dialog card. Shared by eight call sites in
     /// `material_editor_dialog.slint` alone.
-    out property <color> surface-raised: #1e293b;
+    out property <color> surface-raised: root.high-contrast ? #262626 : #1e293b;
     /// A recessed secondary-button or chip-row background -- one step BELOW the
     /// dialog card. Same value as `text-on-accent` above, deliberately named
     /// separately because the roles are unrelated.
-    out property <color> surface-sunken: #0f172a;
+    out property <color> surface-sunken: root.high-contrast ? #000000 : #0f172a;
     /// A small square control (a dialog's own close button) at rest.
-    out property <color> surface-control: #1a202c;
+    out property <color> surface-control: root.high-contrast ? #1a1a1a : #1a202c;
     /// ...and hovered.
-    out property <color> surface-control-hover: #2d3748;
+    out property <color> surface-control-hover: root.high-contrast ? #333333 : #2d3748;
     /// A disabled button's flat fill. Same value as `border-dialog`, named
     /// separately for the same reason as the pair above: a fill is not a border,
     /// and a future palette change would almost certainly move one without the
     /// other.
-    out property <color> surface-disabled: #334155;
+    out property <color> surface-disabled: root.high-contrast ? #2e2e2e : #334155;
 
     /// A selected list row's fill, matching `diagram_list.slint`'s ternary whose
     /// other two branches are already `bg-card-hover`/`bg-input`. Deliberately
     /// NOT shared with `header.slint`'s logo mark, which happens to use the
     /// same value for an unrelated, brand reason -- a palette change should
     /// move one without the other.
-    out property <color> surface-selected: #1e3a8a;
+    out property <color> surface-selected: root.high-contrast ? #0b3fa8 : #1e3a8a;
     /// An informational banner's fill (the catalogue's "showing N just-imported
     /// designs" strip).
-    out property <color> surface-info: #1e3a5f;
+    out property <color> surface-info: root.high-contrast ? #0b3a63 : #1e3a5f;
     /// A warning banner's fill -- the dark amber counterpart to `accent-amber`
     /// content, as `surface-info` is to a blue one.
-    out property <color> surface-warning: #422006;
+    out property <color> surface-warning: root.high-contrast ? #5c3000 : #422006;
 
     // Radii
     out property <length> radius-sm: 4px;
@@ -109,67 +169,168 @@ export global Theme {
     // convention is explicit and a future dialog (or a future palette change) doesn't
     // have to rediscover it by copying another file's hex codes.
     /// The full-viewport semi-transparent backdrop shown behind every modal dialog.
-    out property <color> overlay-backdrop: #00000088;
+    out property <color> overlay-backdrop: root.high-contrast ? #000000cc : #00000088;
     /// A modal dialog card's own background, distinct from `bg-elevated` (used for
     /// smaller in-panel popups like the Log popup rather than full dialogs).
-    out property <color> surface-dialog: #11151f;
+    out property <color> surface-dialog: root.high-contrast ? #0d0d0d : #11151f;
     /// A modal dialog card's own border color.
-    out property <color> border-dialog: #334155;
+    out property <color> border-dialog: root.high-contrast ? #b0b0b0 : #334155;
     /// A checkbox, toggle or similar small control's border at rest, i.e. while
     /// unchecked -- one step brighter than `border-dialog` so the control reads as
     /// interactive against the card it sits on. Shared by five dialogs
     /// (`retarget_dialog`, `export_dialog`, `material_editor_dialog`,
     /// `performance_graph_dialog`, `settings_dialog`), always opposite an
     /// `accent-cyan` checked state.
-    out property <color> border-control: #475569;
+    out property <color> border-control: root.high-contrast ? #b0b0b0 : #475569;
     /// The drop-shadow color under a floating modal dialog card.
-    out property <color> modal-shadow: #000000bb;
+    out property <color> modal-shadow: root.high-contrast ? #000000 : #000000bb;
     /// A small floating popup's own translucent card background -- distinct from
     /// the opaque `surface-dialog` (a full modal dialog card): names the role
     /// for `editor_status_strip.slint`'s "Details" popup. `border-dialog`/
     /// `modal-shadow` above already fit that same popup's border/shadow exactly
     /// (it independently uses the identical literals), so only the background
     /// needed a new name rather than reusing one of the four above.
-    out property <color> popup-surface: #111827ee;
+    out property <color> popup-surface: root.high-contrast ? #0d0d0df2 : #111827ee;
 
     // Semantic state, distinct from the decorative `accent-*` colors above (which
     // this codebase also reuses for non-status purposes, e.g. chart curves).
     /// Danger/error/destructive-action color -- already the de facto shade for this
     /// (toast error icon, Retarget's solve-error text, Material Editor's Delete
     /// button) before this token existed to name it.
-    out property <color> danger: #f87171;
+    out property <color> danger: root.high-contrast ? #ff6b6b : #f87171;
     /// A destructive button's own flat fill at rest, and hovered -- the dark-red
     /// surfaces that carry `danger` text/icons. Shared by the Material Editor's
     /// Delete button and the Filters panel's remove-row button, tying the two
     /// files to the same role.
-    out property <color> danger-surface: #1f1111;
-    out property <color> danger-surface-hover: #450a0a;
+    out property <color> danger-surface: root.high-contrast ? #2b0000 : #1f1111;
+    out property <color> danger-surface-hover: root.high-contrast ? #4d0000 : #450a0a;
     /// A destructive button's border.
-    out property <color> danger-border: #7f1d1d;
+    out property <color> danger-border: root.high-contrast ? #ff6b6b : #7f1d1d;
     /// Success/confirmation color -- the `danger` counterpart, and like `danger` a
     /// lighter shade than the `accent-emerald` it derives from, so it reads as ink
     /// or an icon on a dark surface rather than as a fill. Used by the toast's
     /// success icon, alongside `danger`/`accent-amber`/`accent-cyan` on the same
     /// line.
-    out property <color> success: #34d399;
+    out property <color> success: root.high-contrast ? #3ddc84 : #34d399;
 
     // Toast backgrounds. Translucent by design -- a toast floats over live content
     // and must not hide it -- which is why these are their own tokens rather than
     // the opaque `*-surface` colors above. Named for `toast.slint`, the last
-    // component in `ui/` to get tokens for its own colors.
+    // component in `ui/` to get tokens for its own colors. The high-contrast fills are
+    // nearly opaque (93 %), so text on them keeps its contrast over any content.
     /// The success toast's translucent card fill.
-    out property <color> toast-success-surface: #064e3bcc;
+    out property <color> toast-success-surface: root.high-contrast ? #003d24ee : #064e3bcc;
     /// The error toast's translucent card fill.
-    out property <color> toast-error-surface: #7f1d1dcc;
+    out property <color> toast-error-surface: root.high-contrast ? #4d0010ee : #7f1d1dcc;
     /// The warning toast's translucent card fill.
-    out property <color> toast-warning-surface: #78350fcc;
+    out property <color> toast-warning-surface: root.high-contrast ? #4d3300ee : #78350fcc;
     /// The neutral/info toast's translucent card fill.
-    out property <color> toast-info-surface: #0f172acc;
+    out property <color> toast-info-surface: root.high-contrast ? #000000ee : #0f172acc;
     /// The drop-shadow under a toast -- lighter than `modal-shadow`, since a toast
     /// sits closer to the content than a modal dialog card does.
-    out property <color> toast-shadow: #000000aa;
+    out property <color> toast-shadow: root.high-contrast ? #000000 : #000000aa;
     /// A hover fill for a control that has no surface of its own and must tint
     /// whatever it floats over -- the toast's close button. Deliberately white at
     /// low alpha rather than a named surface, so it works on all four toast fills.
-    out property <color> overlay-hover: #ffffff22;
+    out property <color> overlay-hover: root.high-contrast ? #ffffff44 : #ffffff22;
+
+    // ---- Tokens for one feature each ----------------------------------------------
+    // Added when the last hard-coded colours were moved into the theme. Every normal value
+    // below is the literal the code used before, so the normal look is unchanged.
+
+    // Chips, pills and fields inside the export and tilt-graph dialogs.
+    /// The recessed row or field behind a group of choice chips (frame-rate, bounce and
+    /// colour-space pills, the step field, the progress track). Text on it: 10:1 or more
+    /// for `text-muted` in high contrast.
+    out property <color> surface-chip: root.high-contrast ? #1a1a1a : #131b2e;
+    /// An unselected pill that sits on a panel (the library's tag chips). A FILL, so it is
+    /// not `border-dialog`, which turns light in high contrast and would swallow the label.
+    out property <color> surface-chip-off: root.high-contrast ? #333333 : #334155;
+    /// Fill of a selected channel or axis pill, one tint per series. Each is the series
+    /// colour at about 20 % over the dark surface under it, so the series-coloured label
+    /// keeps 4.5:1 or more on it.
+    out property <color> tint-cyan: root.high-contrast ? #00e0ff33 : #0284c733;
+    out property <color> tint-amber: root.high-contrast ? #ffb30033 : #d9770633;
+    out property <color> tint-red: root.high-contrast ? #ef444433 : #b91c1c33;
+    out property <color> tint-purple: root.high-contrast ? #d28bff33 : #a855f733;
+    /// The same for a pill with no series colour of its own (the "Angle" value pill).
+    out property <color> tint-neutral: root.high-contrast ? #ffffff40 : #33415577;
+
+    // The tilt-performance graph dialog and its chart.
+    /// The graph dialog's card (a hair bluer than `surface-dialog`).
+    out property <color> surface-graph: root.high-contrast ? #0d0d0d : #0f1523;
+    /// The chart's floating hover card, translucent over the lines.
+    out property <color> surface-graph-popup: root.high-contrast ? #0d0d0df2 : #0f1523ee;
+    /// The plot area and its frame.
+    out property <color> chart-bg: root.high-contrast ? #000000 : #050811;
+    out property <color> chart-border: root.high-contrast ? #8c8c8c : #1e293b;
+    /// The horizontal reference lines at 25 / 75 % and at 50 %.
+    out property <color> chart-grid: root.high-contrast ? #ffffff40 : #1e293b44;
+    out property <color> chart-grid-mid: root.high-contrast ? #ffffff66 : #1e293b66;
+    /// The faint vertical guide at 0 degrees, and the hover crosshair.
+    out property <color> chart-guide: root.high-contrast ? #ffffff59 : #33415577;
+    out property <color> chart-crosshair: root.high-contrast ? #ffffffcc : #94a3b877;
+    /// The extinction series (red) -- data colour, the same in both palettes: 5.6:1 on black.
+    /// Brilliance and windowing use `accent-cyan` and `accent-amber`.
+    out property <color> chart-extinction: #ef4444;
+
+    // A "this needs your attention" banner in orange (stale cached curve, long video run).
+    // Not `surface-warning`, which is the dark-amber banner of another feature.
+    /// The banner fill, translucent in the normal palette.
+    out property <color> notice-surface: root.high-contrast ? #331a00 : #7c2d1233;
+    /// Its border, and the fill of the action button inside it (ink on it: `text-on-accent`).
+    out property <color> notice-accent: root.high-contrast ? #ff8a3d : #ea580c;
+    out property <color> notice-accent-hover: root.high-contrast ? #ffa566 : #f97316;
+    /// Its text: 12:1 on `notice-surface` in high contrast.
+    out property <color> notice-text: root.high-contrast ? #ffd2a1 : #fdba74;
+
+    // Small badges in the catalogue (fill; the label uses the matching `accent-*`).
+    out property <color> badge-amber-bg: root.high-contrast ? #4d3300 : #78350f;
+    out property <color> badge-emerald-bg: root.high-contrast ? #003d24 : #065f46;
+    out property <color> badge-purple-bg: root.high-contrast ? #2e0a66 : #4c1d95;
+    /// The "Competition Design" badge: fill and label (10:1 in high contrast).
+    out property <color> badge-orange-bg: root.high-contrast ? #4d1f00 : #7c2d12;
+    out property <color> badge-orange-text: root.high-contrast ? #ffd9b3 : #fed7aa;
+
+    // Overlays drawn over the Live Render picture. In high contrast they are almost opaque
+    // so the text stays readable over a bright render.
+    /// What shows behind the render picture before the first frame arrives.
+    out property <color> viewport-bg: root.high-contrast ? #000000 : #080a0f;
+    /// The metrics strip over the picture.
+    out property <color> hud-surface: root.high-contrast ? #000000f2 : #0f172aee;
+    /// The mouse-hint pills along the bottom edge, and their text and icons.
+    out property <color> hint-surface: root.high-contrast ? #000000eb : #1e293bdd;
+    out property <color> hint-text: root.high-contrast ? #ffffff : #cbd5e1;
+    /// The dimmer behind the render settings card.
+    out property <color> scrim-light: root.high-contrast ? #000000b0 : #00000055;
+
+    // Shadows under a floating card: the strong one under the performance-graph and remote
+    // dialogs, the medium one under the import dialog. (`modal-shadow` and `toast-shadow`
+    // are the other two.) Fully black in high contrast, like those.
+    out property <color> shadow-heavy: root.high-contrast ? #000000 : #000000ee;
+    out property <color> shadow-medium: root.high-contrast ? #000000 : #000000aa;
+
+    /// The round knob of a switch (on a track that is `border-dialog` when off and an
+    /// accent colour when on). White would vanish on the light high-contrast tracks, so it
+    /// is black there: 9:1 on `border-dialog`, 10:1 or more on every accent track.
+    out property <color> toggle-knob: root.high-contrast ? #000000 : #ffffff;
+
+    /// The logo mark in the header (the same blue as `surface-selected`, for a brand reason
+    /// rather than a role, so a re-palette can move one without the other).
+    out property <color> brand-mark-bg: root.high-contrast ? #0b3fa8 : #1e3a8a;
+
+    // The Compare window's overlay legend. Data colours: they must match the red and
+    // green the overlay raster draws, so they are the same in both palettes.
+    out property <color> compare-removed: #ef4444;
+    out property <color> compare-added: #22c55e;
+
+    // The "Clear" and "Keep" swatches of the material editor's body-colour row. (The coloured
+    // swatches are data -- the colour they stand for -- and stay literals in that file.)
+    /// "Clear" when it is the chosen swatch: the pale grey-white of an uncoloured stone. Its
+    /// label is `text-on-accent`.
+    out property <color> swatch-clear: root.high-contrast ? #ffffff : #e2e8f0;
+    /// "Clear" when it is not chosen: a faint translucent grey over the dialog card.
+    out property <color> swatch-clear-off: root.high-contrast ? #ffffff40 : #94a3b844;
+    /// "Keep" (keep the saved colour, which matches no swatch): fainter still.
+    out property <color> swatch-keep: root.high-contrast ? #ffffff26 : #94a3b822;
 }

@@ -538,6 +538,17 @@ fn log_event(event: PoolEvent) {
         } => tracing::warn!(
             "coordinator job: lane {lane} retired after {consecutive_failures} failed chunk(s) in a row"
         ),
+        PoolEvent::ChunkDeferred {
+            lane,
+            range,
+            frontier,
+            total_done,
+            deferrals,
+        } => tracing::warn!(
+            "coordinator job: lane {lane} chunk [{}, +{}) deferred {deferrals} time(s) by the parked-bytes budget; frontier {frontier}, {total_done} sample(s) merged or parked",
+            range.first_sample,
+            range.samples
+        ),
         other => tracing::trace!("coordinator job: {other:?}"),
     }
 }

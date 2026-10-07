@@ -1,0 +1,186 @@
+// The Angle Sweep dialog's table: a row per angle, a column per figure. The best figure of
+// each column is bold and green. A click selects a row (the chart and "Use this angle"
+// follow). The columns are the same as the chart's figures; Rust fills them from `SweepModel`.
+import { ListView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { SweepModel, SweepRowItem } from "../../models/sweep.slint";
+import { SweepStyle } from "sweep_style.slint";
+
+// The height of one table row; the table scrolls a selected row into view with it.
+global SweepTableMetrics {
+    out property <length> row_height: 25px;
+}
+
+component SweepTableRow inherits Rectangle {
+    // Not `row`: that is a built-in property of every element (the grid layout's row).
+    in property <SweepRowItem> item;
+    in property <bool> selected;
+    // The table has the keyboard focus and this is its chosen row: draw the focus ring.
+    in property <bool> ringed;
+    callback clicked();
+
+    height: SweepTableMetrics.row_height;
+
+    accessible-role: AccessibleRole.list-item;
+    accessible-label: "Angle " + root.item.angle + (root.item.status != "" ? ", " + root.item.status : "")
+        + (root.item.notes != "" ? ". " + root.item.notes : "");
+    accessible-description: "Select this angle. The chart, the readout and the Use this angle button follow.";
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.clicked(); }
+
+    Tooltip { text: @markdown("Select this angle. The chart, the readout and the Use this angle button follow."); }
+
+    Rectangle {
+        height: SweepTableMetrics.row_height - 1px;
+        border-radius: Theme.radius-sm;
+        border-width: root.ringed ? 2px : 0px;
+        border-color: Theme.accent-cyan-hover;
+        background: root.selected
+            ? Theme.surface-selected
+            : (row_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken);
+
+        row_touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.clicked(); }
+        }
+
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 12px;
+            spacing: 6px;
+            Text {
+                width: 64px;
+                text: root.item.angle;
+                font-size: 11px;
+                font-weight: 700;
+                color: root.item.is_valid ? Theme.text-primary : Theme.text-muted;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+            Text {
+                width: 92px;
+                text: root.item.status;
+                font-size: 10px;
+                color: root.item.is_current ? Theme.accent-cyan : (root.item.is_valid ? Theme.text-muted : Theme.danger);
+                font-weight: root.item.is_current ? 700 : 400;
+                vertical-alignment: center;
+            }
+            for cell in root.item.cells: Text {
+                horizontal-stretch: 1;
+                min-width: 48px;
+                text: cell.text;
+                font-size: 11px;
+                font-weight: cell.best ? 700 : 400;
+                color: cell.best ? Theme.success : Theme.text-secondary;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+            Text {
+                horizontal-stretch: 2;
+                text: root.item.notes;
+                font-size: 10px;
+                color: Theme.text-muted;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+export component SweepTable inherits VerticalLayout {
+    spacing: 4px;
+
+    // Keeps the selected row inside the visible part of the list, for a row picked on the
+    // chart.
+    property <int> selected: SweepModel.selected_row;
+    function reveal_selected() {
+        if root.selected < 0 {
+            return;
+        }
+        let top = SweepTableMetrics.row_height * root.selected;
+        let bottom = top + SweepTableMetrics.row_height;
+        if -list.content-y > top {
+            list.content-y = -top;
+        } else if -list.content-y + list.visible-height < bottom {
+            list.content-y = -(bottom - list.visible-height);
+        }
+    }
+    changed selected => { root.reveal_selected(); }
+
+    // The column titles, in the colour of their line on the chart.
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 12px;
+        spacing: 6px;
+        Text {
+            width: 64px;
+            text: "Angle";
+            font-size: 10px;
+            font-weight: 700;
+            color: Theme.text-muted;
+            horizontal-alignment: right;
+        }
+        Text { width: 92px; text: "Status"; font-size: 10px; font-weight: 700; color: Theme.text-muted; }
+        for column in SweepModel.columns: Text {
+            horizontal-stretch: 1;
+            min-width: 48px;
+            text: column.title;
+            font-size: 10px;
+            font-weight: 700;
+            color: column.shown ? SweepStyle.series_color(column.series) : Theme.text-muted;
+            horizontal-alignment: right;
+            overflow: elide;
+        }
+        Text { horizontal-stretch: 2; text: "Notes"; font-size: 10px; font-weight: 700; color: Theme.text-muted; }
+    }
+
+    // The table is one Tab stop; Up and Down choose the previous or next angle, Home and End the
+    // first or last, exactly as a click does (the chart follows).
+    table_focus := FocusScope {
+        vertical-stretch: 1;
+        accessible-role: AccessibleRole.list;
+        accessible-label: "Angles of the sweep";
+        accessible-description: "Up and Down choose the previous or next angle. The chart and the readout follow.";
+        key-pressed(event) => {
+            if event.text == Key.DownArrow {
+                if SweepModel.selected_row < SweepModel.rows.length - 1 {
+                    SweepModel.select_row(SweepModel.selected_row + 1);
+                }
+                return accept;
+            } else if event.text == Key.UpArrow {
+                if SweepModel.selected_row > 0 {
+                    SweepModel.select_row(SweepModel.selected_row - 1);
+                } else if SweepModel.selected_row < 0 && SweepModel.rows.length > 0 {
+                    SweepModel.select_row(0);
+                }
+                return accept;
+            } else if event.text == Key.Home {
+                if SweepModel.rows.length > 0 {
+                    SweepModel.select_row(0);
+                }
+                return accept;
+            } else if event.text == Key.End {
+                if SweepModel.rows.length > 0 {
+                    SweepModel.select_row(SweepModel.rows.length - 1);
+                }
+                return accept;
+            }
+            return reject;
+        }
+
+        list := ListView {
+            width: 100%;
+            height: 100%;
+            for entry[i] in SweepModel.rows: SweepTableRow {
+                item: entry;
+                selected: SweepModel.selected_row == i;
+                ringed: table_focus.has-focus && SweepModel.selected_row == i;
+                clicked => {
+                    table_focus.focus();
+                    SweepModel.select_row(i);
+                }
+            }
+        }
+    }
+}

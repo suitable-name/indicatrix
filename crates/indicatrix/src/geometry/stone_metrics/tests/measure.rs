@@ -242,12 +242,13 @@ fn golden_fixtures() -> Vec<(&'static str, Vec<(DVec3, f64)>)> {
 /// (and with it the cached `SOLID_EXTENTS_VERSION` contract) changes.
 // Must be re-pinned after the caliper hypot/tie-break and pow2_scale_norm
 // exponent-extraction change (last-bit movement of width_caliper and volume).
+// Brilliant volume re-pinned for glam 0.34.1 (DMat3 determinant reorder, 1 ULP).
 #[test]
 fn measure_solid_figures_are_pinned_bit_for_bit() {
     let golden: [(&str, u64, u64, u64); 4] = [
         (
             "brilliant",
-            0x3ffb_0a48_00da_e155,
+            0x3ffb_0a48_00da_e156,
             0x3fff_ffff_e989_4f9e,
             0x3ff3_3333_3000_0000,
         ),
@@ -270,25 +271,31 @@ fn measure_solid_figures_are_pinned_bit_for_bit() {
             0x3ff0_0000_0000_0000,
         ),
     ];
+    let mut mismatches: Vec<String> = Vec::new();
     for ((label, planes), (golden_label, volume, width, height)) in
         golden_fixtures().into_iter().zip(golden)
     {
         assert_eq!(label, golden_label, "fixture order changed");
         let m = measure_solid(&planes).expect("fixture must measure");
-        assert_eq!(m.volume.to_bits(), volume, "{label}: volume {}", m.volume);
-        assert_eq!(
-            m.width_caliper.to_bits(),
-            width,
-            "{label}: width_caliper {}",
-            m.width_caliper
-        );
-        assert_eq!(
-            m.total_height.to_bits(),
-            height,
-            "{label}: total_height {}",
-            m.total_height
-        );
+        for (field, value, pinned) in [
+            ("volume", m.volume, volume),
+            ("width_caliper", m.width_caliper, width),
+            ("total_height", m.total_height, height),
+        ] {
+            let actual = value.to_bits();
+            if actual != pinned {
+                mismatches.push(format!(
+                    "{label}: {field} = {value:?}; actual bits {actual:#018x} ({actual}); pinned bits {pinned:#018x} ({pinned})"
+                ));
+            }
+        }
     }
+    assert!(
+        mismatches.is_empty(),
+        "{} pinned value(s) drifted:\n{}",
+        mismatches.len(),
+        mismatches.join("\n")
+    );
 }
 
 /// Extents of a vertex set along each axis.

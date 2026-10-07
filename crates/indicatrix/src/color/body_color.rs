@@ -64,7 +64,7 @@ impl Illuminant {
 
 /// A computed body color in CIE XYZ, CIELAB, and sRGB, with out-of-gamut detection.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Bodycolor {
+pub struct BodyColor {
     /// CIE 1931 XYZ tristimulus values normalized so that ideal transmitter (T ≡ 1) has Y = 1.0.
     pub xyz: [f64; 3],
     /// CIE L*a*b* coordinates under the chosen illuminant.
@@ -77,21 +77,21 @@ pub struct Bodycolor {
 
 /// Body colors for all eigenmodes of an [`AbsorptionTensor`].
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Bodycolors {
+pub struct BodyColors {
     /// Unpolarised transmitted color (mean of eigenmode transmittances).
-    pub unpolarised: Bodycolor,
+    pub unpolarised: BodyColor,
     /// Ordinary ray / alpha-axis color.
-    pub o_ray: Bodycolor,
+    pub o_ray: BodyColor,
     /// Extraordinary ray / gamma-axis color.
-    pub e_ray: Bodycolor,
+    pub e_ray: BodyColor,
     /// Optional beta-ray color for trichroic biaxial materials.
-    pub beta_ray: Option<Bodycolor>,
+    pub beta_ray: Option<BodyColor>,
 }
 
 /// Evaluates body color for a given spectral absorption function `alpha_per_mm(lambda)`
 /// over path length `path_mm` under illuminant `ill` at 1 nm resolution (380 to 780 nm).
 #[must_use]
-pub fn body_color(alpha_per_mm: impl Fn(f64) -> f64, path_mm: f64, ill: Illuminant) -> Bodycolor {
+pub fn body_color(alpha_per_mm: impl Fn(f64) -> f64, path_mm: f64, ill: Illuminant) -> BodyColor {
     body_color_transmittance(
         |lambda| (-alpha_per_mm(lambda).max(0.0) * path_mm).exp(),
         ill,
@@ -104,7 +104,7 @@ pub fn body_color(alpha_per_mm: impl Fn(f64) -> f64, path_mm: f64, ill: Illumina
     clippy::option_if_let_else,
     reason = "three-way split: biaxial, uniaxial dichroic, isotropic"
 )]
-pub fn body_colors(tensor: &AbsorptionTensor, path_mm: f64, ill: Illuminant) -> Bodycolors {
+pub fn body_colors(tensor: &AbsorptionTensor, path_mm: f64, ill: Illuminant) -> BodyColors {
     let eval_o = |lambda: f64| -> f64 {
         f64::from(
             tensor
@@ -165,7 +165,7 @@ pub fn body_colors(tensor: &AbsorptionTensor, path_mm: f64, ill: Illuminant) -> 
         (None, o_col)
     };
 
-    Bodycolors {
+    BodyColors {
         unpolarised: unpol_col,
         o_ray: o_col,
         e_ray: e_col,
@@ -181,7 +181,35 @@ pub fn body_colors(tensor: &AbsorptionTensor, path_mm: f64, ill: Illuminant) -> 
 /// Only the display `srgb` is chromatically adapted: a Planckian illuminant is mapped to D65
 /// exactly like the renderer's Incandescent preset white-balances (Bradford von Kries,
 /// `compute_illuminant_white_balance`), so a colorless stone shows as white, not orange.
-fn body_color_transmittance(t_fn: impl Fn(f64) -> f64, ill: Illuminant) -> Bodycolor {
+fn body_color_transmittance(t_fn: impl Fn(f64) -> f64, ill: Illuminant) -> BodyColor {
+    let display_adaptation = match ill {
+        Illuminant::Planckian(temp_k) => Some(compute_illuminant_white_balance(temp_k)),
+        Illuminant::D65 | Illuminant::UvLongWave365 | Illuminant::UvShortWave254 => None,
+    };
+    body_color_from_spectra(
+        t_fn,
+        |lambda| ill.spectral_power(lambda),
+        display_adaptation,
+    )
+}
+
+/// Evaluates body color from an explicit transmittance spectrum `t_fn(lambda)` and an
+/// explicit illuminant curve `spd(lambda)` (relative spectral power), at 1 nm from 380 to
+/// 780 nm.
+///
+/// The entry for a caller that already has both curves in hand (the optical metrics'
+/// face-up tone, whose transmittance is a mixture over path lengths and whose illuminant is
+/// a lighting preset's own spectrum). `xyz` and `lab` are relative to the SPD's own white.
+/// `display_adaptation` is the per-cone von Kries scale (see
+/// `compute_illuminant_white_balance`) applied to the XYZ before the sRGB conversion:
+/// `Some(scale)` adapts the swatch to the screen's D65, `None` shows the XYZ as it is (the
+/// D65 presets and the UV lines, which have no white point to adapt from).
+#[must_use]
+pub fn body_color_from_spectra(
+    t_fn: impl Fn(f64) -> f64,
+    spd: impl Fn(f64) -> f64,
+    display_adaptation: Option<Vec3>,
+) -> BodyColor {
     let mut sum_x = 0.0;
     let mut sum_y = 0.0;
     let mut sum_z = 0.0;
@@ -192,7 +220,7 @@ fn body_color_transmittance(t_fn: impl Fn(f64) -> f64, ill: Illuminant) -> Bodyc
     for wavelength_i in 380..=780 {
         let lambda = f64::from(wavelength_i);
         let cmf = cie_1931_cmf(lambda as f32);
-        let s = ill.spectral_power(lambda);
+        let s = spd(lambda);
 
         let t = t_fn(lambda).clamp(0.0, 1.0);
 
@@ -214,9 +242,9 @@ fn body_color_transmittance(t_fn: impl Fn(f64) -> f64, ill: Illuminant) -> Bodyc
     let white_xyz = [white_x / norm_y, 1.0, white_z / norm_y];
 
     let lab = xyz_to_lab(xyz, white_xyz);
-    let (srgb, out_of_gamut) = xyz_to_srgb(display_xyz(xyz, ill));
+    let (srgb, out_of_gamut) = xyz_to_srgb(display_xyz(xyz, display_adaptation));
 
-    Bodycolor {
+    BodyColor {
         xyz,
         lab,
         srgb,
@@ -224,14 +252,13 @@ fn body_color_transmittance(t_fn: impl Fn(f64) -> f64, ill: Illuminant) -> Bodyc
     }
 }
 
-/// XYZ as displayed on an sRGB (D65) screen: Planckian illuminants get the renderer's own
-/// Bradford von Kries white balance (the Incandescent preset for 3200 K); D65 and the UV lines
-/// (no white point to adapt from) are shown as they are.
-fn display_xyz(xyz: [f64; 3], ill: Illuminant) -> [f64; 3] {
-    let Illuminant::Planckian(temp_k) = ill else {
+/// XYZ as displayed on an sRGB (D65) screen: with an adaptation scale the renderer's own
+/// Bradford von Kries white balance is applied (the Incandescent preset for 3200 K); without
+/// one (D65, the UV lines: no white point to adapt from) the XYZ is shown as it is.
+fn display_xyz(xyz: [f64; 3], adaptation: Option<Vec3>) -> [f64; 3] {
+    let Some(scale) = adaptation else {
         return xyz;
     };
-    let scale = compute_illuminant_white_balance(temp_k);
     let v = apply_von_kries_white_balance(
         Vec3::new(xyz[0] as f32, xyz[1] as f32, xyz[2] as f32),
         scale,
@@ -332,7 +359,7 @@ pub fn delta_e_2000_terms(lab1: [f64; 3], lab2: [f64; 3]) -> [f64; 4] {
 
     let c1_ab = (a1 * a1 + b1 * b1).sqrt();
     let c2_ab = (a2 * a2 + b2 * b2).sqrt();
-    let c_bar_ab = 0.5 * (c1_ab + c2_ab);
+    let c_bar_ab = f64::midpoint(c1_ab, c2_ab);
 
     let c_bar_ab_7 = c_bar_ab.powi(7);
     let g = 0.5 * (1.0 - (c_bar_ab_7 / (c_bar_ab_7 + 25.0_f64.powi(7))).sqrt());
@@ -373,13 +400,13 @@ pub fn delta_e_2000_terms(lab1: [f64; 3], lab2: [f64; 3]) -> [f64; 4] {
 
     let delta_h_prime = 2.0 * (c1_prime * c2_prime).sqrt() * (delta_h_deg.to_radians() * 0.5).sin();
 
-    let l_bar_prime = 0.5 * (l1 + l2);
-    let c_bar_prime = 0.5 * (c1_prime + c2_prime);
+    let l_bar_prime = f64::midpoint(l1, l2);
+    let c_bar_prime = f64::midpoint(c1_prime, c2_prime);
 
     let h_bar_prime = if c1_prime * c2_prime < 1e-12 {
         h1_prime + h2_prime
     } else if h_diff <= 180.0 {
-        0.5 * (h1_prime + h2_prime)
+        f64::midpoint(h1_prime, h2_prime)
     } else if h1_prime + h2_prime < 360.0 {
         0.5 * (h1_prime + h2_prime + 360.0)
     } else {
@@ -421,9 +448,50 @@ pub fn delta_e_2000_residual(lab1: [f64; 3], lab2: [f64; 3]) -> [f64; 3] {
     ]
 }
 
+/// CIE L*C*h(ab) to L*a*b*: `h` in degrees.
+#[must_use]
+pub fn lch_to_lab(lch: [f64; 3]) -> [f64; 3] {
+    let h = lch[2].to_radians();
+    [lch[0], lch[1] * h.cos(), lch[1] * h.sin()]
+}
+
+/// CIE L*a*b* to L*C*h(ab): `h` in degrees in `[0, 360)` (0 for a neutral colour).
+#[must_use]
+pub fn lab_to_lch(lab: [f64; 3]) -> [f64; 3] {
+    let c = lab[1].hypot(lab[2]);
+    let mut h = lab[2].atan2(lab[1]).to_degrees();
+    if h < 0.0 {
+        h += 360.0;
+    }
+    if c < 1e-9 {
+        h = 0.0;
+    }
+    [lab[0], c, h]
+}
+
+/// The sRGB swatches of the seven-band body colour at each path length.
+///
+/// Each channel is in `[0, 1]` (D65); `amplitudes` are per millimetre (see
+/// `optics::absorption::body_color_bands`) and `paths_mm` are the path lengths: the
+/// editor's "at 3 / 5 / 10 mm" swatches.
+#[must_use]
+pub fn body_color_swatches(amplitudes: &[f32; 7], paths_mm: &[f64]) -> Vec<[f32; 3]> {
+    let bands = crate::optics::absorption::body_color_bands(*amplitudes);
+    let alpha = |lambda: f64| -> f64 {
+        f64::from(bands.iter().map(|b| b.evaluate(lambda as f32)).sum::<f32>())
+    };
+    paths_mm
+        .iter()
+        .map(|&path| {
+            let c = body_color(alpha, path, Illuminant::D65);
+            c.srgb.map(|v| f32::from(v) / 255.0)
+        })
+        .collect()
+}
+
 /// color change metric between D65 daylight and Incandescent 3200K.
 #[must_use]
-pub fn color_change_delta_e(d65: &Bodycolors, incandescent_3200k: &Bodycolors) -> f64 {
+pub fn color_change_delta_e(d65: &BodyColors, incandescent_3200k: &BodyColors) -> f64 {
     delta_e_2000(d65.unpolarised.lab, incandescent_3200k.unpolarised.lab)
 }
 
@@ -558,6 +626,40 @@ mod tests {
         assert_eq!(col.srgb, srgb);
     }
 
+    fn colour_bits(c: &BodyColor) -> ([u64; 3], [u64; 3], [u8; 3], bool) {
+        (
+            c.xyz.map(f64::to_bits),
+            c.lab.map(f64::to_bits),
+            c.srgb,
+            c.out_of_gamut,
+        )
+    }
+
+    #[test]
+    fn body_color_from_spectra_is_the_old_function() {
+        let alpha = |l: f64| -> f64 {
+            if (560.0..620.0).contains(&l) {
+                0.4
+            } else {
+                0.02
+            }
+        };
+        let t = |l: f64| (-alpha(l) * 5.0f64).exp();
+
+        let planck = Illuminant::Planckian(3200.0);
+        let old = body_color(alpha, 5.0, planck);
+        let new = body_color_from_spectra(
+            t,
+            |l| planck.spectral_power(l),
+            Some(compute_illuminant_white_balance(3200.0)),
+        );
+        assert_eq!(colour_bits(&old), colour_bits(&new));
+
+        let old_d65 = body_color(alpha, 5.0, Illuminant::D65);
+        let new_d65 = body_color_from_spectra(t, |l| Illuminant::D65.spectral_power(l), None);
+        assert_eq!(colour_bits(&old_d65), colour_bits(&new_d65));
+    }
+
     #[test]
     fn ideal_transmitter_is_white() {
         let col = body_color(|_| 0.0, 5.0, Illuminant::D65);
@@ -579,6 +681,31 @@ mod tests {
     fn planckian_illuminant_runs() {
         let col = body_color(|_| 0.0, 5.0, Illuminant::Planckian(3200.0));
         assert!((col.lab[0] - 100.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn lch_lab_round_trip_and_hue_range() {
+        for lab in [[50.0, 20.0, -30.0], [70.0, -40.0, 10.0], [30.0, 0.0, 0.0]] {
+            let back = lch_to_lab(lab_to_lch(lab));
+            for k in 0..3 {
+                assert!((back[k] - lab[k]).abs() < 1e-9, "{lab:?} -> {back:?}");
+            }
+        }
+        let lch = lab_to_lch([50.0, 0.0, -10.0]);
+        assert!((lch[2] - 270.0).abs() < 1e-9 && (lch[1] - 10.0).abs() < 1e-9);
+        assert_eq!(lab_to_lch([50.0, 0.0, 0.0])[2], 0.0);
+    }
+
+    #[test]
+    fn swatches_darken_with_path_and_clear_is_white() {
+        let s = body_color_swatches(&[0.0, 0.0, 0.0, 0.0, 0.1, 0.3, 0.2], &[3.0, 5.0, 10.0]);
+        assert_eq!(s.len(), 3);
+        let lum = |c: &[f32; 3]| c[0] + c[1] + c[2];
+        assert!(lum(&s[0]) > lum(&s[1]) && lum(&s[1]) > lum(&s[2]));
+        assert_eq!(
+            body_color_swatches(&[0.0; 7], &[5.0]),
+            vec![[1.0, 1.0, 1.0]]
+        );
     }
 
     #[test]

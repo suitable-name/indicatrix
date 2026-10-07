@@ -15,7 +15,7 @@ use indicatrix_cut_core::rough_plan::{
     CandidateDesign, CutOrder, DesignHull, FitMesh, FitStage, PieceTable, PlanProgress,
     PlanSettings, RoughLayout, RoughMesh, SingleFit, fit_shortlisted_with, merge_fits,
     screen_designs_with,
-    shaped::{BuildClipParams, ClippedTable, ShapedGrid, build_clipped_table},
+    shaped::{BuildClipParams, ClippedTable, ShapedGrid, a_range_jobs, build_clipped_a_range},
     shortlist,
 };
 use std::{
@@ -202,15 +202,17 @@ pub(super) struct ClipJob<'a> {
     pub mesh: Option<&'a RoughMesh>,
 }
 
-/// Builds the clipped piece table one plane of the a axis at a time on up to `lanes`
-/// threads, handing the planes out through an atomic index (the first planes hold the most
-/// ranges, so they start first). `None` when cancelled.
+/// Builds the clipped piece table one a-range at a time on up to `lanes` threads, handing
+/// the ranges out through an atomic index. Every job holds the same number of entries and
+/// reports `grid_poll_events(per_a)` `Grid` events. `None` when cancelled.
 pub(super) fn build_clipped_table_parallel(
     job: &ClipJob<'_>,
     lanes: usize,
     progress: &dyn Progress,
 ) -> Option<ClippedTable> {
-    let parts = run_dynamic(job.grid.cells[0], lanes, &|| progress.abort(), |a0| {
+    let ranges = a_range_jobs(job.grid);
+    let parts = run_dynamic(ranges.len(), lanes, &|| progress.abort(), |index| {
+        let (a0, a1) = ranges[index];
         let params = BuildClipParams {
             grid: job.grid,
             front: job.front,
@@ -221,10 +223,9 @@ pub(super) fn build_clipped_table_parallel(
             slice: a0..a0 + 1,
             cached_classes: None,
         };
-        build_clipped_table(&params, &mut |event| progress.event(event))
+        build_clipped_a_range(&params, (a0, a1), &mut |event| progress.event(event))
     })?;
-    // The planes are consecutive and merged in order, so their concatenation is the full
-    // table.
+    // The blocks are merged in job order, so their concatenation is the full table.
     Some(ClippedTable::concat(job.grid.cells, parts))
 }
 

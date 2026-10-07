@@ -1,0 +1,478 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { CuttingModeModel } from "../../models/cutting_mode.slint";
+import { SolidPreviewModel } from "../../models/solid_preview.slint";
+import { HelpTopics } from "../../models/help.slint";
+import { HelpButton } from "../help_button.slint";
+import { CmButton } from "cm_button.slint";
+import { CmChips } from "index_chips.slint";
+import { CmIndexWheel } from "index_wheel.slint";
+
+// A heading over a value: one line of the step's details (the meet, the depth, the tool...).
+component CmFact inherits VerticalLayout {
+    in property <string> label;
+    in property <string> value;
+    in property <color> ink: Theme.text-primary;
+    spacing: 2px;
+
+    Text {
+        text: root.label;
+        font-size: 12px;
+        font-weight: 600;
+        color: Theme.text-muted;
+    }
+    Text {
+        text: root.value;
+        font-size: 20px;
+        color: root.ink;
+        wrap: word-wrap;
+    }
+}
+
+// A rounded panel on the page.
+component CmCard inherits Rectangle {
+    background: Theme.bg-card;
+    border-radius: Theme.radius-lg;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+}
+
+// A small rounded label (the step's state, its side of the stone).
+component CmBadge inherits Rectangle {
+    in property <string> text;
+    in property <color> ink: Theme.text-primary;
+    in property <color> fill: Theme.tint-neutral;
+
+    width: badge_text.preferred-width + 28px;
+    height: 32px;
+    border-radius: 16px;
+    background: root.fill;
+
+    badge_text := Text {
+        text: root.text;
+        color: root.ink;
+        font-size: 15px;
+        font-weight: 700;
+        vertical-alignment: center;
+        x: 14px;
+        y: 0px;
+        height: root.height;
+    }
+}
+
+// Cutting mode: the cutting instructions one step per page, filling the window. See
+// `CuttingModeModel` (`models/cutting_mode.slint`) for what each property is and who writes it.
+//
+// Left: the step itself, in large type -- which step, the tier, the angle, the indices to tick
+// off, and the meet, depth, cheater offset, tool and note. Right: the stone after this step with
+// the tier highlighted (the picture the Cut slider draws) and the index wheel. Below: the
+// progress bar and the buttons. The keys are handled by `CuttingModeModel.handle_key`, called
+// from the main window's key handler, not from here.
+export component CuttingModeScreen inherits Rectangle {
+    background: Theme.bg-darkest;
+
+    // Takes every click and wheel turn, so none reaches the editor underneath.
+    TouchArea {
+        scroll-event(event) => { return accept; }
+    }
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 16px;
+
+        // --- Header: what this is, which design, the step's state, the way out. ---
+        HorizontalLayout {
+            height: 52px;
+            spacing: 16px;
+
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+                Text {
+                    text: "Cutting mode";
+                    font-size: 13px;
+                    font-weight: 600;
+                    color: Theme.text-muted;
+                }
+                Text {
+                    text: CuttingModeModel.design_name != "" ? CuttingModeModel.design_name : "Untitled design";
+                    font-size: 18px;
+                    font-weight: 600;
+                    color: Theme.text-secondary;
+                    overflow: elide;
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            if CuttingModeModel.step_state != 0 && !CuttingModeModel.busy && CuttingModeModel.error == "": Rectangle {
+                width: state_badge.width;
+                state_badge := CmBadge {
+                    y: (parent.height - self.height) / 2;
+                    text: CuttingModeModel.state_text;
+                    ink: CuttingModeModel.step_state == 1 ? Theme.success : Theme.accent-amber;
+                    fill: CuttingModeModel.step_state == 1 ? Theme.badge-emerald-bg : Theme.badge-amber-bg;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                HelpButton {
+                    topic: HelpTopics.cutting-mode;
+                    hint: "Open the manual page on cutting mode";
+                    diameter: 28px;
+                }
+            }
+            CmButton {
+                text: "Close";
+                hint: "Leave cutting mode and go back to the editor. Esc does the same. Your marks are kept.";
+                icon: @image-url("../../icons/close.svg");
+                clicked => { CuttingModeModel.close(); }
+            }
+        }
+
+        // --- Body: the step, or why there is none. ---
+        Rectangle {
+            vertical-stretch: 1;
+            min-height: 0px;
+
+            if CuttingModeModel.busy: Text {
+                text: "Getting the cutting steps ready...";
+                font-size: 22px;
+                color: Theme.text-secondary;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: parent.width;
+                height: parent.height;
+            }
+
+            if !CuttingModeModel.busy && CuttingModeModel.error != "": Text {
+                text: CuttingModeModel.error;
+                font-size: 22px;
+                color: Theme.accent-amber;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: parent.width;
+                height: parent.height;
+            }
+
+            if !CuttingModeModel.busy && CuttingModeModel.error == "": HorizontalLayout {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
+                spacing: 20px;
+
+                // The step.
+                CmCard {
+                    horizontal-stretch: 3;
+                    min-width: 0px;
+
+                    ScrollView {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: parent.height;
+
+                        VerticalLayout {
+                            padding: 28px;
+                            spacing: 16px;
+                            alignment: start;
+
+                            HorizontalLayout {
+                                height: 36px;
+                                spacing: 14px;
+                                Text {
+                                    text: CuttingModeModel.heading;
+                                    font-size: 22px;
+                                    font-weight: 600;
+                                    color: Theme.text-secondary;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle {
+                                    width: side_badge.width;
+                                    side_badge := CmBadge {
+                                        y: (parent.height - self.height) / 2;
+                                        text: CuttingModeModel.side_label;
+                                        ink: CuttingModeModel.side_label == "Crown" ? Theme.accent-cyan
+                                            : CuttingModeModel.side_label == "Pavilion" ? Theme.accent-purple
+                                            : Theme.text-secondary;
+                                        fill: CuttingModeModel.side_label == "Crown" ? Theme.tint-cyan
+                                            : CuttingModeModel.side_label == "Pavilion" ? Theme.tint-purple
+                                            : Theme.tint-neutral;
+                                    }
+                                }
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                }
+                            }
+
+                            Text {
+                                text: CuttingModeModel.tier_name;
+                                font-size: 36px;
+                                font-weight: 700;
+                                color: Theme.text-primary;
+                                wrap: word-wrap;
+                            }
+
+                            Text {
+                                text: CuttingModeModel.angle_text;
+                                font-size: 120px;
+                                font-weight: 800;
+                                color: Theme.accent-cyan;
+                            }
+
+                            if CuttingModeModel.step_state == 2: Rectangle {
+                                height: changed_note.preferred-height + 24px;
+                                border-radius: Theme.radius-md;
+                                background: Theme.surface-warning;
+                                border-width: 1px;
+                                border-color: Theme.accent-amber;
+                                changed_note := Text {
+                                    text: "Changed since you marked it. The cutting values of this step are not the ones you ticked off. Mark it done again once you have cut it as it reads now.";
+                                    font-size: 15px;
+                                    color: Theme.accent-amber;
+                                    wrap: word-wrap;
+                                    x: 12px;
+                                    y: 12px;
+                                    width: parent.width - 24px;
+                                }
+                            }
+
+                            Text {
+                                text: "Indices (click one to tick it off)";
+                                font-size: 13px;
+                                font-weight: 600;
+                                color: Theme.text-muted;
+                            }
+                            CmChips {
+                                chips: CuttingModeModel.chips;
+                                toggled(index) => { CuttingModeModel.chip_clicked(index); }
+                            }
+
+                            // The tier's own name, then what it meets: `Crown Main: Meet P1, P2`.
+                            CmFact {
+                                label: "Instruction";
+                                value: CuttingModeModel.meet_text;
+                            }
+                            if CuttingModeModel.depth_text != "": CmFact {
+                                label: "Depth";
+                                value: CuttingModeModel.depth_text;
+                            }
+                            if CuttingModeModel.cheater_text != "": CmFact {
+                                label: "Cheater";
+                                value: CuttingModeModel.cheater_text;
+                                ink: Theme.accent-amber;
+                            }
+                            if CuttingModeModel.tool_text != "": CmFact {
+                                label: "Tool";
+                                value: CuttingModeModel.tool_text;
+                            }
+                            if CuttingModeModel.notes_text != "": CmFact {
+                                label: "Your note";
+                                value: CuttingModeModel.notes_text;
+                                ink: Theme.accent-amber;
+                            }
+                        }
+                    }
+                }
+
+                // The stone after this step, and the index wheel.
+                VerticalLayout {
+                    horizontal-stretch: 2;
+                    min-width: 0px;
+                    spacing: 16px;
+
+                    CmCard {
+                        vertical-stretch: 3;
+                        min-height: 0px;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            Rectangle {
+                                vertical-stretch: 1;
+                                min-height: 0px;
+                                background: Theme.viewport-bg;
+                                border-radius: Theme.radius-md;
+                                clip: true;
+
+                                Image {
+                                    x: 0px;
+                                    y: 0px;
+                                    width: parent.width;
+                                    height: parent.height;
+                                    source: SolidPreviewModel.image;
+                                    image-fit: contain;
+                                    accessible-role: AccessibleRole.image;
+                                    accessible-label: "The stone after this step";
+                                    accessible-description: CuttingModeModel.stone_caption;
+                                }
+                                if !SolidPreviewModel.has_solid: Text {
+                                    text: "The picture of the stone is still being drawn...";
+                                    font-size: 15px;
+                                    color: Theme.text-muted;
+                                    wrap: word-wrap;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    width: parent.width;
+                                    height: parent.height;
+                                }
+                            }
+                            Text {
+                                text: CuttingModeModel.stone_caption;
+                                font-size: 13px;
+                                color: Theme.text-secondary;
+                                wrap: word-wrap;
+                                horizontal-alignment: center;
+                            }
+                        }
+                    }
+
+                    CmCard {
+                        vertical-stretch: 2;
+                        min-height: 0px;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            CmIndexWheel {
+                                vertical-stretch: 1;
+                                min-height: 0px;
+                                description: CuttingModeModel.wheel_caption;
+                                minor_ticks: CuttingModeModel.wheel_minor;
+                                major_ticks: CuttingModeModel.wheel_major;
+                                spokes: CuttingModeModel.wheel_spokes;
+                                marks: CuttingModeModel.wheel_marks;
+                                numbers: CuttingModeModel.wheel_scale;
+                            }
+                            Text {
+                                text: CuttingModeModel.wheel_caption;
+                                font-size: 13px;
+                                color: Theme.text-secondary;
+                                wrap: word-wrap;
+                                horizontal-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Footer: progress, the three buttons, reset. ---
+        if !CuttingModeModel.busy && CuttingModeModel.error == "": VerticalLayout {
+            spacing: 10px;
+
+            HorizontalLayout {
+                spacing: 16px;
+                Text {
+                    text: CuttingModeModel.progress_text;
+                    font-size: 16px;
+                    font-weight: 600;
+                    color: CuttingModeModel.done_count >= CuttingModeModel.step_count && CuttingModeModel.step_count > 0 ? Theme.success : Theme.text-primary;
+                    vertical-alignment: center;
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: "Left and Right arrows: previous and next step  ·  Space or D: mark done and go on  ·  Esc: leave";
+                    font-size: 12px;
+                    color: Theme.text-muted;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            Rectangle {
+                height: 10px;
+                border-radius: 5px;
+                background: Theme.bg-input;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                clip: true;
+
+                accessible-role: AccessibleRole.progress-indicator;
+                accessible-label: "Cutting progress";
+                accessible-value: CuttingModeModel.progress_text;
+
+                Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width * CuttingModeModel.progress_fraction;
+                    height: parent.height;
+                    background: Theme.success;
+                }
+            }
+
+            HorizontalLayout {
+                height: 52px;
+                spacing: 12px;
+
+                CmButton {
+                    text: "Previous";
+                    hint: CuttingModeModel.has_previous
+                        ? "Go back to the previous step. The Left arrow or Page Up does the same."
+                        : "This is the first step.";
+                    icon: @image-url("../../icons/chevron-right.svg");
+                    icon_rotation: 180deg;
+                    enabled: CuttingModeModel.has_previous && !CuttingModeModel.confirm_reset;
+                    clicked => { CuttingModeModel.previous(); }
+                }
+                CmButton {
+                    text: CuttingModeModel.step_state == 1 ? "Mark not done" : "Mark step done";
+                    hint: CuttingModeModel.step_state == 1
+                        ? "Take the done mark back from this step, for example when you have to cut it again."
+                        : "Mark this step as cut and remember it. Space or D marks it and goes on to the next step.";
+                    icon: @image-url("../../icons/check.svg");
+                    primary: CuttingModeModel.step_state != 1;
+                    enabled: !CuttingModeModel.confirm_reset;
+                    clicked => { CuttingModeModel.toggle_done(); }
+                }
+                CmButton {
+                    text: "Next";
+                    hint: CuttingModeModel.has_next
+                        ? "Go on to the next step without marking this one. The Right arrow or Page Down does the same."
+                        : "This is the last step.";
+                    icon: @image-url("../../icons/chevron-right.svg");
+                    icon_after: true;
+                    enabled: CuttingModeModel.has_next && !CuttingModeModel.confirm_reset;
+                    clicked => { CuttingModeModel.next(); }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+                if !CuttingModeModel.confirm_reset: CmButton {
+                    text: "Reset progress";
+                    hint: "Remove every done mark of this design. You are asked to confirm first.";
+                    icon: @image-url("../../icons/rotate-ccw.svg");
+                    clicked => { CuttingModeModel.confirm_reset = true; }
+                }
+                if CuttingModeModel.confirm_reset: Text {
+                    text: "Remove every mark for this design?";
+                    font-size: 16px;
+                    font-weight: 600;
+                    color: Theme.danger;
+                    vertical-alignment: center;
+                }
+                if CuttingModeModel.confirm_reset: CmButton {
+                    text: "Reset";
+                    hint: "Yes, remove every done mark of this design.";
+                    danger: true;
+                    clicked => {
+                        CuttingModeModel.confirm_reset = false;
+                        CuttingModeModel.reset_confirmed();
+                    }
+                }
+                if CuttingModeModel.confirm_reset: CmButton {
+                    text: "Keep my marks";
+                    hint: "Do not reset. Esc does the same.";
+                    clicked => { CuttingModeModel.confirm_reset = false; }
+                }
+            }
+        }
+    }
+}

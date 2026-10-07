@@ -13,25 +13,50 @@ use crate::{
     bridge::render_thread::RenderContext,
     gui::{
         editor::{
-            auto_solve,
+            optimize_panel,
             solve_service::{
                 SolveHandle, SolveKind, SolveOutcome, SolveRequest, SolveResult, SolveService,
             },
         },
-        solid_preview::preview_state::{CameraPose, SolidPreviewState},
+        solid_preview::{
+            cut_slider,
+            preview_state::{CameraPose, SolidPreviewState},
+        },
     },
 };
 use indicatrix::geometry::meet_solver::SolvedTier;
 use indicatrix_cut_core::{Design, OptimizeOutcome};
+use indicatrix_editor::optimize_view::build_candidate_preview_design;
 use slint::ComponentHandle;
 use std::{
     cell::RefCell,
     sync::{Arc, Mutex},
 };
 
+// The identity pins still pin these two at their old paths; the tab itself now builds its
+// run through `optimize_panel::plan_from_ui` and words the result in `optimize_run_status`.
+#[cfg(test)]
 pub(in crate::gui::editor) use indicatrix_editor::optimize_view::{
-    build_optimize_preview_design, optimize_status_text, parse_optimize_weights,
+    optimize_status_text, parse_optimize_weights,
 };
+
+/// The design `outcome` would give: the preview, the compare window and the ghost column
+/// all show this.
+///
+/// A candidate of the last Optimize run (found by [`optimize_panel::candidate_for_outcome`])
+/// is built with its masts and with the tiers that follow a relation moved along
+/// ([`build_candidate_preview_design`]); any other outcome falls back to
+/// [`indicatrix_editor::optimize_view::build_optimize_preview_design`], which moves the
+/// angles only.
+pub(in crate::gui::editor) fn build_optimize_preview_design(
+    design: &Design,
+    outcome: &OptimizeOutcome,
+) -> Design {
+    optimize_panel::candidate_for_outcome(outcome).map_or_else(
+        || indicatrix_editor::optimize_view::build_optimize_preview_design(design, outcome),
+        |candidate| build_candidate_preview_design(design, &candidate),
+    )
+}
 
 /// [`indicatrix_editor::optimize_view::optimize_result_rows`], mapped to the
 /// Optimize tab's Slint result rows -- each component on its own row, the blended
@@ -41,13 +66,20 @@ pub(in crate::gui::editor) fn optimize_result_rows(
 ) -> Vec<OptimizeResultRow> {
     indicatrix_editor::optimize_view::optimize_result_rows(outcome)
         .into_iter()
-        .map(|line| OptimizeResultRow {
-            label: line.label.into(),
-            before: line.before.into(),
-            after: line.after.into(),
-            direction: line.direction,
-        })
+        .map(result_row)
         .collect()
+}
+
+/// One result line as the Slint result row.
+pub(in crate::gui::editor) fn result_row(
+    line: indicatrix_editor::optimize_view::OptimizeResultLine,
+) -> OptimizeResultRow {
+    OptimizeResultRow {
+        label: line.label.into(),
+        before: line.before.into(),
+        after: line.after.into(),
+        direction: line.direction,
+    }
 }
 
 /// What a landing ghost result needs to reach the viewport: the candidate design
@@ -147,9 +179,9 @@ pub(super) fn cancel_ghost_preview() {
 /// Queues `design` -- a candidate, not the real design -- to be solved on a
 /// background worker and drawn in the shared solid viewport at the camera pose of
 /// the moment it lands: a raw, generation-independent reproject
-/// (`SolidPreviewState::request_redraw_with_gear`, the same call
+/// (`SolidPreviewState::request_redraw_geometry`, the same call
 /// `gui::render::camera_lighting::resubmit_at_current_pose` uses for a camera
-/// drag), deliberately NOT [`super::viewport::submit_preview_replan`]'s
+/// drag), cut back to the Cut slider's position, deliberately NOT [`super::viewport::submit_preview_replan`]'s
 /// worker-queued `ReplanRequest` path: a ghost preview must never stamp
 /// `solid_last_solved`/the design-generation stash with a CANDIDATE design's own
 /// solved masts, which would corrupt the next real edit's `resolve_dirty`
@@ -219,13 +251,13 @@ fn apply_ghost_result(ui: &MainWindow, result: SolveResult) {
     }
 }
 
-/// Redraws the solid viewport with `pending`'s design at the CURRENT camera pose.
+/// Redraws the solid viewport with `pending`'s design at the CURRENT camera pose, cut
+/// back to wherever the Cut slider stands: a candidate previewed with the slider on the
+/// rough or on step three shows the candidate's rough or first three tiers, not its
+/// finished stone. The candidate's concave tools ride along.
 fn draw_ghost(ui: &MainWindow, pending: &PendingGhost, solved: &[SolvedTier]) {
-    let planes_gpu = auto_solve::design_to_gpu_planes_from_solved(&pending.design, solved);
-    let planes: Vec<(glam::Vec3, f32)> = planes_gpu
-        .iter()
-        .map(|p| (glam::Vec3::from(p.normal), -p.d))
-        .collect();
+    let steps = cut_slider::current_steps(ui, &pending.design);
+    let stone = cut_slider::cut_geometry(&pending.design, Some(solved), steps);
     let ctx = pending
         .render_ctx
         .lock()
@@ -245,7 +277,7 @@ fn draw_ghost(ui: &MainWindow, pending: &PendingGhost, solved: &[SolvedTier]) {
     drop(ctx);
     pending
         .preview_state
-        .request_redraw_with_gear(&planes, camera, size, view_mode, design_gear);
+        .request_redraw_geometry(stone, camera, size, view_mode, design_gear);
 }
 
 #[cfg(test)]

@@ -1,0 +1,617 @@
+// The help window: the user manual, searchable, with Back and Forward.
+//
+// A separate top-level `Window` (like `CompareWindow` and `RoughPlannerWindow`), created,
+// shown and hidden from Rust (`gui::help`). A separate window rather than an overlay so a
+// cutter can keep the manual beside the design while following a procedure, and so a
+// second window never hides the part of the program the page is about.
+//
+// Everything it shows comes from its OWN instance of `HelpModel` (a global exists once
+// per window). Sizing: the whole content hangs off an x/y-positioned wrapper, so no layout
+// constraint inside it reaches the window (see `app.slint`'s sizing notes); the window's
+// own `min-width`/`min-height` are the only limits.
+import { ScrollView, LineEdit } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { HelpModel, HelpTopics, HelpNavItem, HelpBlock, HelpSearchHit } from "../models/help.slint";
+import { HelpToolButton } from "help_button.slint";
+
+// One row of the chapter list: a chapter, or a section of the open chapter.
+component HelpNavRow inherits Rectangle {
+    in property <HelpNavItem> item;
+
+    height: 26px;
+    border-radius: Theme.radius-sm;
+    background: root.item.current ? Theme.surface-selected : (nav_touch.has-hover ? Theme.bg-card-hover : transparent);
+    border-width: nav_focus.has-focus ? 2px : 0px;
+    border-color: Theme.accent-cyan-hover;
+
+    accessible-role: AccessibleRole.list-item;
+    accessible-label: root.item.label;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.item.current;
+    accessible-action-default => { HelpModel.open_topic(root.item.topic); }
+
+    Tooltip { text: @markdown("\{root.item.label}"); }
+
+    // Tab reaches the row; Space and Enter open it.
+    nav_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                HelpModel.open_topic(root.item.topic);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    Text {
+        x: 8px + root.item.level * 14px;
+        width: parent.width - self.x - 6px;
+        height: parent.height;
+        text: root.item.label;
+        font-size: root.item.level == 0 ? 12px : 11px;
+        font-weight: root.item.level == 0 && root.item.open ? 700 : 400;
+        color: root.item.current ? Theme.text-primary
+            : (root.item.open ? Theme.accent-cyan
+            : (root.item.level == 0 ? Theme.text-primary : Theme.text-secondary));
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    nav_touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { HelpModel.open_topic(root.item.topic); }
+    }
+}
+
+// A heading. When the page is asked to jump to this heading's section
+// (`HelpModel.scroll_section` with `scroll_pending`), a short timer waits until the
+// layout has placed the heading, then reports where it is; the page scrolls there.
+component HelpHeading inherits Rectangle {
+    in property <HelpBlock> block;
+    // The heading's position in the window, reported once it is laid out.
+    callback reveal(length);
+
+    Timer {
+        interval: 40ms;
+        running: HelpModel.scroll_pending && HelpModel.scroll_section == root.block.section;
+        triggered => {
+            HelpModel.scroll_pending = false;
+            root.reveal(root.absolute-position.y);
+        }
+    }
+
+    VerticalLayout {
+        padding-top: root.block.level <= 1 ? 4px : (root.block.level == 2 ? 12px : 8px);
+        spacing: 3px;
+
+        Text {
+            text: root.block.plain;
+            font-size: root.block.level <= 1 ? 24px
+                : (root.block.level == 2 ? 18px : (root.block.level == 3 ? 15px : 13px));
+            font-weight: 700;
+            color: root.block.level == 2 ? Theme.accent-cyan : Theme.text-primary;
+            wrap: word-wrap;
+        }
+
+        if root.block.level <= 2: Rectangle {
+            height: 1px;
+            background: Theme.border-subtle;
+        }
+    }
+}
+
+// One block of the page. `block.kind`: 0 paragraph, 1 heading, 2 list item, 3 quote,
+// 4 code, 5 table row, 6 figure, 7 rule.
+component HelpBlockView inherits VerticalLayout {
+    in property <HelpBlock> block;
+    callback link_clicked(string);
+    callback reveal(length);
+
+    if root.block.kind == 0: HorizontalLayout {
+        padding-left: root.block.indent * 20px;
+
+        StyledText {
+            horizontal-stretch: 1;
+            text: root.block.text;
+            default-color: Theme.text-primary;
+            default-font-size: 13px;
+            link-color: Theme.accent-cyan;
+            link-clicked(link) => { root.link_clicked(link); }
+        }
+    }
+
+    if root.block.kind == 1: HelpHeading {
+        block: root.block;
+        reveal(window_y) => { root.reveal(window_y); }
+    }
+
+    if root.block.kind == 2: HorizontalLayout {
+        padding-left: root.block.indent * 20px;
+        spacing: 4px;
+
+        Text {
+            width: 22px;
+            text: root.block.marker;
+            font-size: 13px;
+            color: Theme.accent-cyan;
+            horizontal-alignment: right;
+            vertical-alignment: top;
+        }
+
+        StyledText {
+            horizontal-stretch: 1;
+            text: root.block.text;
+            default-color: Theme.text-primary;
+            default-font-size: 13px;
+            link-color: Theme.accent-cyan;
+            link-clicked(link) => { root.link_clicked(link); }
+        }
+    }
+
+    if root.block.kind == 3: HorizontalLayout {
+        padding-left: root.block.indent * 20px;
+        spacing: 8px;
+
+        Rectangle {
+            width: 3px;
+            border-radius: 1px;
+            background: Theme.accent-cyan;
+        }
+
+        StyledText {
+            horizontal-stretch: 1;
+            text: root.block.text;
+            default-color: Theme.text-secondary;
+            default-font-size: 13px;
+            link-color: Theme.accent-cyan;
+            link-clicked(link) => { root.link_clicked(link); }
+        }
+    }
+
+    if root.block.kind == 4: HorizontalLayout {
+        padding-left: root.block.indent * 20px;
+
+        Rectangle {
+            background: Theme.bg-input;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+
+            VerticalLayout {
+                padding: 8px;
+
+                Text {
+                    text: root.block.plain;
+                    font-family: "Consolas";
+                    font-size: 12px;
+                    color: Theme.text-primary;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+
+    // A table row. Every cell is a Rectangle with no size of its own and a stretch
+    // equal to its column's weight, so the cells share the row in that proportion and
+    // the columns line up from row to row; the row is as high as its tallest cell.
+    // The text sits in a padded layout (not at a fixed x/y) so its wrapped height reaches
+    // the row: a hand-placed text gave the row no height, and the rows piled up on top of
+    // each other and of the next paragraph.
+    if root.block.kind == 5: HorizontalLayout {
+        padding-left: root.block.indent * 20px;
+
+        for cell[column] in root.block.cells: Rectangle {
+            horizontal-stretch: max(root.block.weights[column], 1.0);
+            min-width: 0px;
+            preferred-width: 0px;
+            background: root.block.header ? Theme.bg-elevated : Theme.bg-card;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+
+            VerticalLayout {
+                padding-left: 6px;
+                padding-right: 6px;
+                padding-top: 5px;
+                padding-bottom: 5px;
+
+                StyledText {
+                    text: cell;
+                    default-color: root.block.header ? Theme.accent-cyan : Theme.text-primary;
+                    default-font-size: 12px;
+                    link-color: Theme.accent-cyan;
+                    link-clicked(link) => { root.link_clicked(link); }
+                }
+            }
+        }
+    }
+
+    if root.block.kind == 6: HorizontalLayout {
+        padding-left: root.block.indent * 20px;
+
+        Rectangle {
+            background: Theme.bg-input;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+
+            VerticalLayout {
+                padding: 8px;
+
+                Text {
+                    text: root.block.plain + " (figure)";
+                    font-size: 12px;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+
+    if root.block.kind == 7: Rectangle {
+        height: 1px;
+        background: Theme.border-medium;
+    }
+}
+
+// One search result.
+component HelpHitRow inherits Rectangle {
+    in property <HelpSearchHit> hit;
+
+    border-radius: Theme.radius-sm;
+    border-width: hit_focus.has-focus ? 2px : 1px;
+    border-color: hit_focus.has-focus ? Theme.accent-cyan-hover : Theme.border-subtle;
+    background: hit_touch.has-hover ? Theme.bg-card-hover : Theme.bg-card;
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.hit.section == "" ? root.hit.chapter : root.hit.chapter + ", " + root.hit.section;
+    accessible-description: root.hit.snippet;
+    accessible-action-default => { HelpModel.open_topic(root.hit.topic); }
+
+    Tooltip { text: @markdown("Open this section of the manual."); }
+
+    // Tab reaches the result; Space and Enter open it.
+    hit_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                HelpModel.open_topic(root.hit.topic);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 3px;
+
+        Text {
+            text: root.hit.section == "" ? root.hit.chapter : root.hit.chapter + " \u{00B7} " + root.hit.section;
+            font-size: 12px;
+            font-weight: 700;
+            color: Theme.accent-cyan;
+            wrap: word-wrap;
+        }
+
+        if root.hit.snippet != "": Text {
+            text: root.hit.snippet;
+            font-size: 11px;
+            color: Theme.text-secondary;
+            wrap: word-wrap;
+        }
+    }
+
+    hit_touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { HelpModel.open_topic(root.hit.topic); }
+    }
+}
+
+export component HelpWindow inherits Window {
+    title: "Help \u{2014} " + HelpModel.chapter_title;
+    // See `MainWindow`'s `icon` (app.slint) for why every window sets it.
+    icon: @image-url("../../assets/icon.png");
+    preferred-width: 1000px;
+    preferred-height: 680px;
+    min-width: 640px;
+    min-height: 420px;
+    background: Theme.bg-darkest;
+    default-font-family: "Segoe UI";
+
+    // Scrolls the page by `delta` (negative moves down), never past either end.
+    function scroll_by(delta: length) {
+        page.content-y = clamp(page.content-y + delta, -max(0px, page.content-height - page.visible-height), 0px);
+    }
+
+    FocusScope {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+        init => { self.focus(); }
+
+        key-pressed(event) => {
+            if event.modifiers.alt && event.text == Key.LeftArrow {
+                HelpModel.back();
+                return accept;
+            } else if event.modifiers.alt && event.text == Key.RightArrow {
+                HelpModel.forward();
+                return accept;
+            } else if (event.modifiers.control || event.modifiers.meta) && event.text == "f" {
+                search_input.focus();
+                return accept;
+            } else if event.text == Key.Escape {
+                if HelpModel.search_text != "" {
+                    HelpModel.search_text = "";
+                    HelpModel.search("");
+                } else {
+                    HelpModel.close_window();
+                }
+                return accept;
+            } else if event.text == Key.PageDown || event.text == Key.Space {
+                root.scroll_by(-page.visible-height * 0.9);
+                return accept;
+            } else if event.text == Key.PageUp {
+                root.scroll_by(page.visible-height * 0.9);
+                return accept;
+            } else if event.text == Key.DownArrow {
+                root.scroll_by(-40px);
+                return accept;
+            } else if event.text == Key.UpArrow {
+                root.scroll_by(40px);
+                return accept;
+            } else if event.text == Key.Home {
+                page.content-y = 0px;
+                return accept;
+            } else if event.text == Key.End {
+                root.scroll_by(-page.content-height);
+                return accept;
+            }
+            return reject;
+        }
+
+        VerticalLayout {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            padding: 12px;
+            spacing: 8px;
+
+            // The toolbar.
+            HorizontalLayout {
+                height: 28px;
+                spacing: 6px;
+
+                HelpToolButton {
+                    label: "Back";
+                    hint: "Go back to the page you read before. Alt+Left does the same.";
+                    active: HelpModel.can_back;
+                    clicked => { HelpModel.back(); }
+                }
+
+                HelpToolButton {
+                    label: "Forward";
+                    hint: "Go forward again after going back. Alt+Right does the same.";
+                    active: HelpModel.can_forward;
+                    clicked => { HelpModel.forward(); }
+                }
+
+                HelpToolButton {
+                    label: "Contents";
+                    hint: "Show the table of contents of the manual.";
+                    clicked => { HelpModel.open_topic(HelpTopics.contents); }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    min-width: 120px;
+                    height: 28px;
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+
+                    Tooltip { text: @markdown("Search every chapter of the manual. Click a result to read it."); }
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 6px;
+                        alignment: stretch;
+
+                        Image {
+                            source: @image-url("../icons/search.svg");
+                            colorize: Theme.text-muted;
+                            width: 12px;
+                            height: 12px;
+                        }
+
+                        search_input := LineEdit {
+                            min-width: 0px;
+                            horizontal-stretch: 1;
+                            text <=> HelpModel.search_text;
+                            placeholder-text: "Search the manual (Ctrl+F)";
+                            accessible-label: "Search the manual";
+                            edited => { HelpModel.search(self.text); }
+                        }
+
+                        if HelpModel.search_text != "": Rectangle {
+                            width: 20px;
+                            height: 20px;
+                            border-radius: 10px;
+                            background: clear_touch.has-hover ? Theme.surface-control-hover : Theme.bg-elevated;
+                            border-width: clear_focus.has-focus ? 2px : 0px;
+                            border-color: Theme.accent-cyan-hover;
+
+                            accessible-role: AccessibleRole.button;
+                            accessible-label: "Clear the search";
+                            accessible-action-default => {
+                                HelpModel.search_text = "";
+                                HelpModel.search("");
+                            }
+
+                            Tooltip { text: @markdown("Clear the search and go back to the page. Escape does the same."); }
+
+                            clear_focus := FocusScope {
+                                key-pressed(event) => {
+                                    if event.text == Key.Space || event.text == Key.Return {
+                                        HelpModel.search_text = "";
+                                        HelpModel.search("");
+                                        return accept;
+                                    }
+                                    return reject;
+                                }
+                            }
+
+                            Text {
+                                text: "\u{00D7}";
+                                font-size: 14px;
+                                color: Theme.text-secondary;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            clear_touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    HelpModel.search_text = "";
+                                    HelpModel.search("");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                HelpToolButton {
+                    label: "Glossary";
+                    hint: "Open the glossary: every technical term of the program in plain words.";
+                    clicked => { HelpModel.open_topic(HelpTopics.glossary); }
+                }
+
+                HelpToolButton {
+                    label: "Open manual folder";
+                    hint: "Open the folder with the manual's plain files, to read or copy them outside the program.";
+                    clicked => { HelpModel.open_manual_files(); }
+                }
+            }
+
+            if HelpModel.status != "": Text {
+                text: HelpModel.status;
+                font-size: 11px;
+                color: Theme.accent-amber;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                vertical-stretch: 1;
+                spacing: 8px;
+
+                // The chapter list.
+                Rectangle {
+                    width: 240px;
+                    background: Theme.bg-dark;
+                    border-radius: Theme.radius-md;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    clip: true;
+
+                    ScrollView {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: parent.height;
+
+                        VerticalLayout {
+                            padding: 6px;
+                            spacing: 1px;
+                            alignment: start;
+
+                            for entry in HelpModel.nav: HelpNavRow {
+                                item: entry;
+                            }
+                        }
+                    }
+                }
+
+                // The page, or the search results over it.
+                Rectangle {
+                    horizontal-stretch: 1;
+                    background: Theme.bg-dark;
+                    border-radius: Theme.radius-md;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    clip: true;
+
+                    Rectangle {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: parent.height;
+                        visible: !HelpModel.searching;
+
+                        page := ScrollView {
+                            x: 0px;
+                            y: 0px;
+                            width: parent.width;
+                            height: parent.height;
+
+                            content_col := VerticalLayout {
+                                padding: 14px;
+                                spacing: 6px;
+                                alignment: start;
+
+                                for part in HelpModel.blocks: HelpBlockView {
+                                    block: part;
+                                    link_clicked(link) => { HelpModel.link_clicked(link); }
+                                    // `window_y` is the heading's place in the window; the
+                                    // column's own place moves with the scrolling, so their
+                                    // difference is where the heading sits in the column.
+                                    reveal(window_y) => {
+                                        page.content-y = -clamp(
+                                            window_y - content_col.absolute-position.y - 14px,
+                                            0px,
+                                            max(0px, page.content-height - page.visible-height));
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: parent.height;
+                        visible: HelpModel.searching;
+
+                        ScrollView {
+                            x: 0px;
+                            y: 0px;
+                            width: parent.width;
+                            height: parent.height;
+
+                            VerticalLayout {
+                                padding: 14px;
+                                spacing: 6px;
+                                alignment: start;
+
+                                Text {
+                                    text: HelpModel.hits.length == 0
+                                        ? "No section of the manual matches \"" + HelpModel.search_text + "\"."
+                                        : (HelpModel.hits.length == 1 ? "1 section matches" : HelpModel.hits.length + " sections match") + " \"" + HelpModel.search_text + "\"";
+                                    font-size: 13px;
+                                    color: Theme.text-secondary;
+                                    wrap: word-wrap;
+                                }
+
+                                for entry in HelpModel.hits: HelpHitRow {
+                                    hit: entry;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

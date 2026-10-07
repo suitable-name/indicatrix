@@ -139,13 +139,15 @@ fn solved(design: &Design) -> Option<Vec<SolvedTier>> {
 }
 
 /// Drops the concave-tier fields (`EditorTierItem::kind`/`tool_line`,
-/// `AngleItem::second_line`) from a `Debug` dump while they hold their flat default,
-/// so the dump of a planar design is byte-identical to the one recorded before the
-/// concave work. A flat row that ever carried a concave value keeps the field in the
-/// dump and fails the pin. (The leading space keeps `constraint_kind` out of it.)
+/// `AngleItem::second_line`) and the relation field (`EditorTierItem::relation_text`)
+/// from a `Debug` dump while they hold their flat default, so the dump of a planar design
+/// is byte-identical to the one recorded before the concave and relation work. A flat row
+/// that ever carried a concave value or a relation keeps the field in the dump and fails
+/// the pin. (The leading space keeps `constraint_kind` out of it.)
 fn without_flat_defaults(dump: &str) -> String {
     dump.replace(" kind: 0, ", " ")
         .replace("tool_line: \"\", ", "")
+        .replace("relation_text: \"\", ", "")
         .replace("second_line: \"\", ", "")
 }
 
@@ -211,14 +213,29 @@ fn tier_rows_and_formats_are_pinned() {
         "{:?}",
         index_chip_items(&[0.0, 12.0, 24.5, 95.999_999_999_9], &[12.0])
     );
+    // Re-recorded 2026-10-05: the first four hashes moved, the empty design (no tier rows) and the
+    // chips did not. The tier table shows a tier's angle as the unsigned magnitude and keeps the
+    // side in `block` (`TierRow::angle_deg`/`angle_full` are `tier.angle_deg.abs()`; Save Tier
+    // restores the sign, `tier_form::preserve_saved_tier_side_and_detached`), so a pavilion row now
+    // dumps `angle_deg: "40.00", angle_full: "40"` where the recorded dump had `"-40.00"`/`"-40"`
+    // (and a culet `"0.00"`/`"0"` for `"-0.00"`/`"-0"`). Checked for the third fixture by
+    // reproducing its whole dump by hand: the current code's text hashes to the new value, and the
+    // same text with only those two angle strings signed hashes to the old one.
+    //
+    // Re-recorded 2026-10-06 (lane L1, cutting order and codes): the hashes of the first four
+    // fixtures moved again; the empty design and the chips did not. Every tier row now carries its
+    // code (`EditorTierItem::code`, `P1`, `G1`, `C1`, `T`, `Culet`), which the `Debug` dump
+    // shows; the three template fixtures store their tiers in the order they are cut, so their
+    // rows (and the Schedule rows after them) list the pavilion first and the table last; and
+    // the table's code is `T`, no longer `Table`.
     assert_eq!(
         (got, fnv1a(chips.as_bytes())),
         (
             vec![
-                11_903_447_992_736_157_353,
-                4_501_220_536_405_905_337,
-                15_303_436_785_860_121_761,
-                10_651_142_665_447_707_371,
+                11_581_065_273_413_082_992,
+                14_521_345_531_080_930_808,
+                2_104_834_131_709_722_518,
+                5_527_885_909_529_035_141,
                 17_206_618_785_430_422_565,
             ],
             8_329_660_661_060_172_670
@@ -324,13 +341,18 @@ fn solid_status_is_pinned() {
         result_is_stale(Some(2), 3),
     ])
     .collect();
+    // Re-recorded 2026-10-06 (Windows, lane L1, cutting order): the first three hashes moved. The
+    // three template fixtures now store their tiers in the order they are cut, so the plane dump
+    // (`design_to_gpu_planes`, one plane per tier in stored order) lists the pavilion first and
+    // the table last; the planes themselves are the same. The fourth and fifth fixtures and the
+    // filters are unchanged.
     assert_eq!(
         (got, filters),
         (
             vec![
-                5_603_206_944_834_717_328,
-                6_179_831_918_453_333_942,
-                842_089_732_556_684_961,
+                2_872_048_525_647_084_630,
+                8_339_025_376_295_679_342,
+                15_790_257_466_976_397_087,
                 1_089_956_317_437_908_903,
                 4_120_773_658_827_740_825,
             ],
@@ -378,6 +400,8 @@ fn tier_form_dump() -> String {
         ("12 x7", 96),
         ("1; 2, 3", 96),
         ("100", 96),
+        ("96, 16, 32, 48", 96),
+        ("0, 96", 96),
         ("0:0:5", 96),
         ("x8", 96),
     ] {
@@ -412,6 +436,8 @@ fn preform_and_material_dump() -> String {
         specific_gravity_override: Some(3.1),
         refractive_index_override: Some(1.8),
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     for (girdle, sg) in [("6.5", ""), ("", "3.2"), ("-1", ""), ("x", ""), ("", "0")] {
         let _ = writeln!(out, "{:?}", parse_yield_form(girdle, 3, sg, &current));
@@ -437,6 +463,8 @@ fn preform_and_material_dump() -> String {
                     specific_gravity_override: None,
                     refractive_index_override: None,
                     body_color_override: None,
+                    body_color_bands_override: None,
+                    absorption_path_scale_override: None,
                 },
                 &customs
             )
@@ -498,7 +526,7 @@ fn form_parsing_is_pinned() {
     assert_eq!(
         got,
         (
-            7_808_841_572_456_204_551,
+            1_545_794_316_997_941_305,
             15_758_716_057_735_816_184,
             4_662_660_901_061_571_820
         )
@@ -630,15 +658,58 @@ fn cutting_sheet_and_diagram_bytes_are_pinned() {
         got.push((bytes.len(), fnv1a(&bytes)));
     }
     let _ = std::fs::remove_dir_all(&dir);
+    // Re-recorded 2026-10-05. Since 2026-10-04 (18:19, `cut_sheet::diagram::render_cut_diagram`)
+    // the printed diagram stamps every facet's canonical label (`P1 0`, `C2 3`, ...,
+    // `indicatrix_cut_core::design::labelling`) through `DiagramStyle::facet_labels`. The ink is
+    // fixed-size 5x7 text at scale 1, so the standalone PNG (1800x720) grew by about 23-24 KB and
+    // the sheet's embedded 900x360 PNG by about 21 KB, which base64 and the HTML text turn into the
+    // ~28 KB the three sheets grew by; the sheet carries one diagram, not two. The facet planes did
+    // not move: `solid_status_is_pinned` and the yield pins above still pass unchanged.
+    //
+    // Fixture 0 (the Standard Round Brilliant) is pinned once per platform. Two Windows runs
+    // on 2026-10-05 (12:46, before the round-2 lanes, and 16:27, after them) gave the first
+    // pair; the owner's workspace run of the same day gave the second pair for it and the SAME
+    // bytes as Windows for fixtures 1 and 2. The two pairs differ by a few diagram pixels (the
+    // standalone PNG by 5 bytes), which fits the platform split named in this file's module
+    // doc: the facet normals go through `sin` and `cos`, glibc rounds a few arguments
+    // differently from the Windows runtime, and a last-digit change moves a pixel or a label
+    // only where a facet centre sits on a pixel boundary. By file times no source on the
+    // sheet's path changed between the 16:27 run and the owner's, apart from the pure file
+    // splits. Not proven: if a Windows run ever shows the second pair, the cause is a source
+    // change and not the platform.
+    //
+    // Re-recorded 2026-10-06 (lanes L1 and L2), on both platforms. L1: the printed sheet
+    // follows `Design::cutting_order()` for a planar design too (pavilion and girdle first,
+    // table last), shows each tier's code in its label column with the descriptive name at
+    // the front of the instruction (`Crown Main: Meet P1, P2, G1`), and prints index lists as
+    // `96-08-16`, `03.50`, `-`; the three template fixtures store their tiers in cutting
+    // order. L2: `write_cutting_sheet_html` is `cutting_sheet_document` with
+    // `SheetDetails::from_design`, laid out like the fantasy-cut template: heading "Cutting
+    // instructions", Facet Data, Size Data, Design Data, FOUR single-panel views (each
+    // 560x440, instead of the one 900x360 three-panel picture), then a Pavilion and a Crown
+    // section in place of the one tier table. The sheets therefore grew from about 109 KB to
+    // about 186 KB. The standalone diagram PNG moved by its labels only (numbered per letter
+    // in cutting order, and the table's label is `T`, no longer `Table`); the facet planes
+    // did not move.
+    #[cfg(windows)]
+    let fixture_0: [(usize, u64); 2] = [
+        (186_214, 4_140_978_437_035_329_266),
+        (145_724, 751_681_646_158_210_119),
+    ];
+    #[cfg(not(windows))]
+    let fixture_0: [(usize, u64); 2] = [
+        (186_170, 9_067_540_521_652_588_193),
+        (145_681, 13_620_949_975_005_965_458),
+    ];
     assert_eq!(
         got,
         [
-            (80803, 7_067_950_724_805_645_129),
-            (122_055, 17_204_512_700_538_578_767),
-            (80229, 2_758_044_140_940_148_492),
-            (121_075, 82_326_695_121_513_353),
-            (81140, 15_725_016_216_430_464_209),
-            (122_698, 1_653_056_722_631_375_577),
+            fixture_0[0],
+            fixture_0[1],
+            (184_721, 3_493_856_687_612_366_778),
+            (144_425, 2_818_412_057_544_290_729),
+            (181_528, 11_701_624_034_297_311_098),
+            (145_389, 7_078_474_445_128_246_587),
         ]
     );
 }
@@ -666,29 +737,38 @@ fn retarget_output_is_pinned() {
             specific_gravity_override: None,
             refractive_index_override: None,
             body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
         },
         MaterialSelection {
             name: Some("My Garnet".to_string()),
             specific_gravity_override: None,
             refractive_index_override: None,
             body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
         },
         MaterialSelection {
             name: None,
             specific_gravity_override: None,
             refractive_index_override: Some(2.0),
             body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
         },
     ];
     let crowns = [
+        // The default now follows the pavilion; `fixed` keeps the old "crown stays" rule
+        // pinned too.
         CrownShift::default(),
+        CrownShift::fixed(),
         CrownShift {
             fraction: 0.5,
-            scale_by_ratio: false,
+            ..CrownShift::fixed()
         },
         CrownShift {
-            fraction: 0.0,
             scale_by_ratio: true,
+            ..CrownShift::fixed()
         },
     ];
     let mut got = Vec::new();
@@ -727,12 +807,32 @@ fn retarget_output_is_pinned() {
         }
         got.push(fnv1a(dump.as_bytes()));
     }
+    // Re-recorded 2026-10-06 (Windows), three causes. Lane W1-RT (2026-10-05, deliberate
+    // behaviour change): the Shift proposal no longer carries the table or the culet (a
+    // retarget never tilts a flat facet, so the old table row that crossed to the pavilion
+    // side is gone), a shifted angle is guarded (never past the horizontal, 1 to 89.5
+    // degrees, with a note), crown rows read the crown-window margin and risk instead of the
+    // pavilion formula, and the notes gained the flat-facet and guard lines. The dump above
+    // therefore differs for every fixture that has a table. The Optimize half of the dump is
+    // untouched.
+    //
+    // Lane L3 (2026-10-06, angles read positive, tiers read by code): the guard note names the
+    // held angle as a magnitude (`held at 89.50°` for a pavilion row, never `-89.50°`), and a
+    // relation note names its tiers by display name (code for an empty or old-style name).
+    //
+    // Lane L1 (2026-10-06, cutting order): the three template fixtures now store their tiers
+    // in the order they are cut, so the proposal rows and the dump of the applied design list
+    // the pavilion first and the table last.
+    //
+    // Lane RT1 (2026-10-07, deliberate behaviour change, re-recorded 2026-10-07): the default
+    // crown policy follows the pavilion's stretch (crown rows move, a note names the stretch),
+    // and `CrownShift::fixed()` joined the list, so the dump differs for every fixture.
     assert_eq!(
         got,
         [
-            501_324_477_922_563_186,
-            796_213_417_993_335_374,
-            5_945_022_532_389_829_461,
+            12_329_206_420_166_937_951,
+            1_446_688_508_887_160_525,
+            8_242_296_784_616_884_399,
         ]
     );
 }
@@ -797,7 +897,26 @@ fn optimize_views_are_pinned() {
         ("1", "-0.5", "1", 0.4),
         ("NaN", "1", "1", 0.0),
     ] {
-        let _ = writeln!(dump, "{:?}", parse_optimize_weights(w, e, t, y));
+        // The pin predates the tone fields of `ObjectiveWeights`: print the four it recorded,
+        // in the Debug shape it recorded them in, so the hash below keeps guarding the parser.
+        let line = match parse_optimize_weights(w, e, t, y, 0.0) {
+            Ok(v) => format!(
+                "Ok(ObjectiveWeights {{ windowing: {:?}, extinction: {:?}, tilt_brilliance: {:?}, yield_weight: {:?} }})",
+                v.windowing, v.extinction, v.tilt_brilliance, v.yield_weight
+            ),
+            Err(message) => format!("Err({message:?})"),
+        };
+        let _ = writeln!(dump, "{line}");
     }
-    assert_eq!(fnv1a(dump.as_bytes()), 167_664_852_704_437_451);
+    // Re-recorded 2026-10-06 (lanes L3 and L1): `optimize_change_rows`
+    // now shows both angles as magnitudes and the change as the difference of the two
+    // magnitudes, so the sample change `-40.0 -> -41.5` that this dump held as
+    // `"-40.00°"`, `"-41.50°"`, `"-1.50°"` is now `"40.00°"`, `"41.50°"`, `"+1.50°"`, and the
+    // `30.0 -> 31.0` change keeps `"+1.00°"`. The tier names in the dump are unchanged for
+    // this template (its tiers are named by code already) unless one is empty or old-style.
+    // Lane L1 (2026-10-06, cutting order) adds a second cause: template 0 now stores its tiers
+    // in the order they are cut (pavilion first, table last), so the sample change at index 1
+    // names the Girdle where it named a different tier, and the preview design's tier list is
+    // in the new order. Nothing else in the dump moved.
+    assert_eq!(fnv1a(dump.as_bytes()), 7_714_998_885_164_857_003);
 }

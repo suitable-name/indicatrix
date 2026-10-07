@@ -14,9 +14,9 @@ match versus how many exist in total. If nothing matches, it shows "No
 diagrams found / Try adjusting your search terms or filters."
 
 - **Search box** (top toolbar): matches against a design's title and
-  designer. Its own hint text also mentions notes, but a note is not
-  actually part of the match yet — see Chapter 12. A small "×" appears once
-  you've typed something, to clear it in one click.
+  designer. Its hint text reads "Search title or designer... (Ctrl+F)", and
+  Ctrl+F jumps to it. A note is not part of the match — see Chapter 12. A small
+  "×" appears once you've typed something, to clear it in one click.
 - **Shape** and **Gear** drop-downs: filter to a specific shape
   classification or index-gear size.
 - **Filters** button: opens the Advanced Filters panel (below). It turns
@@ -25,7 +25,9 @@ diagrams found / Try adjusting your search terms or filters."
 
 ### Advanced Filters panel
 
-Click **Filters** to open it. From top to bottom:
+Click **Filters** to open it. The panel takes the keyboard focus: Tab walks its
+controls, Escape closes it, and the **?** in its header opens this section. From
+top to bottom:
 
 1. A live count: "N of M designs match."
 2. Four range sliders, each spanning the *actual* range present in your
@@ -49,10 +51,18 @@ Click **Filters** to open it. From top to bottom:
    slider, a tilt-radius slider, and "worst" or "mean" as the aggregate,
    then click **+ Add Filter**. If any active tilt filter is excluding
    designs that have no computed tilt curve yet, an amber notice tells you
-   how many and offers a **Compute missing tilt curves** button to fill
-   that gap for the whole catalogue in the background.
-6. **Reset Filters** — snaps every slider back to its full, unfiltered
+   how many. In the Advanced interface (Chapter 17) it also offers a **Compute
+   missing tilt curves** button to fill that gap for the whole catalogue in the
+   background; in the Simple interface the notice says to switch to Advanced
+   for it.
+6. **My designs only** and **Tags** — restrict the list to the designs you
+   imported yourself, or to one tag (click a tag chip again to stop). **My
+   designs only** is greyed out while a remote library is showing.
+7. **Reset Filters** — snaps every slider back to its full, unfiltered
    range and clears the toggles above.
+8. **Regenerate for filtered set** (Advanced interface only) — **Regenerate
+   Previews** and **Regenerate Tilt Curves** redo that work for just the designs
+   the filters show now, which is handy after a renderer or material change.
 
 A slider sitting exactly on its own full range's edge counts as
 unfiltered on that side — this is what makes Reset genuinely clear
@@ -74,6 +84,14 @@ the gear/facet count. **Right-click** a card for:
   Rough Planner's candidates (Chapter 15) and nothing else. Unlike **Ignore**, it
   hides nothing: the card stays in the list, marked "not planned", and previews and
   tilt curves are made as usual. It works on the local library only.
+- **Build this design** — turn the design into a step-by-step tutorial that
+  rebuilds it from an empty design (Chapter 22); the steps button in the detail
+  header below does the same.
+
+The same actions are on the three-dot button that appears when you point at a
+card, and in the **Library > Selected Design** menu, which works from the keyboard
+too. To move through the list without the mouse, Tab into it and use Up and Down;
+Enter or Space opens the card.
 
 Previews and tilt curves are rendered from the design's own design file (its
 `.asc`, else `.gem`, else `.gcs` attachment) when the record has one, and from
@@ -100,11 +118,41 @@ that comes with heavy extinction does not win. It is chosen once per design and 
 
 Once selected, the detail header above the tabs shows the title, designer,
 and a row of spec chips (Shape, Gear, Facets, L/W, H/W, C/W, P/W, Vol/W³,
-R.I.) — each chip only appears when that value is known. Local designs get
-an inline pencil to rename, an **Edit Metadata** button for the full set of
-fields, and a **Delete** button (with a confirm step). Below the header are
-three tabs: **3D Spectral Preview (1)**, **Cutting Instructions (2)**, and
-**Files & Downloads (3)** — covered further in Chapters 1 and 3.
+R.I.) — each chip only appears when that value is known, and pointing at one
+says what the figure is. Local designs get an inline pencil to rename, an
+**Edit Metadata** button for the full set of fields, and a **Delete** button
+(with a confirm step: the trash icon becomes "Delete? Yes No"). Every icon of the
+header can be reached with Tab, and a screen reader hears each one by name. The
+**Export .gcs** button (the "gcs" icon) is part of the Advanced interface
+(Chapter 17). The **?** at the right opens this section of the manual. Below the
+header are three tabs: **3D Spectral Preview (1)**, **Cutting Instructions (2)**,
+and **Files & Downloads (3)** — covered further in Chapters 1 and 3.
+
+### The Cutting Instructions tab
+
+The **Cutting Instructions** tab (press 2) lists the selected design's steps as
+a table, one row per tier: the step number, the facet name, its angle, its
+index positions, and any notes. A concave tier takes two lines, the facet and the
+tool line under it.
+
+Every angle is a plain positive number; the side of the girdle comes from the
+block the row belongs to, which the **Pavilion** and **Crown** pills below filter
+on. The facet column shows the standard code (`P1`, `G1`, `C1`, `T`). A design
+catalogued with older labels (`1`, `2`, `A`, `B`) shows the code with the
+original label beside it in small type, for example `P2` with "was 3", so a
+printed sheet that says 3 can still be matched to the row.
+
+- The three pills above the table choose what it shows: **All Steps**,
+  **Pavilion** (the steps below the girdle) or **Crown** (the steps above it).
+  Each pill carries its own row count.
+- **Copy Instructions** copies the whole table to the clipboard, ready to paste
+  into a document. Clicking a single row copies just that row.
+- From the keyboard, Tab into the table, then Up and Down move from row to row
+  (skipping the rows the pills hide), Home and End jump to the first and last
+  row, and Enter or Space copies the row you are on.
+- The **?** at the top right opens this section.
+
+If a design has no recorded cutting instructions, the tab says so.
 
 ## The 3D viewport
 
@@ -136,28 +184,70 @@ genuine right-drag gesture.)
   Edit tab's own Design Settings material automatically (Chapter 6), so what
   you render always matches what you are editing. Turn it off to pick an
   independent render material without touching the design at all.
+- **Color** — a round dot (hollow while the material keeps its own color) that opens
+  a small list: **Material default**, nine ready-made colors, and **Custom colour (tone, saturation, hue)...**
+  for any color you like. It shows the stone in another color without making a custom
+  material. For a design you are only browsing (a row in the catalogue list), the
+  choice changes this view only: the catalogue entry is never changed, the app
+  remembers your choice for next time, and **Material default** clears it. When the view
+  shows the design open in the Edit tab with **Linked to design** on, the pick becomes
+  that design's own color instead (Chapter 6). Chapter 9 has the details, including
+  how the color carries into exports and the tilt video.
 - A pencil button next to Render Material opens the **Material Editor**, where
   you can define a fully custom material (name, refractive index,
   dispersion, birefringence, color swatch, crystal system, and optical
   character) starting from one of the built-in templates.
-- **Lighting** — nine presets in three families (the two UV lamps are listed last):
-  - **Studio** (the analytic studio rig): **D65 Daylight (6500K)**, **Incandescent
-    (3200K)**, **Gem Studio Ring Lights** and **Dramatic Dark Spotlight**. A dark velvet
-    backdrop with a key softbox, a fill and sixteen ring pinpoints: hard sparkle,
-    clipped highlights, black everywhere else.
-  - **Lit models** — what a stone looks like in a real scene. All three darken the
-    facets that would reflect your own head, the way a face-up stone really shows a
-    dark table:
-    - **ISO hemisphere** — the whole sky above the girdle evenly lit,
-      black below. The classic Greylight model for comparing light-return
-      patterns.
+- **Lighting** — thirteen presets in the list, and fifteen in builds with the
+  `physical-color` feature (the two UV lamps). They are listed here in the order the
+  drop-down shows them, in three families:
+  - **Lit models** — what a stone looks like in a real scene. They darken the facets
+    that would reflect your own head, the way a face-up stone really shows a dark table
+    (the Head shadow slider below sets how much), and their brilliance, windowing and
+    extinction figures count every direction that is really lit, not only the brightest
+    lamp:
     - **Light tent + black cards** — the default. A jewellery light tent: grey walls,
       one broad overhead softbox, three black cards for facet contrast and a small hard
       spark light for scintillation. The softbox follows the light azimuth/elevation
       controls; the cards sit 90°, 180° and 270° around from it.
-    - **Daylight sky + sun** — a clear sky, brighter towards the horizon and around the
-      sun, a 2° sun for fire, dark ground.
-  - **UV lamps** — **UV lamp 365 nm** and **UV lamp 395 nm**: the Studio rig lit by a
+    - **Grading tray (D65 hemisphere + head shadow)** (formerly "ISO hemisphere") — the
+      whole sky above the girdle evenly lit, black below. The classic light-return
+      model for comparing patterns, and the light the Optimize and Retarget searches
+      score under. It is flat by design, so a tilt video under it shows no sparkle.
+    - **White tray (lit from below)** — a bright, perfectly even white surround (the
+      walls are the same brightness from the girdle to the zenith) over a bright
+      ground, no cards and no spark: a stone on a white grading tray.
+    - **Jewellery shop (diffuse + spots)** — a bright diffuse ceiling (walls about
+      three times the tent's), the broad key, and small pinpoint spots, the light of a
+      shop window or an office.
+    - **Window daylight** — a dim room lit by one broad window: a single soft key
+      light with a low cone and no cards or spark. The built-in view **Window daylight**
+      (Views list) selects this light and puts it at 30° elevation, as a real window
+      sits; with the default light elevation it would shine from high overhead instead.
+    - **Daylight sky (no sun)** — a clear sky only, brighter towards the horizon, with a
+      soft glow around the light direction and dark ground. There is no sun disc in
+      it. (Settings saved as "Daylight sky + sun" open as this preset, which is what
+      they always drew.)
+    - **Daylight sky + direct sun** — the same sky plus a real sun, a hard-edged disc
+      0.27° across. At the default light height it supplies about 82 % of the light,
+      the rest is sky. A facet flashes, with fire, whenever it catches the sun; the
+      sun follows the light azimuth/elevation controls and goes out when the light is
+      below the horizon.
+    - **Contrast view (ASET-style)** — a contrast view in the style of an ASET scope.
+      The sky is coloured by elevation: **green** from 0° to 45°, **red** from 45°
+      to 75° and **blue** from 75° to 90° overhead, **black** below the horizon.
+      There is no white balance and no head shadow, so you can see where in the stone
+      the light returns from. It is a diagnostic view, not a photograph, and its figures
+      are scored as the Grading tray.
+  - **Studio** (the analytic studio rig): **D65 Daylight (6500K)**, **Incandescent
+    (3200K)**, **Incandescent A (2856K)**, **Gem Studio Ring Lights** and **Dramatic
+    Dark Spotlight**. A dark velvet backdrop with a key softbox, a fill and sixteen
+    ring pinpoints: hard sparkle, clipped highlights, black everywhere else.
+    Incandescent A is the standard tungsten lamp (2856 K) with white balance applied.
+    The brilliance figures under a Studio rig are measured against that rig's own light
+    sources; the Grading tray gives the standard figure.
+  - **UV lamps** (only in builds with the `physical-color` feature; other builds do not
+    offer them, and a stored UV choice falls back to Light tent + black cards) —
+    **UV lamp 365 nm** and **UV lamp 395 nm**: the Studio rig lit by a
     narrow ultraviolet line (10 nm and 12 nm wide) in a dark room, with no backdrop glow
     and no white balance. A non-fluorescent stone stays nearly black (the 395 nm lamp
     lights it faintly violet); a fluorescent one glows. They render on the CPU only.
@@ -179,10 +269,31 @@ genuine right-drag gesture.)
   remote and hybrid rendering and every export. The brilliance, windowing and
   extinction numbers, tilt curves and catalogue previews never use it, and the Solid
   view is unaffected. "Reset to 100 %" restores the default.
-- **Tilt Curve** — opens the tilt-performance dialog (below).
+- **Head shadow** (Settings gear, under Surface glare) — a 0–30° slider (default 16°,
+  0 = Off). On the lit models it is how much of the sky your own head hides: the
+  dark table reflections a face-up stone shows. 16° is a head at arm's length. The
+  slider now also changes the brilliance, windowing and extinction figures under those
+  presets, not only the picture, so a wider head shadow lowers the face-up brilliance.
+  The Studio rigs (D65 Daylight, Incandescent, Incandescent A, Ring Lights, Dark
+  Spotlight) and the UV lamps ignore it, and so does an HDR map (the slider greys out
+  while one is loaded). It follows into the live view, remote and hybrid rendering
+  and every export; "Reset to 16°" restores the default.
+- **Tilt Curve** — opens the tilt-performance dialog (below). Simple mode hides
+  this button (Chapter 17); switch to Advanced to use it.
 - A reset-camera button, a "Save as preset" button (captures your full
-  current lighting *and* camera pose as a named preset), a Pause/Live
-  toggle, a Settings button, and an **Export** button (Chapter 9).
+  current lighting *and* camera pose as a named preset; Simple mode hides it), a
+  Pause/Live toggle, a Settings button, and an **Export** button (Chapter 9).
+- A round **?** button opens this part of the manual. Every button on the toolbar
+  also has a hover note saying what it does, and you can reach each one with the
+  Tab key and press it with Space or Enter.
+
+**A stone that is cut back.** The Edit tab's Cut slider (Chapter 13) can show the
+stone part-way through the cutting, and the Live Render view follows it. While it does,
+a small amber badge over the picture says so and names the step, and its **Show
+finished** button puts the slider back to the finished stone. The badge appears only
+for the design open in the Edit tab: a catalogue row you are browsing is always drawn
+whole. Exports, the tilt video and the tilt curves never use the part-cut stone; they
+always draw the finished gem (Chapter 9).
 
 The Render Material drop-down lists all 32 of this app's built-in
 materials in alphabetical order (Diamond, Sapphire, Tourmaline, the
@@ -200,7 +311,19 @@ instead of bright — turns amber above 12%).
 
 ## Quality, resolution, and GPU options
 
-Open **Settings** from the viewport toolbar for:
+Open **Settings** (the gear) from the viewport toolbar for the list below. The round
+**?** in its title bar opens this section of the manual, and every setting has a hover
+note that says what it does.
+
+In **Simple mode** (Chapter 17) the card shows the settings most designs need:
+Target Samples, Render Resolution, Inclusion Haze, Crystal Axis Orientation, Frosted
+Girdle, Edge Rounding, Stone Size, the Environment Map, Studio Exposure, Backdrop,
+Surface glare, the light direction and the lighting presets. It hides Preview Image
+Size, Preview Samples, Motion Preview Resolution, Live Compute with Live Transfer,
+Local Compute, Max Ray Bounces and the Tilt Performance Curve panel; those are the
+Advanced settings below. A hidden setting keeps its value and still applies. If one of
+them is not at its default, the card says "Some advanced settings are in use. Switch to
+Advanced to see them."
 
 - **Target Samples** — a slider controlling how many samples per pixel the
   live render converges to (8 up to 1024; default 256). More samples means
@@ -239,6 +362,14 @@ Open **Settings** from the viewport toolbar for:
   **Cancel** to back out without changing anything).
 - Your named lighting presets, each individually markable as usable for
   batch export (Chapter 9).
+- **Lighting for this design** — the last group in Settings. **Use this lighting for
+  this design** remembers the lighting you see now (light, exposure, surface glare,
+  backdrop and environment map) for the design that is open in the Edit tab. It is
+  kept in your library on this computer, never inside the design file. Open that
+  design in the Edit tab later and its lighting comes back; open a design with
+  nothing saved and your normal lighting returns. **Forget for this design** removes
+  it. A catalogue row you are only browsing does not apply its saved lighting, so you
+  can flip through designs under one lighting. Chapter 9 has the details.
 
 ## Reading the tilt-performance graph
 

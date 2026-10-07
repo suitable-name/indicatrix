@@ -130,6 +130,22 @@ pub enum PoolEvent {
         /// The run's target sample count.
         target: u32,
     },
+    /// A finished chunk was refused because the merger's parked-bytes budget is full and
+    /// is being retried once the frontier moves. Sent for a lane's first deferral at a
+    /// frontier and then every 50th, so a stalled frontier is visible. After 1200 in a row
+    /// at one frontier the lane fails the chunk instead ([`PoolEvent::LaneFailed`]).
+    ChunkDeferred {
+        /// The lane.
+        lane: usize,
+        /// The chunk as claimed.
+        range: SampleRange,
+        /// The merge frontier the chunk is waiting on.
+        frontier: u32,
+        /// Samples merged or parked so far across all lanes.
+        total_done: u32,
+        /// Consecutive deferrals of this lane at this frontier, this one included.
+        deferrals: u32,
+    },
     /// A chunk ended short; its untraced tail went back to the cursor.
     LaneFailed {
         /// The lane.

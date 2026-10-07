@@ -79,7 +79,7 @@ pub struct AssignedModeAlphaBiaxialCase {
 /// are written as explicit non-fused scalar sums (`a.x*b.x + a.y*b.y + a.z*b.z`), matching the CPU's
 /// `Mat3::transpose() * v` accumulation order bit-for-bit (glam's `Mat3::mul_vec3` SAXPY
 /// expansion reduces algebraically to that same left-to-right grouping -- verified by
-/// reading `glam-0.33.7`'s `f32/mat3.rs`/`vec3.rs` source directly, not assumed). A
+/// reading `glam-0.33.7`'s (re-checked unchanged in 0.34.1) `f32/mat3.rs`/`vec3.rs` source directly, not assumed). A
 /// standalone Rust-side probe (reproducing this exact argmax case via the real CPU
 /// functions) confirms that swapping between a plain dot, an explicit `mul_add`-chain
 /// dot ("as if" `dot()` got FMA-contracted), and `v * (1/sqrt(l2))` vs `v / sqrt(l2)`

@@ -98,17 +98,24 @@ pub(in crate::gui) fn resubmit_at_current_pose(
         // `contained_request_size`'s own doc comment.
         contained_request_size(view_mode, viewport_size, (ctx.width, ctx.height))
     };
-    preview_state.request_redraw_geometry(
-        stone,
-        CameraPose {
-            yaw: ctx.yaw,
-            pitch: ctx.pitch,
-            distance: ctx.distance,
-        },
-        size,
-        view_mode,
-        ctx.design_gear,
-    );
+    let pose = CameraPose {
+        yaw: ctx.yaw,
+        pitch: ctx.pitch,
+        distance: ctx.distance,
+    };
+    if on_live_tab {
+        // The Live Render tab shows the committed design only: a Slice tier that is not
+        // kept yet is an Edit-tab preview (see `request_redraw_committed_geometry`).
+        preview_state.request_redraw_committed_geometry(
+            stone,
+            pose,
+            size,
+            view_mode,
+            ctx.design_gear,
+        );
+    } else {
+        preview_state.request_redraw_geometry(stone, pose, size, view_mode, ctx.design_gear);
+    }
 }
 
 /// The stone `ctx` currently holds -- planes, concave tools and each tool's
@@ -234,7 +241,8 @@ pub(in crate::gui) fn resubmit_live_solid(
         (ui.global::<SolidPreviewModel>().get_live_viewport_width() * scale) as u32,
         (ui.global::<SolidPreviewModel>().get_live_viewport_height() * scale) as u32,
     );
-    preview_state.request_redraw_geometry(
+    // Committed planes only: the Slice tool's provisional tier is an Edit-tab preview.
+    preview_state.request_redraw_committed_geometry(
         stone,
         CameraPose {
             yaw: ctx.yaw,
@@ -517,6 +525,10 @@ pub(in crate::gui) fn setup_environment_map_callbacks(
                     ui.global::<SettingsModel>()
                         .set_env_map_status(status.clone().into());
                     ui.global::<SettingsModel>().set_env_map_loaded(true);
+                    // The cutter's own choice is the newest word on the map: a decode of the
+                    // design's saved map still on its way must not land over it, and "Use
+                    // this lighting for this design" stores this map.
+                    super::design_lighting::env_map_chosen();
                     // The GPU megakernel has its own `env_mode` for `HdrMap` and
                     // renders it directly (see `render_thread::mod`'s module doc
                     // comment), so there is no CPU-only restriction to warn about
@@ -549,6 +561,8 @@ pub(in crate::gui) fn setup_environment_map_callbacks(
         ui.global::<SettingsModel>()
             .set_env_map_status(String::new().into());
         ui.global::<SettingsModel>().set_env_map_loaded(false);
+        // Clearing is a choice too: a decode still on its way must not bring a map back.
+        super::design_lighting::env_map_chosen();
         show_toast(
             &ui,
             "Cleared HDR environment; back to the studio rig.",

@@ -20,9 +20,14 @@ use crate::{
             state::{EditorState, apply_multi_selection, push_multi_selected_count, push_tiers},
             view::{SolidLastSolved, push_selected_tier_chips, submit_preview_replan},
         },
-        solid_preview::preview_state::{SolidPickState, SolidPreviewState},
+        solid_preview::{
+            facet_selection,
+            preview_state::{SolidPickState, SolidPreviewState},
+        },
+        tutorial_events::raise,
     },
 };
+use indicatrix_editor::guide::viewing_events as events;
 
 thread_local! {
     /// The last clicked facet's own identifying text -- the SAME "tier name, index
@@ -35,18 +40,17 @@ thread_local! {
     /// [`setup_solid_facet_click_callback`], which writes it. UI-thread-only,
     /// same reasoning as `super::facet_overlay`'s own `thread_local!`.
     static SELECTED_FACET_LABEL: RefCell<String> = const { RefCell::new(String::new()) };
-    /// The last clicked facet's id, written and cleared exactly where
-    /// [`SELECTED_FACET_LABEL`] is: the facet the manipulation handles
-    /// (`gui::editor::manipulate`) sit on. A selection made from the tier table
-    /// leaves it stale or unset, which the handles resolve by checking it belongs to
-    /// the selected tier and falling back to the tier's first facet. UI-thread-only.
-    static SELECTED_FACET_ID: RefCell<Option<u32>> = const { RefCell::new(None) };
 }
 
-/// The last clicked facet's id, if the last click landed on a facet/// [`SELECTED_FACET_ID`].
+/// The last clicked facet's id, if the last click landed on a facet: the facet the
+/// manipulation handles (`gui::editor::manipulate`) sit on. The Solid and the Diagram view
+/// click into the SAME value (`facet_selection::selected_facet_id`), so the handles have
+/// an anchor facet whichever view the click was made in. A selection made from the tier
+/// table leaves it stale or unset, which the handles resolve by checking it belongs to the
+/// selected tier and falling back to the tier's first facet.
 #[must_use]
 pub(in crate::gui::editor) fn selected_facet_id() -> Option<u32> {
-    SELECTED_FACET_ID.with(|cell| *cell.borrow())
+    facet_selection::selected_facet_id()
 }
 
 /// Maps an incoming Solid-viewport pointer
@@ -239,10 +243,10 @@ pub(in crate::gui::editor) fn setup_solid_facet_hover_callback(
 /// # Indexes the frame's own table instead of rebuilding a `FacetMap`
 ///
 /// See [`setup_solid_facet_hover_callback`]'s matching doc section: `solid_facet_tier`
-/// is the last rendered frame's own `PreviewFrame::facet_tier` table, so resolving a
+/// is the last rendered frame's own `PreviewFrame::facet_owners` tables, so resolving a
 /// clicked facet to its owning tier is one `Vec::get` instead of a fresh
 /// `FacetMap::from_design` rebuild. Neither `Design` nor the last-solved mast cache is
-/// needed here at all. `solid_facet_tier` reaches this callback the same way
+/// needed here at all. `solid_facet_owners` reaches this callback the same way
 /// `solid_hover_text` reaches the hover callback: through `solid_pick_state`, bundled
 /// there by `gui::mod::build_main_window`.
 pub(in crate::gui::editor) fn setup_solid_facet_click_callback(
@@ -250,7 +254,7 @@ pub(in crate::gui::editor) fn setup_solid_facet_click_callback(
     solid_pick_state: &SolidPickState,
 ) {
     let solid_pick = Arc::clone(&solid_pick_state.pick);
-    let solid_facet_tier = Arc::clone(&solid_pick_state.facet_tier);
+    let solid_facet_owners = Arc::clone(&solid_pick_state.facet_owners);
     let solid_hover_text = Arc::clone(&solid_pick_state.hover_text);
     let ui_weak = ui.as_weak();
     ui.global::<SolidPreviewModel>()
@@ -288,19 +292,28 @@ pub(in crate::gui::editor) fn setup_solid_facet_click_callback(
                 // previously identified -- nothing is selected any more, so
                 // nothing should keep reading in the tooltip.
                 SELECTED_FACET_LABEL.with(|cell| cell.borrow_mut().clear());
-                SELECTED_FACET_ID.with(|cell| *cell.borrow_mut() = None);
+                if let Some(preview_state) = auto_solve::preview_state() {
+                    facet_selection::clear_clicked_facet(&preview_state);
+                } else {
+                    facet_selection::set_selected_facet_id(None);
+                }
                 ui.global::<SolidPreviewModel>().set_hover_text("".into());
                 return;
             };
-            let tier_index = solid_facet_tier
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(facet_id as usize)
-                .copied()
-                .flatten();
-            if let Some(tier_index) = tier_index {
+            // A flat facet selects its tier, a concave tool's facet its concave tier (the
+            // row after the flat ones); a tool facet with Ctrl/Shift selects that row
+            // alone, since concave rows never join the multi-select.
+            let tier_row = {
+                let owners = solid_facet_owners
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                facet_selection::clicked_tier_row(&ui, &owners, facet_id)
+            };
+            if let Some(tier_row) = tier_row {
                 ui.global::<EditorModel>()
-                    .set_selected_tier_index(tier_index as i32);
+                    .set_selected_tier_index(tier_row as i32);
+                // A tutorial step may wait for a facet of a tier to be picked.
+                raise(&ui, events::FACET_PICKED);
             }
             // Identifies the clicked facet itself, not just its
             // owning tier -- GemCad/GCS-style "which index is this facet, and
@@ -315,15 +328,14 @@ pub(in crate::gui::editor) fn setup_solid_facet_click_callback(
                 .cloned()
                 .unwrap_or_default();
             SELECTED_FACET_LABEL.with(|cell| cell.borrow_mut().clone_from(&label));
-            SELECTED_FACET_ID.with(|cell| *cell.borrow_mut() = Some(facet_id));
             ui.global::<SolidPreviewModel>()
                 .set_hover_text(label.into());
             // The clicked facet stays lit regardless of whether it resolved to a
             // tier above -- a facet under the cursor is always a real pick.
             if let Some(preview_state) = auto_solve::preview_state() {
-                resubmit_facet_overlay(&preview_state, |overlay| {
-                    overlay.selected_facet = Some(facet_id);
-                });
+                facet_selection::select_clicked_facet(&preview_state, facet_id);
+            } else {
+                facet_selection::set_selected_facet_id(Some(facet_id));
             }
         });
 }
@@ -373,7 +385,7 @@ pub(in crate::gui::editor) fn setup_solid_selected_tier_changed_callback(
     let solid_last_solved = Arc::clone(solid_last_solved);
     let ui_weak = ui.as_weak();
     ui.global::<EditorModel>()
-        .on_selected_tier_changed(move |_index: i32| {
+        .on_selected_tier_changed(move |index: i32| {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
@@ -384,6 +396,12 @@ pub(in crate::gui::editor) fn setup_solid_selected_tier_changed_callback(
                 &preview_state,
                 &solid_last_solved,
             );
+            // Every route to a selected tier ends here (a table row, a facet in the Solid or
+            // Diagram view); a tutorial step may wait for one. Clearing the selection is not
+            // a selection.
+            if index >= 0 {
+                raise(&ui, events::TIER_SELECTED);
+            }
         });
 }
 

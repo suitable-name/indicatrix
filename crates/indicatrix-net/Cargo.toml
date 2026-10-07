@@ -58,7 +58,7 @@ tracing = { workspace = true }
 # see `enroll`'s module doc comment for why both moved here): zeroizes the bearer
 # secret and the claimed private key the moment each is no longer needed, the same
 # `zeroize` version `apps/indicatrix-worker` already pins for the same purpose.
-zeroize = "1.9"
+zeroize = "1.9.1"
 # See `lz4_flex` above. The C library (`zstd-sys`) builds with the MSVC toolchain; use
 # the one-shot `bulk` API only, so decode memory stays bounded by `raw_len`.
 zstd = { version = "0.14.0", optional = true }

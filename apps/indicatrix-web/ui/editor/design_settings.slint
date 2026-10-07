@@ -2,6 +2,7 @@ import { Button, ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "../components/theme.slint";
 import { AppModel } from "../models/app_model.slint";
 import { GuideModel } from "../models/guide_model.slint";
+import { LchEditor } from "../components/lch_editor.slint";
 
 // One row of the gear-remap confirmation (`indicatrix_editor::material::GearRemapPreviewRow`).
 export struct GearRemapRow {
@@ -22,8 +23,24 @@ export global DesignSettingsModel {
     in property <[string]> material-options: [];
     in-out property <int> material-index: 0;
     in-out property <string> ri-override-text: "";
+    // The design's colour combo: "Material default", the presets, then the last entry
+    // "Custom..." (`indicatrix_editor::material::body_color_options`), which opens the picker.
     in property <[string]> color-options: [];
     in-out property <int> color-index: 0;
+    // The same list without "Custom..." for the custom-material editor's colour combo.
+    in property <[string]> custom-color-options: [];
+    // The inline L*C*h colour editor under the colour combo ("Custom...").
+    in-out property <bool> color-picker-open: false;
+    // Its state: the sliders (CIE L*, C*, h at D65), the solved colour's swatches at 3 mm /
+    // 5 mm / 10 mm / this stone with their captions, the reachability badge.
+    in-out property <float> lch-tone: 55.0;
+    in-out property <float> lch-chroma: 40.0;
+    in-out property <float> lch-hue: 260.0;
+    in property <[color]> lch-swatches: [];
+    in property <[string]> lch-swatch-labels: [];
+    in property <string> lch-badge-text: "";
+    in property <bool> lch-reachable: true;
+    in property <bool> lch-has-solution: false;
     in property <string> effective-ri-text: "";
     in property <string> critical-angle-text: "";
     // Where the effective RI came from (`indicatrix_editor::material::ri_source_text`).
@@ -77,6 +94,15 @@ export global DesignSettingsModel {
     in property <string> custom-error: "";
 
     callback apply-material();
+    // The editor opened: seed the sliders from the design's colour and solve.
+    callback lch-open();
+    // A slider was let go: solve the typed tone / saturation / hue for the design's path
+    // (`solve_body_color`, on the UI thread).
+    callback lch-edited(float, float, float);
+    // The hue/saturation/brightness picker's colour: converted to L*C*h and solved.
+    callback lch-picked(color);
+    // Apply colour: store the last solve (bands plus the nearest triple) as ONE undoable edit.
+    callback lch-apply();
     // Builds the material from the `custom-*` fields, offers it in the material lists and
     // makes it this design's material.
     callback save-custom-material();
@@ -251,7 +277,26 @@ export component DesignSettingsDialog inherits Rectangle {
                                 min-width: 0px;
                                 model: DesignSettingsModel.color-options;
                                 current-index <=> DesignSettingsModel.color-index;
-                                selected => { DesignSettingsModel.material-pending = true; }
+                                selected => {
+                                    if self.current-index == DesignSettingsModel.color-options.length - 1 {
+                                        DesignSettingsModel.color-picker-open = true;
+                                        DesignSettingsModel.lch-open();
+                                    } else {
+                                        DesignSettingsModel.color-picker-open = false;
+                                        DesignSettingsModel.material-pending = true;
+                                    }
+                                }
+                            }
+                            if DesignSettingsModel.color-index == DesignSettingsModel.color-options.length - 1 && !DesignSettingsModel.color-picker-open: HorizontalLayout {
+                                Button {
+                                    text: "Choose colour...";
+                                    enabled: GuideModel.allows-design-settings();
+                                    clicked => {
+                                        DesignSettingsModel.color-picker-open = true;
+                                        DesignSettingsModel.lch-open();
+                                    }
+                                }
+                                Rectangle { horizontal-stretch: 1; }
                             }
                         }
                         VerticalLayout {
@@ -262,6 +307,33 @@ export component DesignSettingsDialog inherits Rectangle {
                                 primary: DesignSettingsModel.material-pending;
                                 clicked => { DesignSettingsModel.apply-material(); }
                             }
+                        }
+                    }
+                    if DesignSettingsModel.color-picker-open: VerticalLayout {
+                        spacing: 4px;
+                        Text {
+                            text: "Tone, saturation and hue. The colour depends on the size of the stone: the swatches show it at 3, 5 and 10 mm and at this stone. The closest colour the material model can reach is used; it changes this design and you can undo it.";
+                            font-size: 9px;
+                            color: Theme.text-muted;
+                            wrap: word-wrap;
+                        }
+                        LchEditor {
+                            enabled: GuideModel.allows-design-settings();
+                            tone <=> DesignSettingsModel.lch-tone;
+                            chroma <=> DesignSettingsModel.lch-chroma;
+                            hue <=> DesignSettingsModel.lch-hue;
+                            swatches: DesignSettingsModel.lch-swatches;
+                            swatch-labels: DesignSettingsModel.lch-swatch-labels;
+                            badge-text: DesignSettingsModel.lch-badge-text;
+                            reachable: DesignSettingsModel.lch-reachable;
+                            has-solution: DesignSettingsModel.lch-has-solution;
+                            edited(l, c, h) => { DesignSettingsModel.lch-edited(l, c, h); }
+                            picked(c) => { DesignSettingsModel.lch-picked(c); }
+                            applied => {
+                                DesignSettingsModel.lch-apply();
+                                DesignSettingsModel.color-picker-open = false;
+                            }
+                            cancelled => { DesignSettingsModel.color-picker-open = false; }
                         }
                     }
                     HorizontalLayout {
@@ -369,7 +441,7 @@ export component DesignSettingsDialog inherits Rectangle {
                                 Lbl { text: "color"; }
                                 ComboBox {
                                     min-width: 0px;
-                                    model: DesignSettingsModel.color-options;
+                                    model: DesignSettingsModel.custom-color-options;
                                     current-index <=> DesignSettingsModel.custom-color-index;
                                 }
                             }

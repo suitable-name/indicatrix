@@ -577,6 +577,130 @@ fn concave_facets_get_ids_above_the_flat_ones_with_kind_hover_label_and_block() 
     );
 }
 
+/// A concave row is selected by its table position (`tiers.len() + concave index`): that
+/// tints exactly the tool facets of that concave tier, no flat facet, and a flat selection
+/// tints no tool facet.
+#[test]
+fn selecting_a_concave_row_tints_exactly_its_tool_facets() {
+    let mut design = standard_round_brilliant_design();
+    design.concave_tiers.push(dimple_tier());
+    let mut second = dimple_tier();
+    second.name = "Second".to_string();
+    design.concave_tiers.push(second);
+    design.ensure_concave_tier_ids();
+    let solved = design.solve().expect("every tier is pinned");
+    let flat_count = FacetMap::from_design(&design, &solved).facet_count();
+    let map = FacetMap::from_design_with_tools(&design, &solved, &[(0, 0), (0, 2), (1, 0)]);
+    let tier_count = design.tiers.len();
+
+    let first = map.overlay_flags(&design, 1.54, Some(tier_count), &BTreeSet::new());
+    let tinted: Vec<usize> = (0..map.facet_count())
+        .filter(|&id| first.selected[id])
+        .collect();
+    assert_eq!(tinted, vec![flat_count, flat_count + 1]);
+
+    let second = map.overlay_flags(&design, 1.54, Some(tier_count + 1), &BTreeSet::new());
+    let tinted: Vec<usize> = (0..map.facet_count())
+        .filter(|&id| second.selected[id])
+        .collect();
+    assert_eq!(tinted, vec![flat_count + 2]);
+
+    let flat = map.overlay_flags(&design, 1.54, Some(0), &BTreeSet::new());
+    assert!(
+        (flat_count..map.facet_count()).all(|id| !flat.selected[id]),
+        "a flat selection leaves the tool facets alone"
+    );
+    assert!(
+        map.facets_of_tier(0)
+            .iter()
+            .all(|&id| flat.selected[id as usize])
+    );
+
+    let past_the_end = map.overlay_flags(&design, 1.54, Some(tier_count + 2), &BTreeSet::new());
+    assert!(past_the_end.selected.iter().all(|&on| !on));
+}
+
+/// The planes of a partly cut stone are the finished stone's with the hidden tiers'
+/// slices removed, so a map for the cut must number exactly those planes -- not the
+/// finished stone's, whose ids shift as soon as a hidden tier sat before a shown one.
+#[test]
+fn a_cut_map_numbers_the_planes_the_partly_cut_stone_is_drawn_from() {
+    let mut design = standard_round_brilliant_design();
+    design.concave_tiers.push(dimple_tier());
+    let solved = design.solve().expect("every tier is pinned");
+    let finished = FacetMap::from_design(&design, &solved);
+
+    // The table, the upper girdle and the pavilion main are not cut yet.
+    let hidden = [0_usize, 3, 5];
+    let visible: Vec<bool> = (0..design.tiers.len())
+        .map(|tier| !hidden.contains(&tier))
+        .collect();
+    let drawn = design
+        .try_planes_for_visible_tiers(&solved, &visible)
+        .expect("the masts match the design");
+    let cut = FacetMap::from_design_cut(&design, &solved, &[], Some(&visible));
+
+    assert_eq!(cut.facet_count(), drawn.len());
+    assert_eq!(cut.preform_plane_count(), finished.preform_plane_count());
+    for tier in 0..design.tiers.len() {
+        if hidden.contains(&tier) {
+            assert!(cut.facets_of_tier(tier).is_empty(), "tier {tier} is hidden");
+            continue;
+        }
+        assert_eq!(
+            cut.facets_of_tier(tier).len(),
+            finished.facets_of_tier(tier).len(),
+            "tier {tier} keeps all its facets"
+        );
+        for &id in cut.facets_of_tier(tier) {
+            assert_eq!(cut.tier_of(id as usize), Some(tier));
+        }
+    }
+    // The star follows the hidden table (one plane), so each id moved down by one.
+    assert_eq!(cut.facets_of_tier(1)[0] + 1, finished.facets_of_tier(1)[0]);
+    // The flat facets number the drawn planes after the preform's, each exactly once.
+    let mut every: Vec<u32> = (0..design.tiers.len())
+        .flat_map(|tier| cut.facets_of_tier(tier).iter().copied())
+        .collect();
+    every.sort_unstable();
+    let expected: Vec<u32> = (cut.preform_plane_count() as u32..drawn.len() as u32).collect();
+    assert_eq!(every, expected);
+
+    // Concave facets start after the DRAWN planes, not the finished stone's.
+    let with_tools = FacetMap::from_design_cut(&design, &solved, &[(0, 0), (0, 2)], Some(&visible));
+    assert_eq!(with_tools.facet_count(), drawn.len() + 2);
+    assert_eq!(
+        with_tools.kind_of(drawn.len()),
+        FacetKind::Concave {
+            tier: 0,
+            placement: 0
+        }
+    );
+    assert_eq!(with_tools.kind_of(drawn.len() + 2), FacetKind::Flat);
+
+    // No restriction is the finished stone, tools included.
+    let all = FacetMap::from_design_cut(&design, &solved, &[(0, 0)], None);
+    assert_eq!(all.facet_count(), finished.facet_count() + 1);
+}
+
+/// A restriction that hides nothing changes nothing.
+#[test]
+fn a_cut_map_with_every_tier_visible_is_the_finished_map() {
+    let design = standard_round_brilliant_design();
+    let solved = design.solve().expect("every tier is pinned");
+    let finished = FacetMap::from_design(&design, &solved);
+    let all_visible = vec![true; design.tiers.len()];
+    let cut = FacetMap::from_design_cut(&design, &solved, &[], Some(&all_visible));
+    assert_eq!(cut.facet_count(), finished.facet_count());
+    for tier in 0..design.tiers.len() {
+        assert_eq!(cut.facets_of_tier(tier), finished.facets_of_tier(tier));
+    }
+    for id in 0..finished.facet_count() {
+        assert_eq!(cut.tier_of(id), finished.tier_of(id));
+        assert_eq!(cut.index_on_gear(id), finished.index_on_gear(id));
+    }
+}
+
 #[test]
 fn from_design_with_no_placements_is_exactly_from_design() {
     let mut design = standard_round_brilliant_design();

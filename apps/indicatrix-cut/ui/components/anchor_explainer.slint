@@ -1,6 +1,11 @@
-import { Button, CheckBox } from "std-widgets.slint";
+import { CheckBox } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { EditorModel } from "../models/editor.slint";
+import { GuideModel } from "../models/guide.slint";
+import { HelpTopics } from "../models/help.slint";
+import { HelpButton } from "help_button.slint";
+import { TipButton } from "compact_controls.slint";
+import { TipBox } from "tip_box.slint";
 
 // A one-time card explaining why the solver needs an anchor, shown
 // the first time (this session) a design lacks one
@@ -9,66 +14,118 @@ import { EditorModel } from "../models/editor.slint";
 // `AppSettings.suppressed_confirmations` (key `"anchor_explainer"`) --
 // `EditorModel.anchor_explainer_dismiss`'s own doc comment. Mounted once in
 // `app.slint`, the same way `mismatch_dialog`/`write_confirm` are.
+//
+// The last paragraph depends on the interface mode: "Exact scale value" in the Meets box is an
+// Advanced control (Simple mode only lists it for a tier that already uses it), so a Simple
+// user is pointed at the two ways that are always there, and told where the third one is.
 export component AnchorExplainer inherits Rectangle {
     in-out property <bool> dont_show_again: false;
 
+    function dismiss() {
+        EditorModel.anchor_explainer_dismiss(root.dont_show_again);
+    }
+
     background: Theme.overlay-backdrop;
 
-    TouchArea {} // Swallows clicks on the backdrop -- this card has no "click outside to dismiss".
-
-    Rectangle {
-        width: min(420px, parent.width - 40px);
-        background: Theme.surface-dialog;
-        border-radius: Theme.radius-md;
-        border-width: 1px;
-        border-color: Theme.border-dialog;
-        drop-shadow-blur: 24px;
-        drop-shadow-color: Theme.modal-shadow;
-
-        TouchArea {} // Isolates clicks inside the card from the backdrop above.
-
-        VerticalLayout {
-            padding: 16px;
-            spacing: 10px;
-
-            Text {
-                text: "Why this design needs an anchor";
-                font-size: 13px;
-                font-weight: 700;
-                color: Theme.text-primary;
+    // Takes the keyboard while the card is up: Escape or Enter closes it, and every other
+    // key is swallowed so a shortcut cannot change the design underneath. Tab is let
+    // through so focus can reach the checkbox and the button. The card is INSIDE the scope,
+    // so a key pressed while the checkbox has focus still reaches it.
+    FocusScope {
+        width: 100%;
+        height: 100%;
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape || event.text == Key.Return {
+                root.dismiss();
+            } else if event.text == Key.Tab {
+                return reject;
             }
-            Text {
-                text: "The solver works out every facet's depth (\"mast\") from how the tiers meet each other -- but that only pins RELATIVE depths, the same way a chain of \"this meets that\" statements can describe a shape's proportions without ever fixing its size.";
-                font-size: 10px;
-                color: Theme.text-secondary;
-                wrap: word-wrap;
-            }
-            Text {
-                text: "Somewhere in each block (crown, pavilion, girdle) one tier has to state an exact, authored depth -- a \"scale reference\" -- so the solver has a real number to build every other tier's depth from. Without one, the block has a shape but no size, and cannot be solved.";
-                font-size: 10px;
-                color: Theme.text-secondary;
-                wrap: word-wrap;
-            }
-            Text {
-                text: "Click \"Add Anchor\" on the flagged row, or use the Girdle Facet Preset (90\u{b0}, scale = 1), or set any tier's Meets to \"Exact scale value\" yourself.";
-                font-size: 10px;
-                color: Theme.text-secondary;
-                wrap: word-wrap;
-            }
-            HorizontalLayout {
-                spacing: 6px;
-                CheckBox {
-                    text: "Don't show again";
-                    checked <=> root.dont_show_again;
+            return accept;
+        }
+
+        // Swallows clicks on the backdrop -- this card has no "click outside to dismiss".
+        TouchArea {}
+
+        Rectangle {
+            width: min(420px, parent.width - 40px);
+            // Stated, not taken from the content: a wrapped Text measures as one line, so a
+            // content-sized card would clip the button (see `tilt_batch_dialog.slint`).
+            height: min(parent.height - 40px, 400px);
+            background: Theme.surface-dialog;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border-dialog;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: Theme.modal-shadow;
+
+            // Isolates clicks inside the card from the backdrop above.
+            TouchArea {}
+
+            content := VerticalLayout {
+                padding: 16px;
+                spacing: 10px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: "Why this design needs an anchor";
+                        font-size: 13px;
+                        font-weight: 700;
+                        color: Theme.text-primary;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                        accessible-role: AccessibleRole.text;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        HelpButton {
+                            topic: HelpTopics.anchors;
+                            hint: "Open the manual page on anchors and blocks";
+                        }
+                    }
                 }
-            }
-            HorizontalLayout {
-                alignment: end;
-                Button {
-                    text: "Got it";
-                    primary: true;
-                    clicked => {
-                        EditorModel.anchor_explainer_dismiss(root.dont_show_again);
+                Text {
+                    text: "The solver works out every facet's depth (\"mast\") from how the tiers meet each other -- but that only pins RELATIVE depths, the same way a chain of \"this meets that\" statements can describe a shape's proportions without ever fixing its size.";
+                    font-size: 10px;
+                    color: Theme.text-secondary;
+                    wrap: word-wrap;
+                    accessible-role: AccessibleRole.text;
+                }
+                Text {
+                    text: "Somewhere in each block (crown, pavilion, girdle) one tier has to state an exact, authored depth -- a \"scale reference\" -- so the solver has a real number to build every other tier's depth from. Without one, the block has a shape but no size, and cannot be solved.";
+                    font-size: 10px;
+                    color: Theme.text-secondary;
+                    wrap: word-wrap;
+                    accessible-role: AccessibleRole.text;
+                }
+                Text {
+                    text: GuideModel.shows_advanced()
+                        ? "Click \"Add Anchor\" on the flagged row, or use the Girdle Facet Preset (90\u{b0}, scale = 1), or set any tier's Meets to \"Exact scale value\" yourself."
+                        : "Click \"Add Anchor\" on the flagged row, or use the Girdle Facet Preset (90\u{b0}, scale = 1). To set a tier's depth by hand, switch to Advanced: the Meets box then offers \"Exact scale value\".";
+                    font-size: 10px;
+                    color: Theme.text-secondary;
+                    wrap: word-wrap;
+                    accessible-role: AccessibleRole.text;
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    TipBox {
+                        hint: "Tick to stop showing this card. It does not come back.";
+                        CheckBox {
+                            text: "Don't show again";
+                            checked <=> root.dont_show_again;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    TipButton {
+                        text: "Got it";
+                        hint: "Close this card and go on editing.";
+                        primary: true;
+                        clicked => { root.dismiss(); }
                     }
                 }
             }

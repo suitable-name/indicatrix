@@ -11,7 +11,6 @@ use crate::{
     gui::{env_map_status_text, refresh_lighting_preset_options, show_toast},
     settings::{LightingPreset as SavedLightingPreset, SettingsPersister},
 };
-use indicatrix::optics::LightingPreset;
 use slint::{ComponentHandle, SharedString};
 use std::sync::{Arc, Mutex};
 
@@ -216,7 +215,8 @@ fn setup_apply_lighting_preset_callback(
                 return;
             };
 
-            let lighting_preset = LightingPreset::from_label(&preset.lighting_rig);
+            let lighting_preset =
+                crate::gui::optics::offered_lighting::offered_from_label(&preset.lighting_rig);
 
             // Loading an HDR file is I/O -- done here, BEFORE the lock below, matching
             // `gui::camera_lighting::setup_environment_map_callbacks`'s own "never assign
@@ -280,6 +280,10 @@ fn setup_apply_lighting_preset_callback(
                     );
                 }
             });
+            // The settings now hold this preset's look, so it is the cutter's normal
+            // lighting: a design's own saved lighting that was showing is let go (it
+            // stays saved) instead of being restored over this choice later.
+            super::design_lighting::normal_lighting_chosen();
 
             let Some(ui) = ui_weak_apply.upgrade() else {
                 return;

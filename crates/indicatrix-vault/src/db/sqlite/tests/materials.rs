@@ -103,6 +103,8 @@ fn save_custom_material_round_trips_crystal_optics_fields() {
         per_axis_dispersion_json: Some(r#"{"kind":"uniaxial_extraordinary","a":1.7,"b":0.01}"#),
         specific_gravity: Some(3.35),
         color_recipe_json: None,
+        dispersion_model_json: None,
+        absorption_bands_json: None,
     })
     .expect("save biaxial custom material");
 
@@ -119,6 +121,8 @@ fn save_custom_material_round_trips_crystal_optics_fields() {
         per_axis_dispersion_json: None,
         specific_gravity: Some(4.00),
         color_recipe_json: None,
+        dispersion_model_json: None,
+        absorption_bands_json: None,
     })
     .expect("save uniaxial custom material");
 
@@ -167,6 +171,8 @@ fn save_custom_material_round_trips_crystal_optics_fields() {
         per_axis_dispersion_json: None,
         specific_gravity: None,
         color_recipe_json: None,
+        dispersion_model_json: None,
+        absorption_bands_json: None,
     })
     .expect("re-save clears crystal-optics fields");
     let materials = db.get_custom_materials().expect("read back after re-save");
@@ -407,12 +413,12 @@ fn color_recipe_migration_adds_the_column_and_leaves_existing_rows_nullable() {
 }
 
 /// A real, resolved ruby recipe (the typed payload the desktop stores).
-fn typed_ruby_recipe() -> indicatrix::optics::chromophore::colorRecipe {
+fn typed_ruby_recipe() -> indicatrix::optics::chromophore::ColorRecipe {
     use indicatrix::optics::chromophore::{
-        ChromophoreCatalogue, ResolvedBands, colorRecipe, resolve,
+        ChromophoreCatalogue, ColorRecipe, ResolvedBands, resolve,
     };
     let cat = ChromophoreCatalogue::global();
-    let mut recipe = colorRecipe::new("corundum", cat.data_version);
+    let mut recipe = ColorRecipe::new("corundum", cat.data_version);
     recipe.set_amount("Cr", 0.3);
     let (tensor, _) = resolve(&recipe, cat).expect("ruby resolves");
     recipe.resolved_bands = ResolvedBands::from_tensor(&tensor);
@@ -428,7 +434,7 @@ fn custom_material_color_recipe_round_trip() {
     // The real `ResolvedBands` field names (`o_ray`/`e_ray`/`beta_ray`/`is_pleochroic`).
     let recipe_json = r#"{"host":"corundum","data_version":2,"entries":[],"treatments":[],"strength":1.0,"reference_path_mm":5.0,"resolved_bands":{"o_ray":[],"e_ray":[],"is_pleochroic":true}}"#;
     assert!(
-        serde_json::from_str::<indicatrix::optics::chromophore::colorRecipe>(recipe_json).is_ok(),
+        serde_json::from_str::<indicatrix::optics::chromophore::ColorRecipe>(recipe_json).is_ok(),
         "the fixture JSON must deserialize into the real recipe type"
     );
 
@@ -444,6 +450,8 @@ fn custom_material_color_recipe_round_trip() {
         per_axis_dispersion_json: None,
         specific_gravity: Some(4.0),
         color_recipe_json: Some(recipe_json),
+        dispersion_model_json: None,
+        absorption_bands_json: None,
     })
     .expect("save custom material");
 
@@ -461,7 +469,7 @@ fn custom_material_color_recipe_round_trip() {
 /// in the vault, read back and deserialised is equal to the original.
 #[test]
 fn typed_color_recipe_survives_the_vault() {
-    use indicatrix::optics::chromophore::colorRecipe;
+    use indicatrix::optics::chromophore::ColorRecipe;
 
     let path = temp_db_path("color_recipe_typed_round_trip");
     let db = Database::new(Some(path.to_str().unwrap())).expect("create db");
@@ -481,6 +489,8 @@ fn typed_color_recipe_survives_the_vault() {
         per_axis_dispersion_json: None,
         specific_gravity: None,
         color_recipe_json: Some(&json),
+        dispersion_model_json: None,
+        absorption_bands_json: None,
     })
     .expect("save custom material");
 
@@ -490,9 +500,187 @@ fn typed_color_recipe_survives_the_vault() {
         .find(|m| m.name == "Typed Ruby")
         .and_then(|m| m.color_recipe_json.as_deref())
         .expect("recipe stored");
-    let back: colorRecipe = serde_json::from_str(stored).expect("deserialise the stored recipe");
+    let back: ColorRecipe = serde_json::from_str(stored).expect("deserialise the stored recipe");
     assert_eq!(back, recipe);
     assert_eq!(back.data_version, recipe.data_version);
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_fresh_database_already_has_the_dispersion_model_column() {
+    let path = temp_db_path("fresh_dispersion_model");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("create fresh db");
+    assert!(
+        Database::column_exists(&db.conn, "custom_gem_materials", "dispersion_model_json").unwrap(),
+        "a fresh database's CREATE TABLE must already include dispersion_model_json"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A database from before the column existed gains it as `NULL` on every row (so the row
+/// keeps loading as the plain refractive-index path), and opening it again changes nothing.
+#[test]
+fn dispersion_model_migration_adds_the_column_and_leaves_existing_rows_null() {
+    let path = temp_db_path("dispersion_model_migration");
+    seed_pre_color_recipe_custom_material(&path);
+
+    {
+        let db = Database::new(Some(path.to_str().unwrap())).expect("first open migrates");
+        assert!(
+            Database::column_exists(&db.conn, "custom_gem_materials", "dispersion_model_json")
+                .unwrap(),
+            "migration must add dispersion_model_json"
+        );
+        let materials = db.get_custom_materials().expect("read back materials");
+        assert_eq!(materials.len(), 1);
+        assert_eq!(materials[0].name, "Legacy Custom Ruby");
+        assert_eq!(materials[0].dispersion_model_json, None);
+        assert!((materials[0].refractive_index - 1.768).abs() < 1e-6);
+    }
+
+    let db2 = Database::new(Some(path.to_str().unwrap())).expect("second open is idempotent");
+    let materials = db2
+        .get_custom_materials()
+        .expect("read back materials again");
+    assert_eq!(materials.len(), 1);
+    assert_eq!(materials[0].dispersion_model_json, None);
+
+    let _ = std::fs::remove_file(&path);
+}
+
+/// The column is opaque text to this crate: the stored string comes back byte for byte, a
+/// row saved without one reads `None`, and re-saving over a name clears or replaces it.
+#[test]
+fn dispersion_model_json_round_trips_and_a_resave_replaces_it() {
+    let path = temp_db_path("dispersion_model_round_trip");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("create db");
+    let model_json = r#"{"kind":"sellmeier3","b":[1.0396122,0.23179235,1.0104694],"c":[0.006000699,0.020017914,103.56065]}"#;
+    let save = |name: &str, json: Option<&str>| {
+        db.save_custom_material(&CustomMaterialParams {
+            name,
+            refractive_index: 1.5168,
+            dispersion: 0.008,
+            birefringence: 0.0,
+            absorption_rgb: [0.0, 0.0, 0.0],
+            crystal_system: Some("Cubic"),
+            optical_character: Some("Isotropic"),
+            biaxial_delta_beta_alpha: None,
+            per_axis_dispersion_json: None,
+            specific_gravity: None,
+            color_recipe_json: None,
+            dispersion_model_json: json,
+            absorption_bands_json: None,
+        })
+        .expect("save custom material");
+    };
+    let stored = |name: &str| {
+        db.get_custom_materials()
+            .expect("read back")
+            .into_iter()
+            .find(|m| m.name == name)
+            .expect("row present")
+    };
+
+    save("With Model", Some(model_json));
+    save("Plain", None);
+    assert_eq!(
+        stored("With Model").dispersion_model_json.as_deref(),
+        Some(model_json)
+    );
+    assert_eq!(stored("Plain").dispersion_model_json, None);
+
+    // Back to the plain path: the model is cleared.
+    save("With Model", None);
+    assert_eq!(stored("With Model").dispersion_model_json, None);
+    // And on again with a different one.
+    let cauchy = r#"{"kind":"cauchy","a":1.7,"b":0.006,"c":0.0}"#;
+    save("With Model", Some(cauchy));
+    assert_eq!(
+        stored("With Model").dispersion_model_json.as_deref(),
+        Some(cauchy)
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A database from before the bands column existed opens unchanged: the column is added as
+/// `NULL` (no bands) on every row, the legacy triple still reads, and a second open is a no-op.
+#[test]
+fn absorption_bands_migration_adds_the_column_and_leaves_existing_rows_null() {
+    let path = temp_db_path("absorption_bands_migration");
+    seed_pre_color_recipe_custom_material(&path);
+
+    {
+        let db = Database::new(Some(path.to_str().unwrap())).expect("first open migrates");
+        assert!(
+            Database::column_exists(&db.conn, "custom_gem_materials", "absorption_bands_json")
+                .unwrap(),
+            "migration must add absorption_bands_json"
+        );
+        let materials = db.get_custom_materials().expect("read back materials");
+        assert_eq!(materials.len(), 1);
+        assert_eq!(materials[0].absorption_bands_json, None);
+        assert!((materials[0].refractive_index - 1.768).abs() < 1e-6);
+    }
+
+    let db2 = Database::new(Some(path.to_str().unwrap())).expect("second open is idempotent");
+    let materials = db2.get_custom_materials().expect("read back again");
+    assert_eq!(materials.len(), 1);
+    assert_eq!(materials[0].absorption_bands_json, None);
+
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A fresh database has the column in its CREATE TABLE, the stored text comes back byte for
+/// byte beside the legacy triple, a row saved without bands reads `None`, and a re-save
+/// replaces or clears it.
+#[test]
+fn absorption_bands_json_round_trips_beside_the_legacy_triple() {
+    let path = temp_db_path("absorption_bands_round_trip");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("create db");
+    assert!(
+        Database::column_exists(&db.conn, "custom_gem_materials", "absorption_bands_json").unwrap(),
+        "a fresh database's CREATE TABLE must already include absorption_bands_json"
+    );
+    let bands = "[[460.0,45.0,0.25],[540.0,45.0,0.1]]";
+    let save = |name: &str, bands: Option<&str>| {
+        db.save_custom_material(&CustomMaterialParams {
+            name,
+            refractive_index: 1.5168,
+            dispersion: 0.008,
+            birefringence: 0.0,
+            absorption_rgb: [0.3, 0.2, 0.1],
+            crystal_system: Some("Cubic"),
+            optical_character: Some("Isotropic"),
+            biaxial_delta_beta_alpha: None,
+            per_axis_dispersion_json: None,
+            specific_gravity: None,
+            color_recipe_json: None,
+            dispersion_model_json: None,
+            absorption_bands_json: bands,
+        })
+        .expect("save custom material");
+    };
+    let stored = |name: &str| {
+        db.get_custom_materials()
+            .expect("read back")
+            .into_iter()
+            .find(|m| m.name == name)
+            .expect("row present")
+    };
+
+    save("Banded", Some(bands));
+    save("Plain", None);
+    assert_eq!(
+        stored("Banded").absorption_bands_json.as_deref(),
+        Some(bands)
+    );
+    assert_eq!(stored("Banded").absorption_rgb, [0.3, 0.2, 0.1]);
+    assert_eq!(stored("Plain").absorption_bands_json, None);
+
+    save("Banded", None);
+    assert_eq!(stored("Banded").absorption_bands_json, None);
 
     let _ = std::fs::remove_file(&path);
 }

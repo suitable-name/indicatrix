@@ -2,20 +2,45 @@ import { Theme } from "../../theme.slint";
 import { ManipulateModel } from "../../models/manipulate.slint";
 
 // One small pill in the hint strip. `lit` shows a toggle that is on; `emphasized` is the
-// primary action (Keep). Everything else is a plain button.
+// primary action (Keep). Everything else is a plain button. 20 px tall, the least a hit
+// target should be; Tab reaches it, Space or Enter presses it, and `hint` is both the tooltip
+// and what a screen reader reads after the label.
 component HintButton inherits Rectangle {
     in property <string> text;
+    in property <string> hint;
     in property <bool> lit: false;
     in property <bool> emphasized: false;
+    // A toggle: a screen reader says whether it is on.
+    in property <bool> checkable: false;
     callback clicked();
 
-    height: 18px;
+    height: 20px;
     background: (root.lit || root.emphasized) ? Theme.primary : (hint_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
     border-radius: Theme.radius-sm;
-    border-width: 1px;
-    border-color: (root.lit || root.emphasized) ? Theme.accent-cyan : Theme.border-subtle;
+    border-width: hint_focus.has-focus ? 2px : 1px;
+    border-color: hint_focus.has-focus ? Theme.accent-cyan-hover : ((root.lit || root.emphasized) ? Theme.accent-cyan : Theme.border-subtle);
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.text;
+    accessible-description: root.hint;
+    accessible-checkable: root.checkable;
+    accessible-checked: root.lit;
+    accessible-action-default => { root.clicked(); }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    hint_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
 
     hint_touch := TouchArea {
+        mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
     Text {
@@ -25,6 +50,7 @@ component HintButton inherits Rectangle {
         color: (root.lit || root.emphasized) ? Theme.text-on-primary : Theme.text-secondary;
         horizontal-alignment: center;
         vertical-alignment: center;
+        overflow: elide;
     }
 }
 
@@ -55,11 +81,14 @@ export component ManipulateHintBar inherits Rectangle {
         x: 10px;
         y: 16px + root.toolbar_height;
         width: parent.width - 20px;
-        height: 22px;
+        height: 24px;
         background: Theme.bg-input;
         border-radius: Theme.radius-sm;
         border-width: 1px;
         border-color: Theme.border-subtle;
+
+        accessible-role: AccessibleRole.text;
+        accessible-label: ManipulateModel.hint_text;
 
         Text {
             text: ManipulateModel.hint_text;
@@ -83,23 +112,28 @@ export component ManipulateHintBar inherits Rectangle {
             if ManipulateModel.provisional_active: HintButton {
                 width: 96px;
                 text: ManipulateModel.provisional_label == "" ? "Keep" : "Keep " + ManipulateModel.provisional_label;
+                hint: "Add the new facet to the design as a real tier. One undo step removes it again. Shortcut: Enter.";
                 emphasized: true;
                 clicked => { ManipulateModel.slice_keep(); }
             }
             if ManipulateModel.provisional_active: HintButton {
                 width: 66px;
                 text: "Discard";
+                hint: "Throw the new facet away. The design stays exactly as it was. Shortcut: Escape.";
                 clicked => { ManipulateModel.slice_discard(); }
             }
             if ManipulateModel.provisional_active: HintButton {
                 width: 46px;
                 text: "Flip";
+                hint: "Cut away the other side of your line instead. Shortcut: F.";
                 clicked => { ManipulateModel.slice_flip(); }
             }
             if ManipulateModel.slice_mode || ManipulateModel.provisional_active: HintButton {
                 width: 90px;
                 text: "Symmetric";
+                hint: "On: the new facet is cut at every index position the design's symmetry gives it. Off: a single position.";
                 lit: ManipulateModel.slice_symmetric;
+                checkable: true;
                 clicked => {
                     ManipulateModel.slice_symmetric = !ManipulateModel.slice_symmetric;
                     ManipulateModel.slice_symmetric_toggled();

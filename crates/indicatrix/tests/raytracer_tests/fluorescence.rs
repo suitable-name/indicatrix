@@ -12,7 +12,7 @@ use indicatrix::{
     geometry::{StoneGeometry, cuts::StandardGemCuts},
     optics::{
         absorption::{AbsorptionBand, AbsorptionTensor},
-        chromophore::{ChromophoreCatalogue, colorRecipe, resolve, resolve_fluorescence},
+        chromophore::{ChromophoreCatalogue, ColorRecipe, resolve, resolve_fluorescence},
         fluorescence::{EmissionBand, Fluorescence, FluorescentEmitter},
         materials::GemMaterial,
         raytracer::{
@@ -334,7 +334,7 @@ fn ruby_glows_red_under_the_365nm_lamp_and_quenching_dims_it() {
 /// `host_material` with the absorption of `recipe` (resolved from the catalogue, per mm) at
 /// the 3.5 mm per model unit scale of a 7 mm stone, and the fluorescence the same recipe
 /// resolves to: what a physics-mode custom material renders with.
-fn recipe_stone(host_material: GemMaterial, recipe: &colorRecipe) -> (GemMaterial, Fluorescence) {
+fn recipe_stone(host_material: GemMaterial, recipe: &ColorRecipe) -> (GemMaterial, Fluorescence) {
     let catalogue = ChromophoreCatalogue::global();
     let (tensor, _) = resolve(recipe, catalogue).expect("the recipe resolves");
     (
@@ -371,7 +371,7 @@ fn recipe_ruby_glows_red_under_the_365nm_lamp_and_iron_quenches_it() {
     let host = catalogue.host("corundum").expect("corundum");
     let fe_per_wt_pct_feo = host.n_site_for_unit("wt_pct_oxide:FeO")
         / host.n_site_for_unit(&host.element_unit("Fe").expect("Fe unit"));
-    let mut ruby = colorRecipe::new("corundum", catalogue.data_version);
+    let mut ruby = ColorRecipe::new("corundum", catalogue.data_version);
     ruby.set_amount("Cr", 0.5);
     let mut iron = ruby.clone();
     iron.set_amount("Fe", fe_per_wt_pct_feo);
@@ -401,7 +401,7 @@ fn recipe_ruby_glows_red_under_the_365nm_lamp_and_iron_quenches_it() {
 fn recipe_diamond_n3_glows_blue_under_the_365nm_lamp() {
     const SPP: u32 = 1024;
     let catalogue = ChromophoreCatalogue::global();
-    let mut recipe = colorRecipe::new("diamond", catalogue.data_version);
+    let mut recipe = ColorRecipe::new("diamond", catalogue.data_version);
     recipe.set_amount("N", 1500.0);
     let (stone, glowing) = recipe_stone(GemMaterial::diamond(), &recipe);
     assert_eq!(glowing.emitters().len(), 1, "the N3 centre");
@@ -466,7 +466,7 @@ fn fluorescent_traces_are_deterministic() {
     for s in 0..4000u32 {
         let seed = indicatrix::optics::raytracer::hash_u32(s);
         // Heroes in the mixture's second half, which lands on the emission line.
-        let hero = 0.5 + 0.5 * (s as f32 + 0.5) / 4000.0;
+        let hero = 0.5 + (s as f32 + 0.5) / 8000.0;
         let a = trace(&fluorescence, seed, hero);
         let b = trace(&again, seed, hero);
         assert_eq!(

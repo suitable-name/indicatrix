@@ -41,6 +41,7 @@ pub fn setup_worker_callbacks(
     setup_claim_token_callback(ui);
     setup_test_worker_connection_callback(ui);
     setup_cert_dir_picker_callback(ui);
+    super::advanced_in_use::setup_advanced_in_use_callback(ui);
 }
 
 /// Wires `on_save_remote`: the form replaces the one endpoint (keeping its live

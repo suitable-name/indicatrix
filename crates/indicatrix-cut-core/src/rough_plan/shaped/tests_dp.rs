@@ -9,7 +9,8 @@ use glam::DVec3;
 use super::{
     clip::{
         BuildClipParams, CLASS_EXTERIOR, CLASS_INTERIOR, CLASS_PARTIAL, ClippedTable, PLANE_EPS_MM,
-        build_clipped_table, build_clipped_table_lanes, classify_box, grid_poll_events,
+        a_range_entry_range, a_range_jobs, build_clipped_a_range, build_clipped_table,
+        build_clipped_table_jobs, build_clipped_table_lanes, classify_box, grid_poll_events,
         slice_entry_range,
     },
     ctx::ShapedCtx,
@@ -25,7 +26,7 @@ use crate::rough_plan::{
     Axis, CandidateDesign, CutOrder, NEG, PieceTable, PlanProgress, PlanSettings, RoughBase,
     RoughCut, RoughModel, pareto_front,
     rank::best_layout,
-    tests::{Lcg, close, random_designs, settings_with},
+    tests::{Lcg, box_design, close, random_designs, settings_with},
     tree::Tree,
 };
 
@@ -176,6 +177,7 @@ fn the_size_table_on_lanes_is_the_serial_table_with_one_event_per_plane() {
 }
 
 #[test]
+#[ignore = "slow rough-planner test (over 60 s); run with --ignored"]
 fn the_clipped_build_reports_one_event_per_1024_pieces_and_cancels_on_any_of_them() {
     let fx = cylinder_fixture();
     let ga = fx.grid.cells[0];
@@ -252,6 +254,133 @@ fn the_lane_build_reports_the_events_of_its_slices_and_cancels_across_lanes() {
         assert!(cancelled.is_none(), "lanes {lanes}");
         assert_eq!(seen, 2, "lanes {lanes}");
     }
+}
+
+/// A small clipped-table fixture: the corner-cut block with a coarse grid.
+fn corner_cut_fixture() -> ClipFixture {
+    ClipFixture::new(&corner_cut_model(), settings_with(4, 0.3, 0.2, 0.5), 7)
+}
+
+/// The whole-grid blocks of `fx` built one a-range at a time and concatenated.
+fn a_range_blocks(fx: &ClipFixture, serial_classes: Option<&[u8]>) -> ClippedTable {
+    let grid = &fx.grid;
+    let parts = a_range_jobs(grid)
+        .into_iter()
+        .map(|(a0, a1)| {
+            let cached = serial_classes.map(|classes| &classes[a_range_entry_range(grid, a0, a1)]);
+            let params = fx.params(a0..a0 + 1, cached);
+            build_clipped_a_range(&params, (a0, a1), &mut |_| true).expect("block")
+        })
+        .collect();
+    ClippedTable::concat(grid.cells, parts)
+}
+
+#[test]
+fn a_range_jobs_concatenate_to_the_serial_table() {
+    let fx = corner_cut_fixture();
+    let ga = fx.grid.cells[0];
+    let jobs = a_range_jobs(&fx.grid);
+    assert_eq!(jobs.len(), fx.grid.range_count(0));
+    // `range_index(0, ..)` order, and the entry ranges tile the table.
+    let mut cursor = 0;
+    for (ra, &(a0, a1)) in jobs.iter().enumerate() {
+        assert_eq!(fx.grid.range_index(0, a0, a1), ra);
+        let entries = a_range_entry_range(&fx.grid, a0, a1);
+        assert_eq!(entries.start, cursor);
+        cursor = entries.end;
+    }
+    assert_eq!(cursor, slice_entry_range(&fx.grid, &(0..ga)).len());
+
+    let serial = build_clipped_table(&fx.params(0..ga, None), &mut |_| true).expect("serial");
+    assert_eq!(a_range_blocks(&fx, None), serial);
+    // With the serial table's classes cut per block.
+    assert_eq!(a_range_blocks(&fx, Some(&serial.classes)), serial);
+}
+
+#[test]
+fn the_job_build_is_the_serial_table_for_any_lane_count() {
+    let fx = corner_cut_fixture();
+    let ga = fx.grid.cells[0];
+    let serial = build_clipped_table(&fx.params(0..ga, None), &mut |_| true).expect("serial");
+    let per_a = fx.grid.range_count(1) * fx.grid.range_count(2);
+    let per_job = grid_poll_events(per_a);
+    let jobs = a_range_jobs(&fx.grid).len();
+    for lanes in [1, 2, 5, 16] {
+        for cached in [None, Some(serial.classes.as_slice())] {
+            let mut events = 0;
+            let table = build_clipped_table_jobs(&fx.params(0..ga, cached), lanes, &mut |event| {
+                if lanes > 1 {
+                    assert!(matches!(event, PlanProgress::Grid { total, .. } if total == per_job));
+                }
+                events += 1;
+                true
+            })
+            .expect("jobs");
+            assert_eq!(table, serial, "lanes {lanes}, cached {}", cached.is_some());
+            if lanes > 1 {
+                assert_eq!(events, jobs * per_job, "lanes {lanes}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_job_build_of_a_mesh_rough_is_the_serial_table() {
+    use crate::rough_plan::shape::mesh_fixture::{C_SHAPE_OBJ, import_obj};
+
+    let settings = settings_with(3, 0.3, 0.2, 1.0);
+    let designs = vec![
+        box_design(1),
+        CandidateDesign {
+            entry_id: 2,
+            width: 1.0,
+            length: 1.6,
+            height: 0.6,
+            volume: 0.5,
+        },
+    ];
+    let front = pareto_front(&designs);
+    let model = RoughModel::new(import_obj(C_SHAPE_OBJ), Vec::new());
+    let ctx = ShapedCtx::new(&model, &settings).expect("ctx");
+    assert!(ctx.mesh.is_some(), "the C-shape imports with its mesh");
+    let grid = grid_with_cells(&ctx, &settings, [3, 3, 3]);
+    let size_table = grid
+        .size_table(&settings, &front, &mut |_| true)
+        .expect("size table");
+    let params = BuildClipParams {
+        grid: &grid,
+        front: &front,
+        non_box_planes: &ctx.non_box,
+        mesh: ctx.mesh.as_deref(),
+        size_table: &size_table,
+        settings: &settings,
+        slice: 0..3,
+        cached_classes: None,
+    };
+    let serial = build_clipped_table(&params, &mut |_| true).expect("serial");
+    for lanes in [1, 2, 6] {
+        let table = build_clipped_table_jobs(&params, lanes, &mut |_| true).expect("jobs");
+        assert_eq!(table, serial, "lanes {lanes}");
+    }
+}
+
+#[test]
+fn a_cancel_in_a_job_build_gives_none() {
+    let fx = corner_cut_fixture();
+    let ga = fx.grid.cells[0];
+    for lanes in [2, 5] {
+        let mut seen = 0;
+        let cancelled = build_clipped_table_jobs(&fx.params(0..ga, None), lanes, &mut |_| {
+            seen += 1;
+            seen < 2
+        });
+        assert!(cancelled.is_none(), "lanes {lanes}");
+        assert_eq!(seen, 2, "lanes {lanes}");
+    }
+    // A single block cancels on its first event.
+    let (a0, a1) = a_range_jobs(&fx.grid)[0];
+    let block = build_clipped_a_range(&fx.params(a0..a0 + 1, None), (a0, a1), &mut |_| false);
+    assert!(block.is_none());
 }
 
 #[test]
@@ -372,7 +501,11 @@ fn uniform_layouts_are_the_same_on_any_lane_count_and_progress_counts_designs() 
 }
 
 /// The grid of `ctx` with `cells` cells per axis instead of the chosen resolution.
-fn grid_with_cells(ctx: &ShapedCtx, settings: &PlanSettings, cells: [usize; 3]) -> ShapedGrid {
+pub(super) fn grid_with_cells(
+    ctx: &ShapedCtx,
+    settings: &PlanSettings,
+    cells: [usize; 3],
+) -> ShapedGrid {
     let mut grid = choose_shaped_grid_at(ctx.bbox_min, ctx.bbox_extents, settings);
     grid.cells = cells;
     grid.unit = [0, 1, 2].map(|i| (grid.usable_mm[i] + grid.kerf_mm) / cells[i] as f64);

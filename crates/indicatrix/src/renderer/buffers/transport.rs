@@ -3,6 +3,8 @@
 
 use core::mem::offset_of;
 
+use crate::optics::raytracer::{DEFAULT_HEAD_SHADOW_COSINES, TentParams};
+
 /// Per-dispatch kernel parameters for `shaders/spectral_transport.wgsl`'s
 /// `transport_main` entry point.
 ///
@@ -21,7 +23,7 @@ use core::mem::offset_of;
 ///
 /// # Layout
 ///
-/// This struct is 80 bytes. The `offset_of!`/`size_of!` asserts right below this
+/// This struct is 112 bytes. The `offset_of!`/`size_of!` asserts right below this
 /// `impl` block are what actually pin the layout; this paragraph is descriptive, kept in
 /// sync with them by hand.
 ///
@@ -31,9 +33,10 @@ use core::mem::offset_of;
 /// the remaining 4 bytes of that 16-byte block, bringing the running total to 64 --
 /// exactly what the struct WOULD be without the two fields below. `studio_model` (64)
 /// and `backdrop` (68) add one more 16-byte block; `surface_glare` (72) fills the next
-/// slot and `_pad_surface_glare` (76, 4 bytes of genuine padding -- not a field WGSL's
-/// `GpuTransportParams` reads) rounds that block out to the struct's own 16-byte
-/// alignment, for 80 bytes total.
+/// slot and `head_shadow_outer_cos` (76) completes that block (80 bytes). One more
+/// 16-byte row follows: `head_shadow_inner_cos` (80), `tent_flat` (84) and two pads (88, 92,
+/// genuine padding WGSL echoes but never reads). A last 16-byte row (96..112) holds the light-tent
+/// parameters `tent_walls`, `tent_cards`, `tent_spark`, `tent_ground`, for 112 bytes total.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuTransportParams {
@@ -86,7 +89,27 @@ pub struct GpuTransportParams {
     /// Scale of the stone's first-surface specular reflection, `0.0..=1.0` (`1.0`:
     /// unchanged) -- mirrors `EnvironmentSource::Studio::surface_glare`.
     pub surface_glare: f32,
-    _pad_surface_glare: u32,
+    /// Outer cosine of the observer head-shadow cone (the dot product at which the shadow
+    /// starts to fade in): mirrors
+    /// `head_shadow_cosines(EnvironmentSource::Studio::head_shadow_deg)[0]`. Default = the
+    /// 16 degree cone's literal.
+    pub head_shadow_outer_cos: f32,
+    /// Inner cosine of the head-shadow cone: `head_shadow_cosines(..)[1]`.
+    pub head_shadow_inner_cos: f32,
+    /// Light-tent wall flattening (`TentParams::flat`; `0.0` = the tent's gradient). Lives in
+    /// the first former pad slot (offset 84), so the struct size is unchanged.
+    pub tent_flat: f32,
+    _pad_head_shadow1: u32,
+    _pad_head_shadow2: u32,
+    /// Light-tent wall scale (`TentParams::walls`; `1.0` = the tent). Only the
+    /// `LIGHT_TENT` model reads the four `tent_*` fields.
+    pub tent_walls: f32,
+    /// Light-tent card strength (`TentParams::cards`; `1.0` = the tent, `0.0` = no cards).
+    pub tent_cards: f32,
+    /// Light-tent spark flag (`TentParams::spark`; `1.0` = on, `0.0` = off).
+    pub tent_spark: f32,
+    /// Light-tent ground radiance (`TentParams::ground`; `0.02` = the tent).
+    pub tent_ground: f32,
 }
 
 /// `studio_model` discriminants for [`GpuTransportParams`].
@@ -95,7 +118,9 @@ pub struct GpuTransportParams {
 /// - 0: `Studio` (classic analytic rig)
 /// - 1: `IsoHemisphere` (uniform lit upper hemisphere)
 /// - 2: `LightTent` (light tent + black cards)
-/// - 3: `DaylightDome` (daylight sky + sun)
+/// - 3: `DaylightDome` (daylight sky, no sun)
+/// - 4: `Aset` (ASET-style contrast view)
+/// - 5: `DaylightSun` (daylight sky + direct sun)
 pub mod studio_model {
     /// Identifier for studio.
     pub const STUDIO: u32 = 0;
@@ -105,6 +130,10 @@ pub mod studio_model {
     pub const LIGHT_TENT: u32 = 2;
     /// Identifier for daylight dome.
     pub const DAYLIGHT_DOME: u32 = 3;
+    /// Identifier for the ASET-style contrast view.
+    pub const ASET: u32 = 4;
+    /// Identifier for daylight sky plus direct sun.
+    pub const DAYLIGHT_SUN: u32 = 5;
 }
 
 /// `env_mode` discriminants for [`GpuTransportParams`]. Must match
@@ -163,7 +192,40 @@ impl GpuTransportParams {
             studio_model: 0,
             backdrop: 0.0,
             surface_glare: 1.0,
-            _pad_surface_glare: 0,
+            head_shadow_outer_cos: DEFAULT_HEAD_SHADOW_COSINES[0],
+            head_shadow_inner_cos: DEFAULT_HEAD_SHADOW_COSINES[1],
+            tent_flat: TentParams::DEFAULT.flat,
+            _pad_head_shadow1: 0,
+            _pad_head_shadow2: 0,
+            tent_walls: TentParams::DEFAULT.walls,
+            tent_cards: TentParams::DEFAULT.cards,
+            tent_spark: TentParams::DEFAULT.spark,
+            tent_ground: TentParams::DEFAULT.ground,
+        }
+    }
+
+    /// Returns a copy with the light-tent per-preset parameters (see [`TentParams`]).
+    /// The default already is the light tent's own values.
+    #[must_use]
+    pub const fn with_tent(mut self, tent: TentParams) -> Self {
+        self.tent_walls = tent.walls;
+        self.tent_cards = tent.cards;
+        self.tent_spark = tent.spark;
+        self.tent_ground = tent.ground;
+        self.tent_flat = tent.flat;
+        self
+    }
+
+    /// Returns a copy with the tent parameters of `environment`'s lighting preset (the
+    /// default for an HDR map, whose shader branch never reads them).
+    #[must_use]
+    pub const fn with_tent_of(
+        self,
+        environment: crate::optics::raytracer::EnvironmentSource<'_>,
+    ) -> Self {
+        match environment.lighting_preset() {
+            Some(preset) => self.with_tent(preset.params().tent),
+            None => self.with_tent(TentParams::DEFAULT),
         }
     }
 
@@ -223,6 +285,15 @@ impl GpuTransportParams {
         };
         self
     }
+
+    /// Returns a copy with the observer head-shadow cone `[outer, inner]` cosines (see
+    /// [`Self::head_shadow_outer_cos`] and `optics::raytracer::head_shadow_cosines`).
+    #[must_use]
+    pub const fn with_head_shadow(mut self, cosines: [f32; 2]) -> Self {
+        self.head_shadow_outer_cos = cosines[0];
+        self.head_shadow_inner_cos = cosines[1];
+        self
+    }
 }
 
 const _: () = {
@@ -241,6 +312,14 @@ const _: () = {
     assert!(offset_of!(GpuTransportParams, studio_model) == 64);
     assert!(offset_of!(GpuTransportParams, backdrop) == 68);
     assert!(offset_of!(GpuTransportParams, surface_glare) == 72);
-    assert!(offset_of!(GpuTransportParams, _pad_surface_glare) == 76);
-    assert!(size_of::<GpuTransportParams>() == 80);
+    assert!(offset_of!(GpuTransportParams, head_shadow_outer_cos) == 76);
+    assert!(offset_of!(GpuTransportParams, head_shadow_inner_cos) == 80);
+    assert!(offset_of!(GpuTransportParams, tent_flat) == 84);
+    assert!(offset_of!(GpuTransportParams, _pad_head_shadow1) == 88);
+    assert!(offset_of!(GpuTransportParams, _pad_head_shadow2) == 92);
+    assert!(offset_of!(GpuTransportParams, tent_walls) == 96);
+    assert!(offset_of!(GpuTransportParams, tent_cards) == 100);
+    assert!(offset_of!(GpuTransportParams, tent_spark) == 104);
+    assert!(offset_of!(GpuTransportParams, tent_ground) == 108);
+    assert!(size_of::<GpuTransportParams>() == 112);
 };

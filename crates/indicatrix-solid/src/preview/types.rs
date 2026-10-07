@@ -4,7 +4,7 @@
 //! Moved verbatim from the desktop's `gui::solid_preview::preview_state::types`,
 //! which re-exports them.
 
-use crate::mesh_cache::fnv1a_64;
+use crate::{diagram2d::DiagramLayout, mesh_cache::fnv1a_64};
 use glam::Vec3;
 use indicatrix::geometry::{GpuFacetPlane, StoneGeometry, ToolPrimitive};
 use std::sync::Arc;
@@ -73,6 +73,16 @@ pub struct FrameGeometry {
     pub camera: CameraPose,
     /// The raster (= pick buffer) size in pixels the frame was drawn at.
     pub size: (u32, u32),
+    /// The panel layout of the Diagram view (view mode 3) frame, in the same pixel
+    /// space as [`Self::size`]; `None` in every other view mode and while the
+    /// diagram could not be built. What the 2D drag handles are placed with.
+    pub diagram: Option<Arc<DiagramLayout>>,
+    /// Which flat tiers (indexed like `Design::tiers`) the shown planes contain when the
+    /// stone is only partly cut (the Cut slider); `None` for the finished stone. The
+    /// facet ids of this frame number the facets of exactly these tiers, so a map built
+    /// for a pick or an outline must use the same set
+    /// ([`crate::facet_map::FacetMap::from_design_cut`]).
+    pub visible_tiers: Option<Arc<Vec<bool>>>,
 }
 
 /// A finished frame's per-pixel facet-picking buffer, alongside the size needed to

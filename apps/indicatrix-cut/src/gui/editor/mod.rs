@@ -111,12 +111,24 @@
 
 mod activity;
 mod auto_solve;
+// The design settings body-colour combo with its trailing "Custom" entry for a colour that
+// matches no preset -- see that module's own doc comment.
+mod body_color_combo;
 mod callbacks;
 // The visual before/after compare window (Retarget, Optimize, Snapshot) -- see
 // that module's own doc comment.
 mod compare;
 mod cut_sheet;
+// Cutting mode: the cutting instructions one step per page, with done marks kept in the
+// library -- see that module's own doc comment.
+mod cutting_mode;
 mod deep_solve;
+// The design settings panel's "Some advanced settings are in use" question for the Simple
+// interface -- see that module's own doc comment.
+mod design_settings_model;
+// The finished stone for the exports, which must not follow the Cut slider -- see that
+// module's own doc comment.
+mod finished_stone;
 // The coalesce-at-the-source UI intent queue: `setup_tier_cutoff_callback`
 // (below) and `callbacks::tier_actions::setup_nudge_angle_callback`/
 // `callbacks::retarget_actions::setup_retarget_proposal_changed_callback` each
@@ -125,10 +137,16 @@ pub(in crate::gui::editor) mod edit_intent;
 // The worked-example walkthrough: step content, automatic advance, and the
 // completion checks every refresh ends in -- see this module's own doc comment.
 mod guide;
+// The Inspector's History tab: the undo history as a list with a picture per step, and the
+// jump to a step -- see that module's own doc comment.
+mod history_panel;
 // Byte-identity pins for everything shared with `crates/indicatrix-editor` -- see
 // that module's own doc comment.
 #[cfg(test)]
 mod identity_pins;
+// Findings that reach the tier table after their solid-preview frame (the plan worker runs
+// the costly concave-tool check once its frame is out) -- see that module's own doc comment.
+mod late_findings;
 mod loading;
 pub(in crate::gui) mod material_lookup;
 // Mouse-driven angle/depth/index drag handles on the Solid viewport's selected facet --
@@ -139,10 +157,22 @@ mod manipulate;
 // own "replace existing design(s)?" prompt -- see that function's own doc
 // comment.
 pub(in crate::gui) mod native_io;
+// The Inspector's Optimize tab: preset, what may change, angle ranges, ranked candidates.
+mod optimize_panel;
 mod optimize_solve;
+// "Edit as Text": the cutting instructions as editable `.asc` text with a live check, an
+// undoable Apply and a line comparison -- see that module's own doc comment.
+mod raw_text;
 // "Retarget for material" moved to `indicatrix-editor` unchanged; re-exported at
 // its old path.
 pub use indicatrix_editor::retarget;
+// Tier relations (a tier's angle follows other tiers, `P2 = P1 - 2`): what a Tier form
+// save becomes, the refusal wording and the follower refresh -- see that module's own doc
+// comment.
+mod relation_ui;
+// The editor's half of the Live Render toolbar's "Color" control -- see that module's
+// own doc comment.
+mod render_color;
 mod setup;
 // The shortcut table shared by the in-app overlay and the generated section of
 // appendix B -- see this module's own doc comment.
@@ -153,13 +183,34 @@ mod solve_service;
 mod stale;
 mod stall_guard;
 mod state;
+// Edit > Angle Sweep...: one tier's angle over a range as a table, a chart and CSV -- see
+// that module's own doc comment.
+mod sweep;
 // The New Design template gallery's Rust-side glue -- see this module's own doc
 // comment.
 mod templates;
+// The tier table's and the Tier form's number-reading callbacks (`TierTableModel`: the
+// multi-select Offset box, "+ Add" and Rotate) -- see that module's own doc comment.
+mod tier_table_model;
+// The History tab's Variants view: named copies of the design kept in the library by the
+// design's UUID, with open and compare -- see that module's own doc comment.
+mod variants;
+// The overall Good / Check / Problem verdict in the status strip: the worker that works it
+// out after each solve, and the one-click fixes -- see that module's own doc comment.
+mod verdict;
 mod view;
 
 // Called wherever the main window hides, so the compare window never outlives it.
 pub(in crate::gui) use compare::close_compare_window;
+// The high-resolution export, the tilt video, the tilt curves and the tilt hover preview ask
+// for it before they capture the scene; none of them solves on the UI thread.
+pub(in crate::gui) use finished_stone::{
+    Finished, FinishedStoneJob, Withheld, finished_stone_job, finished_stone_then,
+    push_viewport_owner,
+};
+// The manufacturability findings the plan worker delivers after its frame -- see that
+// module's own doc comment.
+pub(in crate::gui) use late_findings::{LatePush, apply_late_findings};
 
 use crate::{
     MainWindow,
@@ -256,6 +307,8 @@ pub fn setup_editor_callbacks(
     setup_edit_view_entered_callback(ui, &state, render_ctx, preview_state, solid_last_solved);
     callbacks::setup_undo_callback(ui, &state, render_ctx, preview_state, solid_last_solved);
     callbacks::setup_redo_callback(ui, &state, render_ctx, preview_state, solid_last_solved);
+    history_panel::setup_history_panel(ui, &state, render_ctx, preview_state, solid_last_solved);
+    variants::setup_variants(ui, &state, render_ctx, preview_state, solid_last_solved, db);
     callbacks::setup_apply_preform_callback(
         ui,
         &state,
@@ -316,13 +369,16 @@ pub fn setup_editor_callbacks(
         preview_state,
         solid_last_solved,
     );
+    optimize_panel::setup_optimize_panel(ui, &state);
+    tier_table_model::setup_tier_table_model(ui);
     // The "Compute Tilt Curves" analysis action.
     callbacks::setup_batch_tilt_for_open_design_callback(ui, &state, render_ctx, db);
     // The guide pushes its static steps once and re-checks a step's goal against
     // `state` on entry; the shortcuts overlay is static data, and the template
     // gallery's own "Create" path goes through `setup_new_design_create_callback`
     // above (see `templates.rs`'s own doc comment).
-    guide::setup_guide(ui, &state);
+    guide::setup_guide(ui, &state, db, source);
+    cutting_mode::setup_cutting_mode(ui, &state, db);
     shortcuts::setup_shortcuts_overlay(ui);
     templates::setup_template_gallery(ui);
     setup_editor_secondary_callbacks(
@@ -378,6 +434,7 @@ fn setup_editor_secondary_callbacks(
         solid_last_solved,
     );
     callbacks::setup_gear_apply_callback(ui, state);
+    design_settings_model::setup_design_settings_model(ui);
     callbacks::setup_gear_remap_confirm_callback(
         ui,
         state,
@@ -394,6 +451,15 @@ fn setup_editor_secondary_callbacks(
         solid_last_solved,
     );
     callbacks::setup_viewport_material_linked_changed_callback(ui, state, render_ctx);
+    // The Live Render toolbar's quick "Color" control (the open design's colour, or a
+    // view-only colour).
+    render_color::setup_render_color_callbacks(
+        ui,
+        state,
+        render_ctx,
+        preview_state,
+        solid_last_solved,
+    );
     // Catalogue-load material suggestion banner.
     callbacks::setup_material_suggestion_accept_callback(
         ui,
@@ -453,7 +519,7 @@ fn setup_editor_tertiary_callbacks(
     // `callbacks::retarget_actions::setup_snapshot_callbacks`'s own doc comment; the
     // command bar's Snapshot and Compare buttons (`editor_command_bar.slint`) call
     // `EditorModel.snapshot_design()`/`compare_to_snapshot()`.
-    callbacks::setup_snapshot_callbacks(ui, state, solid_last_solved);
+    callbacks::setup_snapshot_callbacks(ui, state, render_ctx, solid_last_solved);
     // The visual compare window's entry points (Retarget/Optimize "Compare…",
     // the snapshot table's "Compare visually…").
     compare::setup_compare_callbacks(ui, state, render_ctx, preview_state, solid_last_solved);
@@ -514,6 +580,12 @@ fn setup_editor_tertiary_callbacks(
         solid_last_solved,
         solid_pick_state,
     );
+    // The Edit as Text dialog (Edit > Edit as Text..., and the command palette).
+    raw_text::setup_raw_text_dialog(ui, state, render_ctx, preview_state, solid_last_solved);
+    // The Angle Sweep dialog (Edit > Angle Sweep..., and the command palette).
+    sweep::setup_sweep_callbacks(ui, state, render_ctx, preview_state, solid_last_solved);
+    // The status strip's verdict badge: its Fix callback and the handles it needs.
+    verdict::setup_verdict(ui, state, render_ctx, preview_state, solid_last_solved);
 }
 
 /// Called from `gui::SlintSolidSink::apply` once a solid-preview
@@ -535,40 +607,50 @@ fn setup_editor_tertiary_callbacks(
 /// a design named after a custom material never has this specific path silently
 /// score it against a built-in fallback. The same locked read also hands over
 /// `RenderContext::custom_material_specific_gravity`, for the identical reason.
+///
+/// `warnings` is the frame's own manufacturability pass (`PreviewFrame::warnings`, run by
+/// the plan worker), or the copy kept for its generation when the frame came without one,
+/// so this UI-thread call never builds a solid for the concave-tool
+/// check; `None` -- no pass for this generation -- is handled by the row builders (see
+/// `indicatrix_editor::view_model::rows::tier_items_from_solved_with_warnings`).
+///
+/// Returns whether the rows were pushed. `false` means the frame changed nothing: the design
+/// stash is taken by the FIRST frame of a generation to land, so a second frame of the same
+/// generation (two replans queued before the first landed) pushes no rows, and neither does
+/// a frame of a design the editor has left. The caller must record only frames that return
+/// `true` as having shown anything.
 pub fn apply_matching_preview_frame(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
     generation: u64,
     solved: &[SolvedTier],
-) {
-    if let Some((design, multi_selected)) = auto_solve::take_matching_design(generation) {
-        let (custom_materials, custom_sg) = {
-            let ctx = render_ctx
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            (
-                ctx.custom_materials.as_ref().clone(),
-                Arc::clone(&ctx.custom_material_specific_gravity),
-            )
-        };
-        view::push_solved_preview(
-            ui,
-            &design,
-            solved,
-            &multi_selected,
-            &custom_materials,
-            &custom_sg,
-        );
-        // This frame may be a partial (subgraph-resolved) replan, still showing
-        // "one edit behind" -- a no-op when it isn't.
-        auto_solve::schedule_idle_replan_if_stale(
-            ui,
-            render_ctx,
-            generation,
-            &design,
-            &multi_selected,
-        );
-    }
+    warnings: Option<&[indicatrix_cut_core::ManufacturabilityWarning]>,
+) -> bool {
+    let Some((design, multi_selected)) = auto_solve::take_matching_design(generation) else {
+        return false;
+    };
+    let (custom_materials, custom_sg) = {
+        let ctx = render_ctx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (
+            ctx.custom_materials.as_ref().clone(),
+            Arc::clone(&ctx.custom_material_specific_gravity),
+        )
+    };
+    view::push_solved_preview(
+        ui,
+        &design,
+        solved,
+        &multi_selected,
+        &custom_materials,
+        &custom_sg,
+        warnings,
+    );
+    // This frame may be a partial (subgraph-resolved) replan, still showing
+    // "one edit behind" -- a no-op when it isn't.
+    auto_solve::schedule_idle_replan_if_stale(ui, render_ctx, generation, &design, &multi_selected);
+    true
 }
 
 /// Runs on the UI thread after every solid-preview frame has been stored (its pick

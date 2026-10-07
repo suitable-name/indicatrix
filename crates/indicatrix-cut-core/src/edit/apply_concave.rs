@@ -11,6 +11,12 @@ impl Design {
     /// [`ConcaveTier::validate`] against this design's gear and does not reuse a
     /// flat tier's name.
     ///
+    /// A name shared by two CONCAVE tiers is deliberately not refused here, the same
+    /// split the flat tiers have: the form refuses it (`concave_name_clash_message` in
+    /// `indicatrix-editor`), the edit does not. An edit that refused it would also refuse
+    /// the replays that rebuild a design (a saved variant, the undo of a rename) for a file
+    /// an earlier build saved with a repeated name; those tiers stay distinguishable by id.
+    ///
     /// [`EditError`] has one shape, naming a position and a count, so a rejected
     /// tier reuses it with the concave list's length -- the same precedent as
     /// `SetSchedule`'s schedule-wide validation failure. The editor's own tier

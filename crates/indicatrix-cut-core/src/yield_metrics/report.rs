@@ -222,6 +222,8 @@ mod yield_report_with_tests {
             specific_gravity_override: None,
             refractive_index_override: None,
             body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
         });
         let solved = design.solve().expect("single anchored tier must solve");
         let plain = design.yield_report(&solved);
@@ -244,6 +246,8 @@ mod yield_report_with_tests {
             specific_gravity_override: None,
             refractive_index_override: None,
             body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
         });
         let solved = design.solve().expect("single anchored tier must solve");
 
@@ -276,6 +280,8 @@ mod yield_report_with_tests {
             specific_gravity_override: Some(4.10),
             refractive_index_override: None,
             body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
         });
         let solved = design.solve().expect("single anchored tier must solve");
         let report = design.yield_report_with(&solved, &CustomOnlyLookup);

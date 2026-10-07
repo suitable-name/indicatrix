@@ -1,22 +1,40 @@
 //! The real [`PreviewSink`] that hops a finished solid-preview frame back onto the
 //! UI thread, plus the trace/solid plane-arrangement agreement check it feeds.
 
+mod late_rows;
+
 use crate::{
     MainWindow, SolidPreviewModel,
     bridge::render_thread::{PlanesOwner, RenderContext},
     gui::{
         editor,
         solid_preview::{
-            diagram_wiring::{DiagramFacetTier, DiagramHoverText, DiagramPick},
+            cut_slider,
+            diagram_wiring::{DiagramFacetOwners, DiagramHoverText, DiagramPick},
+            facet_selection,
             preview_state::{
-                FrameGeometry, PickBuffer, PreviewFrame, PreviewSink, SolidLastSolved,
+                FacetOwners, FrameGeometry, LateFindings, PickBuffer, PreviewFrame, PreviewSink,
+                SolidLastSolved,
             },
         },
     },
 };
 use indicatrix::geometry::{ToolPrimitive, meet_solver::SolvedTier, plane::GpuFacetPlane};
+use indicatrix_cut_core::ManufacturabilityWarning;
+use late_rows::LateRows;
 use slint::{ComponentHandle, Weak};
-use std::sync::{Arc, Mutex};
+use std::{
+    cell::RefCell,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+thread_local! {
+    /// Which committed frames have pushed their rows, and findings that arrived before their
+    /// frame -- see [`LateRows`]. Only ever touched inside [`PreviewSink`]'s
+    /// `upgrade_in_event_loop` closures, so it lives on the UI thread.
+    static LATE_ROWS: RefCell<LateRows> = RefCell::default();
+}
 
 /// The real [`PreviewSink`] -- hops back to the UI thread exactly like
 /// `bridge::render_thread::frame_helpers::push_frame_to_ui` already does for the
@@ -27,7 +45,7 @@ use std::sync::{Arc, Mutex};
 /// module doc comment ("`PreviewSink`: kept generic over Slint on purpose") for why
 /// this hop lives here rather than inside `SolidPreviewState` itself.
 ///
-/// `pick`/`last_solved`/`diagram_pick`/`diagram_hover_text`/`diagram_facet_tier` are
+/// `pick`/`last_solved`/`diagram_pick`/`diagram_hover_text`/`diagram_facet_owners` are
 /// plain `Arc<Mutex<..>>` state, not Slint properties, so `gui::editor`'s hover/click
 /// callbacks, `solid_preview::diagram_wiring`'s Diagram-mode hover/click callbacks,
 /// and the next edit's [`solid_preview::preview_state::ReplanRequest::last_solved`]
@@ -52,7 +70,7 @@ pub(super) struct SlintSolidSink {
     // `solid_preview::diagram_wiring`'s own module doc comment).
     pub(super) diagram_pick: DiagramPick,
     pub(super) diagram_hover_text: DiagramHoverText,
-    pub(super) diagram_facet_tier: DiagramFacetTier,
+    pub(super) diagram_facet_owners: DiagramFacetOwners,
     /// The index wheel's own per-pixel tooth-picking buffer
     /// (`PreviewFrame::diagram_tooth_pick`) -- a separate buffer from
     /// `diagram_pick` above, same reasoning (the diagram's pixel layout has no
@@ -72,9 +90,9 @@ pub(super) struct SlintSolidSink {
     /// handoff this sets up but does not finish (that indexing change lives
     /// elsewhere in `gui::editor`).
     pub(super) hover_text: Arc<Mutex<Vec<String>>>,
-    /// The Solid view's own facet id -> owning tier index table, from every
-    /// frame's [`PreviewFrame::facet_tier`] -- see `hover_text`'s doc comment.
-    pub(super) facet_tier: Arc<Mutex<Vec<Option<usize>>>>,
+    /// The Solid view's own facet id -> owning flat and concave tier tables, from every
+    /// frame's [`PreviewFrame::facet_owners`] -- see `hover_text`'s doc comment.
+    pub(super) facet_owners: Arc<Mutex<FacetOwners>>,
     /// The shared render context.
     ///
     /// A finished frame's own [`PreviewFrame::planes`] are published back into
@@ -298,7 +316,7 @@ fn store_value<T>(state: &Mutex<T>, value: T) {
 
 /// Stores `value` into `state` when `Some`, leaving `state` untouched for `None`
 /// -- the Diagram-mode side tables (`PreviewFrame::diagram_pick`/
-/// `diagram_tooth_pick`/`diagram_hover_text`/`diagram_facet_tier`) are only ever
+/// `diagram_tooth_pick`/`diagram_hover_text`/`diagram_facet_owners`) are only ever
 /// `Some` together, for a `view_mode`-3 request (see `PreviewFrame::
 /// diagram_hover_text`'s own doc comment). Split out of
 /// [`SlintSolidSink::apply`] purely to keep that function under clippy's
@@ -309,6 +327,42 @@ fn store_if_some<T>(state: &Mutex<Option<T>>, value: Option<T>) {
         *state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(value);
+    }
+}
+
+/// Pushes a committed frame's tier rows, banner and yield figures from its own `masts`.
+///
+/// `warnings` is the manufacturability pass the plan worker ran for the frame; it rides on the
+/// frame so the tier table only displays it (check 6 of the pass builds a solid, which a UI
+/// thread must not). A frame that came without the findings is followed by the rows' second
+/// push, once [`LateRows`] says its findings are due. Split out of [`SlintSolidSink::apply`] to
+/// keep that function under clippy's function-length lint.
+///
+/// [`LateRows`] is told about the frame only when it really pushed rows (see
+/// [`late_rows::land_committed_frame`]), and a frame that comes without its own findings is given
+/// the kept copy for its generation in that first push, so a Cut slider drag builds each frame's
+/// rows once.
+fn push_committed_rows(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    generation: u64,
+    masts: &[SolvedTier],
+    warnings: Option<&Arc<Vec<ManufacturabilityWarning>>>,
+) {
+    let due = LATE_ROWS.with(|rows| {
+        late_rows::land_committed_frame(rows, generation, warnings, |shown| {
+            editor::apply_matching_preview_frame(ui, render_ctx, generation, masts, shown)
+        })
+    });
+    push_due_findings(ui, render_ctx, due, FINDINGS_RETRIES);
+}
+
+/// Records which flat tiers the committed frame just stored contains (the Cut slider's cut),
+/// for the facet maps the tier-selection outlines are built from. A provisional frame
+/// describes a design the editor does not have, so it records nothing.
+fn note_drawn_cut(committed: bool, geometry: Option<&FrameGeometry>) {
+    if committed {
+        facet_selection::note_drawn_tiers(geometry.and_then(|shown| shown.visible_tiers.clone()));
     }
 }
 
@@ -328,6 +382,72 @@ pub(super) const fn frame_is_superseded(
     cached_generation: u64,
 ) -> bool {
     planned && generation < cached_generation
+}
+
+/// Whether a landed frame's masts may be filed in the shared `solid_last_solved` cache, and
+/// pushed to the tier table, under the frame's own `generation`: only a PLANNED frame that is
+/// not behind the cache's watermark (`superseded`).
+///
+/// A camera-follow frame (`Reproject`/`UpdateFacetOverlay`) carries the worker's LAST masts
+/// forward under the worker's last planned generation. After an `Unsolvable` plan that
+/// generation has no masts of its own -- the list is the previous design's -- and filing it
+/// would make the exact-generation test of `gui::editor::finished_stone` accept the new angles
+/// on the old masts as the finished stone. Every generation that DID solve has filed its masts
+/// from its planned frame already, so a camera-follow frame can only repeat them.
+pub(in crate::gui) const fn frame_files_masts(planned: bool, superseded: bool) -> bool {
+    planned && !superseded
+}
+
+/// How long findings that met a held editor state wait before the next try.
+const FINDINGS_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+
+/// How many times findings that met a held editor state are tried again: three seconds in
+/// all. A state that is still held after that belongs to a writer that keeps the event loop
+/// busy for longer; the rows then get the findings with the next frame of their generation
+/// ([`late_rows::land_committed_frame`] hands the kept copy out again).
+const FINDINGS_RETRIES: u8 = 30;
+
+/// Pushes the rows the findings of a late-arriving plan belong to, when they are due (see
+/// [`LateRows`]). `due` is what the state machine returned for the frame or the findings
+/// just handled. Split out of [`PreviewSink::apply`] and [`PreviewSink::apply_findings`] to
+/// keep them short.
+///
+/// A push that finds the editor state held by a callback (one that pumps the event loop) did
+/// not show anything: the findings go back to [`LateRows`] as still owed, and are tried again
+/// on a timer, `retries_left` more times. They are never marked as shown on a refusal.
+fn push_due_findings(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    due: Option<Arc<LateFindings>>,
+    retries_left: u8,
+) {
+    let Some(late) = due else {
+        return;
+    };
+    let outcome = editor::apply_late_findings(
+        ui,
+        render_ctx,
+        late.generation,
+        &late.design,
+        &late.masts,
+        &late.warnings,
+    );
+    if outcome != editor::LatePush::Held {
+        return;
+    }
+    LATE_ROWS.with(|rows| rows.borrow_mut().put_back(&late));
+    let Some(next) = cut_slider::retries_after_busy(retries_left) else {
+        return;
+    };
+    let ui_weak = ui.as_weak();
+    let render_ctx = Arc::clone(render_ctx);
+    slint::Timer::single_shot(FINDINGS_RETRY_INTERVAL, move || {
+        let Some(ui) = ui_weak.upgrade() else {
+            return;
+        };
+        let due = LATE_ROWS.with(|rows| rows.borrow_mut().owed());
+        push_due_findings(&ui, &render_ctx, due, next);
+    });
 }
 
 impl PreviewSink for SlintSolidSink {
@@ -359,16 +479,17 @@ impl PreviewSink for SlintSolidSink {
             diagram_tooth_pick,
             diagram_panel_pick,
             diagram_hover_text,
-            diagram_facet_tier,
+            diagram_facet_owners,
             planes,
             tools,
             placements,
             hover_text,
-            facet_tier,
+            facet_owners,
             generation,
             planned,
             mesh_bounding_radius,
             geometry,
+            warnings,
         } = frame;
 
         // Cloned Arcs (cheap), not `self` -- the closure below outlives this call.
@@ -378,9 +499,9 @@ impl PreviewSink for SlintSolidSink {
         let diagram_tooth_pick_state = Arc::clone(&self.diagram_tooth_pick);
         let diagram_panel_pick_state = Arc::clone(&self.diagram_panel_pick);
         let diagram_hover_text_state = Arc::clone(&self.diagram_hover_text);
-        let diagram_facet_tier_state = Arc::clone(&self.diagram_facet_tier);
+        let diagram_facet_owners_state = Arc::clone(&self.diagram_facet_owners);
         let hover_text_state = Arc::clone(&self.hover_text);
-        let facet_tier_state = Arc::clone(&self.facet_tier);
+        let facet_owners_state = Arc::clone(&self.facet_owners);
         let render_ctx_state = Arc::clone(&self.render_ctx);
         let solid_active_planes_state = Arc::clone(&self.solid_active_planes);
         let trace_active_planes_state = Arc::clone(&self.trace_active_planes);
@@ -413,7 +534,7 @@ impl PreviewSink for SlintSolidSink {
                 .map_or(0, |(cached_generation, _)| *cached_generation);
             // A camera-follow frame behind the watermark still redraws (see
             // `frame_is_superseded`); it only must not push its older masts back
-            // into the cache or the tier table below -- `superseded` gates those.
+            // into the cache or the tier table below -- `frame_files_masts` gates those.
             let superseded = generation < cached_generation;
             if frame_is_superseded(planned, generation, cached_generation) {
                 return;
@@ -430,6 +551,10 @@ impl PreviewSink for SlintSolidSink {
             // tracer's plane slot.
             let committed = editor::frame_updates_mast_cache(generation);
             store_value(&pick_state, Some(pick));
+            // Which tiers this frame's facet ids number (the Cut slider's cut), for the
+            // facet maps the tier-selection outlines are built from. A provisional
+            // frame describes a design the editor does not have.
+            note_drawn_cut(committed, geometry.as_ref());
             // The pose/size/mesh geometry of this SAME frame, swapped with its pick
             // buffer -- see `SlintSolidSink::geometry`.
             store_value(&geometry_state, geometry);
@@ -453,22 +578,24 @@ impl PreviewSink for SlintSolidSink {
             // auto-solve was about to recompute the exact same thing.
             // `solved.as_ref()` only borrows -- `solved` itself still moves into
             // `last_solved_state` below.
+            //
+            // The plan worker delivers the manufacturability findings AFTER its frame
+            // (`PreviewSink::apply_findings`): a frame that came without them is followed
+            // by a second push of the rows, which `LateRows` schedules once this one is out.
+            let files_masts = frame_files_masts(planned, superseded);
             if committed
-                && !superseded
+                && files_masts
                 && let Some(masts) = solved.as_ref()
             {
-                editor::apply_matching_preview_frame(&ui, &render_ctx_state, generation, masts);
+                push_committed_rows(&ui, &render_ctx_state, generation, masts, warnings.as_ref());
             }
-            // Only overwrite the shared cache with a REAL solve -- an ordinary
-            // camera-follow `Reproject`/`UpdateFacetOverlay` frame's own
-            // `solved` is always `None` (see `PreviewFrame::solved`'s doc
-            // comment) and must leave whatever real masts are already cached
-            // alone, exactly like `store_if_some` already does for the
-            // Diagram-mode tables below -- tagged with THIS frame's own
-            // `generation`. A camera-follow frame behind the watermark
-            // chains the worker's OLDER masts forward, so `superseded` keeps it
-            // from regressing the cache.
-            if !superseded && let Some(masts) = solved {
+            // Only overwrite the shared cache with masts this frame SOLVED, tagged with
+            // THIS frame's own `generation`: a planned frame. An `Unsolvable` plan carries
+            // none (it leaves the cache alone, under the generation that did solve), and a
+            // camera-follow `Reproject`/`UpdateFacetOverlay` frame only repeats the
+            // worker's last masts under its last planned generation -- see
+            // `frame_files_masts` for why filing those would be wrong.
+            if files_masts && let Some(masts) = solved {
                 store_solved(committed, generation, masts, &last_solved_state);
             }
             // A provisional frame's planes go to the Slice tool too (after its masts,
@@ -486,11 +613,11 @@ impl PreviewSink for SlintSolidSink {
             store_if_some(&diagram_tooth_pick_state, diagram_tooth_pick);
             store_if_some(&diagram_panel_pick_state, diagram_panel_pick);
             store_if_some(&diagram_hover_text_state, diagram_hover_text);
-            store_if_some(&diagram_facet_tier_state, diagram_facet_tier);
+            store_if_some(&diagram_facet_owners_state, diagram_facet_owners);
             // Unconditional (unlike the Diagram-only tables above) -- see
             // `SlintSolidSink::hover_text`'s doc comment.
             store_value(&hover_text_state, hover_text);
-            store_value(&facet_tier_state, facet_tier);
+            store_value(&facet_owners_state, facet_owners);
 
             // See `sync_planes_and_check_trace_match`'s own doc comment. Also
             // passes this SAME frame's `generation` (already destructured above,
@@ -528,11 +655,29 @@ impl PreviewSink for SlintSolidSink {
             editor::on_solid_frame_landed(&ui, generation);
         });
     }
+
+    /// The plan worker's manufacturability findings for a plan whose frame it handed on
+    /// first. Hops to the UI thread like [`Self::apply`]; [`LateRows`] decides there whether
+    /// the rows are refreshed now (their frame landed without the findings), later (the
+    /// frame is still on its way) or not at all (the frame carried them, or the editor has
+    /// moved on). A copy is kept for any further frame of the same generation (a tier
+    /// selection or a Cut slider move plans the same design again), whose rows would
+    /// otherwise start without them.
+    fn apply_findings(&self, findings: LateFindings) {
+        let render_ctx = Arc::clone(&self.render_ctx);
+        let _ = self.ui.upgrade_in_event_loop(move |ui| {
+            let due = LATE_ROWS.with(|rows| rows.borrow_mut().findings_arrived(findings));
+            push_due_findings(&ui, &render_ctx, due, FINDINGS_RETRIES);
+        });
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{GpuFacetPlane, PLANE_REPUBLISH_EPSILON, frame_is_superseded, planes_equal_within};
+    use super::{
+        GpuFacetPlane, PLANE_REPUBLISH_EPSILON, frame_files_masts, frame_is_superseded,
+        planes_equal_within,
+    };
     use glam::Vec3;
 
     /// A few dozen planes with unit normals spread over yaw/pitch angles.
@@ -633,5 +778,17 @@ mod tests {
     fn a_planned_frame_at_or_past_the_watermark_is_not_superseded() {
         assert!(!frame_is_superseded(true, 9, 9));
         assert!(!frame_is_superseded(true, 10, 9));
+    }
+
+    /// F4-8: masts are filed from planned frames that are not behind the watermark. A
+    /// camera-follow frame repeats the worker's last masts under its last planned
+    /// generation, which after an unsolvable plan is a generation those masts do not
+    /// describe.
+    #[test]
+    fn only_a_current_planned_frame_files_its_masts() {
+        assert!(frame_files_masts(true, false));
+        assert!(!frame_files_masts(true, true), "behind the watermark");
+        assert!(!frame_files_masts(false, false), "a camera-follow frame");
+        assert!(!frame_files_masts(false, true));
     }
 }

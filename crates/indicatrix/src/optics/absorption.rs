@@ -376,3 +376,69 @@ pub fn legacy_rgb_bands(rgb: [f32; 3]) -> Vec<AbsorptionBand> {
         AbsorptionBand::new(450.0, 45.0, rgb[2]),
     ]
 }
+
+/// The fixed seven-band basis of the path-aware L*C*h body-colour editor.
+///
+/// `(centre_nm, width_nm)` of seven wavelength-domain Gaussians (width is the standard
+/// deviation, as for [`AbsorptionBand::new`]) spaced 40 nm apart across the visible range.
+/// Seven is the most a material can carry on the GPU (`MAX_ABSORPTION_BANDS = 8`, one slot
+/// spare).
+pub const BODY_COLOR_BASIS_NM: [(f32, f32); 7] = [
+    (420.0, 55.0),
+    (460.0, 45.0),
+    (500.0, 45.0),
+    (540.0, 45.0),
+    (580.0, 45.0),
+    (620.0, 45.0),
+    (660.0, 55.0),
+];
+
+/// Builds the absorption bands of [`BODY_COLOR_BASIS_NM`] for `amplitudes_per_mm` (peak
+/// absorption coefficient per millimetre of each basis band).
+///
+/// Bands whose amplitude is zero (or negative / not finite) are left out, so an all-zero set
+/// is the empty set: it renders exactly like a colourless stone.
+#[must_use]
+pub fn body_color_bands(amplitudes_per_mm: [f32; 7]) -> Vec<AbsorptionBand> {
+    BODY_COLOR_BASIS_NM
+        .iter()
+        .zip(amplitudes_per_mm)
+        .filter(|(_, a)| a.is_finite() && *a > 0.0)
+        .map(|(&(centre, width), a)| AbsorptionBand::new(centre, width, a))
+        .collect()
+}
+
+#[cfg(test)]
+mod body_color_basis_tests {
+    use super::*;
+    use crate::color::body_color::{Illuminant, body_color};
+
+    fn alpha(bands: &[AbsorptionBand]) -> impl Fn(f64) -> f64 + '_ {
+        move |l| f64::from(bands.iter().map(|b| b.evaluate(l as f32)).sum::<f32>())
+    }
+
+    #[test]
+    fn all_zero_amplitudes_make_no_bands_and_render_like_an_empty_set() {
+        let bands = body_color_bands([0.0; 7]);
+        assert_eq!(bands, Vec::<AbsorptionBand>::new());
+        let a = body_color(alpha(&bands), 5.0, Illuminant::D65);
+        let none: Vec<AbsorptionBand> = Vec::new();
+        let b = body_color(alpha(&none), 5.0, Illuminant::D65);
+        assert_eq!(a, b);
+        assert_eq!(a.srgb, [255, 255, 255]);
+    }
+
+    #[test]
+    fn only_positive_finite_amplitudes_become_bands() {
+        let bands = body_color_bands([0.0, 0.5, -1.0, f32::NAN, 0.0, 2.0, 0.0]);
+        assert_eq!(bands.len(), 2);
+        assert_eq!(bands[0].center_nm, 460.0);
+        assert_eq!(bands[1].center_nm, 620.0);
+        assert_eq!(bands[1].peak, 2.0);
+    }
+
+    #[test]
+    fn basis_fits_the_gpu_band_budget() {
+        assert!(BODY_COLOR_BASIS_NM.len() < 8);
+    }
+}

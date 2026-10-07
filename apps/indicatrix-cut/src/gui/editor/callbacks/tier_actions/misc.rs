@@ -4,13 +4,12 @@
 
 use std::{cell::RefCell, rc::Rc};
 
+use indicatrix_editor::view_model::live_margin::angle_live_margin;
 use slint::{ComponentHandle, SharedString};
 
 use crate::{
     EditorModel, MainWindow,
-    gui::editor::state::{
-        EditorState, representative_crown_and_pavilion_angles_deg, tier_matches_filter,
-    },
+    gui::editor::state::{EditorState, tier_matches_filter},
 };
 
 /// The tier list's filter box asks Rust whether one row matches, because Slint's
@@ -24,26 +23,17 @@ pub(in crate::gui::editor) fn setup_tier_filter_callback(ui: &MainWindow) {
 
 /// Live critical-angle guidance in the Tier form's Angle field (see
 /// `EditorModel::angle_live_preview`'s own doc comment on `ui/models/editor.slint`).
-/// Parses `text` (the field's own
-/// live content) as a signed degree value: a pavilion angle (`< 0`) reads the
-/// plain table-only critical-angle margin
-/// (`state::tier_margin_and_risk`'s own pavilion branch, via
-/// [`indicatrix_cut_core::tier_margin_deg`]/[`indicatrix_cut_core::windowing_risk`]);
-/// a crown angle (`> 0`) reads the crown-window ESTIMATE
-/// ([`indicatrix_cut_core::crown_window_margin_deg`]/
-/// [`indicatrix_cut_core::crown_windowing_risk`]) against the design's own
-/// representative pavilion angle
-/// ([`representative_crown_and_pavilion_angles_deg`]) --
-/// the exact same functions a saved row's MARGIN cell uses, so a value typed
-/// but not yet saved reads the identical bar. Uses the design's plain
-/// [`indicatrix_cut_core::Design::effective_refractive_index`] (built-in
-/// materials only, no custom-catalogue lookup) rather than threading
-/// `RenderContext` through for this preview-only path -- the authoritative
-/// "Eff. RI"/critical-angle readouts elsewhere already use the full
-/// custom-material-aware value; this is a live estimate while typing, not the
-/// figure of record. An unparseable/blank/zero angle, or a crown angle with no
-/// pavilion tier in the design to estimate against, clears the bar
-/// (`level = -1`).
+///
+/// The bar itself is [`angle_live_margin`], shared with the web inspector: the same
+/// functions a saved row's MARGIN cell uses, so a value typed but not yet saved reads the
+/// identical bar. `text` may be a number, arithmetic (`41.5+0.3`) or a relation
+/// (`=P1-2`, read as the angle it would give). It uses the design's plain
+/// [`indicatrix_cut_core::Design::effective_refractive_index`] (built-in materials only,
+/// no custom-catalogue lookup) rather than threading `RenderContext` through for this
+/// preview-only path -- the authoritative "Eff. RI"/critical-angle readouts elsewhere
+/// already use the full custom-material-aware value; this is a live estimate while typing,
+/// not the figure of record. Text that is not an angle, a zero angle, or a crown angle with
+/// no pavilion tier in the design to estimate against, clears the bar (`level = -1`).
 pub(in crate::gui::editor) fn setup_angle_live_preview_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -56,46 +46,19 @@ pub(in crate::gui::editor) fn setup_angle_live_preview_callback(
                 return;
             };
             let model = ui.global::<EditorModel>();
-            let clear = || {
+            let margin = {
+                let st = state.borrow();
+                let n_d = st.design.effective_refractive_index();
+                angle_live_margin(&st.design, n_d, &text)
+            };
+            if let Some(bar) = margin {
+                model.set_angle_live_margin_text(bar.text.into());
+                model.set_angle_live_margin_level(bar.level);
+                model.set_angle_live_margin_is_estimate(bar.is_estimate);
+            } else {
                 model.set_angle_live_margin_text(SharedString::new());
                 model.set_angle_live_margin_level(-1);
                 model.set_angle_live_margin_is_estimate(false);
-            };
-            let Ok(angle_deg) = text.trim().parse::<f64>() else {
-                clear();
-                return;
-            };
-            let st = state.borrow();
-            let n_d = st.design.effective_refractive_index();
-            if angle_deg < 0.0 {
-                let margin = indicatrix_cut_core::tier_margin_deg(angle_deg, n_d);
-                let level = match indicatrix_cut_core::windowing_risk(angle_deg, n_d) {
-                    indicatrix_cut_core::Risk::Safe => 0,
-                    indicatrix_cut_core::Risk::Marginal => 1,
-                    indicatrix_cut_core::Risk::Windows => 2,
-                };
-                model.set_angle_live_margin_text(format!("{margin:+.1}\u{b0}").into());
-                model.set_angle_live_margin_level(level);
-                model.set_angle_live_margin_is_estimate(false);
-            } else if angle_deg > 0.0 {
-                let (_, pavilion_deg) = representative_crown_and_pavilion_angles_deg(&st.design);
-                let Some(pavilion_deg) = pavilion_deg else {
-                    clear();
-                    return;
-                };
-                let margin =
-                    indicatrix_cut_core::crown_window_margin_deg(pavilion_deg, angle_deg, n_d);
-                let level =
-                    match indicatrix_cut_core::crown_windowing_risk(pavilion_deg, angle_deg, n_d) {
-                        indicatrix_cut_core::Risk::Safe => 0,
-                        indicatrix_cut_core::Risk::Marginal => 1,
-                        indicatrix_cut_core::Risk::Windows => 2,
-                    };
-                model.set_angle_live_margin_text(format!("{margin:+.1}\u{b0}").into());
-                model.set_angle_live_margin_level(level);
-                model.set_angle_live_margin_is_estimate(true);
-            } else {
-                clear();
             }
         });
 }

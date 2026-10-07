@@ -12,6 +12,7 @@
 
 mod custom;
 mod gear;
+mod lch;
 mod push;
 
 pub use push::{clear, push};
@@ -31,7 +32,7 @@ use crate::{
 use indicatrix_cut_core::Edit;
 use indicatrix_editor::{
     loading::ri_override_for_material_pick,
-    material::{body_color_from_index, design_material_options, parse_design_material_form},
+    material::{design_material_options, parse_design_material_form, with_body_color_choice},
     printed_proportions::parse_printed_proportions_form,
     view_model::row_format::tiers_incomplete_under_proposed_symmetry,
 };
@@ -58,7 +59,7 @@ fn apply_material(ctx: &Ctx) {
         let current = design_state.session.design.material.clone();
         let legacy_ri = design_state.session.design.meta.refractive_index;
         parse_design_material_form(combo_index, &ri_text, &options, &current).and_then(|material| {
-            let mut material = material.with_body_color(body_color_from_index(color_index));
+            let mut material = with_body_color_choice(material, color_index, &current);
             if material.refractive_index_override.is_none() {
                 material.refractive_index_override = ri_override_for_material_pick(
                     material.name.as_deref(),
@@ -306,6 +307,7 @@ pub fn wire(ui: &AppWindow, ctx: &Ctx) {
     let model = ui.global::<DesignSettingsModel>();
     let c = ctx.clone();
     model.on_apply_material(move || apply_material(&c));
+    lch::wire(ui, ctx);
     let c = ctx.clone();
     model.on_set_material_from_guess(move || set_material_from_guess(&c));
     let c = ctx.clone();

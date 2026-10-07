@@ -500,7 +500,8 @@ fn a_claim_connection_cannot_issue_a_render_request() {
         environment: indicatrix_net::scene::SceneEnvironment::Studio,
         surface_glare: 1.0,
         tools: Vec::new(),
-        fluorescence: Default::default(),
+        fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
+        head_shadow_deg: 16.0,
     };
     let request = RenderRequest {
         intent: indicatrix_net::messages::RequestIntent::Batch,

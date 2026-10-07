@@ -1,0 +1,48 @@
+// The Inspector's History tab: every step of the open design's undo history, newest at the
+// top, with a small picture of the design at each step and a click to go back to it. The
+// Rust side is `gui::editor::history_panel`; the tab itself is
+// `components/editor_inspector/history_tab.slint`.
+
+// One row of the list. `position` is the step the row goes to: 0 for the "Start" row (the
+// design as it was opened or created), 1 for the first change, and so on.
+export struct HistoryRowData {
+    position: int,
+    // What the step did, e.g. "Set P1 angle to -41.0 degrees".
+    title: string,
+    // A second, quieter line: "Step 3", "Step 5, undone", or what the start row means.
+    detail: string,
+    // The step the design stands at right now.
+    current: bool,
+    // A step that has been undone (it comes after the current one and can be redone).
+    undone: bool,
+    // The "Start" row.
+    start: bool,
+}
+
+// What one row's picture shows. `state` 0: still being drawn; 1: `picture` is ready; 2: the
+// design at that step does not solve, so there is nothing to draw.
+export struct HistoryThumb {
+    picture: image,
+    state: int,
+}
+
+export global HistoryModel {
+    // The list, newest first, ending with the "Start" row. Filled while the History tab is
+    // showing.
+    in property <[HistoryRowData]> rows;
+    // The step the design stands at (0 when nothing has been changed yet). Moves whenever
+    // the history changes, which is how the tab drops its keyboard cursor back onto it.
+    in property <int> current_position: 0;
+    // The newest step number; also the number of steps in the list.
+    in property <int> step_count: 0;
+    // Counts up whenever pictures may have changed. A row reads it so that it asks again.
+    in property <int> thumb_version: 0;
+
+    // A row's picture, answered from a cache and drawn in the background. Pure: it only
+    // looks things up; asking for a picture that is not there yet queues it.
+    pure callback thumbnail(int, int) -> HistoryThumb;
+    // Go to a step (a row was clicked, or Enter on a row).
+    callback jump(int);
+    // The tab was just shown: fill the list now rather than at the next refresh.
+    callback opened();
+}

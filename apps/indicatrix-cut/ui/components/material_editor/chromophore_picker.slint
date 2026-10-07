@@ -2,6 +2,9 @@ import { Slider, ComboBox } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { PhysicscolorModel, PhysicsRow } from "../../models/physics_color.slint";
 import { colorPicker } from "color_picker.slint";
+import { ActionButton } from "../chip_toggle.slint";
+import { IconButton } from "../icon_button.slint";
+import { TipBox, FieldCaption } from "../tip_box.slint";
 
 // The material editor's physics color section (spec 7): host, data-confidence banner, the
 // element rows (log-scale amount sliders bounded by the host's concentration maximum, lock,
@@ -14,21 +17,58 @@ import { colorPicker } from "color_picker.slint";
 // Rows and chips are STATELESS views (`value`/`on` come only from the model, interaction only
 // emits callbacks): a std `Slider` assigned by the user stops following its binding, which
 // would leave a row stale after an undo or a solver write.
+//
+// Keyboard: the chips and the row sliders take Tab and Space or Enter; a row slider moves by
+// 5 % with Left and Right. The "+ Add" and "Sources" popups open from the keyboard, but their
+// entries are reached with the mouse or a screen reader's default action.
 
 // A flat chip: a label that is either on or off.
 component Chip inherits Rectangle {
     in property <string> text;
+    // One plain sentence: what the chip does. Shown as the tooltip.
+    in property <string> hint;
     in property <bool> on: false;
     in property <bool> enabled: true;
+    // A toggle chip (Lock, a treatment, a view): a screen reader says whether it is on.
+    in property <bool> checkable: false;
     callback clicked();
     height: 22px;
     min-width: 40px;
     border-radius: Theme.radius-sm;
     background: root.on ? Theme.surface-raised : Theme.surface-sunken;
-    border-width: 1px;
-    border-color: root.on ? Theme.accent-cyan : Theme.border-dialog;
+    border-width: chip_focus.has-focus ? 2px : 1px;
+    border-color: chip_focus.has-focus ? Theme.accent-cyan-hover : (root.on ? Theme.accent-cyan : Theme.border-dialog);
     opacity: root.enabled ? 1.0 : 0.5;
-    TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.text;
+    accessible-description: root.hint;
+    accessible-checkable: root.checkable;
+    accessible-checked: root.on;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
+
+    chip_focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
+    }
     HorizontalLayout {
         padding-left: 8px;
         padding-right: 8px;
@@ -44,29 +84,55 @@ component Chip inherits Rectangle {
 }
 
 // A small color swatch with a caption under the row it belongs to.
-component Swatch inherits HorizontalLayout {
+component Swatch inherits Rectangle {
     in property <color> swatch;
     in property <string> caption;
-    spacing: 4px;
-    Rectangle {
-        width: 28px;
-        height: 18px;
-        border-radius: 3px;
-        background: root.swatch;
-        border-width: 1px;
-        border-color: Theme.border-dialog;
+    // What a screen reader says (the caption is often one letter). Empty: the caption.
+    in property <string> reader;
+    // The tooltip. Empty: none.
+    in property <string> hint;
+
+    width: swatch_row.preferred-width;
+    height: 18px;
+    accessible-role: AccessibleRole.image;
+    accessible-label: (root.reader != "" ? root.reader : root.caption) + " colour";
+
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
+
+    swatch_row := HorizontalLayout {
+        spacing: 4px;
+        Rectangle {
+            width: 28px;
+            height: 18px;
+            border-radius: 3px;
+            background: root.swatch;
+            border-width: 1px;
+            border-color: Theme.border-dialog;
+        }
+        Text { text: root.caption; font-size: 9px; color: Theme.text-muted; vertical-alignment: center; }
     }
-    Text { text: root.caption; font-size: 9px; color: Theme.text-muted; vertical-alignment: center; }
 }
 
-// A stateless horizontal slider: `value` is 0..1 and only ever comes from the model.
+// A stateless horizontal slider: `value` is 0..1 and only ever comes from the model. Left and
+// Right move it by 5 % (a step and its release, like a short drag).
 component PhysSlider inherits Rectangle {
     in property <float> value: 0.0;
+    in property <string> label;
     callback changed(float);
     callback released();
     height: 18px;
     min-width: 60px;
     horizontal-stretch: 1;
+
+    accessible-role: AccessibleRole.slider;
+    accessible-label: root.label;
+    accessible-value: "" + Math.round(root.value * 100) + " percent";
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 100;
+    accessible-value-step: 5;
+    accessible-action-increment => { root.changed(min(1.0, root.value + 0.05)); root.released(); }
+    accessible-action-decrement => { root.changed(max(0.0, root.value - 0.05)); root.released(); }
+
     function position(x: length) -> float {
         return max(0.0, min(1.0, (x - 6px) / max(1px, root.width - 12px)));
     }
@@ -92,13 +158,28 @@ component PhysSlider inherits Rectangle {
         height: 12px;
         border-radius: 6px;
         background: Theme.accent-cyan;
-        border-width: 1px;
-        border-color: #ffffff;
+        border-width: slider_focus.has-focus ? 2px : 1px;
+        border-color: slider_focus.has-focus ? Theme.accent-cyan-hover : Theme.toggle-knob;
+    }
+    slider_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.LeftArrow {
+                root.changed(max(0.0, root.value - 0.05));
+                root.released();
+                return accept;
+            } else if event.text == Key.RightArrow {
+                root.changed(min(1.0, root.value + 0.05));
+                root.released();
+                return accept;
+            }
+            return reject;
+        }
     }
     TouchArea {
         pointer-event(e) => {
             if (e.button == PointerEventButton.left) {
                 if (e.kind == PointerEventKind.down) {
+                    slider_focus.focus();
                     root.changed(root.position(self.mouse-x));
                 } else if (e.kind == PointerEventKind.up) {
                     root.released();
@@ -133,6 +214,7 @@ component PhysicsRowItem inherits Rectangle {
                 overflow: elide;
             }
             PhysSlider {
+                label: "Amount of " + root.item.label;
                 value: root.fractions ? root.item.fraction : root.item.slider;
                 changed(v) => {
                     if (root.fractions) {
@@ -153,27 +235,25 @@ component PhysicsRowItem inherits Rectangle {
             }
             Chip {
                 text: root.item.locked ? "Locked" : "Lock";
+                hint: root.item.locked ? "This amount is locked: the colour solver will not change it. Press to unlock." : "Lock this amount so the colour solver does not change it.";
                 on: root.item.locked;
+                checkable: true;
                 clicked => { PhysicscolorModel.lock_toggled(root.item.id); }
             }
             Chip {
                 text: "Sources";
+                hint: "Show where the data for this item comes from.";
                 clicked => { sources_popup.show(); }
             }
-            Rectangle {
+            IconButton {
+                icon: @image-url("../../icons/close.svg");
+                hint: "Remove " + root.item.label + " from the recipe";
+                tint: Theme.danger;
+                hover_fill: Theme.danger-surface-hover;
+                glyph: 10px;
                 width: 22px;
                 height: 22px;
-                border-radius: Theme.radius-sm;
-                background: remove_touch.has-hover ? Theme.danger-surface-hover : Theme.danger-surface;
-                border-width: 1px;
-                border-color: Theme.danger-border;
-                remove_touch := TouchArea { clicked => { PhysicscolorModel.remove_item(root.item.id); } }
-                Image {
-                    source: @image-url("../../icons/close.svg");
-                    colorize: Theme.danger;
-                    width: 10px;
-                    height: 10px;
-                }
+                clicked => { PhysicscolorModel.remove_item(root.item.id); }
             }
         }
         if root.item.estimated : Text {
@@ -214,14 +294,21 @@ export component ChromophorePicker inherits VerticalLayout {
         spacing: 4px;
         HorizontalLayout {
             alignment: space-between;
-            Text { text: "Host Crystal:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+            FieldCaption {
+                text: "Host Crystal:";
+                hint: "The crystal the colouring elements sit in, such as corundum for ruby. It fixes the crystal system and optical character, and fills in a refractive index and specific gravity to start from.";
+            }
             Text { text: "(locks crystal system & character; prefills RI and SG)"; font-size: 10px; color: Theme.text-muted; }
         }
-        ComboBox {
-            model: PhysicscolorModel.host_names;
-            current-index <=> PhysicscolorModel.host_index;
-            selected(val) => {
-                PhysicscolorModel.host_selected(self.current-index);
+        TipBox {
+            hint: "Pick the host crystal of the stone.";
+            ComboBox {
+                model: PhysicscolorModel.host_names;
+                current-index <=> PhysicscolorModel.host_index;
+                accessible-label: "Host crystal";
+                selected(val) => {
+                    PhysicscolorModel.host_selected(self.current-index);
+                }
             }
         }
     }
@@ -233,9 +320,18 @@ export component ChromophorePicker inherits VerticalLayout {
         border-width: 1px;
         border-color: Theme.accent-amber;
         height: banner_text.preferred-height + 12px;
-        banner_text := Text {
+        // The warning sign is an icon: the UI font has no glyph for it.
+        Image {
+            source: @image-url("../../icons/warning.svg");
+            colorize: Theme.accent-amber;
             x: 8px;
-            width: parent.width - 16px;
+            y: 7px;
+            width: 12px;
+            height: 12px;
+        }
+        banner_text := Text {
+            x: 26px;
+            width: parent.width - 34px;
             y: 6px;
             text: PhysicscolorModel.banner_text;
             font-size: 10px;
@@ -255,7 +351,7 @@ export component ChromophorePicker inherits VerticalLayout {
             padding-right: 8px;
             spacing: 8px;
             Text {
-                text: "color data updated \u{2014} this recipe still renders from its stored bands.";
+                text: "Color data updated \u{2014} this recipe still renders from its stored bands.";
                 font-size: 10px;
                 color: Theme.text-primary;
                 vertical-alignment: center;
@@ -264,6 +360,7 @@ export component ChromophorePicker inherits VerticalLayout {
             }
             Chip {
                 text: "Update to current data";
+                hint: "Recompute the colour from the current catalogue data. The recipe keeps rendering from its stored bands until you do.";
                 clicked => { PhysicscolorModel.update_data(); }
             }
         }
@@ -277,16 +374,19 @@ export component ChromophorePicker inherits VerticalLayout {
             Text { text: "Elements"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; vertical-alignment: center; horizontal-stretch: 1; }
             Chip {
                 text: "Undo";
+                hint: "Undo the last change to the recipe. Fifty steps are kept while this dialog is open. Ctrl+Z does the same.";
                 enabled: PhysicscolorModel.can_undo;
                 clicked => { PhysicscolorModel.undo(); }
             }
             Chip {
                 text: "Redo";
+                hint: "Redo the change you undid. Ctrl+Y does the same.";
                 enabled: PhysicscolorModel.can_redo;
                 clicked => { PhysicscolorModel.redo(); }
             }
             add_chip := Chip {
                 text: "+ Add";
+                hint: "Add an element or end-member to the recipe.";
                 clicked => { add_popup.show(); }
                 add_popup := PopupWindow {
                     x: 0px;
@@ -306,6 +406,14 @@ export component ChromophorePicker inherits VerticalLayout {
                                 opacity: opt.enabled ? 1.0 : 0.55;
                                 background: opt_touch.has-hover && opt.enabled ? Theme.surface-control-hover : transparent;
                                 border-radius: 3px;
+                                accessible-role: AccessibleRole.list-item;
+                                accessible-label: opt.label + (opt.enabled ? "" : ", not available: " + opt.reason);
+                                accessible-enabled: opt.enabled;
+                                accessible-action-default => {
+                                    if opt.enabled {
+                                        PhysicscolorModel.add_item(opt.id);
+                                    }
+                                }
                                 opt_touch := TouchArea {
                                     enabled: opt.enabled;
                                     clicked => { PhysicscolorModel.add_item(opt.id); }
@@ -346,7 +454,9 @@ export component ChromophorePicker inherits VerticalLayout {
         Text { text: "View:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; vertical-alignment: center; }
         Chip {
             text: "Strength + fractions";
+            hint: "Show one overall strength and each item's share of the recipe.";
             on: PhysicscolorModel.view_fractions;
+            checkable: true;
             clicked => {
                 PhysicscolorModel.view_fractions = true;
                 PhysicscolorModel.view_changed(true);
@@ -354,7 +464,9 @@ export component ChromophorePicker inherits VerticalLayout {
         }
         Chip {
             text: "Absolute amounts";
+            hint: "Show the real amount of every item, for example in weight percent.";
             on: !PhysicscolorModel.view_fractions;
+            checkable: true;
             clicked => {
                 PhysicscolorModel.view_fractions = false;
                 PhysicscolorModel.view_changed(false);
@@ -367,28 +479,41 @@ export component ChromophorePicker inherits VerticalLayout {
         spacing: 4px;
         HorizontalLayout {
             alignment: space-between;
-            Text { text: "Strength (multiplier on all items):"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+            FieldCaption {
+                text: "Strength (multiplier on all items):";
+                hint: "Make every item absorb more or less light by the same factor. The hue stays; the colour gets deeper or paler.";
+            }
             Text { text: Math.round(PhysicscolorModel.strength * 100.0) / 100.0 + "\u{d7}"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
         }
-        Slider {
-            minimum: 0.05;
-            maximum: 10.0;
-            value <=> PhysicscolorModel.strength;
-            changed(v) => { PhysicscolorModel.strength_changed(v); }
-            released(v) => { PhysicscolorModel.strength_released(); }
+        TipBox {
+            hint: "From 0.05 to 10 times the recipe's own strength.";
+            Slider {
+                minimum: 0.05;
+                maximum: 10.0;
+                step: 0.05;
+                value <=> PhysicscolorModel.strength;
+                accessible-label: "Strength multiplier";
+                changed(v) => { PhysicscolorModel.strength_changed(v); }
+                released(v) => { PhysicscolorModel.strength_released(); }
+            }
         }
     }
 
     // ---- Treatments valid for the host (and the present elements) ----
     if PhysicscolorModel.treatments.length > 0 : VerticalLayout {
         spacing: 4px;
-        Text { text: "Treatments:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+        FieldCaption {
+            text: "Treatments:";
+            hint: "Treatments such as heating or irradiation change the colour. Only those that are possible for this host and these elements are offered.";
+        }
         HorizontalLayout {
             spacing: 6px;
             alignment: start;
             for t in PhysicscolorModel.treatments : Chip {
                 text: t.name;
+                hint: t.conditions;
                 on: t.active;
+                checkable: true;
                 clicked => { PhysicscolorModel.treatment_toggled(t.id, !t.active); }
             }
         }
@@ -399,15 +524,23 @@ export component ChromophorePicker inherits VerticalLayout {
         spacing: 4px;
         HorizontalLayout {
             alignment: space-between;
-            Text { text: "Equivalent path (mm):"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+            FieldCaption {
+                text: "Equivalent path (mm):";
+                hint: "How far light travels through the stone, in millimetres. The colour you see depends on it; the default is one and a half times the girdle width.";
+            }
             Text { text: Math.round(PhysicscolorModel.reference_path_mm * 10.0) / 10.0 + " mm"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
         }
-        Slider {
-            minimum: 1.0;
-            maximum: 40.0;
-            value <=> PhysicscolorModel.reference_path_mm;
-            changed(v) => { PhysicscolorModel.path_changed(v); }
-            released(v) => { PhysicscolorModel.path_released(); }
+        TipBox {
+            hint: "From 1 to 40 millimetres.";
+            Slider {
+                minimum: 1.0;
+                maximum: 40.0;
+                step: 0.5;
+                value <=> PhysicscolorModel.reference_path_mm;
+                accessible-label: "Equivalent path in millimetres";
+                changed(v) => { PhysicscolorModel.path_changed(v); }
+                released(v) => { PhysicscolorModel.path_released(); }
+            }
         }
         Text { text: PhysicscolorModel.path_hint; font-size: 9px; color: Theme.text-muted; wrap: word-wrap; }
     }
@@ -415,32 +548,35 @@ export component ChromophorePicker inherits VerticalLayout {
     // ---- Computed body color: D65 and 3200 K, unpolarised plus o / e / beta ----
     VerticalLayout {
         spacing: 6px;
-        Text { text: "Computed body color:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+        FieldCaption {
+            text: "Computed body color:";
+            hint: "The colour the recipe gives, in daylight (D65) and in warm lamp light (3200 K). A doubly refracting stone shows a different colour for each ray: o is the ordinary ray, e the extraordinary one, beta the middle ray of a biaxial stone.";
+        }
         HorizontalLayout {
             spacing: 8px;
             alignment: start;
             Text { text: "D65"; font-size: 10px; font-weight: 600; color: Theme.text-muted; width: 44px; vertical-alignment: center; }
-            Swatch { swatch: PhysicscolorModel.d65_unpol; caption: "unpol."; }
-            Swatch { swatch: PhysicscolorModel.d65_o; caption: "o"; }
-            Swatch { swatch: PhysicscolorModel.d65_e; caption: "e"; }
-            if PhysicscolorModel.has_beta : Swatch { swatch: PhysicscolorModel.d65_beta; caption: "\u{3b2}"; }
+            Swatch { swatch: PhysicscolorModel.d65_unpol; caption: "unpol."; reader: "Daylight, unpolarised"; }
+            Swatch { swatch: PhysicscolorModel.d65_o; caption: "o"; reader: "Daylight, ordinary ray"; }
+            Swatch { swatch: PhysicscolorModel.d65_e; caption: "e"; reader: "Daylight, extraordinary ray"; }
+            if PhysicscolorModel.has_beta : Swatch { swatch: PhysicscolorModel.d65_beta; caption: "\u{3b2}"; reader: "Daylight, beta ray"; }
         }
         HorizontalLayout {
             spacing: 8px;
             alignment: start;
             Text { text: "3200 K"; font-size: 10px; font-weight: 600; color: Theme.text-muted; width: 44px; vertical-alignment: center; }
-            Swatch { swatch: PhysicscolorModel.a_unpol; caption: "unpol."; }
-            Swatch { swatch: PhysicscolorModel.a_o; caption: "o"; }
-            Swatch { swatch: PhysicscolorModel.a_e; caption: "e"; }
-            if PhysicscolorModel.has_beta : Swatch { swatch: PhysicscolorModel.a_beta; caption: "\u{3b2}"; }
+            Swatch { swatch: PhysicscolorModel.a_unpol; caption: "unpol."; reader: "Lamp light, unpolarised"; }
+            Swatch { swatch: PhysicscolorModel.a_o; caption: "o"; reader: "Lamp light, ordinary ray"; }
+            Swatch { swatch: PhysicscolorModel.a_e; caption: "e"; reader: "Lamp light, extraordinary ray"; }
+            if PhysicscolorModel.has_beta : Swatch { swatch: PhysicscolorModel.a_beta; caption: "\u{3b2}"; reader: "Lamp light, beta ray"; }
         }
         Text { text: PhysicscolorModel.color_change_text; font-size: 9px; font-weight: 600; color: Theme.accent-purple; }
         if PhysicscolorModel.show_stone : HorizontalLayout {
             spacing: 8px;
             alignment: start;
             Text { text: PhysicscolorModel.stone_text; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-            Swatch { swatch: PhysicscolorModel.stone_d65; caption: "D65"; }
-            Swatch { swatch: PhysicscolorModel.stone_a; caption: "3200 K"; }
+            Swatch { swatch: PhysicscolorModel.stone_d65; caption: "D65"; reader: "Whole stone, daylight"; }
+            Swatch { swatch: PhysicscolorModel.stone_a; caption: "3200 K"; reader: "Whole stone, lamp light"; }
         }
 
         // ---- Fluorescence: the analytic glow of the recipe's emitters under the UV lamps ----
@@ -456,9 +592,9 @@ export component ChromophorePicker inherits VerticalLayout {
                 spacing: 8px;
                 alignment: start;
                 Text { text: "UV 365"; font-size: 10px; font-weight: 600; color: Theme.text-muted; width: 44px; vertical-alignment: center; }
-                Swatch { swatch: PhysicscolorModel.glow365; caption: PhysicscolorModel.glow365_text; }
+                Swatch { swatch: PhysicscolorModel.glow365; caption: PhysicscolorModel.glow365_text; reader: "Glow under a 365 nanometre lamp"; }
                 Text { text: "UV 395"; font-size: 10px; font-weight: 600; color: Theme.text-muted; width: 44px; vertical-alignment: center; }
-                Swatch { swatch: PhysicscolorModel.glow395; caption: PhysicscolorModel.glow395_text; }
+                Swatch { swatch: PhysicscolorModel.glow395; caption: PhysicscolorModel.glow395_text; reader: "Glow under a 395 nanometre lamp"; }
             }
         }
     }
@@ -469,22 +605,15 @@ export component ChromophorePicker inherits VerticalLayout {
         HorizontalLayout {
             spacing: 8px;
             alignment: start;
-            Rectangle {
-                width: 100px;
+            ActionButton {
+                width: 110px;
                 height: 26px;
-                border-radius: Theme.radius-sm;
-                background: pick_touch.has-hover ? Theme.accent-cyan : Theme.surface-raised;
-                border-width: 1px;
-                border-color: Theme.border-dialog;
-                pick_touch := TouchArea { clicked => { root.picker_open = !root.picker_open; } }
-                Text {
-                    text: "Pick color\u{2026}";
-                    font-size: 10px;
-                    font-weight: 600;
-                    color: pick_touch.has-hover ? Theme.text-on-accent : Theme.text-primary;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
+                text: "Pick color\u{2026}";
+                hint: "Pick the colour you want the stone to be. The program looks for the elements and amounts that come closest.";
+                fill: Theme.surface-raised;
+                hover_fill: Theme.surface-control-hover;
+                font_size: 10px;
+                clicked => { root.picker_open = !root.picker_open; }
             }
             if PhysicscolorModel.has_target : Rectangle {
                 width: 28px;
@@ -494,6 +623,9 @@ export component ChromophorePicker inherits VerticalLayout {
                 background: PhysicscolorModel.target_color;
                 border-width: 1px;
                 border-color: Theme.border-dialog;
+                accessible-role: AccessibleRole.image;
+                accessible-label: "Picked colour";
+                Tooltip { text: @markdown("The colour you picked: the target the solver aims for."); }
             }
             if PhysicscolorModel.solving : Text {
                 text: PhysicscolorModel.note_text != "" ? PhysicscolorModel.note_text : "Solving\u{2026}";

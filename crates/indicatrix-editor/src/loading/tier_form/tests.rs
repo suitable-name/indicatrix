@@ -184,6 +184,17 @@ fn parse_tier_form_rejects_a_magnitude_over_90() {
 }
 
 #[test]
+fn the_over_90_message_reads_a_signed_entry_as_a_positive_angle() {
+    let pavilion = parse_tier_form(tier_form("-95.5", 2, "0.5", "T", "")).unwrap_err();
+    let crown = parse_tier_form(tier_form("95.5", 2, "0.5", "T", "")).unwrap_err();
+    assert!(
+        pavilion.starts_with("Angle 95.50\u{b0} exceeds 90\u{b0}"),
+        "{pavilion}"
+    );
+    assert_eq!(pavilion, crown);
+}
+
+#[test]
 fn parse_tier_form_accepts_exactly_90() {
     assert!(parse_tier_form(tier_form("90.0", 2, "0.5", "T", "")).is_ok());
     assert!(parse_tier_form(tier_form("-90.0", 2, "0.5", "T", "")).is_ok());
@@ -239,15 +250,64 @@ fn parse_tier_form_rejects_a_non_finite_index() {
 }
 
 #[test]
-fn parse_tier_form_rejects_an_index_outside_the_gears_tooth_count() {
-    let err = parse_tier_form(tier_form("0.0", 2, "0.5", "T", "1, 96")).unwrap_err();
-    assert!(err.contains("96"));
+fn parse_tier_form_accepts_the_gears_tooth_count_as_a_valid_index() {
+    // 96 on a 96-tooth gear is the same position as 0: valid, and kept as typed.
+    let tier = parse_tier_form(tier_form("0.0", 2, "0.5", "T", "96, 16, 32")).unwrap();
+    assert_eq!(tier.indices, vec![96.0, 16.0, 32.0]);
+    let tier = parse_tier_form(tier_form("0.0", 2, "0.5", "T", "1, 96")).unwrap();
+    assert_eq!(tier.indices, vec![1.0, 96.0]);
+}
+
+#[test]
+fn parse_tier_form_rejects_an_index_past_the_gears_tooth_count() {
+    let err = parse_tier_form(tier_form("0.0", 2, "0.5", "T", "1, 97")).unwrap_err();
+    assert!(err.contains("'97'"));
+    assert!(err.contains("Indices run from 0 to 96 on this gear."));
+    assert_eq!(tier_form_error_field(&err), "indices");
+    // Just past the closing value is off the gear as well.
+    assert!(parse_tier_form(tier_form("0.0", 2, "0.5", "T", "96.5")).is_err());
+}
+
+#[test]
+fn parse_tier_form_treats_zero_and_the_tooth_count_as_the_same_position() {
+    let err = parse_tier_form(tier_form("0.0", 2, "0.5", "T", "0, 96")).unwrap_err();
+    assert!(err.contains("'96'"));
+    assert!(err.contains("more than once"));
+    let err = parse_tier_form(tier_form("0.0", 2, "0.5", "T", "96, 0")).unwrap_err();
+    assert!(err.contains("'0'"));
+    assert!(err.contains("more than once"));
+}
+
+#[test]
+fn parse_tier_form_shorthand_that_wraps_onto_zero_collides_with_a_typed_tooth_count() {
+    // "96 x4" expands to 96 (stored as 0 after the wrap), 24, 48, 72, so a later "0" repeats it.
+    let tier = parse_tier_form(tier_form("0.0", 2, "0.5", "T", "96 x4")).unwrap();
+    assert_eq!(tier.indices, vec![0.0, 24.0, 48.0, 72.0]);
+    let err = parse_tier_form(tier_form("0.0", 2, "0.5", "T", "96 x4, 0")).unwrap_err();
+    assert!(err.contains("more than once"));
 }
 
 #[test]
 fn parse_tier_form_rejects_a_negative_index() {
     let err = parse_tier_form(tier_form("0.0", 2, "0.5", "T", "-1")).unwrap_err();
     assert!(err.contains("-1"));
+    assert!(err.contains("Indices run from 0 to 96 on this gear."));
+}
+
+#[test]
+fn parse_tier_form_shorthand_that_runs_past_the_gear_wraps_onto_real_teeth() {
+    // 96 lands on the closing tooth and wraps to 0; the rest keep counting on from there.
+    let tier = parse_tier_form(tier_form("10", 2, "0.5", "G", "84:6:120")).unwrap();
+    assert_eq!(tier.indices, vec![84.0, 90.0, 0.0, 6.0, 12.0, 18.0]);
+}
+
+#[test]
+fn parse_index_list_accepts_the_tooth_count_on_any_gear() {
+    assert_eq!(parse_index_list("64, 8", 64).unwrap(), vec![64.0, 8.0]);
+    assert!(parse_index_list("65", 64).is_err());
+    // A gear of zero teeth has only position 0.
+    assert_eq!(parse_index_list("0", 0).unwrap(), vec![0.0]);
+    assert!(parse_index_list("1", 0).is_err());
 }
 
 #[test]
@@ -334,8 +394,17 @@ fn parse_tier_target_parses_a_table_width_target_in_mm() {
 
 #[test]
 fn parse_tier_target_rejects_a_non_numeric_value_with_the_scale_reference_wording_style() {
+    // A plain word holds no operator, so it keeps the short historical wording ...
+    let err = parse_tier_target(3, "abc").unwrap_err();
+    assert_eq!(err, "Depth 'abc' is not a number.");
+    // ... while text with '-' signs in it is read as arithmetic (number fields take
+    // expressions, see `number_expr`), so it is worded as a calculation that failed, and
+    // names the word it could not use.
     let err = parse_tier_target(3, "not-a-number").unwrap_err();
-    assert_eq!(err, "Depth 'not-a-number' is not a number.");
+    assert_eq!(
+        err,
+        "Depth 'not-a-number' cannot be calculated: 'not' is not a number."
+    );
     let err = parse_tier_target(4, "wide").unwrap_err();
     assert_eq!(err, "Girdle thickness 'wide' is not a number.");
     let err = parse_tier_target(5, "wide").unwrap_err();

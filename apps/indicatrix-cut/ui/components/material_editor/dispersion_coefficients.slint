@@ -1,0 +1,394 @@
+import { ComboBox, LineEdit } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { FormRow } from "../editor_inspector/form_row.slint";
+import { WarningLine } from "../warning_line.slint";
+import { DispersionEditorModel, DispersionView } from "../../models/dispersion_editor.slint";
+import { GuideModel } from "../../models/guide.slint";
+import { SegmentPill } from "../pill_button.slint";
+
+// One labelled coefficient field: a `FormRow` with a number input and its own error line.
+component CoefficientField inherits VerticalLayout {
+    in property <string> label;
+    in property <string> tooltip;
+    in property <string> placeholder;
+    // The message for this field, "" when it is fine; also draws the red border.
+    in property <string> error;
+    in-out property <string> value;
+    horizontal-stretch: 1;
+
+    FormRow {
+        label: root.label;
+        tooltip: root.tooltip;
+        label_width: 56px;
+        invalid: root.error != "";
+        error: root.error;
+        LineEdit {
+            text <=> root.value;
+            placeholder-text: root.placeholder;
+            accessible-label: "Coefficient " + root.label;
+            accessible-description: root.tooltip;
+        }
+    }
+}
+
+// The Dispersion section of the Gem Material Editor: a Simple | Coefficients switch above the
+// refractive-index sliders. In Coefficients mode the material's refractive-index curve is a
+// Sellmeier (1 or 3 terms) or Cauchy fit typed as coefficients, with a live readout (n_d, n_F,
+// n_C, n_F - n_C, Abbe number), the curve over 380-780 nm, plain-word errors and amber
+// warnings. All numbers come from Rust (`DispersionEditorModel.evaluate`); this component owns
+// the typed texts and the mode.
+//
+// Simple and Advanced (`GuideModel.shows_advanced()`): the Simple interface hides the whole switch
+// and keeps the plain refractive-index and dispersion sliders. A material that already has
+// coefficients (`mode == 1`) keeps the switch and its editor in every interface, so it is never
+// left without a way to see or leave them.
+//
+// `ri_val` / `disp_val` are the dialog's own Simple-mode numbers, two-way bound: leaving the
+// Coefficients mode copies the model's n_d and n_F - n_C into them, and entering it with empty
+// fields starts from the Cauchy fit of them. The dialog reads `mode` (to hide the two sliders),
+// `save_ok` (Save stays disabled while a typed model is unusable), `model_json` (what Save
+// stores, "" in Simple mode) and `dirty` (the discard prompt).
+export component MaterialDispersionCoefficients inherits VerticalLayout {
+    spacing: 8px;
+
+    in-out property <float> ri_val: 2.417;
+    in-out property <float> disp_val: 0.0256;
+    // 0 = Simple, 1 = Coefficients.
+    in-out property <int> mode: 0;
+    // The model combo: 0 = Sellmeier 1 term, 1 = Sellmeier 3 terms, 2 = Cauchy.
+    in-out property <int> kind: 2;
+    // The coefficient fields, in the order Rust lists them (`ModelKind::labels`): Sellmeier 3
+    // terms is B1, B2, B3, C1, C2, C3; Sellmeier 1 term is B1, C1; Cauchy is A, B, C.
+    in-out property <string> t0: "";
+    in-out property <string> t1: "";
+    in-out property <string> t2: "";
+    in-out property <string> t3: "";
+    in-out property <string> t4: "";
+    in-out property <string> t5: "";
+
+    // Save is allowed in Simple mode, and in Coefficients mode while the model is usable.
+    out property <bool> save_ok: root.mode == 0 || root.view.valid;
+    // The model JSON for the database; "" means the plain refractive-index path.
+    out property <string> model_json: (root.mode == 1 && root.view.valid) ? root.view.model_json : "";
+    // What the section looks like, for the dialog's unsaved-changes check: the Simple mode is
+    // always the same, whatever the hidden fields hold.
+    out property <string> signature: root.mode == 1
+        ? "c|\{root.kind}|" + root.t0 + "|" + root.t1 + "|" + root.t2 + "|" + root.t3 + "|" + root.t4 + "|" + root.t5
+        : "s";
+    property <string> baseline_signature: "s";
+    out property <bool> dirty: root.signature != root.baseline_signature;
+
+    property <[string]> kind_options: ["Sellmeier, 1 term", "Sellmeier, 3 terms", "Cauchy"];
+    property <DispersionView> view: DispersionEditorModel.evaluate(
+        root.kind, [root.t0, root.t1, root.t2, root.t3, root.t4, root.t5]);
+    property <[string]> copy_names: DispersionEditorModel.copy_options(root.kind);
+    property <bool> fields_empty: root.t0 == "" && root.t1 == "" && root.t2 == ""
+        && root.t3 == "" && root.t4 == "" && root.t5 == "";
+    property <string> formula:
+        root.kind == 2 ? "n = A + B/λ² + C/λ^4, with the wavelength λ in µm."
+        : root.kind == 1 ? "n² = 1 + B1·λ²/(λ² − C1) + B2·λ²/(λ² − C2) + B3·λ²/(λ² − C3), with the wavelength λ in µm."
+        : "n² = 1 + B1·λ²/(λ² − C1), with the wavelength λ in µm.";
+
+    // Hover text of coefficient field `index`.
+    pure function tip(index: int) -> string {
+        return root.kind == 2
+            ? (index == 0 ? "A: the index far into the red, where the wavelength terms have died away."
+                : index == 1 ? "B, in µm². Sets most of the dispersion."
+                : "C, in µm^4. A small correction; 0 is common.")
+            : (index < (root.kind == 1 ? 3 : 1)
+                ? "B: how strong this resonance is. No unit."
+                : "C: the resonance wavelength squared, in µm². 0.01 means a resonance at 100 nm.");
+    }
+
+    // Opens the dialog on the stored material: Rust pushed the starting mode, model and texts
+    // (`gui::optics::custom_materials`), and what is shown right now is the clean baseline.
+    init => {
+        root.mode = DispersionEditorModel.prefill_mode;
+        root.kind = DispersionEditorModel.prefill_kind;
+        root.t0 = DispersionEditorModel.prefill_texts[0];
+        root.t1 = DispersionEditorModel.prefill_texts[1];
+        root.t2 = DispersionEditorModel.prefill_texts[2];
+        root.t3 = DispersionEditorModel.prefill_texts[3];
+        root.t4 = DispersionEditorModel.prefill_texts[4];
+        root.t5 = DispersionEditorModel.prefill_texts[5];
+        root.baseline_signature = root.signature;
+    }
+
+    // Back to the Simple mode without touching `ri_val` / `disp_val`: the dialog calls this when a
+    // template or a physics host has just proposed those numbers itself.
+    public function reset_to_simple() {
+        root.mode = 0;
+    }
+
+    function clear_texts() {
+        root.t0 = "";
+        root.t1 = "";
+        root.t2 = "";
+        root.t3 = "";
+        root.t4 = "";
+        root.t5 = "";
+    }
+
+    function switch_to_simple() {
+        if (root.mode == 1 && root.view.valid) {
+            // The model's n_d and n_F - n_C become the sliders' values (kept inside their range).
+            root.ri_val = Math.min(Math.max(root.view.n_d_value, 1.30), 3.20);
+            root.disp_val = Math.min(Math.max(root.view.delta_value, 0.0), 0.210);
+        }
+        root.mode = 0;
+    }
+
+    function switch_to_coefficients() {
+        if (root.mode == 1) {
+            return;
+        }
+        root.mode = 1;
+        if (root.fields_empty) {
+            // The Cauchy fit of the sliders' numbers: the same curve the Simple mode would trace,
+            // as a starting point to edit.
+            root.kind = 2;
+            root.t0 = DispersionEditorModel.cauchy_seed(root.ri_val, root.disp_val, 0);
+            root.t1 = DispersionEditorModel.cauchy_seed(root.ri_val, root.disp_val, 1);
+            root.t2 = DispersionEditorModel.cauchy_seed(root.ri_val, root.disp_val, 2);
+        }
+    }
+
+    // The mode switch (Advanced mode, or a material that already has coefficients).
+    if GuideModel.shows_advanced() || root.mode == 1 : HorizontalLayout {
+        spacing: 10px;
+        alignment: start;
+        Text {
+            text: "Refractive index curve:";
+            font-size: 11px;
+            font-weight: 600;
+            color: Theme.text-secondary;
+            vertical-alignment: center;
+        }
+        SegmentPill {
+            width: 70px;
+            text: "Simple";
+            hint: "Type a refractive index and one dispersion number. The curve is a smooth fit through them.";
+            selected: root.mode == 0;
+            picked => { root.switch_to_simple(); }
+        }
+        SegmentPill {
+            width: 90px;
+            text: "Coefficients";
+            hint: "Type the Sellmeier or Cauchy coefficients of a published fit, for glass or a gem with a known curve.";
+            selected: root.mode == 1;
+            picked => { root.switch_to_coefficients(); }
+        }
+    }
+
+    if root.mode == 1 : VerticalLayout {
+        spacing: 8px;
+
+        // Model kind. Choosing another kind starts its fields empty: the same number means
+        // something else in each equation.
+        FormRow {
+            label: "Model";
+            tooltip: "The kind of equation the coefficients belong to. Sellmeier is the usual choice for glass and crystals, Cauchy for a quick fit. Choosing another model clears the fields.";
+            label_width: 56px;
+            ComboBox {
+                model: root.kind_options;
+                current-index <=> root.kind;
+                accessible-label: "Dispersion model";
+                accessible-description: "Choosing another model clears the coefficient fields.";
+                selected(value) => {
+                    root.clear_texts();
+                }
+            }
+        }
+
+        // Copy the coefficients of a built-in material of this kind as a starting point. Hidden
+        // when no built-in material uses this kind.
+        if root.copy_names.length > 0 : FormRow {
+            label: "Copy from";
+            tooltip: "Fill the fields with the coefficients of a built-in material, as a starting point.";
+            label_width: 56px;
+            ComboBox {
+                model: root.copy_names;
+                current-index: 0;
+                accessible-label: "Copy coefficients from a built-in material";
+                selected(name) => {
+                    if (self.current-index > 0) {
+                        root.t0 = DispersionEditorModel.coefficient(root.kind, name, 0);
+                        root.t1 = DispersionEditorModel.coefficient(root.kind, name, 1);
+                        root.t2 = DispersionEditorModel.coefficient(root.kind, name, 2);
+                        root.t3 = DispersionEditorModel.coefficient(root.kind, name, 3);
+                        root.t4 = DispersionEditorModel.coefficient(root.kind, name, 4);
+                        root.t5 = DispersionEditorModel.coefficient(root.kind, name, 5);
+                    }
+                    self.current-index = 0;
+                }
+            }
+        }
+
+        Text {
+            text: root.formula;
+            font-size: 9px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+
+        // The coefficient fields, paired B with its C for a Sellmeier fit.
+        if root.kind == 1 : VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                spacing: 10px;
+                CoefficientField { value <=> root.t0; label: root.view.labels[0]; tooltip: root.tip(0); placeholder: root.view.placeholders[0]; error: root.view.field_errors[0]; }
+                CoefficientField { value <=> root.t3; label: root.view.labels[3]; tooltip: root.tip(3); placeholder: root.view.placeholders[3]; error: root.view.field_errors[3]; }
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                CoefficientField { value <=> root.t1; label: root.view.labels[1]; tooltip: root.tip(1); placeholder: root.view.placeholders[1]; error: root.view.field_errors[1]; }
+                CoefficientField { value <=> root.t4; label: root.view.labels[4]; tooltip: root.tip(4); placeholder: root.view.placeholders[4]; error: root.view.field_errors[4]; }
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                CoefficientField { value <=> root.t2; label: root.view.labels[2]; tooltip: root.tip(2); placeholder: root.view.placeholders[2]; error: root.view.field_errors[2]; }
+                CoefficientField { value <=> root.t5; label: root.view.labels[5]; tooltip: root.tip(5); placeholder: root.view.placeholders[5]; error: root.view.field_errors[5]; }
+            }
+        }
+        if root.kind == 0 : HorizontalLayout {
+            spacing: 10px;
+            CoefficientField { value <=> root.t0; label: root.view.labels[0]; tooltip: root.tip(0); placeholder: root.view.placeholders[0]; error: root.view.field_errors[0]; }
+            CoefficientField { value <=> root.t1; label: root.view.labels[1]; tooltip: root.tip(1); placeholder: root.view.placeholders[1]; error: root.view.field_errors[1]; }
+        }
+        if root.kind == 2 : VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                spacing: 10px;
+                CoefficientField { value <=> root.t0; label: root.view.labels[0]; tooltip: root.tip(0); placeholder: root.view.placeholders[0]; error: root.view.field_errors[0]; }
+                CoefficientField { value <=> root.t1; label: root.view.labels[1]; tooltip: root.tip(1); placeholder: root.view.placeholders[1]; error: root.view.field_errors[1]; }
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                CoefficientField { value <=> root.t2; label: root.view.labels[2]; tooltip: root.tip(2); placeholder: root.view.placeholders[2]; error: root.view.field_errors[2]; }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+
+        if root.view.hint != "" : Text {
+            text: root.view.hint;
+            font-size: 9px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+
+        // A problem with the curve as a whole; Save stays disabled until it is fixed.
+        if root.view.model_error != "" : WarningLine {
+            text: root.view.model_error;
+            tint: Theme.danger;
+            font_size: 10px;
+            font_weight: 600;
+        }
+
+        // The live readout: the five numbers a gem catalogue prints for a material.
+        HorizontalLayout {
+            spacing: 6px;
+            Rectangle {
+                horizontal-stretch: 1;
+                Tooltip { text: @markdown("n_d: the refractive index for yellow light (587.6 nm). It is the one number a gem catalogue prints. See the glossary."); }
+                VerticalLayout {
+                    Text { text: "nd"; font-size: 9px; color: Theme.text-muted; }
+                    Text { text: root.view.n_d; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+                Tooltip { text: @markdown("n_F: the refractive index for blue light (486.1 nm)."); }
+                VerticalLayout {
+                    Text { text: "nF"; font-size: 9px; color: Theme.text-muted; }
+                    Text { text: root.view.n_f; font-size: 11px; font-weight: 700; color: Theme.text-primary; }
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+                Tooltip { text: @markdown("n_C: the refractive index for red light (656.3 nm)."); }
+                VerticalLayout {
+                    Text { text: "nC"; font-size: 9px; color: Theme.text-muted; }
+                    Text { text: root.view.n_c; font-size: 11px; font-weight: 700; color: Theme.text-primary; }
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+                Tooltip { text: @markdown("The dispersion: n_F minus n_C, the difference between the blue and the red index. The bigger it is, the more fire the stone shows. See the glossary."); }
+                VerticalLayout {
+                    Text { text: "ΔnF−C"; font-size: 9px; color: Theme.text-muted; }
+                    Text { text: root.view.delta; font-size: 11px; font-weight: 700; color: Theme.accent-purple; }
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+                Tooltip { text: @markdown("Abbe number: (nd − 1) divided by (nF − nC). A lower number means more dispersion and more fire. Gem materials sit between about 5 and 120."); }
+                VerticalLayout {
+                    Text { text: "Abbe number"; font-size: 9px; color: Theme.text-muted; overflow: elide; }
+                    Text { text: root.view.abbe; font-size: 11px; font-weight: 700; color: Theme.accent-amber; }
+                }
+            }
+        }
+
+        // The curve n(λ) over the visible range, scaled to its own spread.
+        if root.view.valid : VerticalLayout {
+            spacing: 2px;
+            HorizontalLayout {
+                spacing: 4px;
+                Rectangle {
+                    width: 44px;
+                    height: 84px;
+                    Text {
+                        x: 0px;
+                        y: 0px;
+                        text: root.view.curve_top;
+                        font-size: 9px;
+                        color: Theme.text-muted;
+                    }
+                    Text {
+                        x: 0px;
+                        y: parent.height - self.height;
+                        text: root.view.curve_bottom;
+                        font-size: 9px;
+                        color: Theme.text-muted;
+                    }
+                }
+                Rectangle {
+                    height: 84px;
+                    horizontal-stretch: 1;
+                    background: Theme.surface-sunken;
+                    border-width: 1px;
+                    border-color: Theme.border-dialog;
+                    border-radius: Theme.radius-sm;
+                    accessible-role: AccessibleRole.image;
+                    accessible-label: "Refractive index against wavelength, from " + root.view.curve_bottom + " to " + root.view.curve_top;
+                    Tooltip { text: @markdown("The refractive index over the visible wavelengths, scaled to its own spread: blue light bends most, red least."); }
+                    Path {
+                        width: 100%;
+                        height: 100%;
+                        fit: fill;
+                        commands: root.view.curve;
+                        viewbox-width: 100;
+                        viewbox-height: 100;
+                        stroke: Theme.accent-cyan;
+                        stroke-width: 1.5px;
+                        fill: transparent;
+                    }
+                }
+            }
+            HorizontalLayout {
+                padding-left: 48px;
+                alignment: space-between;
+                Text { text: "380 nm"; font-size: 9px; color: Theme.text-muted; }
+                Text { text: "wavelength"; font-size: 9px; color: Theme.text-muted; }
+                Text { text: "780 nm"; font-size: 9px; color: Theme.text-muted; }
+            }
+        }
+
+        // Odd but usable curves.
+        for note in root.view.warnings : WarningLine {
+            text: note;
+            font_size: 9px;
+            font_weight: 600;
+        }
+    }
+}

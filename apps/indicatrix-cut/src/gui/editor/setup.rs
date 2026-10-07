@@ -5,8 +5,16 @@
 
 use super::{auto_solve, edit_intent, native_io, stall_guard, state::EditorState, view};
 use crate::{
-    MainWindow, bridge::render_thread::RenderContext,
-    gui::solid_preview::preview_state::SolidPreviewState,
+    MainWindow,
+    bridge::render_thread::RenderContext,
+    gui::{
+        solid_preview::{cut_slider, preview_state::SolidPreviewState},
+        tutorial_events::raise,
+    },
+};
+use indicatrix_editor::{
+    edit_intent::DRAIN_INTERVAL,
+    guide::viewing_events::{DIAGRAM_PANEL_ENLARGED, cut_slider_event},
 };
 use slint::{ComponentHandle as _, Model as _};
 use std::{
@@ -192,6 +200,41 @@ fn open_requested_design(
     });
 }
 
+/// What one Cut slider replan needs, shared by the queue's drain and its retries.
+struct CutReplan {
+    ui_weak: slint::Weak<MainWindow>,
+    state: Rc<RefCell<EditorState>>,
+    render_ctx: Arc<Mutex<RenderContext>>,
+    preview_state: Arc<SolidPreviewState>,
+    solid_last_solved: view::SolidLastSolved,
+}
+
+/// Submits the replan a moved Cut slider (or a changed enlarged panel) asks for. The
+/// editor state is only borrowed, never held across a Slint call that can re-enter; when
+/// a writer holds it, this tries again on the queue's own 16 ms beat until
+/// `retries_left` runs out.
+fn run_cut_replan(replan: &Rc<CutReplan>, retries_left: u8) {
+    let Some(ui) = replan.ui_weak.upgrade() else {
+        return;
+    };
+    let Ok(st) = replan.state.try_borrow() else {
+        if let Some(next) = cut_slider::retries_after_busy(retries_left) {
+            let again = Rc::clone(replan);
+            slint::Timer::single_shot(DRAIN_INTERVAL, move || run_cut_replan(&again, next));
+        }
+        return;
+    };
+    view::submit_preview_replan(
+        &ui,
+        &replan.render_ctx,
+        &replan.preview_state,
+        &replan.solid_last_solved,
+        &st,
+        std::collections::BTreeSet::new(),
+        false,
+    );
+}
+
 /// Redraws the preview when the tier-cutoff slider moves, and when the Diagram's
 /// enlarged panel changes (`on_diagram_enlarged_panel_changed`, same queue).
 ///
@@ -207,9 +250,11 @@ fn open_requested_design(
 /// `solid_viewport.slint`'s slider uses its own `changed(value)` INTERACTION
 /// callback (fires only on an actual drag/keyboard nudge/click, not on a tier
 /// push moving the bound expression). This is the only handler left on this path,
-/// using `try_borrow`/skip rather than plain `borrow()`: a writer already
-/// holding the guard will submit its own replan on its way out, so this tick's
-/// work would only be redundant.
+/// using `try_borrow` rather than plain `borrow()`. A tick that finds the editor
+/// state borrowed is retried a few ticks later ([`cut_slider::retries_after_busy`])
+/// instead of being dropped, which used to leave the slider moved and the view not; a
+/// writer that holds the guard for longer (a blocking file dialog) submits its own
+/// replan on its way out, which reads the slider fresh.
 ///
 /// A `changed(value)` tick fires on every pixel of drag, far more often than once
 /// per 16ms frame. Each one posts an [`edit_intent::EditIntent::CutOff`] into a
@@ -225,30 +270,16 @@ pub(super) fn setup_tier_cutoff_callback(
     preview_state: &Arc<SolidPreviewState>,
     solid_last_solved: &view::SolidLastSolved,
 ) {
-    let intent_queue = {
-        let state = Rc::clone(state);
-        let render_ctx = Arc::clone(render_ctx);
-        let preview_state = Arc::clone(preview_state);
-        let solid_last_solved = Arc::clone(solid_last_solved);
-        let ui_weak = ui.as_weak();
-        edit_intent::EditIntentQueue::new(move |_intent| {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            let Ok(st) = state.try_borrow() else {
-                return;
-            };
-            view::submit_preview_replan(
-                &ui,
-                &render_ctx,
-                &preview_state,
-                &solid_last_solved,
-                &st,
-                std::collections::BTreeSet::new(),
-                false,
-            );
-        })
-    };
+    let replan = Rc::new(CutReplan {
+        ui_weak: ui.as_weak(),
+        state: Rc::clone(state),
+        render_ctx: Arc::clone(render_ctx),
+        preview_state: Arc::clone(preview_state),
+        solid_last_solved: Arc::clone(solid_last_solved),
+    });
+    let intent_queue = edit_intent::EditIntentQueue::new(move |_intent| {
+        run_cut_replan(&replan, cut_slider::REPLAN_RETRIES);
+    });
     // The diagram's enlarged-panel choice (`SolidPreviewModel.diagram_enlarged_panel`)
     // is read by the plan worker just like the tier cutoff, and changing it alone
     // redraws nothing, so it shares this queue: the drain ignores the intent's
@@ -263,8 +294,14 @@ pub(super) fn setup_tier_cutoff_callback(
                 let Some(ui) = ui_weak_enlarged.upgrade() else {
                     return;
                 };
-                let count = ui.global::<crate::SolidPreviewModel>().get_tier_cutoff();
+                let model = ui.global::<crate::SolidPreviewModel>();
+                let count = model.get_tier_cutoff();
                 enlarged_queue.post(edit_intent::EditIntent::CutOff { count });
+                // A tutorial step may wait for a panel to be enlarged (not for it to go
+                // back to all three).
+                if model.get_diagram_enlarged_panel() >= 0 {
+                    raise(&ui, DIAGRAM_PANEL_ENLARGED);
+                }
             });
         });
     let ui_weak = ui.as_weak();
@@ -276,6 +313,9 @@ pub(super) fn setup_tier_cutoff_callback(
                 };
                 let count = ui.global::<crate::SolidPreviewModel>().get_tier_cutoff();
                 intent_queue.post(edit_intent::EditIntent::CutOff { count });
+                // A tutorial step may wait for the slider to reach the rough, a step in
+                // between, or the finished stone.
+                raise(&ui, cut_slider_event(count));
             });
         });
 }

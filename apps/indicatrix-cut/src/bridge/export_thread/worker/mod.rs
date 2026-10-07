@@ -23,7 +23,7 @@ mod final_picture;
 mod tests;
 mod types;
 
-pub(super) use export::run_export;
+pub use export::run_export;
 pub use final_picture::{RenderedImage, render_image_rgba};
 pub use types::AccumulationCarry;
 // v16: `render_local_share`'s only consumers outside this module are

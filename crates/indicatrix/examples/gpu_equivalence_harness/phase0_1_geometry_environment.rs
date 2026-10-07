@@ -3,9 +3,12 @@
 //! studio environment sampling, CIE 1931 CMF integration, von Kries white balance,
 //! and the furnace anchor) checks.
 
-use indicatrix::renderer::gpu::{
-    GpuContext, camera_check, determinism_check, environment_check, furnace_check, layout_check,
-    polyhedron_check, rng_check,
+use indicatrix::renderer::{
+    buffers::GpuGemMaterial,
+    gpu::{
+        GpuContext, camera_check, determinism_check, environment_check, furnace_check,
+        layout_check, polyhedron_check, rng_check,
+    },
 };
 
 use crate::{
@@ -22,7 +25,10 @@ const DET_SAMPLES: u32 = 256;
 
 /// Tier 1a: the mandatory struct-layout GPU echo test. Returns whether it passed.
 fn report_layout_check(ctx: &GpuContext) -> bool {
-    print!("[Tier 1] struct-layout echo test (GpuGemMaterial, 480 bytes) ... ");
+    print!(
+        "[Tier 1] struct-layout echo test (GpuGemMaterial, {} bytes) ... ",
+        std::mem::size_of::<GpuGemMaterial>()
+    );
     let result = layout_check::run(ctx);
     if result.passed() {
         println!("PASS");
@@ -380,6 +386,8 @@ pub fn run_phase0_and_phase1_checks(ctx: &GpuContext) -> bool {
     let blackbody_passed = report_ulp_check("blackbody_spectrum", &blackbody_result);
     let studio_env_result = environment_check::run_studio_env(ctx);
     let studio_env_passed = report_ulp_check("sample_studio_environment", &studio_env_result);
+    let sun_nee_result = environment_check::run_sun_nee(ctx);
+    let sun_nee_passed = report_ulp_check("daylight_sun_nee", &sun_nee_result);
     let white_balance_result = environment_check::run_white_balance(ctx);
     let white_balance_passed =
         report_ulp_check("compute_illuminant_white_balance", &white_balance_result);
@@ -394,6 +402,7 @@ pub fn run_phase0_and_phase1_checks(ctx: &GpuContext) -> bool {
         && cmf_passed
         && blackbody_passed
         && studio_env_passed
+        && sun_nee_passed
         && white_balance_passed
         && furnace_passed
 }

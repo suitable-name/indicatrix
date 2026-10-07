@@ -6,8 +6,9 @@
 //! `indicatrix-vault`'s `CustomMaterialRow` deliberately does not depend on `indicatrix`
 //! (see that struct's own doc comment), so it stores `crystal_system`/
 //! `optical_character` as plain `Option<String>` -- a `indicatrix` enum variant's `Debug`
-//! name, e.g. `"Trigonal"`. This module is the one place that knows both types, and
-//! is where the string <-> enum and Slint-combo-index <-> enum conversions live. No
+//! name, e.g. `"Trigonal"`. This module is where the Slint-combo-index <-> enum
+//! conversions live; the string <-> enum ones (and the library row -> `GemMaterial`
+//! build, shared with the command line) are in `indicatrix_cut_core::material`. No
 //! dependency on Slint itself -- pure data, exercised directly by the unit tests,
 //! matching this app's `gui::optics::c_axis`/`gui::render::sample_scale` precedent for
 //! where such a helper lives.
@@ -17,7 +18,14 @@ use indicatrix::optics::{
     fluorescence::Fluorescence,
     materials::{CrystalSystem, GemMaterial, OpticalCharacter},
 };
-use indicatrix_cut_core::material::colorMode;
+// The stored spelling of a crystal system and an optical character (the variant's `Debug`
+// name, e.g. "Trigonal") lives in `indicatrix-cut-core`, next to the code the command line
+// shares: `crystal_system_name` / `crystal_system_from_name` and the two for the optical
+// character. A name nobody knows reads back as `None`, which a caller treats exactly like an
+// absent row field.
+use indicatrix_cut_core::material::{
+    ColorMode, LibraryMaterial, crystal_system_name, optical_character_name,
+};
 use indicatrix_vault::{
     db::sqlite::{CustomMaterialParams, Database},
     model::material::CustomMaterialRow,
@@ -46,58 +54,6 @@ const OPTICAL_CHARACTERS: [OpticalCharacter; 5] = [
     OpticalCharacter::BiaxialPositive,
     OpticalCharacter::BiaxialNegative,
 ];
-
-/// `CrystalSystem`'s `Debug` name, e.g. `"Trigonal"` -- what gets persisted in
-/// `CustomMaterialRow::crystal_system`/the `custom_gem_materials.crystal_system`
-/// column.
-#[must_use]
-pub const fn crystal_system_to_str(cs: CrystalSystem) -> &'static str {
-    match cs {
-        CrystalSystem::Cubic => "Cubic",
-        CrystalSystem::Tetragonal => "Tetragonal",
-        CrystalSystem::Hexagonal => "Hexagonal",
-        CrystalSystem::Trigonal => "Trigonal",
-        CrystalSystem::Orthorhombic => "Orthorhombic",
-        CrystalSystem::Monoclinic => "Monoclinic",
-        CrystalSystem::Triclinic => "Triclinic",
-    }
-}
-
-/// Inverse of [`crystal_system_to_str`]. `None` for anything unrecognized (a
-/// hand-edited database, or a future variant this build predates) -- the caller must
-/// treat that exactly like an absent (`None`) row field: fall back to
-/// `GemMaterial::new_custom`'s own inference rather than guessing.
-#[must_use]
-pub fn crystal_system_from_str(s: &str) -> Option<CrystalSystem> {
-    CRYSTAL_SYSTEMS
-        .iter()
-        .copied()
-        .find(|cs| crystal_system_to_str(*cs) == s)
-}
-
-/// `OpticalCharacter`'s `Debug` name, e.g. `"UniaxialNegative"` -- what gets
-/// persisted in `CustomMaterialRow::optical_character`/the
-/// `custom_gem_materials.optical_character` column.
-#[must_use]
-pub const fn optical_character_to_str(oc: OpticalCharacter) -> &'static str {
-    match oc {
-        OpticalCharacter::Isotropic => "Isotropic",
-        OpticalCharacter::UniaxialPositive => "UniaxialPositive",
-        OpticalCharacter::UniaxialNegative => "UniaxialNegative",
-        OpticalCharacter::BiaxialPositive => "BiaxialPositive",
-        OpticalCharacter::BiaxialNegative => "BiaxialNegative",
-    }
-}
-
-/// Inverse of [`optical_character_to_str`]. Same "unrecognized falls back to `None`,
-/// treated as inference" contract as [`crystal_system_from_str`].
-#[must_use]
-pub fn optical_character_from_str(s: &str) -> Option<OpticalCharacter> {
-    OPTICAL_CHARACTERS
-        .iter()
-        .copied()
-        .find(|oc| optical_character_to_str(*oc) == s)
-}
 
 /// `material_editor_dialog.slint`'s crystal-system `ComboBox` current-index -> enum.
 /// `None` for an out-of-range index (defensive only -- the combo itself can never
@@ -165,43 +121,38 @@ pub const fn is_biaxial(oc: OpticalCharacter) -> bool {
 /// migration left them `NULL` -- see `Database::migrate_crystal_optics_columns`), so
 /// every one of those three fields on the returned `GemMaterial` stays exactly what
 /// `new_custom` already infers, unchanged.
+///
+/// A row whose `dispersion_model_json` holds a usable Sellmeier or Cauchy model builds its
+/// curve with `GemMaterial::new_custom_with_dispersion`; a row without one (every row saved
+/// before the column existed, and every refractive-index-and-dispersion row) or with one
+/// that fails `DispersionModel::validate` takes the `new_custom` path from `refractive_index`
+/// and `dispersion`, exactly as before.
+///
+/// The work is `indicatrix_cut_core::material::LibraryMaterial::gem_material`, which the
+/// command line shares; this function only copies the row's fields into it.
 #[must_use]
 pub fn gem_material_from_row(row: &CustomMaterialRow) -> GemMaterial {
-    let mut material = GemMaterial::new_custom(
-        &row.name,
-        row.refractive_index,
-        row.dispersion,
-        row.birefringence,
-        row.absorption_rgb,
-    );
-    if let Some(cs) = row
-        .crystal_system
-        .as_deref()
-        .and_then(crystal_system_from_str)
-    {
-        material.crystal_system = cs;
+    library_material(row).gem_material()
+}
+
+/// The fields of `row` as the plain values `indicatrix-cut-core` builds a material and a
+/// file snapshot from (the vault crate cannot name that type, so the copy is made here).
+#[must_use]
+pub fn library_material(row: &CustomMaterialRow) -> LibraryMaterial<'_> {
+    LibraryMaterial {
+        name: &row.name,
+        refractive_index: row.refractive_index,
+        dispersion: row.dispersion,
+        birefringence: row.birefringence,
+        absorption_rgb: row.absorption_rgb,
+        crystal_system: row.crystal_system.as_deref(),
+        optical_character: row.optical_character.as_deref(),
+        biaxial_delta_beta_alpha: row.biaxial_delta_beta_alpha,
+        specific_gravity: row.specific_gravity,
+        color_recipe_json: row.color_recipe_json.as_deref(),
+        dispersion_model_json: row.dispersion_model_json.as_deref(),
+        absorption_bands_json: row.absorption_bands_json.as_deref(),
     }
-    if let Some(oc) = row
-        .optical_character
-        .as_deref()
-        .and_then(optical_character_from_str)
-    {
-        material.optical_character = oc;
-    }
-    if let Some(delta) = row.biaxial_delta_beta_alpha {
-        material.biaxial_delta_beta_alpha = Some(delta);
-    }
-    // A stored recipe renders from its `resolved_bands` while physics is the active mode
-    // (the fantasy payload and the parked recipe are both kept in the JSON).
-    if let Some(mode) = row
-        .color_recipe_json
-        .as_deref()
-        .and_then(colorMode::from_json)
-        && mode.is_physics()
-    {
-        material.absorption = mode.resolve_tensor();
-    }
-    material
 }
 
 /// Saves `material`'s crystal-optics fields (name, RI, dispersion, birefringence,
@@ -224,6 +175,10 @@ pub fn gem_material_from_row(row: &CustomMaterialRow) -> GemMaterial {
 /// # Errors
 ///
 /// Returns whatever [`Database::save_custom_material`] returns.
+///
+/// The editor saves through [`save_gem_material_fields`] (which also carries the dispersion
+/// model); this loose-scalar form is what the tests that predate the model still call.
+#[cfg(test)]
 #[expect(
     clippy::too_many_arguments,
     reason = "mirrors the vault row's columns; a params struct would only move the list"
@@ -238,21 +193,75 @@ pub fn save_gem_material(
     specific_gravity: Option<f32>,
     color_recipe_json: Option<&str>,
 ) -> anyhow::Result<()> {
+    save_gem_material_fields(
+        db,
+        material,
+        &MaterialSaveFields {
+            ri,
+            dispersion,
+            birefringence,
+            absorption_rgb,
+            specific_gravity,
+            color_recipe_json,
+            dispersion_model_json: None,
+            absorption_bands_json: None,
+        },
+    )
+}
+
+/// The editor values [`save_gem_material_fields`] stores next to a material's crystal
+/// optics: the loose scalars [`save_gem_material`] documents, plus the dispersion model.
+#[derive(Debug, Clone, Copy)]
+pub struct MaterialSaveFields<'a> {
+    /// The refractive index (`n_d` of the model when `dispersion_model_json` is set).
+    pub ri: f32,
+    /// The Fraunhofer `n_F - n_C` figure (the model's own when `dispersion_model_json` is
+    /// set).
+    pub dispersion: f32,
+    /// The birefringence.
+    pub birefringence: f32,
+    /// The absorption triple an older build reads as the color.
+    pub absorption_rgb: [f32; 3],
+    /// The specific gravity, `None` for "not recorded".
+    pub specific_gravity: Option<f32>,
+    /// The serialized `ColorMode`, stored exactly as given.
+    pub color_recipe_json: Option<&'a str>,
+    /// The dispersion model as the JSON `dispersion_model_to_json` writes, or `None` for
+    /// the plain refractive-index-and-dispersion path.
+    pub dispersion_model_json: Option<&'a str>,
+    /// The seven-band body colour as the JSON `absorption_bands_to_json` writes, or `None` for "no
+    /// bands" (the triple colours the material).
+    pub absorption_bands_json: Option<&'a str>,
+}
+
+/// [`save_gem_material`] with the dispersion model: the same row, plus the
+/// `dispersion_model_json` column.
+///
+/// # Errors
+///
+/// Returns whatever [`Database::save_custom_material`] returns.
+pub fn save_gem_material_fields(
+    db: &Database,
+    material: &GemMaterial,
+    fields: &MaterialSaveFields<'_>,
+) -> anyhow::Result<()> {
     db.save_custom_material(&CustomMaterialParams {
         name: &material.name,
-        refractive_index: ri,
-        dispersion,
-        birefringence,
-        absorption_rgb,
-        crystal_system: Some(crystal_system_to_str(material.crystal_system)),
-        optical_character: Some(optical_character_to_str(material.optical_character)),
+        refractive_index: fields.ri,
+        dispersion: fields.dispersion,
+        birefringence: fields.birefringence,
+        absorption_rgb: fields.absorption_rgb,
+        crystal_system: Some(crystal_system_name(material.crystal_system)),
+        optical_character: Some(optical_character_name(material.optical_character)),
         biaxial_delta_beta_alpha: material.biaxial_delta_beta_alpha,
         // This UI does not yet author per-axis dispersion data (that would need its
         // own editor surface, out of scope here) -- `None`, the same "not stored"
         // state every row saved before this column existed already has.
         per_axis_dispersion_json: None,
-        specific_gravity,
-        color_recipe_json,
+        specific_gravity: fields.specific_gravity,
+        color_recipe_json: fields.color_recipe_json,
+        dispersion_model_json: fields.dispersion_model_json,
+        absorption_bands_json: fields.absorption_bands_json,
     })
 }
 
@@ -265,7 +274,7 @@ pub fn custom_material_physics_from_rows(rows: &[CustomMaterialRow]) -> Vec<Stri
         .filter(|row| {
             row.color_recipe_json
                 .as_deref()
-                .and_then(colorMode::from_json)
+                .and_then(ColorMode::from_json)
                 .is_some_and(|m| m.is_physics())
         })
         .map(|row| row.name.clone())
@@ -282,7 +291,7 @@ pub fn custom_material_fluorescence_from_rows(
     let catalogue = ChromophoreCatalogue::global();
     rows.iter()
         .filter_map(|row| {
-            let mode = colorMode::from_json(row.color_recipe_json.as_deref()?)?;
+            let mode = ColorMode::from_json(row.color_recipe_json.as_deref()?)?;
             let glow = mode.fluorescence(catalogue);
             (!glow.is_empty()).then(|| (row.name.clone(), Arc::new(glow)))
         })
@@ -319,20 +328,24 @@ pub fn custom_material_specific_gravity_from_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indicatrix_cut_core::{
+        material::{crystal_system_from_name, optical_character_from_name},
+        native::dispersion_model_from_json,
+    };
 
     #[test]
     fn crystal_system_str_round_trips_all_seven_variants() {
         for cs in CRYSTAL_SYSTEMS {
-            let s = crystal_system_to_str(cs);
-            assert_eq!(crystal_system_from_str(s), Some(cs), "variant={cs:?}");
+            let s = crystal_system_name(cs);
+            assert_eq!(crystal_system_from_name(s), Some(cs), "variant={cs:?}");
         }
     }
 
     #[test]
     fn optical_character_str_round_trips_all_five_variants() {
         for oc in OPTICAL_CHARACTERS {
-            let s = optical_character_to_str(oc);
-            assert_eq!(optical_character_from_str(s), Some(oc), "variant={oc:?}");
+            let s = optical_character_name(oc);
+            assert_eq!(optical_character_from_name(s), Some(oc), "variant={oc:?}");
         }
     }
 
@@ -383,8 +396,8 @@ mod tests {
 
     #[test]
     fn unrecognized_strings_and_out_of_range_indices_return_none() {
-        assert_eq!(crystal_system_from_str("Amorphous"), None);
-        assert_eq!(optical_character_from_str(""), None);
+        assert_eq!(crystal_system_from_name("Amorphous"), None);
+        assert_eq!(optical_character_from_name(""), None);
         assert_eq!(crystal_system_from_index(-1), None);
         assert_eq!(crystal_system_from_index(99), None);
         assert_eq!(optical_character_from_index(-1), None);
@@ -420,6 +433,8 @@ mod tests {
             per_axis_dispersion_json: None,
             specific_gravity: None,
             color_recipe_json: None,
+            dispersion_model_json: None,
+            absorption_bands_json: None,
         };
         let from_row = gem_material_from_row(&row);
         let inferred = GemMaterial::new_custom(
@@ -468,6 +483,8 @@ mod tests {
             per_axis_dispersion_json: None,
             specific_gravity: None,
             color_recipe_json: None,
+            dispersion_model_json: None,
+            absorption_bands_json: None,
         };
         let material = gem_material_from_row(&row);
         assert_eq!(material.crystal_system, CrystalSystem::Orthorhombic);
@@ -494,6 +511,8 @@ mod tests {
             per_axis_dispersion_json: None,
             specific_gravity,
             color_recipe_json: None,
+            dispersion_model_json: None,
+            absorption_bands_json: None,
         }
     }
 
@@ -531,5 +550,106 @@ mod tests {
         let rows = [row_named("My Garnet", Some(3.9))];
         let entries = custom_material_specific_gravity_from_rows(&rows);
         assert!((entries[0].1 - 3.9_f64).abs() < 1e-6);
+    }
+
+    // --- dispersion model column ---
+
+    const BK7_JSON: &str = r#"{"kind":"sellmeier3","b":[1.0396122,0.23179235,1.0104694],"c":[0.006000699,0.020017914,103.56065]}"#;
+
+    fn row_with_model(json: Option<&str>) -> CustomMaterialRow {
+        CustomMaterialRow {
+            refractive_index: 1.5168,
+            dispersion: 0.008,
+            dispersion_model_json: json.map(str::to_string),
+            ..row_named("My Glass", None)
+        }
+    }
+
+    /// A row without a model is the `new_custom` Cauchy fit of its two scalars, curve
+    /// included: nothing saved before the column existed changes.
+    #[test]
+    fn a_row_without_a_model_keeps_the_plain_cauchy_fit() {
+        let row = row_with_model(None);
+        let material = gem_material_from_row(&row);
+        let plain = GemMaterial::new_custom(
+            &row.name,
+            row.refractive_index,
+            row.dispersion,
+            row.birefringence,
+            row.absorption_rgb,
+        );
+        assert_eq!(material.dispersion, plain.dispersion);
+        assert_eq!(material, plain);
+    }
+
+    /// A row with a model renders with that model, not the flat fit of its scalars.
+    #[test]
+    fn a_row_with_a_model_builds_that_curve() {
+        let row = row_with_model(Some(BK7_JSON));
+        let material = gem_material_from_row(&row);
+        let model = dispersion_model_from_json(BK7_JSON).expect("the fixture is a valid model");
+        assert_eq!(material.dispersion, model);
+        assert!(matches!(
+            material.dispersion,
+            indicatrix::optics::dispersion::DispersionModel::Sellmeier3 { .. }
+        ));
+        assert!((material.dispersion.n_d() - 1.5168).abs() < 0.002);
+        // Crystal optics still come from the same rules as the plain path.
+        assert_eq!(material.crystal_system, CrystalSystem::Cubic);
+        assert_eq!(material.optical_character, OpticalCharacter::Isotropic);
+    }
+
+    /// A stored model that cannot render (a resonance at 600 nm, text that is not a
+    /// model) is ignored, and the row takes the plain path instead of drawing a clear block.
+    #[test]
+    fn an_unusable_stored_model_falls_back_to_the_plain_path() {
+        let plain = gem_material_from_row(&row_with_model(None));
+        for json in [
+            r#"{"kind":"sellmeier1","b1":1.0,"c1":0.36}"#,
+            r#"{"kind":"cauchy","a":0.5,"b":0.0,"c":0.0}"#,
+            "not json",
+            "",
+        ] {
+            let material = gem_material_from_row(&row_with_model(Some(json)));
+            assert_eq!(material, plain, "{json}");
+        }
+    }
+
+    /// The model written by the save path comes back from the vault as the same curve, and
+    /// saving without one clears the column.
+    #[test]
+    fn the_vault_round_trips_the_dispersion_model() {
+        let db = Database::new(Some(":memory:")).expect("in-memory database");
+        let model = dispersion_model_from_json(BK7_JSON).expect("valid model");
+        let material = GemMaterial::new_custom_with_dispersion("My Glass", model, 0.0, [0.0; 3]);
+        let json = indicatrix_cut_core::native::dispersion_model_to_json(&model);
+        let fields = MaterialSaveFields {
+            ri: model.n_d(),
+            dispersion: model.delta_f_c(),
+            birefringence: 0.0,
+            absorption_rgb: [0.0; 3],
+            specific_gravity: None,
+            color_recipe_json: None,
+            dispersion_model_json: Some(&json),
+            absorption_bands_json: None,
+        };
+        save_gem_material_fields(&db, &material, &fields).expect("save");
+        let rows = db.get_custom_materials().expect("read");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].dispersion_model_json.as_deref(),
+            Some(json.as_str())
+        );
+        assert_eq!(gem_material_from_row(&rows[0]).dispersion, model);
+
+        // The stored scalars are the model's own n_d and n_F - n_C.
+        assert!((rows[0].refractive_index - model.n_d()).abs() < 1e-6);
+        assert!((rows[0].dispersion - model.delta_f_c()).abs() < 1e-6);
+
+        // Back to the plain path: the legacy saver writes no model.
+        save_gem_material(&db, &material, 1.5168, 0.008, 0.0, [0.0; 3], None, None)
+            .expect("save plain");
+        let rows = db.get_custom_materials().expect("read again");
+        assert_eq!(rows[0].dispersion_model_json, None);
     }
 }

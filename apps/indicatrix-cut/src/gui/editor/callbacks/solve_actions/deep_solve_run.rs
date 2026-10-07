@@ -11,10 +11,12 @@ use crate::{
             view::{deep_solve_tier_rows, format_deep_solve_report},
         },
         show_toast,
+        tutorial_events::raise,
     },
 };
 use indicatrix::geometry::{meet_solver::SolvedTier, stone_metrics::ExternalProportions};
 use indicatrix_cut_core::Design;
+use indicatrix_editor::guide::solving_events::{DEEP_SOLVE_FINISHED, DEEP_SOLVE_STARTED};
 use slint::{ComponentHandle, ModelRc, VecModel};
 use std::{
     cell::RefCell,
@@ -206,6 +208,7 @@ fn begin_deep_solve_run(
         .set_deep_solve_status("Deep solving... 0.0s elapsed".into());
     ui.global::<EditorModel>()
         .set_deep_solve_status_is_problem(false);
+    raise(ui, DEEP_SOLVE_STARTED);
 
     // Activity registered before the
     // worker even spawns, so the status strip's activity list shows it from
@@ -449,6 +452,7 @@ fn apply_deep_solve_outcome(
             state.borrow_mut().deep_solve_result_generation = Some(provenance.started_generation);
             ui.global::<EditorModel>()
                 .set_deep_solve_stale(provenance.is_stale());
+            raise(ui, DEEP_SOLVE_FINISHED);
         }
     }
 }

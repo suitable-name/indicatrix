@@ -269,8 +269,29 @@ fn solid_identity_pin_crackotto_step_full_pipeline() {
         single_panel_hash,
         facet_map_hash,
     ]);
+    // Components at the last pin (recorded 2026-10-01): plain = prepared = 0xdf86a6f437c16b6a,
+    // three_panel = 0xa3087a86f828adb9, single_panel = 0xf907e8de88732259 (all four unchanged
+    // since), facet_map = 0x5dab528ff64d1b20. Only the facet_map component moved, to
+    // 0xb5933f4403c95b96, because of the canonical facet labelling of 2026-10-04
+    // (`design/labelling.rs`, `FacetMap::from_design`): `facet_label` now reads "C1 95" where
+    // the legacy tier name made it "A 95" (and "P1 95" for "1 95", "Table" unchanged). Both
+    // facet_map values were reproduced offline from the fixture's .asc (211 facets, same tier
+    // ids and gear indices; only the label text differs), so no geometry, pick id or diagram
+    // pixel moved.
+    //
+    // Re-pinned 2026-10-06 (cutting-order lane): the facet_map component moved again, to
+    // 0xa93b9f399890ed06. Codes are now numbered per letter in the order the tiers are cut
+    // (pavilion and girdle first, crown next, the table last) and the table's code is `T`, so
+    // `facet_label` reads `T` where it read `Table` and a tier's number can differ from its
+    // top-down one. Only label text changed: the owner's run showed the other four components
+    // exactly at the values above.
+    //
+    // Re-pinned 2026-10-07 (glam 0.34.1 upgrade, DMat3 determinant/inverse reorder, ~1 ULP
+    // solver drift): plain = prepared moved from 0xdf86a6f437c16b6a to 0x2c7d2de39502c667;
+    // three_panel, single_panel and facet_map are unchanged. Combined hash
+    // 0x689fa4cb6a0ff009 -> 0x1ff8fcba069aa4e1.
     assert_eq!(
-        combined, 0x185a_50a0_ea1a_363b,
+        combined, 0x1ff8_fcba_069a_a4e1,
         "CrackOtto-Step solid/diagram/facet_map pipeline hash changed -- \
          plain={plain_hash:#x} prepared={prepared_hash:#x} three_panel={three_panel_hash:#x} \
          single_panel={single_panel_hash:#x} facet_map={facet_map_hash:#x}"

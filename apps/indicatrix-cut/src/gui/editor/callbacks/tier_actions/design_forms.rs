@@ -9,11 +9,15 @@ use std::{
 };
 
 use indicatrix_cut_core::Edit;
+use indicatrix_editor::{
+    loading::{NumberExprError, eval_number},
+    slider_ranges::{format_slider_number, preform_spec_data},
+};
 use slint::{ComponentHandle, SharedString};
 
-use super::FIXED_CYLINDER_PREFORM_SIDES;
+use super::{FIXED_CYLINDER_PREFORM_SIDES, tier_form::slider_spec_from};
 use crate::{
-    EditorModel, MainWindow,
+    EditorModel, MainWindow, SliderModel,
     bridge::render_thread::RenderContext,
     gui::{
         editor::{
@@ -27,9 +31,58 @@ use crate::{
     },
 };
 
+/// A design-wide number field (the preform Y-offset, the gear reference angle): a plain
+/// number or arithmetic over numbers (`1.5 - 0.25`, see `indicatrix_editor::loading::
+/// eval_number`). `Err` is the toast text: "<label> '<text>' is not a number." for text that
+/// is no number (unchanged), "... cannot be calculated: <reason>." for a broken calculation,
+/// "<label> must be a finite number." for `inf` or `NaN`.
+fn finite_number_field(label: &str, text: &str) -> Result<f64, String> {
+    let value = eval_number(text, None).map_err(|error| error.message(label, text))?;
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(format!("{label} must be a finite number."))
+    }
+}
+
+/// The cheater-offset field: blank clears the offset (`Ok(None)`), otherwise a number or
+/// arithmetic (`12 + 0.5`). `Err` is the toast text; a value that is not finite reads "...
+/// is not a number." like any other text that is no number.
+fn cheater_offset_from_text(text: &str) -> Result<Option<f64>, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match eval_number(trimmed, None) {
+        Ok(value) if value.is_finite() => Ok(Some(value)),
+        Ok(_) => Err(NumberExprError::NotANumber.message("Cheater offset", trimmed)),
+        Err(error) => Err(error.message("Cheater offset", trimmed)),
+    }
+}
+
+/// Answers the Preform tab's sliders (`SliderModel`'s two Preform callbacks): `preform_spec`
+/// says whether a field's slider works and gives its range and value, `preform_text` is the
+/// number a drag writes into the field. Both are pure functions of their arguments (the
+/// Y-offset's range is half the Depth in millimetres, so the Depth and Girdle Diameter texts
+/// come along); the work is done in `indicatrix_editor::slider_ranges`. A slider only fills
+/// its field in: "Apply Preform" applies it.
+fn setup_preform_slider_callbacks(ui: &MainWindow) {
+    let model = ui.global::<SliderModel>();
+    model.on_preform_spec(|field, text, depth_text, girdle_diameter_text| {
+        slider_spec_from(preform_spec_data(
+            &field,
+            &text,
+            &depth_text,
+            &girdle_diameter_text,
+        ))
+    });
+    model.on_preform_text(|value| format_slider_number(f64::from(value)).into());
+}
+
 /// "Apply Preform": parses the form (see `loading::parse_preform_form`) and, on
 /// success, applies it through `EditorState::apply` as a [`Edit::SetPreform`] -- the
-/// only `Edit` variant this callback ever constructs.
+/// only `Edit` variant this callback ever constructs. The Preform tab's slider callbacks
+/// are wired from here too ([`setup_preform_slider_callbacks`]).
 pub(in crate::gui::editor) fn setup_apply_preform_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -37,6 +90,7 @@ pub(in crate::gui::editor) fn setup_apply_preform_callback(
     preview_state: &Arc<SolidPreviewState>,
     solid_last_solved: &SolidLastSolved,
 ) {
+    setup_preform_slider_callbacks(ui);
     let state = Rc::clone(state);
     let render_ctx = Arc::clone(render_ctx);
     let preview_state = Arc::clone(preview_state);
@@ -170,19 +224,14 @@ pub(in crate::gui::editor) fn setup_apply_preform_y_offset_callback(
                 return;
             };
             stall_guard("on_apply_preform_y_offset", || {
-                let trimmed = mm_text.trim();
-                let Ok(mm) = trimmed.parse::<f64>() else {
-                    show_toast(
-                        &ui,
-                        &format!("Y-offset '{trimmed}' is not a number."),
-                        "error",
-                    );
-                    return;
+                // A number or arithmetic (`1.5 - 0.25`); see `finite_number_field`.
+                let mm = match finite_number_field("Y-offset", &mm_text) {
+                    Ok(mm) => mm,
+                    Err(message) => {
+                        show_toast(&ui, &message, "error");
+                        return;
+                    }
                 };
-                if !mm.is_finite() {
-                    show_toast(&ui, "Y-offset must be a finite number.", "error");
-                    return;
-                }
                 let mut st = state.borrow_mut();
                 // The UI thread never solves -- this reuses the last
                 // background/synchronous solve's cached masts (same cache
@@ -265,20 +314,12 @@ pub(in crate::gui::editor) fn setup_apply_cheater_offset_callback(
             let Ok(index) = usize::try_from(index) else {
                 return;
             };
-            let trimmed = text.trim();
-            let offset_deg = if trimmed.is_empty() {
-                None
-            } else {
-                match trimmed.parse::<f64>() {
-                    Ok(value) if value.is_finite() => Some(value),
-                    _ => {
-                        show_toast(
-                            &ui,
-                            &format!("Cheater offset '{trimmed}' is not a number."),
-                            "error",
-                        );
-                        return;
-                    }
+            // Blank clears the offset; otherwise a number or arithmetic (`12 + 0.5`).
+            let offset_deg = match cheater_offset_from_text(&text) {
+                Ok(offset_deg) => offset_deg,
+                Err(message) => {
+                    show_toast(&ui, &message, "error");
+                    return;
                 }
             };
             let mut st = state.borrow_mut();
@@ -377,23 +418,14 @@ pub(in crate::gui::editor) fn setup_apply_design_meta_callback(
             }
             headers.extend(split_lines(&extra_headers));
             let footnotes = split_lines(&footnotes);
-            let gear_ref_trimmed = gear_ref.trim();
-            let Ok(gear_reference_angle) = gear_ref_trimmed.parse::<f64>() else {
-                show_toast(
-                    &ui,
-                    &format!("Gear reference angle '{gear_ref_trimmed}' is not a number."),
-                    "error",
-                );
-                return;
+            let gear_reference_angle = match finite_number_field("Gear reference angle", &gear_ref)
+            {
+                Ok(angle) => angle,
+                Err(message) => {
+                    show_toast(&ui, &message, "error");
+                    return;
+                }
             };
-            if !gear_reference_angle.is_finite() {
-                show_toast(
-                    &ui,
-                    "Gear reference angle must be a finite number.",
-                    "error",
-                );
-                return;
-            }
             let mut st = state.borrow_mut();
             // Mast-preserving (see `Edit::SetMeta`'s own doc comment) -- no tier is
             // dirty, but the gear reference angle can rotate the rendered index
@@ -419,4 +451,73 @@ pub(in crate::gui::editor) fn setup_apply_design_meta_callback(
             );
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_plain_number_reads_as_before_and_arithmetic_is_worked_out() {
+        assert_eq!(finite_number_field("Y-offset", " 1.5 "), Ok(1.5));
+        assert_eq!(finite_number_field("Y-offset", "-0.25"), Ok(-0.25));
+        let sum = finite_number_field("Gear reference angle", "1.5 - 0.25").unwrap();
+        assert_eq!(sum.to_bits(), 1.25_f64.to_bits());
+        assert_eq!(cheater_offset_from_text("12 + 0.5"), Ok(Some(12.5)));
+        assert_eq!(cheater_offset_from_text("3"), Ok(Some(3.0)));
+    }
+
+    #[test]
+    fn a_blank_cheater_offset_clears_it() {
+        assert_eq!(cheater_offset_from_text(""), Ok(None));
+        assert_eq!(cheater_offset_from_text("   "), Ok(None));
+    }
+
+    #[test]
+    fn text_that_is_no_number_keeps_the_old_wording() {
+        assert_eq!(
+            finite_number_field("Y-offset", " abc "),
+            Err("Y-offset 'abc' is not a number.".to_owned())
+        );
+        assert_eq!(
+            cheater_offset_from_text("abc"),
+            Err("Cheater offset 'abc' is not a number.".to_owned())
+        );
+        assert_eq!(
+            finite_number_field("Gear reference angle", ""),
+            Err("Gear reference angle '' is not a number.".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_value_that_is_not_finite_is_refused() {
+        assert_eq!(
+            finite_number_field("Y-offset", "inf"),
+            Err("Y-offset must be a finite number.".to_owned())
+        );
+        assert_eq!(
+            finite_number_field("Gear reference angle", "NaN"),
+            Err("Gear reference angle must be a finite number.".to_owned())
+        );
+        assert_eq!(
+            cheater_offset_from_text("inf"),
+            Err("Cheater offset 'inf' is not a number.".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_broken_calculation_says_why_and_names_the_field() {
+        let message = finite_number_field("Y-offset", "1 +").unwrap_err();
+        assert!(
+            message.starts_with("Y-offset '1 +' cannot be calculated:"),
+            "{message}"
+        );
+        let message = cheater_offset_from_text("(2 + 3").unwrap_err();
+        assert!(
+            message.starts_with("Cheater offset '(2 + 3' cannot be calculated:"),
+            "{message}"
+        );
+        // A relation is for a tier's angle only.
+        assert!(finite_number_field("Y-offset", "=P1").is_err());
+    }
 }

@@ -156,6 +156,14 @@ pub fn build_main_window() -> anyhow::Result<MainWindowHandle> {
         &solid.preview_state,
     );
     setup_editor(&ui, &db, &library_source, &render_ctx, &solid);
+    // The lighting a design remembers for itself (settings dialog buttons + the hook the
+    // editor calls when a design opens, see `render::design_lighting`).
+    render::design_lighting::setup_design_lighting_callbacks(
+        &ui,
+        &db,
+        &render_ctx,
+        &settings_store,
+    );
     setup_solid_view_mode_callbacks(&ui, &render_ctx, &settings_store, &solid.preview_state);
     setup_live_view_mode_callbacks(&ui, &render_ctx, &settings_store, &solid.preview_state);
     let remote_rendering_timer =

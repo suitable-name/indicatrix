@@ -1,7 +1,8 @@
 //! UI-thread session state for the rough planner window.
 
 use super::{
-    base::blank_model, inputs::FilterSnapshot, run::RunState, saved::SavedState, view::ViewState,
+    base::blank_model, inputs::FilterSnapshot, mesh_task::MeshJobs, run::RunState,
+    saved::SavedState, view::ViewState,
 };
 use indicatrix::geometry::stone_metrics::SolidMesh;
 use indicatrix_cut_core::rough_plan::{RoughMeasure, RoughModel};
@@ -99,6 +100,8 @@ pub(super) struct Session {
     pub(super) run: RunState,
     /// The saved plans' state.
     pub(super) saved: SavedState,
+    /// The background mesh job (an OBJ import or a mesh scaling) the window waits for.
+    pub(super) mesh_jobs: MeshJobs,
 }
 
 impl Default for Session {
@@ -123,6 +126,7 @@ impl Default for Session {
             view: ViewState::default(),
             run: RunState::default(),
             saved: SavedState::default(),
+            mesh_jobs: MeshJobs::default(),
         }
     }
 }

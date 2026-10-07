@@ -18,6 +18,8 @@ import { SolidViewportToolbar } from "solid_viewport/toolbar.slint";
 import { ManipulateModel } from "../models/manipulate.slint";
 import { ManipulateOverlay, SliceLineOverlay } from "solid_viewport/manipulate_overlay.slint";
 import { ManipulateHintBar } from "solid_viewport/hint_bar.slint";
+// The open tutorial step may outline the picture itself (`highlight_target == "solid_viewport"`).
+import { GuideModel } from "../models/guide.slint";
 
 // The Edit tab's solid-inspection viewport: a flat-shaded software render of the
 // current design's solid, shown as a static image after Solve. Reads
@@ -48,6 +50,12 @@ export component SolidViewportView inherits Rectangle {
     property <string> hover_text: SolidPreviewModel.view_mode == 3 ? SolidPreviewModel.diagram_hover_text : SolidPreviewModel.hover_text;
 
     property <bool> is_dragging: false;
+    // "Both" mode while the Cut slider has the design cut back and the traced image has
+    // not caught up with the cut yet: the flat-shaded solid, which always shows the cut
+    // stone, stands in for the stale render (with its edges on top) instead of a dimmed
+    // render with the edges hidden, which would show the wrong stone. Not while orbiting:
+    // the layers compose as if matching then (see the Both layers below).
+    property <bool> cut_shows_solid: SolidPreviewModel.view_mode == 2 && SolidPreviewModel.tier_cutoff != -1 && !SolidPreviewModel.trace_matches_solid && !root.is_dragging && SolidPreviewModel.has_solid;
     property <length> last_mouse_x;
     property <length> last_mouse_y;
     // Accumulated |dx| + |dy| since the last pointer-down, in logical pixels --
@@ -89,6 +97,19 @@ export component SolidViewportView inherits Rectangle {
     function diagram_unzoomed_y(mouse_y: length) -> length {
         return (mouse_y - root.diagram_pan_y) / root.diagram_zoom;
     }
+    // The pointer coordinates the drag handles (`ManipulateModel`) work in: the unzoomed
+    // ones in the Diagram view -- where the handle positions are unzoomed too and
+    // `ManipulateOverlay` maps them back when it draws -- the raw ones everywhere else.
+    function manip_x(mouse_x: length) -> length {
+        return SolidPreviewModel.view_mode == 3 ? root.diagram_unzoomed_x(mouse_x) : mouse_x;
+    }
+    function manip_y(mouse_y: length) -> length {
+        return SolidPreviewModel.view_mode == 3 ? root.diagram_unzoomed_y(mouse_y) : mouse_y;
+    }
+    // Rust sizes the handle hit radius by the zoom (a marker keeps its size on screen).
+    changed diagram_zoom => {
+        ManipulateModel.view_zoom = root.diagram_zoom;
+    }
     // Keeps a zoomed-in diagram from being dragged entirely off-screen -- clamps
     // to the extra width/height `diagram_zoom` adds beyond the viewport's own
     // size, on each side.
@@ -96,7 +117,7 @@ export component SolidViewportView inherits Rectangle {
         return max(-(extent * (zoom - 1)), min(extent * (zoom - 1), value));
     }
 
-    background: #080a0f;
+    background: Theme.viewport-bg;
     border-radius: Theme.radius-md;
     border-width: 1px;
     border-color: Theme.border-subtle;
@@ -130,6 +151,7 @@ export component SolidViewportView inherits Rectangle {
     init => {
         SolidPreviewModel.viewport_width = self.width;
         SolidPreviewModel.viewport_height = self.height;
+        ManipulateModel.view_zoom = root.diagram_zoom;
     }
 
     // #116: a global's own property can't get a `changed` handler outside the
@@ -310,26 +332,28 @@ export component SolidViewportView inherits Rectangle {
             // orbit is in progress.
             if (event.kind == PointerEventKind.move) {
                 if (root.handle_dragging) {
-                    ManipulateModel.drag_move(drag_area.mouse-x, drag_area.mouse-y, event.modifiers.shift);
+                    ManipulateModel.drag_move(root.manip_x(drag_area.mouse-x), root.manip_y(drag_area.mouse-y), event.modifiers.shift);
                 } else if (root.slice_dragging) {
                     ManipulateModel.slice_move(drag_area.mouse-x, drag_area.mouse-y);
                 } else if (!root.is_dragging) {
+                    // In the Diagram view this also moves the handles onto the panel the
+                    // pointer entered.
+                    if (ManipulateModel.handles_visible) {
+                        ManipulateModel.handle_hover(root.manip_x(drag_area.mouse-x), root.manip_y(drag_area.mouse-y));
+                    }
                     if (SolidPreviewModel.view_mode == 3) {
                         SolidPreviewModel.diagram_facet_hover(root.diagram_unzoomed_x(drag_area.mouse-x), root.diagram_unzoomed_y(drag_area.mouse-y));
                     } else {
-                        if (ManipulateModel.handles_visible) {
-                            ManipulateModel.handle_hover(drag_area.mouse-x, drag_area.mouse-y);
-                        }
                         // Only picking, not dragging -- the hover tooltip.
                         SolidPreviewModel.facet_hover(drag_area.mouse-x, drag_area.mouse-y);
                     }
                 }
             } else if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
                 root.swallow_click = false;
-                if (SolidPreviewModel.view_mode != 3 && ManipulateModel.handles_visible) {
-                    let hit = ManipulateModel.handle_hit_test(drag_area.mouse-x, drag_area.mouse-y);
+                if (ManipulateModel.handles_visible) {
+                    let hit = ManipulateModel.handle_hit_test(root.manip_x(drag_area.mouse-x), root.manip_y(drag_area.mouse-y));
                     if (hit >= 0) {
-                        ManipulateModel.drag_begin(hit, drag_area.mouse-x, drag_area.mouse-y);
+                        ManipulateModel.drag_begin(hit, root.manip_x(drag_area.mouse-x), root.manip_y(drag_area.mouse-y));
                         // Rust sets `dragging` only when it grants the drag; a
                         // refused press falls through to the orbit below.
                         root.handle_dragging = ManipulateModel.dragging;
@@ -443,7 +467,7 @@ export component SolidViewportView inherits Rectangle {
                 // drag in every other mode -- only forward it as a real pick when
                 // the pointer barely moved between down and up, so panning the
                 // diagram never also re-triggers a facet pick.
-                if (root.drag_distance < 3) {
+                if (root.drag_distance < 3 && !root.swallow_click) {
                     SolidPreviewModel.diagram_facet_click(root.diagram_unzoomed_x(drag_area.mouse-x), root.diagram_unzoomed_y(drag_area.mouse-y));
                 }
             } else if (root.drag_distance < 3 && !root.swallow_click) {
@@ -473,6 +497,11 @@ export component SolidViewportView inherits Rectangle {
         scroll-event(event) => {
             if (SolidPreviewModel.view_mode != 3) {
                 ViewportModel.camera_zoom(event.delta-y / 1px);
+                return accept;
+            }
+            // A handle drag in the Diagram view keeps the picture still: zooming under it
+            // would move the unzoomed point the pointer is over.
+            if (root.handle_dragging) {
                 return accept;
             }
             root.diagram_zoom = max(1.0, min(6.0, root.diagram_zoom - (event.delta-y / 1px) * 0.003));
@@ -511,20 +540,39 @@ export component SolidViewportView inherits Rectangle {
     // While `root.is_dragging` (an orbit drag, `ViewportModel.camera_drag_begin`) the layers compose
     // as if matching: the dim and the note wait for the release, and the edges stay
     // visible as the orientation aid over the low-resolution preview trace.
-    if SolidPreviewModel.view_mode == 2 && ViewportModel.has_render: Image {
+    //
+    // With the Cut slider cut back (`root.cut_shows_solid`) the stale render would show
+    // the wrong stone, so the solid layer shows the cut stone itself, edges on top, until
+    // the render catches up.
+    if root.cut_shows_solid: Image {
+        width: 100%;
+        height: 100%;
+        source: SolidPreviewModel.image;
+        image-fit: contain;
+    }
+    if SolidPreviewModel.view_mode == 2 && ViewportModel.has_render && !root.cut_shows_solid: Image {
         width: 100%;
         height: 100%;
         source: ViewportModel.render_image;
         image-fit: contain;
         opacity: (SolidPreviewModel.trace_matches_solid || root.is_dragging) ? 1.0 : 0.5;
     }
-    if SolidPreviewModel.view_mode == 2 && SolidPreviewModel.has_solid_edges && (SolidPreviewModel.trace_matches_solid || root.is_dragging): Image {
+    if SolidPreviewModel.view_mode == 2 && SolidPreviewModel.has_solid_edges && (SolidPreviewModel.trace_matches_solid || root.is_dragging || root.cut_shows_solid): Image {
         width: 100%;
         height: 100%;
         source: SolidPreviewModel.edges_image;
         image-fit: contain;
     }
-    if SolidPreviewModel.view_mode == 2 && ViewportModel.has_render && !SolidPreviewModel.trace_matches_solid && !root.is_dragging: Text {
+    if root.cut_shows_solid: Text {
+        text: "Showing the flat preview while the render catches up with the cut";
+        font-size: 11px;
+        color: Theme.text-secondary;
+        horizontal-alignment: center;
+        y: parent.height - 56px;
+        width: 100%;
+        wrap: word-wrap;
+    }
+    if SolidPreviewModel.view_mode == 2 && ViewportModel.has_render && !SolidPreviewModel.trace_matches_solid && !root.is_dragging && !root.cut_shows_solid: Text {
         text: "Render is behind the current edit -- edges hidden until it catches up";
         font-size: 12px;
         color: Theme.text-primary;
@@ -583,14 +631,20 @@ export component SolidViewportView inherits Rectangle {
     // The angle/depth/index drag handles of the selected facet, above the images
     // (`ManipulateModel`, pushed by `gui::editor::manipulate`). Pointer input is
     // never handled here: `drag_area` above stays the only TouchArea.
-    if ManipulateModel.handles_visible && SolidPreviewModel.view_mode != 3: ManipulateOverlay { }
+    // In the Diagram view the overlay maps the model's unzoomed positions through this
+    // component's zoom and pan.
+    if ManipulateModel.handles_visible: ManipulateOverlay {
+        zoom: SolidPreviewModel.view_mode == 3 ? root.diagram_zoom : 1.0;
+        pan_x: SolidPreviewModel.view_mode == 3 ? root.diagram_pan_x : 0px;
+        pan_y: SolidPreviewModel.view_mode == 3 ? root.diagram_pan_y : 0px;
+    }
 
     // The Slice tool's rubber band while a line is being drawn.
     if ManipulateModel.slice_line_visible && SolidPreviewModel.view_mode != 3: SliceLineOverlay { }
 
     // The one-line hint under the toolbar row (with the Slice tool's buttons at its
     // right end); hidden while it has nothing to say.
-    if (ManipulateModel.hint_text != "" || ManipulateModel.provisional_active) && SolidPreviewModel.view_mode != 3: ManipulateHintBar { toolbar_height: toolbar.top_height; }
+    if ManipulateModel.hint_text != "" || ManipulateModel.provisional_active: ManipulateHintBar { toolbar_height: toolbar.top_height; }
 
     // A small hover tooltip panel, bottom-left of the image -- see `hover_text`'s own
     // doc comment above.
@@ -632,6 +686,34 @@ export component SolidViewportView inherits Rectangle {
         diagram_zoom <=> root.diagram_zoom;
         diagram_pan_x <=> root.diagram_pan_x;
         diagram_pan_y <=> root.diagram_pan_y;
+    }
+
+    // The focus ring: drawn while the viewport itself has keyboard focus (Tab, or a click
+    // on the picture), which is when Up/Down step through the tiers, Escape clears the
+    // selection and S turns the Slice tool on. No pointer handling, so every event still
+    // reaches `drag_area` underneath.
+    if viewport_focus.has-focus: Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        border-radius: Theme.radius-md;
+        border-width: 2px;
+        border-color: Theme.border-accent;
+    }
+
+    // The tutorial outline: drawn while the open step is about the picture. Like the focus
+    // ring it handles no pointer events.
+    if GuideModel.highlight_target == "solid_viewport": Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        border-radius: Theme.radius-md;
+        border-width: 2px;
+        border-color: Theme.accent-cyan;
     }
 
     // The Tilt Curve dialog and the material editor are no longer mounted here:

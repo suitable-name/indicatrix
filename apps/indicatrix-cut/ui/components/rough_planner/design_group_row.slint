@@ -30,11 +30,14 @@ export component DesignGroupRow inherits Rectangle {
     border-color: row_focus.has-focus ? Theme.accent-cyan
         : (root.is_selected ? Theme.border-accent : Theme.border-subtle);
 
-    accessible-role: list-item;
+    accessible-role: AccessibleRole.list-item;
     accessible-label: root.group.count + " \u{00D7} " + root.group.name;
+    accessible-description: root.group.status != "" ? root.group.status : root.group.detail;
     accessible-item-selectable: true;
     accessible-item-selected: root.is_selected;
     accessible-action-default => { root.clicked(); }
+
+    Tooltip { text: @markdown("Highlight these stones in the 3D view. Click again to clear the highlight."); }
 
     row_focus := FocusScope {
         key-pressed(event) => {
@@ -105,6 +108,30 @@ export component DesignGroupRow inherits Rectangle {
                     mouse-cursor: root.link_ok ? pointer : default;
                     clicked => { RoughPlanModel.select_design(root.group.entry_id); }
                 }
+
+                // The design name is a link: Tab reaches it, Space and Enter follow it.
+                name_focus := FocusScope {
+                    enabled: root.link_ok;
+                    accessible-role: AccessibleRole.button;
+                    accessible-label: "Show " + root.group.name + " in the library";
+                    accessible-description: "Select this design in the library list.";
+                    accessible-action-default => { RoughPlanModel.select_design(root.group.entry_id); }
+                    key-pressed(event) => {
+                        if event.text == Key.Space || event.text == Key.Return {
+                            RoughPlanModel.select_design(root.group.entry_id);
+                            return accept;
+                        }
+                        return reject;
+                    }
+                }
+
+                if name_focus.has-focus: Rectangle {
+                    border-width: 2px;
+                    border-color: Theme.accent-cyan-hover;
+                    border-radius: Theme.radius-sm;
+                }
+
+                if root.link_ok: Tooltip { text: @markdown("Select this design in the library list."); }
             }
 
             // Status chip (if present)
@@ -139,6 +166,11 @@ export component DesignGroupRow inherits Rectangle {
                 alignment: center;
                 RoughPill {
                     text: root.group.excluded ? "Excluded" : "Exclude";
+                    hint: !root.link_ok ? "Switch to the local library first: this needs the design in the library."
+                        : (RoughPlanModel.running ? "Not while a plan is running."
+                        : (root.group.excluded
+                            ? "The planner leaves this design out. Click to take it back into the planning."
+                            : "Leave this design out of every future plan. You can take it back from the Excluded designs list."));
                     active: root.group.excluded;
                     enabled: root.link_ok && !RoughPlanModel.running;
                     accessible-label: root.group.excluded

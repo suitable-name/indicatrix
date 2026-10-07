@@ -19,6 +19,7 @@ use indicatrix::{
     },
     renderer::env_map::EnvironmentMap,
 };
+use indicatrix_solid::preview::StoneGeometryBuf;
 use std::sync::{Arc, Mutex};
 
 /// A read-only snapshot of everything a render needs, captured out of the live
@@ -57,6 +58,9 @@ pub struct SceneSnapshot {
     /// the viewport's value the way they follow its lighting preset. Analytic presets
     /// only; an HDR map ignores it.
     pub surface_glare: f32,
+    /// Head-shadow radius in degrees (`RenderContext::head_shadow_deg`, `0.0` = off): exports
+    /// follow the viewport's value. Lit analytic presets only; an HDR map ignores it.
+    pub head_shadow_deg: f32,
     /// Facet planes of the active design.
     pub active_planes: Vec<GpuFacetPlane>,
     /// The concave tools cut out of `active_planes` (`RenderContext::active_tools`);
@@ -100,6 +104,27 @@ impl SceneSnapshot {
     /// this by aborting the export/dispatch/tilt-video render, not by substituting
     /// a default material (see `resolve_material`'s own doc comment for why).
     pub fn capture(ctx: &Mutex<RenderContext>) -> Result<Self, String> {
+        Self::capture_finished(ctx, None)
+    }
+
+    /// [`Self::capture`] for a scene that leaves the program (the high-resolution export,
+    /// the tilt video, the tilt curves): `finished` is the whole stone to draw in place of
+    /// the planes and concave tools the context holds, which follow the Cut slider.
+    ///
+    /// `None` -- and an empty `finished`, which would draw nothing -- keeps the context's
+    /// own stone, so the live remote dispatch and every caller that wants what the viewport
+    /// shows go through [`Self::capture`] unchanged. The substitute is applied before
+    /// anything is derived from the planes (the stone-width scale of the material, the
+    /// frosted-girdle classification), so the whole scene describes one stone.
+    ///
+    /// # Errors
+    ///
+    /// The same refusals as [`Self::capture`].
+    pub fn capture_finished(
+        ctx: &Mutex<RenderContext>,
+        finished: Option<&StoneGeometryBuf>,
+    ) -> Result<Self, String> {
+        let finished = finished.filter(|stone| !stone.planes.is_empty());
         let guard = ctx
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -111,10 +136,14 @@ impl SceneSnapshot {
         // material override the live viewport, tilt sweep and hover preview already
         // resolve through -- otherwise the export silently reverts to the by-name
         // lookup for the one surface that matters most (the delivered image).
+        // The override carries the Live Render toolbar's view-only colour too (a plain
+        // clone while none is in force), so an export, a tilt video and a remote worker
+        // all render the colour the cutter chose.
+        let material_override = guard.tinted_material_override();
         let Some(material) = resolve_material_with_override(
             &materials,
             &guard.custom_materials,
-            guard.material_override.as_ref(),
+            material_override.as_ref(),
             &guard.material_name,
         ) else {
             return Err(format!(
@@ -130,6 +159,19 @@ impl SceneSnapshot {
         // an export with nothing dialled in stays bit-identical to a plain by-name
         // resolve. A fresh `StoneWidthCache` since this runs once per export,
         // not once per frame like the live loop's persistent cache.
+        //
+        // `active_planes`/`tools` are the stone the scene draws: the finished one when the
+        // caller passed it, else the context's own. Taken before the overrides, which
+        // measure the planes.
+        //
+        // `active_planes` is a plain `Vec` (a one-shot export capture, not
+        // `RenderContext`'s hot-path per-frame snapshot), so this is the one actual deep
+        // copy `capture` makes -- `.to_vec()` off the `Arc<Vec<..>>` (via its
+        // `Deref<Target = [GpuFacetPlane]>`).
+        let (active_planes, tools) = finished.map_or_else(
+            || (guard.active_planes.to_vec(), guard.active_tools.to_vec()),
+            |stone| (stone.planes.clone(), stone.tools.clone()),
+        );
         let material = apply_material_overrides(
             material,
             &MaterialOverrides {
@@ -138,7 +180,7 @@ impl SceneSnapshot {
                 edge_rounding_radius: guard.edge_rounding_radius,
                 stone_width_mm: guard.stone_width_mm,
             },
-            &guard.active_planes,
+            &active_planes,
             &mut StoneWidthCache::new(),
             guard.physics_color(),
         );
@@ -146,7 +188,7 @@ impl SceneSnapshot {
         // `trace_spectral_ray_with_finish`'s documented equivalent of
         // `trace_spectral_ray` (every facet reads `FacetFinish::default() == Polished`).
         let facet_finishes = if guard.girdle_frosted {
-            girdle_facet_finishes(&guard.active_planes)
+            girdle_facet_finishes(&active_planes)
         } else {
             Vec::new()
         };
@@ -162,12 +204,9 @@ impl SceneSnapshot {
             exposure: guard.exposure,
             backdrop: guard.backdrop.level(),
             surface_glare: guard.surface_glare,
-            // `SceneSnapshot::active_planes` is a plain `Vec` (a one-shot export
-            // capture, not `RenderContext`'s hot-path per-frame snapshot), so this is
-            // the one actual deep copy `capture` makes -- `.to_vec()` off the `Arc<Vec<..>>`
-            // (via its `Deref<Target = [GpuFacetPlane]>`).
-            active_planes: guard.active_planes.to_vec(),
-            tools: guard.active_tools.to_vec(),
+            head_shadow_deg: guard.head_shadow_deg,
+            active_planes,
+            tools,
             fluorescence: guard.active_fluorescence().unwrap_or_default(),
             facet_finishes,
             // `Arc::clone`, not a deep copy of the decoded panorama.
@@ -385,6 +424,21 @@ mod tests {
         assert_eq!(dimmed.surface_glare.to_bits(), 0.25f32.to_bits());
     }
 
+    /// The viewport's head-shadow radius reaches the export snapshot; the default is 16.
+    #[test]
+    fn capture_carries_the_head_shadow_into_the_exported_scene() {
+        let default = SceneSnapshot::capture(&Mutex::new(RenderContext::default()))
+            .expect("default resolves");
+        assert_eq!(default.head_shadow_deg.to_bits(), 16.0f32.to_bits());
+
+        let off = SceneSnapshot::capture(&Mutex::new(RenderContext {
+            head_shadow_deg: 0.0,
+            ..Default::default()
+        }))
+        .expect("default resolves");
+        assert_eq!(off.head_shadow_deg.to_bits(), 0.0f32.to_bits());
+    }
+
     /// The girdle-frosted toggle is captured as a resolved per-facet finish list, not
     /// a bare `bool`, so `run_export`/`render_batch` need no further classification.
     #[test]
@@ -408,6 +462,83 @@ mod tests {
             on.facet_finishes,
             girdle_facet_finishes(&RenderContext::default().active_planes),
             "the on position must carry the same classification the live viewport uses"
+        );
+    }
+
+    /// A finished stone handed to `capture_finished` replaces the context's planes and
+    /// tools -- and the derived frosted-girdle list follows it -- while an empty one (a
+    /// design that did not solve) leaves the context's own stone alone.
+    #[test]
+    fn capture_finished_draws_the_substitute_stone_and_ignores_an_empty_one() {
+        let ctx = Mutex::new(RenderContext {
+            girdle_frosted: true,
+            ..Default::default()
+        });
+        let own = ctx.lock().unwrap().active_planes.to_vec();
+        assert!(own.len() > 4);
+        let finished = StoneGeometryBuf {
+            planes: own[..4].to_vec(),
+            tools: Vec::new(),
+            placements: Vec::new(),
+        };
+
+        let swapped = SceneSnapshot::capture_finished(&ctx, Some(&finished)).expect("resolves");
+        assert_eq!(swapped.active_planes, finished.planes);
+        assert_eq!(
+            swapped.facet_finishes,
+            girdle_facet_finishes(&finished.planes),
+            "the girdle classification describes the substitute stone"
+        );
+
+        let empty = StoneGeometryBuf {
+            planes: Vec::new(),
+            tools: Vec::new(),
+            placements: Vec::new(),
+        };
+        let kept = SceneSnapshot::capture_finished(&ctx, Some(&empty)).expect("resolves");
+        assert_eq!(kept.active_planes, own);
+        let plain = SceneSnapshot::capture_finished(&ctx, None).expect("resolves");
+        assert_eq!(plain.active_planes, own);
+    }
+
+    /// The Live Render toolbar's view-only colour must reach the export (and so the tilt
+    /// video and the remote workers, which all start from this capture), and must stay
+    /// out of it while the linked open design supplies the colour itself.
+    #[test]
+    fn capture_carries_the_view_only_colour_into_the_exported_scene() {
+        use crate::bridge::render_thread::PlanesOwner;
+
+        let yellow = [0.2f32, 0.4, 2.8];
+        let capture = |view_body_color, planes_owner, material_linked| {
+            SceneSnapshot::capture(&Mutex::new(RenderContext {
+                material_name: "Sapphire".to_string(),
+                view_body_color,
+                planes_owner,
+                material_linked,
+                ..Default::default()
+            }))
+            .expect("Sapphire resolves")
+        };
+
+        let plain = capture(None, PlanesOwner::Builtin, false);
+        assert_eq!(
+            plain.material.absorption,
+            GemMaterial::sapphire().absorption
+        );
+
+        let tinted = capture(Some(yellow), PlanesOwner::Builtin, false);
+        assert_eq!(tinted.material.name, "Sapphire");
+        assert_eq!(
+            tinted.material.absorption,
+            GemMaterial::sapphire().with_body_color(yellow).absorption,
+            "the chosen colour must reach the exported scene"
+        );
+        assert_eq!(tinted.material.dispersion, plain.material.dispersion);
+
+        let design_driven = capture(Some(yellow), PlanesOwner::Editor { generation: 1 }, true);
+        assert_eq!(
+            design_driven.material.absorption, plain.material.absorption,
+            "while the linked open design drives the colour, the view setting stays out"
         );
     }
 }

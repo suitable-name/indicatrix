@@ -31,6 +31,8 @@ fn batch_applies_every_sub_edit_and_undoes_them_all_in_one_step() {
                         specific_gravity_override: None,
                         refractive_index_override: None,
                         body_color_override: None,
+                        body_color_bands_override: None,
+                        absorption_path_scale_override: None,
                     },
                 },
             ]),
@@ -97,7 +99,8 @@ fn describe_reads_as_a_cutters_sentence_for_representative_variants() {
             changes: vec![(0, -40.0, -41.0)],
         }
         .describe(&design),
-        "Set P1 angle to -41.0 degrees"
+        // The tier is stored at -41; the sentence reads the plain number.
+        "Set P1 angle to 41.0 degrees"
     );
     assert_eq!(
         Edit::RemapIndices {
@@ -131,6 +134,8 @@ fn describe_reads_as_a_cutters_sentence_for_representative_variants() {
                     specific_gravity_override: None,
                     refractive_index_override: None,
                     body_color_override: None,
+                    body_color_bands_override: None,
+                    absorption_path_scale_override: None,
                 },
             },
         ])
@@ -139,12 +144,62 @@ fn describe_reads_as_a_cutters_sentence_for_representative_variants() {
     );
 }
 
+/// An old-style tier name (`1`, `A`) reads as the standard code the tier table shows, and a
+/// pavilion angle reads as a plain number, in every sentence that names a tier.
+#[test]
+fn describe_uses_the_standard_code_for_an_old_style_name_and_a_positive_angle() {
+    let mut design = fresh_design();
+    design
+        .tiers
+        .push(tier("1", -40.0, MeetConstraint::ScaleReference(0.5), &[]));
+    design
+        .tiers
+        .push(tier("C1", 30.0, MeetConstraint::ScaleReference(0.5), &[]));
+    let codes = crate::design::compute_tier_labels(&design.tiers);
+    let code = codes[0].code.as_str();
+    // A pavilion tier named by an old-style digit is a P tier.
+    assert!(code.starts_with('P'), "{code}");
+
+    assert_eq!(
+        Edit::RetargetAngles {
+            changes: vec![(0, -40.0, -41.5)],
+        }
+        .describe(&design),
+        format!("Set {code} angle to 41.5 degrees")
+    );
+    assert_eq!(
+        Edit::RemoveTier { index: 0 }.describe(&design),
+        format!("Remove tier {code}")
+    );
+    // Two changes to the one tier (a nudge plus the tiers that follow) read the same way.
+    assert_eq!(
+        Edit::Batch(vec![
+            Edit::RetargetAngles {
+                changes: vec![(0, -40.0, -41.0)],
+            },
+            Edit::RetargetAngles {
+                changes: vec![(0, -41.0, -42.0)],
+            },
+        ])
+        .describe(&design),
+        format!("Set {code} angle to 42.0 degrees")
+    );
+    // A crown tier's angle is unchanged by the rule.
+    assert_eq!(
+        Edit::RetargetAngles {
+            changes: vec![(1, 30.0, 31.0)],
+        }
+        .describe(&design),
+        "Set C1 angle to 31.0 degrees"
+    );
+}
+
 /// A body-color override is named in the undo label: the preset's own label when
 /// the triple matches one, "custom color" otherwise, and nothing extra when unset.
 #[test]
 fn describe_names_a_body_color_override() {
     let design = fresh_design();
-    let yellow = indicatrix::optics::materials::body_color::BODY_color_PRESETS[5];
+    let yellow = indicatrix::optics::materials::body_color::BODY_COLOR_PRESETS[5];
     let sapphire = MaterialSelection {
         name: Some("Sapphire".to_string()),
         ..MaterialSelection::none()

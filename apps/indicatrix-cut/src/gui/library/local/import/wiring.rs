@@ -10,9 +10,12 @@ use super::{
     pipeline::{ImportOutcome, import_path},
 };
 use crate::{
-    LibraryModel, MainWindow, bridge::library::source::LibrarySource, gui::show_toast,
+    LibraryModel, MainWindow,
+    bridge::library::source::LibrarySource,
+    gui::{show_toast, tutorial_events::raise},
     settings::SettingsPersister,
 };
+use indicatrix_editor::guide::viewing_events as events;
 use indicatrix_vault::db::sqlite::Database;
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 use std::{
@@ -127,6 +130,10 @@ fn spawn_import(
                 && let Ok(id) = i32::try_from(*only_id)
             {
                 ui.global::<LibraryModel>().invoke_select_diagram(id);
+            }
+            // A tutorial step may wait for designs to be imported.
+            if !imported_ids.is_empty() {
+                raise(&ui, events::LIBRARY_IMPORTED);
             }
             // Asks whether to generate previews for what was just imported -- shares
             // the same confirm-step dialog as the missing-previews library scan; see

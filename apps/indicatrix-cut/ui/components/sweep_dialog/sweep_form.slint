@@ -1,0 +1,260 @@
+// The form at the top of the Angle Sweep dialog: which tier, the range and step, the tilt
+// option, the Run / Cancel button, what the run will take, and its progress bar.
+import { ComboBox, LineEdit } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { SweepModel } from "../../models/sweep.slint";
+import { TipBox, FieldCaption } from "../tip_box.slint";
+import { SweepButton } from "sweep_button.slint";
+
+// A number field with its caption above it. It takes arithmetic (`41.5 - 3`).
+component SweepNumberField inherits Rectangle {
+    in-out property <string> value;
+    in property <string> caption;
+    // One plain sentence on the field: what the number means. The tooltip of caption and field.
+    in property <string> hint;
+    in property <string> placeholder;
+    in property <bool> enabled: true;
+    callback edited();
+
+    width: 92px;
+    height: 50px;
+
+    VerticalLayout {
+        spacing: 3px;
+        FieldCaption { text: root.caption; hint: root.hint; }
+        Rectangle {
+            height: 30px;
+            background: Theme.surface-raised;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border-dialog;
+            TipBox {
+                width: 100%;
+                height: 100%;
+                hint: root.hint;
+                LineEdit {
+                    text <=> root.value;
+                    placeholder-text: root.placeholder;
+                    enabled: root.enabled;
+                    accessible-label: root.caption;
+                    accessible-description: root.hint;
+                    edited => { root.edited(); }
+                }
+            }
+        }
+    }
+}
+
+// A check box drawn from a rectangle and the check icon, with its label to the right. Tab
+// reaches it; Space and Enter flip it.
+component SweepCheck inherits Rectangle {
+    in-out property <bool> checked;
+    in property <string> label;
+    in property <string> hint;
+    in property <bool> enabled: true;
+    callback toggled();
+
+    height: 24px;
+    min-width: check_row.preferred-width;
+    opacity: root.enabled ? 1.0 : 0.45;
+    border-radius: Theme.radius-sm;
+    border-width: check_focus.has-focus ? 2px : 0px;
+    border-color: Theme.accent-cyan-hover;
+
+    accessible-role: AccessibleRole.checkbox;
+    accessible-label: root.label;
+    accessible-description: root.hint;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.checked = !root.checked;
+            root.toggled();
+        }
+    }
+
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
+
+    check_focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.checked = !root.checked;
+                root.toggled();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    check_touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled();
+        }
+    }
+
+    check_row := HorizontalLayout {
+        spacing: 8px;
+        padding-left: 2px;
+        Rectangle {
+            width: 16px;
+            Rectangle {
+                width: 16px;
+                height: 16px;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: root.checked ? Theme.accent-cyan : Theme.border-control;
+                background: root.checked ? Theme.accent-cyan : Theme.surface-sunken;
+                if root.checked: Image {
+                    source: @image-url("../../icons/check.svg");
+                    colorize: Theme.text-on-accent;
+                    width: 11px;
+                    height: 11px;
+                }
+            }
+        }
+        Text {
+            text: root.label;
+            font-size: 12px;
+            color: Theme.text-primary;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component SweepForm inherits VerticalLayout {
+    spacing: 8px;
+
+    // Why Run sweep is greyed out, or what it does.
+    property <string> run_hint: SweepModel.running
+        ? "Stop the sweep. The angles already finished stay in the table."
+        : (SweepModel.form_ok
+            ? "Solve and score every angle in the range, each on a copy of the design. Your design is not changed."
+            : "Cannot run yet: " + SweepModel.summary_text);
+
+    HorizontalLayout {
+        spacing: 10px;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 3px;
+            FieldCaption {
+                text: "Tier";
+                hint: "The tier whose angle is tried. Every other tier keeps its angle.";
+            }
+            Rectangle {
+                height: 30px;
+                background: Theme.surface-raised;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-dialog;
+                TipBox {
+                    width: 100%;
+                    height: 100%;
+                    hint: "The tier whose angle is tried. Every other tier keeps its angle.";
+                    ComboBox {
+                        model: SweepModel.tier_names;
+                        current-index <=> SweepModel.tier_index;
+                        enabled: !SweepModel.running;
+                        accessible-label: "Tier to sweep";
+                        selected(value) => { SweepModel.tier_changed(); }
+                    }
+                }
+            }
+        }
+
+        SweepNumberField {
+            caption: "From (degrees)";
+            hint: "One end of the range, in degrees from flat. Use a positive number: the crown or pavilion side comes from the tier. You can type a sum such as 41.5 - 3.";
+            placeholder: "from";
+            value <=> SweepModel.from_text;
+            enabled: !SweepModel.running;
+            edited => { SweepModel.form_changed(); }
+        }
+        SweepNumberField {
+            caption: "To (degrees)";
+            hint: "The other end of the range, in degrees from flat. The table lists the angles from the flattest to the steepest. You can type a sum such as 41.5 + 3.";
+            placeholder: "to";
+            value <=> SweepModel.to_text;
+            enabled: !SweepModel.running;
+            edited => { SweepModel.form_changed(); }
+        }
+        SweepNumberField {
+            caption: "Step (degrees)";
+            hint: "The gap between two angles, in degrees. A smaller step gives more rows and takes longer.";
+            placeholder: "step";
+            value <=> SweepModel.step_text;
+            enabled: !SweepModel.running;
+            edited => { SweepModel.form_changed(); }
+        }
+
+        VerticalLayout {
+            alignment: end;
+            SweepButton {
+                width: 120px;
+                text: SweepModel.running ? "Cancel" : "Run sweep";
+                hint: root.run_hint;
+                icon: SweepModel.running ? @image-url("../../icons/close.svg") : @image-url("../../icons/play.svg");
+                primary: !SweepModel.running;
+                enabled: SweepModel.running || SweepModel.form_ok;
+                clicked => {
+                    if SweepModel.running {
+                        SweepModel.cancel();
+                    } else {
+                        SweepModel.run();
+                    }
+                }
+            }
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 16px;
+        SweepCheck {
+            label: "Also average the tilt performance (slower)";
+            hint: "Also work out the tilt performance of every angle and average it, so the table and chart can show it. It gives a fuller picture but makes the sweep much slower.";
+            checked <=> SweepModel.tilt_average;
+            enabled: !SweepModel.running;
+            toggled => { SweepModel.form_changed(); }
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: SweepModel.summary_text;
+            font-size: 11px;
+            color: SweepModel.form_ok ? Theme.text-secondary : Theme.danger;
+            wrap: word-wrap;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            accessible-role: AccessibleRole.text;
+        }
+    }
+
+    if SweepModel.notice_text != "": Text {
+        text: SweepModel.notice_text;
+        font-size: 10px;
+        font-italic: true;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+        accessible-role: AccessibleRole.text;
+    }
+
+    if SweepModel.running: Rectangle {
+        height: 6px;
+        border-radius: 3px;
+        background: Theme.surface-chip;
+        accessible-role: AccessibleRole.progress-indicator;
+        accessible-label: "Sweep progress";
+        accessible-value: Math.round(Math.clamp(SweepModel.progress, 0.0, 1.0) * 100) + " percent";
+        Rectangle {
+            x: 0px;
+            width: parent.width * SweepModel.progress;
+            height: 100%;
+            border-radius: 3px;
+            background: Theme.accent-cyan;
+        }
+    }
+}

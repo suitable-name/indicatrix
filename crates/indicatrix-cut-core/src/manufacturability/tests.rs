@@ -582,15 +582,15 @@ fn a_through_cylinder_on_the_girdle_warns_breaks_through() {
         1.0,
         glam::Vec3::ZERO,
     );
-    assert!(
+    assert_eq!(
         mesh_checks::concave_tool_warnings(
             &unit_cube_planes(),
             0,
             &[groove],
             &[(0, 0)],
             DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2,
-        )
-        .is_empty()
+        ),
+        [] as [ManufacturabilityWarning; 0]
     );
 }
 
@@ -621,7 +621,9 @@ fn a_ball_on_a_corner_removes_the_meet_and_the_hull_vertex() {
 #[test]
 fn two_balls_at_the_same_spot_overlap_and_a_planar_design_stays_silent() {
     use indicatrix::geometry::tool::ToolPrimitive;
-    let ball = ToolPrimitive::ball(glam::Vec3::ZERO, 0.3);
+    // On the +z facet, so each ball is an ordinary cut (a ball at the centre would sit wholly
+    // inside the stone, which is its own warning).
+    let ball = ToolPrimitive::ball(glam::Vec3::new(0.0, 0.0, 1.0), 0.3);
     let warnings = mesh_checks::concave_tool_warnings(
         &unit_cube_planes(),
         0,
@@ -639,8 +641,9 @@ fn two_balls_at_the_same_spot_overlap_and_a_planar_design_stays_silent() {
         .tiers
         .push(tier("T", 0.0, MeetConstraint::ScaleReference(0.3), &[]));
     let solved = solved(&design);
-    assert!(
-        check_concave_tools(&design, &solved, DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2).is_empty()
+    assert_eq!(
+        check_concave_tools(&design, &solved, DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2),
+        [] as [ManufacturabilityWarning; 0]
     );
 }
 

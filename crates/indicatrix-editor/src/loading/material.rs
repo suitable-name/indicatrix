@@ -89,6 +89,8 @@ pub fn material_selection_for_accepted_suggestion(
         specific_gravity_override: current.specific_gravity_override,
         refractive_index_override: ri_override_to_preserve(name, schedule_ri),
         body_color_override: current.body_color_override,
+        body_color_bands_override: current.body_color_bands_override.clone(),
+        absorption_path_scale_override: current.absorption_path_scale_override,
     }
 }
 

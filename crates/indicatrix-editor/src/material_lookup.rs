@@ -12,13 +12,23 @@
 //! exists in the schema, but nothing in this crate has ever written a real value into
 //! it -- `gui::optics::crystal_optics::save_gem_material` always saves `None` for it
 //! today, and `gem_material_from_row` (the one place a `CustomMaterialRow` becomes a
-//! `GemMaterial`) does not parse it either. This lookup therefore has the exact same
-//! "a custom material with only a flat RI/dispersion pair renders non-dispersive"
-//! limitation the live-render viewport already has -- deliberately left as a documented
-//! limitation (stated in the material combo's tooltip) rather than a per-axis
-//! authoring surface.
+//! `GemMaterial`) does not parse it either. A custom material's extraordinary ray
+//! therefore follows the constant-`birefringence_delta` approximation -- deliberately
+//! left as a documented limitation rather than a per-axis authoring surface.
+//!
+//! # A custom material's ordinary-ray curve
+//!
+//! A custom material is either the Cauchy fit of a refractive index and an `n_F - n_C`
+//! figure (`GemMaterial::new_custom`) or, when its author typed coefficients in the
+//! Material Editor, a Sellmeier or Cauchy model of their own
+//! (`GemMaterial::new_custom_with_dispersion`). Either way the curve is the material's
+//! `dispersion` field, and every function here returns it unchanged. The one thing that
+//! replaces it is a design's refractive-index override (`MaterialSelection::
+//! apply_overrides`), which flattens any material to a non-dispersive index.
 
-use indicatrix::optics::materials::GemMaterial;
+use indicatrix::{
+    geometry::GpuFacetPlane, optics::materials::GemMaterial, render_setup::measure_model_width,
+};
 use indicatrix_cut_core::{
     Design,
     material::{BuiltinMaterials, MaterialLookup, MaterialSelection},
@@ -113,6 +123,40 @@ pub fn resolved_gem_material(
     lookup: &dyn MaterialLookup,
 ) -> GemMaterial {
     selection.apply_overrides(selection.resolve(lookup).gem)
+}
+
+/// `material` sized for the design's real stone, for a run that works out the face-up
+/// colour (the Optimize tone objective).
+///
+/// When [`Design::girdle_diameter_mm`] is `Some(mm)` with `mm > 0` and the planes measure a
+/// model width `w > 1e-9` ([`indicatrix::render_setup::measure_model_width`]), the material's
+/// `absorption_path_scale` becomes `mm / w`: the renderer's own rule in
+/// `render_setup::apply_material_overrides_for_mode` (model units of path times that scale
+/// are millimetres of body colour). Otherwise the material is returned unchanged, so one
+/// model unit of path counts as one unit of colour strength, the swatch convention.
+#[must_use]
+pub fn sized_material_for_optimize(
+    material: GemMaterial,
+    design: &Design,
+    planes: &[GpuFacetPlane],
+) -> GemMaterial {
+    let Some(mm) = design
+        .girdle_diameter_mm
+        .filter(|mm| *mm > 0.0 && mm.is_finite())
+    else {
+        return material;
+    };
+    match measure_model_width(planes) {
+        Some(width) if width > 1e-9 => {
+            let scale = (mm / width) as f32;
+            if scale.is_finite() && scale > 0.0 {
+                material.with_absorption_path_scale(scale)
+            } else {
+                material
+            }
+        }
+        _ => material,
+    }
 }
 
 /// How close a design's own refractive index must sit to a built-in preset's for that
@@ -463,6 +507,8 @@ mod tests {
             specific_gravity_override: None,
             refractive_index_override: Some(1.66),
             body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
         };
         let custom_list: [GemMaterial; 0] = [];
         let lookup = EditorMaterialLookup::new(&custom_list);
@@ -541,6 +587,8 @@ mod tests {
             specific_gravity_override: None,
             refractive_index_override: None,
             body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
         };
         let custom_list: [GemMaterial; 0] = [];
         let lookup = EditorMaterialLookup::new(&custom_list);
@@ -556,6 +604,8 @@ mod tests {
             specific_gravity_override: None,
             refractive_index_override: Some(1.70),
             body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
         };
         let custom_list: [GemMaterial; 0] = [];
         let lookup = EditorMaterialLookup::new(&custom_list);
@@ -571,6 +621,46 @@ mod tests {
         let base = GemMaterial::diamond();
         assert_eq!(gem.crystal_system, base.crystal_system);
         assert_eq!(gem.absorption, base.absorption);
+    }
+
+    /// A custom material built from Sellmeier coefficients keeps its curve through every
+    /// path a design's material resolves by (lookup, optimizer/tilt resolution, render
+    /// trace); only an RI override flattens it, by design.
+    #[test]
+    fn a_custom_dispersion_model_survives_every_resolution_path_until_an_ri_override() {
+        let model = GemMaterial::by_name("Glass (N-BK7)")
+            .expect("N-BK7 is a built-in")
+            .dispersion;
+        assert!(matches!(model, DispersionModel::Sellmeier3 { .. }));
+        let custom = GemMaterial::new_custom_with_dispersion("My Glass", model, 0.0, [0.0; 3]);
+        let custom_list = [custom];
+        let lookup = EditorMaterialLookup::new(&custom_list);
+
+        let found = lookup
+            .lookup("my glass")
+            .expect("custom materials match any case");
+        assert_eq!(found.dispersion, model);
+
+        let selection = MaterialSelection {
+            name: Some("My Glass".to_string()),
+            ..MaterialSelection::none()
+        };
+        assert_eq!(resolved_gem_material(&selection, &lookup).dispersion, model);
+        let traced =
+            traced_gem_material("My Glass", &selection, &lookup).expect("the custom name resolves");
+        assert_eq!(traced.dispersion, model);
+
+        // The documented exception: a typed RI override replaces the curve with a flat one
+        // at that index.
+        let overridden = MaterialSelection {
+            refractive_index_override: Some(1.60),
+            ..selection
+        };
+        let flat = resolved_gem_material(&overridden, &lookup);
+        assert_ne!(flat.dispersion, model);
+        for lambda in [450.0f32, 589.3, 700.0] {
+            assert!((f64::from(flat.dispersion.evaluate(lambda)) - 1.60).abs() < 1e-4);
+        }
     }
 
     /// At sapphire's own RI, the nearest-first list must start with Sapphire
@@ -659,6 +749,8 @@ mod tests {
                 specific_gravity_override: None,
                 refractive_index_override: None,
                 body_color_override: None,
+                body_color_bands_override: None,
+                absorption_path_scale_override: None,
             };
             let resolved = resolved_gem_material(&selection, &lookup);
             assert_eq!(

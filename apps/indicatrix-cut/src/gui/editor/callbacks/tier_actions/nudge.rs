@@ -16,6 +16,10 @@ use crate::{
     gui::{
         editor::{
             edit_intent,
+            relation_ui::{
+                DRIVEN_ANGLE_HINT, edit_error_text, refresh_with_followers, split_driven_targets,
+                with_followers,
+            },
             stall_guard::stall_guard,
             state::EditorState,
             view::{SolidLastSolved, refresh_editor_panel_stale, submit_preview_replan},
@@ -64,18 +68,16 @@ pub(in crate::gui::editor) fn setup_inline_set_angle_callback(
                 // Without this toast, a committed-but-unchanged edit would be silent and
                 // indistinguishable from a dropped one.
                 Ok(InlineAngle::NoChange) => show_toast(&ui, "No change.", "info"),
-                Ok(InlineAngle::Applied(_)) => {
-                    refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::from([index]));
-                    submit_preview_replan(
-                        &ui,
-                        &render_ctx,
-                        &preview_state,
-                        &solid_last_solved,
-                        &st,
-                        BTreeSet::from([index]),
-                        false,
-                    );
-                }
+                // A relation typed into the cell (`=P1-2`) moves the tier and everything
+                // that follows it, so the followers are refreshed too.
+                Ok(InlineAngle::Applied(_)) => refresh_with_followers(
+                    &ui,
+                    &render_ctx,
+                    &preview_state,
+                    &solid_last_solved,
+                    &st,
+                    [index],
+                ),
                 Err(e) => show_toast(&ui, &e, "error"),
             }
         });
@@ -91,10 +93,15 @@ pub(super) use indicatrix_editor::session::tier_nudge_label;
 /// `tier_angle_cell.slint`'s `TierAngleCell::step`/`TierAngleCell.nudge`) forwards
 /// here as `(anchor_index, delta_deg)`. The tier FORM's own Angle field Up/Down
 /// (`editor_inspector/tier_form_tab.slint`'s `LineEdit.key-pressed`) does NOT --
-/// it calls `stepped_angle_text` (declared on `TierFormTab` itself), a pure
-/// function over the field's own local scratch text, since the form is a
-/// staging area with nothing committed to `Design` yet (see that function's own
-/// doc comment); this path only ever nudges an EXISTING, already-saved tier.
+/// it asks `SliderModel.stepped_angle_text` (`indicatrix_editor::slider_ranges::
+/// stepped_angle_text`), a pure function over the field's own local scratch text,
+/// since the form is a staging area with nothing committed to `Design` yet; this
+/// path only ever nudges an EXISTING, already-saved tier.
+///
+/// `delta_deg` is a change of the angle the row SHOWS. The tier table prints a pavilion
+/// tier's angle without its minus sign, so Up (a positive delta) makes the shown number
+/// bigger for a crown and a pavilion tier alike; the stored sign stays
+/// (`EditorSession::nudge_displayed_angles`).
 ///
 /// When `anchor_index` is part of a multi-select group of two or more
 /// (`EditorState::multi_selected`), every selected tier is nudged together as ONE
@@ -193,10 +200,22 @@ fn apply_nudge_intent(
     delta_deg: f64,
 ) {
     let mut st = state.borrow_mut();
+    // A tier whose angle follows a relation takes no direct nudge: say why, once, and
+    // nudge the free tiers of the group as usual.
+    let (driven, targets) = split_driven_targets(&st.design, targets);
+    let targets = targets.as_slice();
+    if targets.is_empty() {
+        drop(st);
+        if !driven.is_empty() {
+            show_toast(ui, DRIVEN_ANGLE_HINT, "info");
+        }
+        return;
+    }
     match st.nudge_angles(targets, delta_deg) {
         Ok(None) => {}
         Ok(Some(outcome)) => {
-            let dirty: BTreeSet<usize> = targets.iter().copied().collect();
+            // The tiers that follow a nudged tier moved with it.
+            let dirty: BTreeSet<usize> = with_followers(&st.design, targets.iter().copied());
             refresh_editor_panel_stale(ui, render_ctx, &st, &dirty);
             submit_preview_replan(
                 ui,
@@ -224,7 +243,16 @@ fn apply_nudge_intent(
                     "info",
                 );
             }
+            // Last, so it is the toast left on screen: part of the group did not move.
+            if !driven.is_empty() {
+                show_toast(ui, DRIVEN_ANGLE_HINT, "info");
+            }
         }
-        Err(e) => show_toast(ui, &e.to_string(), "error"),
+        // A follower that would leave 0-90 degrees refuses the nudge in words (the
+        // session kept the reason).
+        Err(e) => {
+            let message = edit_error_text(&mut st, &e);
+            show_toast(ui, &message, "error");
+        }
     }
 }

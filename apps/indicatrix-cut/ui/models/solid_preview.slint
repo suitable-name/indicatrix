@@ -77,7 +77,18 @@ export global SolidPreviewModel {
     // Persists `view_mode` through the debounced settings writer
     // (`settings/persist.rs`'s `SettingsPersister::update`).
     callback view_mode_changed(int);
-    changed view_mode => { view_mode_changed(view_mode); }
+    changed view_mode => {
+        view_mode_changed(view_mode);
+        // The Diagram always shows the finished design: its facet numbers and tier
+        // labels come from the whole design, so a truncated stone would not match them,
+        // and it has no slider to show or undo the cut. Entering it puts the Cut slider
+        // back to Finished (the rough is not restored on the way out).
+        if (view_mode == 3 && tier_cutoff != -1) {
+            tier_cutoff = -1;
+            cut_position = cut_step_count;
+            tier_cutoff_changed();
+        }
+    }
 
     // Whether the Solid view's rasterizer (`gui::solid_preview::raster`)
     // draws the rough's own bounding (preform) planes -- toggled by
@@ -118,16 +129,40 @@ export global SolidPreviewModel {
     // and toggles `diagram_enlarged_panel`, like the web app does.
     callback diagram_double_click(length, length);
 
-    // Draws the stone as it stands after this many tiers of the
-    // schedule, so a cutter can see what the next course actually lands on. `-1` is
-    // "the whole design", matching `diagram_enlarged_panel` just above -- Slint has
-    // no `Option<int>`. Read in `gui::editor::view::submit_preview_replan` and
-    // handed to `SolidPreviewState::set_tier_cutoff`, which the plan worker
-    // consults via `Design::planes_through_tier`.
+    // The Cut slider: how far through the cutting steps the stone is drawn, so a cutter
+    // can see the rough after every tier. Slint has no `Option<int>`, so:
+    // `-1` is the finished design, `-2` is the rough (the preform before any tier is
+    // cut), and `n >= 0` is the stone after steps 0 to n (a planar design: "through
+    // tier n"). Decoded by `gui::solid_preview::cut_slider::CutPosition`; read in
+    // `gui::editor::view::submit_preview_replan` and handed to the plan worker, and by
+    // every full redraw (background solve, refresh, optimise ghost) so they all draw the
+    // same stone. New, Open and Load reset it to `-1`; so does entering Diagram mode.
     in-out property <int> tier_cutoff: -1;
+    // The number of cutting steps (flat and concave tiers) of the loaded design: the
+    // slider's last position is "Finished", this many steps in. Written by Rust
+    // (`cut_slider::sync_model`) on every replan.
+    in-out property <int> cut_step_count: 0;
+    // The slider handle, 0 (Rough) to `cut_step_count` (Finished). Two-way bound to the
+    // slider in `toolbar.slint` so Rust can move the handle (New/Open/Load put it back to
+    // Finished), which a plain `value:` binding stops doing after the first drag.
+    in-out property <float> cut_position: 0;
+    // The slider's label for the current position: "Rough", "After <tier> (k of N)" or
+    // "Finished". Written by Rust together with `tier_cutoff`, so label and view agree.
+    in-out property <string> cut_label: "Finished";
     // Setting `tier_cutoff` alone changes nothing on screen: the preview only
     // redraws when something requests a replan, and a property write is not a
     // request. The slider fires this straight after writing the value, and
     // `gui::editor` turns it into one.
     callback tier_cutoff_changed();
+
+    // Puts the Cut slider back on the finished design and asks for the replan, exactly as
+    // dragging it to the far right does. Live Render's "Show finished" button calls this; it
+    // does nothing when the stone is not cut.
+    public function show_finished() {
+        if (tier_cutoff != -1) {
+            tier_cutoff = -1;
+            cut_position = cut_step_count;
+            tier_cutoff_changed();
+        }
+    }
 }

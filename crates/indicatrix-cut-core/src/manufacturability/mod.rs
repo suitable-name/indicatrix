@@ -23,9 +23,11 @@
 //!    geometrically fine today, but silently loses or mis-targets the reference
 //!    the moment the design round-trips through `.asc` text.
 //! 6. [`mesh_checks::check_concave_tools`]: only for a design with concave tiers, the
-//!    tool warnings of plan §9.1 (a tool that misses the stone, breaks through it,
-//!    removes a meet or hull vertex, overlaps another, or leaves a sliver). Absent
-//!    for a planar design, so its output is unchanged.
+//!    tool warnings of plan §9.1 (a tool that misses the stone, sits wholly inside it,
+//!    breaks through it, removes a meet or hull vertex, overlaps another, or leaves a
+//!    sliver). Absent for a planar design, so its output is unchanged. It is the one
+//!    costly check (dozens of plane-arrangement meshes), so callers that run on a UI
+//!    thread take it from a worker instead of calling it inline.
 //!
 //! [`check_manufacturability`] runs all five together over an
 //! **already-solved** [`crate::design::Design`] (see its own doc comment for why that
@@ -58,6 +60,7 @@ mod authored_checks;
 mod mesh_checks;
 #[cfg(test)]
 mod tests;
+mod tool_cull;
 mod warning;
 
 use crate::design::Design;

@@ -1,0 +1,113 @@
+import { Theme } from "../theme.slint";
+import { HelpModel } from "../models/help.slint";
+
+// The small round "?" button a panel carries. A click opens the manual at `topic`, a
+// topic id from `HelpTopics` (`models/help.slint`):
+//
+//     HelpButton { topic: HelpTopics.tier-form; }
+//
+// It is a plain 20 px circle by default; `diameter` makes it larger. It takes keyboard
+// focus (Tab) and answers Space and Enter like a button.
+export component HelpButton inherits Rectangle {
+    in property <string> topic;
+    // What the tooltip says; name the panel when it helps ("Open the manual page on the tier form").
+    in property <string> hint: "Open the manual for this part of the program";
+    in property <length> diameter: 20px;
+
+    width: root.diameter;
+    height: root.diameter;
+    border-radius: root.diameter / 2;
+    background: help_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
+    border-width: help_focus.has-focus ? 2px : 1px;
+    border-color: help_focus.has-focus ? Theme.accent-cyan : Theme.border-control;
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: "Help: " + root.hint;
+    accessible-action-default => { HelpModel.open_topic(root.topic); }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    help_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                HelpModel.open_topic(root.topic);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    Image {
+        source: @image-url("../icons/help.svg");
+        colorize: Theme.text-secondary;
+        width: root.diameter * 0.65;
+        height: root.diameter * 0.65;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        image-fit: contain;
+    }
+
+    help_touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { HelpModel.open_topic(root.topic); }
+    }
+}
+
+// A text button for the help window's toolbar and the glossary dialog's footer. `primary`
+// fills it with the accent colour; an inactive button is dimmed and ignores clicks.
+export component HelpToolButton inherits Rectangle {
+    in property <string> label;
+    // One plain sentence: what the button does. Shown as the tooltip and read after the label.
+    in property <string> hint;
+    in property <bool> active: true;
+    in property <bool> primary: false;
+    callback clicked();
+
+    height: 28px;
+    width: max(64px, tool_label.preferred-width + 24px);
+    border-radius: Theme.radius-sm;
+    opacity: root.active ? 1.0 : 0.45;
+    background: root.primary
+        ? (tool_touch.has-hover && root.active ? Theme.accent-cyan-hover : Theme.accent-cyan)
+        : (tool_touch.has-hover && root.active ? Theme.surface-control-hover : Theme.surface-control);
+    border-width: tool_focus.has-focus ? 2px : 1px;
+    border-color: tool_focus.has-focus ? Theme.border-accent : (root.primary ? Theme.accent-cyan : Theme.border-control);
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.label;
+    accessible-description: root.hint;
+    accessible-enabled: root.active;
+    accessible-action-default => {
+        if root.active {
+            root.clicked();
+        }
+    }
+
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
+
+    tool_focus := FocusScope {
+        enabled: root.active;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    tool_label := Text {
+        text: root.label;
+        font-size: 12px;
+        font-weight: 600;
+        color: root.primary ? Theme.text-on-accent : Theme.text-primary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    tool_touch := TouchArea {
+        enabled: root.active;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}

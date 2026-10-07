@@ -75,9 +75,12 @@ pub(crate) struct NeeContext<'a> {
     pub(crate) tools: &'a [crate::geometry::tool::ToolPrimitive],
     /// `optics::raytracer::transport::trace_spectral_ray_inner`'s own `enable_nee`
     /// parameter -- `true` only at every PUBLIC entry point when `environment` is
-    /// `HdrMap` (never `Studio`: the analytic rig has no importance distribution to draw
-    /// from), or when this crate's own tests force it explicitly for an on/off A-B
-    /// comparison (mirroring `ExitSplitCtx::enabled`'s identical precedent).
+    /// `HdrMap` or the analytic `DaylightSun` (`environment_supports_nee`; every other
+    /// `Studio` rig has no light-sampling technique to draw from), or when this crate's
+    /// own tests force it explicitly for an on/off A-B comparison (mirroring
+    /// `ExitSplitCtx::enabled`'s identical precedent). Under the sun only the frosted
+    /// exterior NEE fires: the Henyey-Greenstein estimator is HDR-only (see
+    /// `nee_contribution_hg_scatter`).
     pub(crate) enabled: bool,
 }
 

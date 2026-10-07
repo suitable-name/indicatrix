@@ -150,7 +150,8 @@ pub(crate) fn nee_contribution_frosted_exterior(
 
     let common = brdf_pdf * mis_weight / sample.pdf;
     for k in 0..NUM_CHANNELS {
-        let env_k = crate::renderer::env_map::rgb_to_spectral_radiance(sample.rgb, lambdas[k]);
+        // HDR texel lifted to a spectrum, or the analytic sun's `factor * (spd * exposure)`.
+        let env_k = sample.radiance(lambdas[k]);
         radiance[k] = (stokes[k].intensity() * common * env_k).mul_add(1.0, radiance[k]);
     }
 }

@@ -5,7 +5,8 @@
 This chapter covers the Edit tab's Solid viewport: a second, independent
 view of your design's actual solved shape, shown alongside the ordinary
 spectral render. You will learn the four view modes, how to orbit, zoom,
-and pick facets, what hover and click do, the hatched and outlined
+and pick facets, how the Cut slider shows the stone step by step, what hover
+and click do, the hatched and outlined
 overlays, and what the "Not solved" banner means here versus in Chapter 5
 — including the case where an edit genuinely does not solve at all.
 
@@ -38,6 +39,14 @@ Four buttons sit above the Solid viewport:
 Your chosen mode is remembered across restarts (Chapter 1 covers where
 settings are stored generally).
 
+**The toolbar and the hint strip.** Every button above the viewport has a hover note
+that says what it does, and you can reach each one with the Tab key and press it with
+Space or Enter; the viewport itself shows a coloured outline while it has the keyboard.
+A round **?** at the end of the toolbar opens this chapter. Simple mode (Chapter 17) hides
+the **Tilt Curve** and **Save View Preset** buttons; **Preform**, **Snap** and **Slice**
+stay. The thin strip under the toolbar shows what the pointer will do and carries its own
+small buttons, each with a hover note too.
+
 ## Orbiting
 
 Drag inside the Solid viewport (in Solid, Path-traced, or Both mode) to
@@ -53,6 +62,74 @@ orthographic projections — but dragging and scrolling still do something
 there: they pan and zoom the diagram image itself (clamped so you can't
 drag it entirely off screen), and a **Reset View** button appears in
 Diagram mode to snap both back to their defaults.
+
+## The Cut slider
+
+The small slider in the toolbar, with a short label beside it, lets you
+watch the stone being cut. It works in **Solid**, **Path-traced** and **Both**
+mode, and appears as soon as the design has at least one tier.
+
+- **All the way left is the rough.** The label reads **Rough** and the
+  viewport shows the uncut starting block, before any facet exists.
+- **Each step to the right adds one tier.** The label names the tier you
+  have just cut, for example **After P1 Pavilion Main (3 of 9)**: the first
+  three tiers of the cutting steps are on the stone, the rest are not. The
+  label starts with the tier's code (C1, P2, G1, T, and so on), the same
+  label the tier list and the cutting sheet use, followed by the tier's own
+  name when it has one. The number after "of" is the total number of
+  steps, and every tier counts as one step, whether it is an ordinary
+  facet tier or a concave one (a groove or a dimple).
+- **All the way right is Finished.** The label reads **Finished** and you
+  see the complete design, as if the slider were not there. This is where
+  the slider sits whenever you start or open a design.
+
+The slider moves one whole step at a time. While it is anywhere but
+Finished, its border turns amber so you can tell at a glance that you are
+looking at a part of the design.
+
+**Which order are the steps in?** The order in which the stone is actually
+cut, the same order as the cutting sheet and cutting mode (Chapter 11), so
+every step looks like a real stage of the work: the pavilion and girdle
+facets first, then the concave pavilion tiers, then the crown facets (the
+Table excepted), then the concave crown tiers, and the Table last. The label
+counts positions in that order, so a tier that sits early in the tier list
+can be a late step (a Table at the top of the list is the last step), while
+the tier list itself still shows the order you stored.
+
+**Every position is a whole stone.** A step only ever removes material from
+the rough, so even the rough and the earliest steps are closed solids you
+can orbit and pick. Facets that belong to tiers not cut yet are not on the
+stone, so hovering or clicking only finds the tiers shown, and the facet it
+names is the one drawn under the pointer, also in a design with concave
+tiers. If you edit
+the design and it now has fewer steps than the slider's position, the
+slider goes back to Finished rather than showing a position that no longer
+exists. If the design does not solve at all right now, the rough is still
+drawn (it needs no solved tier), with the banner naming the problem as
+described under "When an edit genuinely does not solve" below. The later
+positions use the last solid that closed; when there is none that still
+fits the design (you added or removed a tier since), they stay blank
+until the edit solves, and the banner says why.
+
+**Both mode.** The path-traced picture is drawn from the same cut stone,
+but it takes a moment to catch up with each step. Until it does, **Both**
+shows the flat-shaded stone with its edges, with a small note saying so,
+rather than a path-traced picture of the wrong stone. The Live Render tab
+and the path-traced mode draw from the same geometry, so they follow the cut
+as well; put the slider back to Finished when you want a picture of the
+whole design. Over the Live Render picture a small amber badge says that the
+stone is cut back and has a **Show finished** button that puts the slider
+back for you. An export, the tilt video and the tilt curves never use the cut
+stone; they always draw the finished gem (Chapter 9).
+
+**Diagram mode.** The Diagram always shows the finished design, because its
+panels are a reference drawing of the whole stone. Switching to Diagram
+puts the slider back to Finished and hides it; when you switch back it
+stays at Finished. **New**, **Open** and loading a design from the library
+also put the slider back to Finished.
+
+**The Optimize and Retarget previews** are cut to the slider too: with the
+slider on step 3, a candidate shows its own first three tiers.
 
 ## Diagram view
 
@@ -85,7 +162,11 @@ outlined in the pending color.
 Hovering and clicking work exactly like the Solid view (see above), just
 resolved against the diagram's own layout — click a facet in any of the
 three panels and its tier is selected in the Cutting Instructions list below,
-the same as clicking the Solid render. This click-to-select mapping is
+the same as clicking the Solid render. The exact facet you clicked is
+remembered the same way too, so switching between the Diagram and the Solid
+view keeps the same facet picked, and the drag handles (see "Handles in the
+Diagram view" below) sit on it. Hovering a facet draws it on top of the
+selected tier's tint instead of replacing the tint. This click-to-select mapping is
 built the moment the diagram is (re)drawn in Diagram mode, so if you switch
 into Diagram mode and click immediately, before the panels have redrawn
 for the current design, the click does nothing; give it a moment (or make
@@ -113,6 +194,10 @@ switch to Both if you want to see exactly which facet you picked. This
 works in reverse too: click a row in the tier list, and its facets tint in
 the Solid viewport, so you can always see exactly what a row in the list
 corresponds to on the actual stone.
+
+A tool facet of a concave tier (a groove or a dimple) works the same way: clicking
+it, in the Solid view or the diagram, selects its concave row and opens the
+concave form, and selecting a concave row tints all of its tool facets (Chapter 16).
 
 ## Dragging a facet: the angle, depth and index handles
 
@@ -163,9 +248,66 @@ pressed. Escape with nothing being dragged clears the selection, as before.
 
 A drag never starts on a design that is not solved yet, and a depth drag
 needs the tier's solved mast, so the hint asks you to Solve first. The
-handles are hidden in Diagram mode, while the Cut slider shows only part of
-the design, and whenever the solid on screen is behind the design you are
-editing; they come back when the preview catches up.
+handles are hidden while the Cut slider shows only part of the design, and
+whenever the solid on screen is behind the design you are editing; they come
+back when the preview catches up. The Diagram view has handles of its own,
+described next.
+
+## Handles in the Diagram view
+
+The same three handles work in **Diagram** mode, on the flat panels. Select a
+tier (click one of its facets in any panel, or click its row in the tier list)
+and, once the design is solved, the **A**, **D** and **I** handles appear on
+one of the panels. They edit the whole tier exactly as in the other views:
+the same hint line, the same orange outline on the tiers that follow, one
+undo step for the whole drag, a toast when you let go, and **Escape** while
+dragging puts the design back as it was. The **Snap** pill is shown in
+Diagram mode too and does the same thing; hold **Shift** for fine steps.
+
+**One panel at a time.** The handles sit on the panel your pointer last
+entered, as long as that panel offers handles for the facet; move the pointer
+onto another panel and they move with it. They are anchored on the facet you
+clicked, or, when you picked the tier from the list, on the first facet of the
+tier that has handles anywhere. A tier whose facets are all drawn in a panel
+where they have no handle (see below) takes its handles from another panel.
+
+**What each panel offers.**
+
+- **Crown and pavilion.** **A** and **D** both lie along the line from the
+  centre of the wheel out through the facet, **A** nearer and **D** farther
+  out so the two never sit on top of each other. Drag **A** away from the
+  centre to make the facet steeper, towards the centre to make it shallower;
+  drag **D** away from the centre to move the tier outward, towards the centre
+  to move it inward (this pins the tier's mast, as described above). **I** lies
+  along the wheel. Drag it round the wheel: the pointer's angle around the
+  middle of the panel is the turn, so moving it in the direction the tooth
+  numbers grow on that panel turns the tier to higher indices by the same
+  number of teeth, and you can go round more than once. The pavilion panel is
+  the crown's mirror image, so its numbers grow the other way round, and the
+  handle follows them.
+- **Profile.** Only a facet seen exactly side on, so that it shows as a line,
+  has handles here (the girdle, for example): **A** runs along the line and
+  **D** across it. There is no index wheel in the profile, so no **I**.
+
+**Handles a panel leaves out.** A handle is not offered where dragging it
+would barely move on the picture, because a pixel of drag would then change
+the value far too much. The table, seen from above, has no **D** (its depth
+points straight at you) and no **I** (it has no index positions). A facet
+steeper than about 81 degrees has no **A** on the crown and pavilion panels,
+and one shallower than about 9 degrees has no **D**; the profile shows the
+steep ones side on. As in the other views, a tier with no index positions has
+no **I**, and a tier whose angle follows another tier's through a relation has
+no **A**. When no panel offers a handle for any facet of the selected tier,
+no handles are shown.
+
+**Zoom and pan.** The handles stay in step with the picture when you zoom
+and pan, and keep their size on screen, so a zoomed-in diagram grabs them just
+as easily as a zoomed-out one. The mouse wheel is ignored while you are
+dragging a handle, so the picture holds still under your pointer.
+
+**What is not offered here.** The **Slice** tool needs the 3D stone and is
+not available in Diagram mode. While a Slice tier is waiting to be kept or
+discarded, the Diagram view shows no handles; keep or discard it first.
 
 ## Slicing a new facet with the mouse
 

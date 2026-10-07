@@ -13,7 +13,7 @@ use super::{
 };
 use crate::rough_plan::{
     Axis, CandidateDesign, CutOrder, FitMesh, PlacedStone, PlanSettings, RoughLayout, StonePose,
-    piece::{ASSIGNMENTS, Norm, stone_scale},
+    piece::{ASSIGNMENTS, Norm, min_width_floor, stone_scale},
     tree::{Leaf, Tree, assemble_layout, assignment_axes},
 };
 
@@ -61,7 +61,10 @@ impl<'a> StoneFitter<'a> {
     /// The stone is the largest scaling of the leaf's design and assignment whose
     /// box lies inside the piece minus the allowance and inside every cut plane.
     /// `None` when the leaf's design is not in the pool, the piece lies outside
-    /// the rough, or the stone would be narrower than the minimum width.
+    /// the rough, or the stone would be narrower than the minimum width. "Narrower"
+    /// has the slack of [`min_width_floor`], the one rule every valuation of a piece
+    /// uses, so a piece the table or the refinement valued at the minimum width holds
+    /// its stone here too.
     pub fn fit(&mut self, origin: [f64; 3], size: [f64; 3], leaf: &Leaf) -> Option<PlacedStone> {
         let design = self.pool.get(leaf.design)?;
         let norm = Norm::of(design);
@@ -87,7 +90,7 @@ impl<'a> StoneFitter<'a> {
             self.solver
                 .solve_with(&region, caliper_extents(&norm, leaf.orient), self.mesh)?
         };
-        if scale <= 0.0 || scale < self.settings.min_width_mm {
+        if scale <= 0.0 || scale < min_width_floor(self.settings.min_width_mm) {
             return None;
         }
         Some(self.placed(design, &norm, leaf.orient, origin, size, (scale, center_mm)))

@@ -525,7 +525,11 @@ mod tests {
         let loaded =
             design_from_asc_and_native("x.asc", &saved.asc_text, "not valid toml [[[", None, 1)
                 .expect("plain fallback");
-        assert!(loaded.design.concave_tiers.is_empty());
+        assert_eq!(
+            loaded.design.concave_tiers.len(),
+            0,
+            "the plain .asc has no concave tiers"
+        );
     }
 
     /// An attached `.indicatrix` file with unusable concave tiers is an error: the

@@ -1,0 +1,57 @@
+import { Theme } from "../../theme.slint";
+import { SolidPreviewModel } from "../../models/solid_preview.slint";
+import { PillButton } from "../pill_button.slint";
+
+// The Live Render viewport's note that the picture is cut back. Live Render follows the Edit
+// tab's Cut slider, so while the slider is not on Finished the stone on screen is a part-cut
+// stone -- said plainly here ("Cut: After P2 (3 of 12)") instead of being left to be
+// noticed, with a "Show finished" button that puts the slider back, exactly as dragging it to
+// the far right does. Exports and tilt videos ignore the slider and always show the finished
+// stone; the tooltip says so.
+//
+// The host (`gem_viewport.slint`) mounts it only while the viewport shows the Edit tab's
+// design and the slider is cut (`ViewportModel.shows_editor_design`), so it needs no gate of
+// its own. The words come from Rust (`SolidPreviewModel.cut_label`), written together with
+// the cut, so they always describe what the picture shows.
+export component LiveCutBadge inherits Rectangle {
+    height: 28px;
+    min-width: 120px;
+    max-width: 440px;
+    background: Theme.hint-surface;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.accent-amber;
+
+    accessible-role: AccessibleRole.text;
+    accessible-label: "The picture shows the stone cut back. Cut: " + SolidPreviewModel.cut_label;
+
+    Tooltip { text: @markdown("The Cut slider in the Edit tab has this design cut back to **\{SolidPreviewModel.cut_label}**, and this picture follows it. Exports and tilt videos always show the finished stone. Press Show finished to put the slider back."); }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 3px;
+        spacing: 8px;
+
+        Text {
+            horizontal-stretch: 1;
+            text: "Cut: " + SolidPreviewModel.cut_label;
+            font-size: 11px;
+            font-weight: 700;
+            color: Theme.accent-amber;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        VerticalLayout {
+            alignment: center;
+            PillButton {
+                width: 104px;
+                height: 22px;
+                text: "Show finished";
+                font_size: 11px;
+                hint: "Put the Cut slider back on the finished stone.";
+                clicked => { SolidPreviewModel.show_finished(); }
+            }
+        }
+    }
+}

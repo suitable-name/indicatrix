@@ -10,7 +10,7 @@ use super::{
     handle_layout, hit_test,
     provisional::{
         PROVISIONAL_GENERATION, cut_hides_tier, frame_updates_mast_cache, keep_allowed,
-        resting_hint, session_outlives, surviving_facets, wheel_turn,
+        resting_hint, session_outlives, surviving_facets, tier_step, wheel_turn,
     },
     text,
 };
@@ -503,7 +503,43 @@ fn the_resting_hint_prefers_the_cut_slider_warning_then_the_tier_then_the_mode()
         "the slider stops before the new tier"
     );
     assert!(cut_hides_tier(0, 1) && !cut_hides_tier(1, 1) && !cut_hides_tier(-1, 1));
+    // The rough (`-2`) has no tier cut at all, so every tier is hidden, tier 0 too.
+    assert!(cut_hides_tier(-2, 0) && cut_hides_tier(-2, 7));
     assert!(frame_updates_mast_cache(0) && !frame_updates_mast_cache(PROVISIONAL_GENERATION));
+}
+
+/// The Cut slider counts cutting steps, and a provisional tier's step is its position in the
+/// cutting order, not its stored index: the hint must follow the step, or it appears one step
+/// too late (or too early).
+#[test]
+fn the_resting_hint_follows_the_cutting_step_not_the_stored_index() {
+    let committed = Design::concave_fixture();
+    let slice = build(&committed);
+    let step = tier_step(&slice.design, slice.tier_index).expect("the tier is a step");
+    assert_ne!(
+        step, slice.tier_index,
+        "a concave step moves the tier in the cutting order"
+    );
+    let cutoff = |through: usize| i32::try_from(through).expect("a small step");
+    // Stopping just short of its own step hides the tier; reaching it shows it.
+    let hidden_through = step.checked_sub(1).map(cutoff).expect("not the first step");
+    assert_eq!(
+        resting_hint(Some(&slice), hidden_through, true, true),
+        text::SLICE_CUT_SLIDER_HINT
+    );
+    assert_eq!(
+        resting_hint(Some(&slice), cutoff(step), true, true),
+        slice.hint()
+    );
+    // Without concave tiers the rule is the same: the provisional tier is stored last (index
+    // 5, after the two crown tiers) but is pavilion-side, so the cutting order puts it right
+    // after the three pavilion and girdle tiers -- step 3, not 5.
+    let mut flat = committed;
+    flat.concave_tiers.clear();
+    flat.concave_tier_ids.clear();
+    let slice = build(&flat);
+    assert_eq!(slice.tier_index, 5);
+    assert_eq!(tier_step(&slice.design, slice.tier_index), Some(3));
 }
 
 /// A frame geometry with no centroids: enough to prove `place` needs masts first.
@@ -518,6 +554,8 @@ fn frame_geometry() -> indicatrix_solid::preview::FrameGeometry {
             distance: 4.0,
         },
         size: (800, 600),
+        diagram: None,
+        visible_tiers: None,
     }
 }
 

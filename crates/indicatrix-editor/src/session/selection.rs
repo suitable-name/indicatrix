@@ -19,6 +19,9 @@ enum Shift {
     /// The tier at `from` was taken out and re-inserted at `to` (`Vec::remove` then
     /// `Vec::insert`, exactly as `Edit::MoveTier` applies it).
     Move { from: usize, to: usize },
+    /// The whole tier list was replaced (`Edit::ReplaceSchedule`): no row can be
+    /// followed through it, so every row drops out of the selection.
+    Clear,
 }
 
 impl Shift {
@@ -26,6 +29,7 @@ impl Shift {
     /// when this change removed it.
     const fn apply(self, index: usize) -> Option<usize> {
         match self {
+            Self::Clear => None,
             Self::Insert(at) => Some(if index >= at { index + 1 } else { index }),
             Self::Remove(at) => {
                 if index == at {
@@ -100,6 +104,39 @@ impl TierIndexMap {
             .filter_map(|&index| self.map(index))
             .collect()
     }
+
+    /// Appends the renumbering of a change that happened after this one, so the map
+    /// then describes both together: a jump along the history is several undos or redos,
+    /// and one row has to be followed through all of them.
+    pub fn extend(&mut self, later: &Self) {
+        self.shifts.extend_from_slice(&later.shifts);
+        self.concave_shifts.extend_from_slice(&later.concave_shifts);
+    }
+
+    /// Where the row `row` of a tier table sits after the change this map describes, or
+    /// `None` when the change removed its tier.
+    ///
+    /// A tier table lists the flat tiers first and the concave tiers after them, so a row
+    /// at or past `flat_before` (the flat tier count before the change) names a concave
+    /// tier. `flat_after` and `concave_after` are the counts after it: a row that lands
+    /// outside them names nothing and is dropped too. This is the desktop's single
+    /// selected row, which `EditorSession::multi_selected` cannot hold because it
+    /// numbers the flat tiers alone.
+    #[must_use]
+    pub fn map_table_row(
+        &self,
+        row: usize,
+        flat_before: usize,
+        flat_after: usize,
+        concave_after: usize,
+    ) -> Option<usize> {
+        if row < flat_before {
+            return self.map(row).filter(|&mapped| mapped < flat_after);
+        }
+        self.map_concave(row - flat_before)
+            .filter(|&mapped| mapped < concave_after)
+            .map(|mapped| flat_after + mapped)
+    }
 }
 
 /// Appends `edit`'s row shifts to `map`, sub-edits of a batch in application order.
@@ -117,6 +154,7 @@ fn collect_shifts(edit: &Edit, map: &mut TierIndexMap) {
             from: *from,
             to: *to,
         }),
+        Edit::ReplaceSchedule(_) => map.shifts.push(Shift::Clear),
         Edit::Batch(edits) => {
             for sub_edit in edits {
                 collect_shifts(sub_edit, map);
@@ -259,6 +297,49 @@ mod tests {
     }
 
     #[test]
+    fn relation_edits_move_no_rows_and_leave_a_batch_to_its_other_parts() {
+        use indicatrix_cut_core::{
+            TierId,
+            design::{RelationExpr, TierRelation},
+        };
+        let relation = TierRelation::new(RelationExpr::offset_from(TierId(0), -2.0));
+        for edit in [
+            Edit::SetTierRelation {
+                index: 1,
+                relation: Some(relation),
+            },
+            Edit::SetTierRelation {
+                index: 1,
+                relation: None,
+            },
+        ] {
+            let map = TierIndexMap::of(&edit);
+            assert_eq!(
+                [0, 1, 2, 3].map(|index| map.map(index)),
+                [Some(0), Some(1), Some(2), Some(3)],
+                "{edit:?} must not move rows"
+            );
+        }
+        // A removal that also frees a relation and moves a follower: only the removal
+        // renumbers rows.
+        let batch = Edit::Batch(vec![
+            Edit::RemoveTier { index: 0 },
+            Edit::SetTierRelation {
+                index: 0,
+                relation: None,
+            },
+            Edit::RetargetAngles {
+                changes: vec![(0, -40.0, -41.0)],
+            },
+        ]);
+        let map = TierIndexMap::of(&batch);
+        assert_eq!(
+            [0, 1, 2].map(|index| map.map(index)),
+            [None, Some(0), Some(1)]
+        );
+    }
+
+    #[test]
     fn remapping_a_selection_drops_removed_rows_and_renumbers_the_rest() {
         let map = TierIndexMap::of(&Edit::RemoveTier { index: 0 });
         assert_eq!(
@@ -266,6 +347,27 @@ mod tests {
             BTreeSet::from([0]),
             "row 0 is gone and row 1 is now row 0"
         );
+    }
+
+    #[test]
+    fn replacing_the_whole_schedule_drops_every_selected_row() {
+        let design = indicatrix_cut_core::Design::fresh(
+            indicatrix_cut_core::PreformSpec::block(1.0, 1.0, 2.0),
+            96,
+            4,
+            1.62,
+        );
+        let replace =
+            Edit::ReplaceSchedule(Box::new(indicatrix_cut_core::ScheduleState::of(&design)));
+        let map = TierIndexMap::of(&replace);
+        assert_eq!(
+            [0, 1, 2].map(|index| map.map(index)),
+            [None, None, None],
+            "no row can be followed through a whole-list replacement"
+        );
+        assert!(map.remap(&BTreeSet::from([0, 2])).is_empty());
+        // The concave list is not part of the replacement.
+        assert_eq!(map.map_concave(1), Some(1));
     }
 
     #[test]
@@ -294,5 +396,70 @@ mod tests {
         // A flat edit leaves the concave list alone.
         let flat = TierIndexMap::of(&Edit::RemoveTier { index: 0 });
         assert_eq!(flat.map_concave(0), Some(0));
+    }
+
+    #[test]
+    fn two_changes_extended_into_one_map_move_a_row_like_the_changes_in_turn() {
+        // [a, b, c, d] with `d` moved to the front is [d, a, b, c]; then `b` (now row 2)
+        // is removed: [d, a, c].
+        let mut both = TierIndexMap::of(&Edit::MoveTier { from: 3, to: 0 });
+        both.extend(&TierIndexMap::of(&Edit::RemoveTier { index: 2 }));
+        assert_eq!(
+            [0, 1, 2, 3].map(|index| both.map(index)),
+            [Some(1), None, Some(2), Some(0)]
+        );
+        // Following a tier through the second change after the first gives the same.
+        let first = TierIndexMap::of(&Edit::MoveTier { from: 3, to: 0 });
+        let second = TierIndexMap::of(&Edit::RemoveTier { index: 2 });
+        for index in 0..4 {
+            assert_eq!(
+                both.map(index),
+                first.map(index).and_then(|moved| second.map(moved))
+            );
+        }
+        // The concave list is carried the same way.
+        let mut concave = TierIndexMap::of(&Edit::RemoveConcaveTier { index: 0 });
+        concave.extend(&TierIndexMap::of(&Edit::RemoveConcaveTier { index: 0 }));
+        assert_eq!(
+            [0, 1, 2].map(|index| concave.map_concave(index)),
+            [None, None, Some(0)]
+        );
+    }
+
+    /// A table lists the flat tiers first, then the concave ones.
+    #[test]
+    fn a_table_row_follows_its_tier_whether_it_is_flat_or_concave() {
+        // Four flat tiers and two concave tiers (rows 0-3 and 4-5). Tier 1 is removed and
+        // concave tier 0 is inserted at the front: three flat tiers, three concave tiers.
+        let mut map = TierIndexMap::of(&Edit::RemoveTier { index: 1 });
+        let concave = indicatrix_cut_core::Design::concave_fixture()
+            .concave_tiers
+            .remove(0);
+        map.extend(&TierIndexMap::of(&Edit::AddConcaveTier {
+            index: 0,
+            tier: concave,
+        }));
+        let after = |row| map.map_table_row(row, 4, 3, 3);
+        // Flat rows: tier 0 stays, tier 1 is gone, tiers 2 and 3 move up.
+        assert_eq!([0, 1, 2, 3].map(after), [Some(0), None, Some(1), Some(2)]);
+        // Concave rows: they start at row 3 now, and the inserted tier pushed both down.
+        assert_eq!([4, 5].map(after), [Some(4), Some(5)]);
+        // A row past the old table names nothing.
+        assert_eq!(after(6), None);
+    }
+
+    #[test]
+    fn a_table_row_that_lands_outside_the_new_table_is_dropped() {
+        // An insertion pushes the last flat tier past the end the caller reports.
+        let map = TierIndexMap::of(&Edit::AddTier {
+            index: 0,
+            tier: tier(),
+        });
+        assert_eq!(map.map_table_row(2, 3, 4, 0), Some(3));
+        assert_eq!(
+            map.map_table_row(2, 3, 3, 0),
+            None,
+            "row 3 does not exist in a table of three"
+        );
     }
 }

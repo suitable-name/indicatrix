@@ -49,6 +49,12 @@ impl HdrAsset {
         &self.content_hash
     }
 
+    /// The file this map was loaded from.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// The `SceneState` environment naming this map.
     #[must_use]
     pub const fn environment(&self) -> HdrEnvironment {

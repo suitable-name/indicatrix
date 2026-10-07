@@ -7,8 +7,8 @@
 use glam::{DVec3, Vec3};
 use indicatrix::{
     color::metrics::{
-        PROFILE_AZIMUTHS_DEG, TILT_ANGLES_DEG, evaluate_full_axis_profile_at_azimuth,
-        evaluate_gem_optical_metrics,
+        FaceUpTone, PROFILE_AZIMUTHS_DEG, TILT_ANGLES_DEG, evaluate_full_axis_profile_at_azimuth,
+        evaluate_gem_optical_metrics, evaluate_gem_optical_metrics_with_tone,
     },
     geometry::GpuFacetPlane,
     optics::{materials::GemMaterial, raytracer::LightingPreset},
@@ -18,23 +18,27 @@ use indicatrix::{
 /// module uses.
 ///
 /// The same `(light_yaw, light_pitch)` value
-/// `bridge::preview_render::PREVIEW_LIGHT_YAW`/`PREVIEW_LIGHT_PITCH` uses. Duplicated
-/// as a plain `f32` rather than imported since `bridge::preview_render`
-/// lives in `apps/indicatrix-cut`, a crate this one must not depend on. Keeping the
-/// same numeric convention means an optimized design's objective is measured under
-/// the same illumination the editor's own live preview already shows the user.
+/// `bridge::preview_render::PREVIEW_LIGHT_YAW`/`PREVIEW_LIGHT_PITCH` uses (the catalogue
+/// thumbnails' pose). Duplicated as a plain `f32` rather than imported since
+/// `bridge::preview_render` lives in `apps/indicatrix-cut`, a crate this one must not
+/// depend on. It only matters for the pose-dependent presets (the tent and the Studio
+/// rigs); the canonical [`CANONICAL_LIGHTING_PRESET`] ignores it.
 pub const CANONICAL_LIGHT_YAW: f32 = 0.85;
 /// The pitch half of [`CANONICAL_LIGHT_YAW`]'s own pose -- see that constant's
 /// doc comment for what the pair means and why it is duplicated here rather
 /// than imported.
 pub const CANONICAL_LIGHT_PITCH: f32 = 0.95;
 
-/// The lighting preset [`evaluate_objective`] scores under: the editor's default rig.
+/// The lighting preset [`evaluate_objective`] scores under: the grading standard, the ISO
+/// hemisphere (D65, head shadow included).
 ///
-/// The metrics describe the image lit by a preset, so the same design scores differently
-/// under another one; a caller that optimizes for the preset the user has selected uses
-/// [`evaluate_objective_under`] instead.
-pub const CANONICAL_LIGHTING_PRESET: LightingPreset = LightingPreset::RingLights;
+/// It is pose- and azimuth-free (a symmetric design scores the same at any rotation, and
+/// [`CANONICAL_LIGHT_YAW`]/[`CANONICAL_LIGHT_PITCH`] do not matter to it), so the score
+/// is the "ISO brightness" figure cutters know from `GemRay` and `GemCad`. It is not the
+/// illumination the live preview shows. The metrics describe the image lit by a preset,
+/// so the same design scores differently under another one; a caller that optimizes for
+/// the preset the user has selected uses [`evaluate_objective_under`] instead.
+pub const CANONICAL_LIGHTING_PRESET: LightingPreset = LightingPreset::IsoHemisphere;
 
 /// User-visible, user-adjustable weights for [`ObjectiveComponents`].
 ///
@@ -62,6 +66,61 @@ pub struct ObjectiveWeights {
     /// [`Self::score`]'s output bit for bit -- this field, and
     /// [`Self::score_with_yield`], are strictly additive.
     pub yield_weight: f32,
+    /// Weight on the face-up tone loss ([`ToneGoal::loss_pct`] of the stone's
+    /// [`FaceUpTone`] at the table-up pose, `0` to `100`, lower is better). `0.0` (the
+    /// default) switches the tone term off: nothing is measured for it in the search loop
+    /// and every score is bit for bit what it was before this field existed (see
+    /// [`Self::score_with_tone`]).
+    pub tone_weight: f32,
+    /// Which way the tone term pulls: lighter or deeper. Only read when
+    /// [`Self::tone_weight`] is positive.
+    pub tone_goal: ToneGoal,
+}
+
+/// Which way the face-up tone term of the objective pulls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToneGoal {
+    /// A lighter stone face-up: the loss is `100 - L*`.
+    #[default]
+    Lighter,
+    /// A stronger colour face-up: the loss is `100 - C*` (chroma capped at 100).
+    Deeper,
+}
+
+impl ToneGoal {
+    /// The loss (`0` to `100`, lower is better) of `tone` for this goal.
+    #[must_use]
+    pub fn loss_pct(self, tone: &FaceUpTone) -> f32 {
+        let figure = match self {
+            Self::Lighter => tone.l_star,
+            Self::Deeper => tone.chroma,
+        };
+        if figure.is_nan() {
+            return 100.0;
+        }
+        100.0 - figure.clamp(0.0, 100.0)
+    }
+
+    /// `true` when `after` has not moved against this goal relative to `before`
+    /// (`Lighter`: `L*` did not drop; `Deeper`: `C*` did not drop), within a `1e-3`
+    /// tolerance. A NaN figure on either side fails the gate.
+    #[must_use]
+    pub fn not_worse(self, before: &FaceUpTone, after: &FaceUpTone) -> bool {
+        let (b, a) = match self {
+            Self::Lighter => (before.l_star, after.l_star),
+            Self::Deeper => (before.chroma, after.chroma),
+        };
+        a >= b - 1e-3
+    }
+
+    /// A lower-case word for a sentence.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Lighter => "lighter",
+            Self::Deeper => "deeper",
+        }
+    }
 }
 
 impl Default for ObjectiveWeights {
@@ -71,6 +130,8 @@ impl Default for ObjectiveWeights {
             extinction: 1.0,
             tilt_brilliance: 1.0,
             yield_weight: 0.0,
+            tone_weight: 0.0,
+            tone_goal: ToneGoal::Lighter,
         }
     }
 }
@@ -131,6 +192,44 @@ impl ObjectiveWeights {
         let weighted = w_ext.mul_add(components.extinction_pct, w_win * components.windowing_pct);
         let weighted = w_tilt.mul_add(100.0 - components.tilt_brilliance_pct, weighted);
         w_yield.mul_add(yield_loss_pct, weighted) / norm
+    }
+
+    /// [`Self::score_with_yield`], extended with the face-up tone term: `tone_loss_pct`
+    /// (`0` to `100`, lower is better, see [`ToneGoal::loss_pct`]) is blended in at
+    /// [`Self::tone_weight`] and counted in the normalising sum.
+    ///
+    /// With `tone_weight == 0.0` and a finite `tone_loss_pct` this equals
+    /// [`Self::score_with_yield`] bit for bit (`0.0.mul_add(x, y)` is exactly `y` and the
+    /// extra `+ 0.0` in the sum is exact), so a caller with the default weights may pass
+    /// `0.0` and skip the measurement.
+    #[must_use]
+    pub fn score_with_tone(
+        &self,
+        components: &ObjectiveComponents,
+        yield_loss_pct: f32,
+        tone_loss_pct: f32,
+    ) -> f32 {
+        let sum = self.windowing
+            + self.extinction
+            + self.tilt_brilliance
+            + self.yield_weight
+            + self.tone_weight;
+        let (w_win, w_ext, w_tilt, w_yield, w_tone) = if sum > 1e-6 {
+            (
+                self.windowing,
+                self.extinction,
+                self.tilt_brilliance,
+                self.yield_weight,
+                self.tone_weight,
+            )
+        } else {
+            (1.0, 1.0, 1.0, 0.0, 0.0)
+        };
+        let norm = (w_win + w_ext + w_tilt + w_yield + w_tone).max(1e-6);
+        let weighted = w_ext.mul_add(components.extinction_pct, w_win * components.windowing_pct);
+        let weighted = w_tilt.mul_add(100.0 - components.tilt_brilliance_pct, weighted);
+        let weighted = w_yield.mul_add(yield_loss_pct, weighted);
+        w_tone.mul_add(tone_loss_pct, weighted) / norm
     }
 }
 
@@ -201,6 +300,53 @@ pub fn evaluate_objective(
     fidelity: ObjectiveFidelity,
 ) -> ObjectiveComponents {
     evaluate_objective_under(planes, material, fidelity, CANONICAL_LIGHTING_PRESET)
+}
+
+/// [`evaluate_objective`] plus the face-up tone, under [`CANONICAL_LIGHTING_PRESET`].
+/// See [`evaluate_objective_with_tone_under`].
+#[must_use]
+pub fn evaluate_objective_with_tone(
+    planes: &[GpuFacetPlane],
+    material: &GemMaterial,
+    fidelity: ObjectiveFidelity,
+) -> (ObjectiveComponents, FaceUpTone) {
+    evaluate_objective_with_tone_under(planes, material, fidelity, CANONICAL_LIGHTING_PRESET)
+}
+
+/// [`evaluate_objective_under`] plus the face-up tone ([`FaceUpTone`]).
+///
+/// The tone is always the table-up pose (`cam_yaw` 0, pitch 90 degrees) at both
+/// fidelities, under `preset`'s own light and white point (a UV lamp falls back to
+/// D65). `Fast` is one trace that yields the components and the tone together; `Full`
+/// runs the tilt sweep for the components and one more table-up trace for the tone (its
+/// metrics are discarded), so the components are bit-identical to
+/// [`evaluate_objective_under`]'s.
+#[must_use]
+pub fn evaluate_objective_with_tone_under(
+    planes: &[GpuFacetPlane],
+    material: &GemMaterial,
+    fidelity: ObjectiveFidelity,
+    preset: LightingPreset,
+) -> (ObjectiveComponents, FaceUpTone) {
+    let environment = preset.studio(1.0, CANONICAL_LIGHT_YAW, CANONICAL_LIGHT_PITCH);
+    let (m, tone) = evaluate_gem_optical_metrics_with_tone(
+        planes,
+        material,
+        0.0,
+        90.0f32.to_radians(),
+        environment,
+    );
+    let components = match fidelity {
+        ObjectiveFidelity::Fast => ObjectiveComponents {
+            windowing_pct: m.windowing_pct,
+            extinction_pct: m.extinction_pct,
+            tilt_brilliance_pct: m.brilliance_pct,
+        },
+        ObjectiveFidelity::Full => {
+            evaluate_objective_under(planes, material, ObjectiveFidelity::Full, preset)
+        }
+    };
+    (components, tone)
 }
 
 /// [`evaluate_objective`] lit by `preset` at the canonical light pose

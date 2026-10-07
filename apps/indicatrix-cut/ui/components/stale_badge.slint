@@ -1,5 +1,6 @@
 import { Theme } from "../theme.slint";
 import { GuideModel } from "../models/guide.slint";
+import { TouchButton } from "touch_button.slint";
 
 // A shared amber "Stale: design
 // changed" chip for any analysis panel whose last result was computed against an
@@ -13,6 +14,9 @@ import { GuideModel } from "../models/guide.slint";
 // just needs an honest "this may not describe the design you are holding anymore"
 // marker next to it -- see the module doc comment on `gui/editor/state/mod.rs` for
 // why `generation` counts edits, not solves.
+//
+// The words carry a tooltip that says what stale means; "Recompute" is a button for the
+// keyboard and a screen reader (`TouchButton`).
 export component StaleBadge inherits Rectangle {
     // Hides the "Recompute" action for a panel with no single re-run entry point of
     // its own (e.g. Snapshot compare has no one-click re-diff action yet) -- the
@@ -26,7 +30,7 @@ export component StaleBadge inherits Rectangle {
     callback recompute();
 
     width: layout.preferred-width;
-    height: layout.preferred-height;
+    height: max(20px, layout.preferred-height);
     border-radius: Theme.radius-sm;
     background: Theme.accent-amber-glow;
     border-width: 1px;
@@ -39,29 +43,35 @@ export component StaleBadge inherits Rectangle {
         padding-bottom: 2px;
         spacing: 6px;
 
-        Text {
-            text: "Stale: design changed";
-            font-size: 10px;
-            font-weight: 700;
-            color: Theme.accent-amber;
-            vertical-alignment: center;
+        Rectangle {
+            width: stale_text.preferred-width;
+            Tooltip { text: @markdown("This result was worked out for an earlier version of the design. It is kept for reference but may no longer describe the design as it is now."); }
+            stale_text := Text {
+                text: "Stale: design changed";
+                font-size: 10px;
+                font-weight: 700;
+                color: Theme.accent-amber;
+                vertical-alignment: center;
+            }
         }
 
         if root.show_recompute: Rectangle {
             width: recompute_label.preferred-width;
             opacity: root.enabled ? 1.0 : 0.4;
-            recompute_touch := TouchArea {
-                enabled: root.enabled;
-                mouse-cursor: root.enabled ? pointer : default;
-                clicked => { root.recompute(); }
-            }
-            if !root.enabled: Tooltip { text: @markdown("\{GuideModel.locked_hint}"); }
             recompute_label := Text {
                 text: "Recompute";
                 font-size: 10px;
                 font-weight: 700;
-                color: recompute_touch.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan;
+                color: recompute_touch.has_hover ? Theme.accent-cyan-hover : Theme.accent-cyan;
                 vertical-alignment: center;
+            }
+            recompute_touch := TouchButton {
+                enabled: root.enabled;
+                label: "Recompute";
+                hint: root.enabled
+                    ? "Work this result out again for the design as it is now."
+                    : GuideModel.locked_hint;
+                clicked => { root.recompute(); }
             }
         }
     }

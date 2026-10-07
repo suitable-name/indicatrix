@@ -102,6 +102,20 @@ pub fn parse_obj(text: &str) -> (Vec<DVec3>, Vec<[u32; 3]>) {
     (points, tris)
 }
 
+/// [`noisy_c_shape`] with a physical amount of noise: the jitter is `0.3` of the vertex
+/// spacing, `0.3 * 10 / 2^levels` mm (the notch walls are 10 mm quads, split `levels`
+/// times).
+///
+/// A scan's noise is always far below its sampling pitch. `noisy_c_shape(levels, 0.8)` keeps
+/// 0.8 mm whatever the level, which from level 4 on (0.625 mm spacing) exceeds the spacing:
+/// the two walls meeting at the inner corner `x = 10, y = 5` bulge into the notch by more
+/// than one vertex row and pass through each other, so the surface really crosses itself
+/// and the mesh builder rightly refuses it. At 0.3 of the spacing the wall normals still
+/// differ by up to 17 degrees, a proper thicket, and nothing folds.
+pub fn noisy_c_scan(levels: u32) -> (Vec<DVec3>, Vec<[u32; 3]>) {
+    noisy_c_shape(levels, 0.3 * 10.0 / f64::from(1_u32 << levels))
+}
+
 /// [`C_SHAPE_OBJ`] as a noisy scan: every triangle split into four `levels` times, and the
 /// vertices inside the three walls of the notch moved along the wall's normal by up to
 /// `jitter` mm in a fixed pseudo-random pattern. The surface stays closed, and the notch
@@ -144,6 +158,111 @@ pub fn noisy_c_shape(levels: u32, jitter: f64) -> (Vec<DVec3>, Vec<[u32; 3]>) {
         } else if (near(p.y, 5.0) || near(p.y, 15.0)) && between(p.x, 10.0, 20.0) {
             p.y += noise;
         }
+    }
+    (points, tris)
+}
+
+/// The index of the midpoint of the edge `a`-`b`, pushed onto the unit sphere the first time
+/// the edge is split.
+fn sphere_midpoint(
+    points: &mut Vec<DVec3>,
+    cache: &mut std::collections::BTreeMap<(u32, u32), u32>,
+    a: u32,
+    b: u32,
+) -> u32 {
+    *cache.entry((a.min(b), a.max(b))).or_insert_with(|| {
+        let mid = (points[a as usize] + points[b as usize]) * 0.5;
+        points.push(mid.normalize());
+        (points.len() - 1) as u32
+    })
+}
+
+/// A closed, convex, outward-wound icosphere of `radius` mm: an icosahedron split `levels`
+/// times, which has `20 * 4^levels` triangles and `10 * 4^levels + 2` vertices (1,280
+/// triangles at 3, 5,120 at 4). Every vertex is on the sphere, so its convex hull has one
+/// plane per triangle: a smooth scan, far over the 400-plane limit of an exact outline.
+pub fn icosphere(levels: u32, radius: f64) -> (Vec<DVec3>, Vec<[u32; 3]>) {
+    let t = f64::midpoint(1.0, 5.0_f64.sqrt());
+    let mut points: Vec<DVec3> = [
+        [-1.0, t, 0.0],
+        [1.0, t, 0.0],
+        [-1.0, -t, 0.0],
+        [1.0, -t, 0.0],
+        [0.0, -1.0, t],
+        [0.0, 1.0, t],
+        [0.0, -1.0, -t],
+        [0.0, 1.0, -t],
+        [t, 0.0, -1.0],
+        [t, 0.0, 1.0],
+        [-t, 0.0, -1.0],
+        [-t, 0.0, 1.0],
+    ]
+    .iter()
+    .map(|&c| DVec3::from_array(c).normalize())
+    .collect();
+    let mut tris: Vec<[u32; 3]> = vec![
+        [0, 11, 5],
+        [0, 5, 1],
+        [0, 1, 7],
+        [0, 7, 10],
+        [0, 10, 11],
+        [1, 5, 9],
+        [5, 11, 4],
+        [11, 10, 2],
+        [10, 7, 6],
+        [7, 1, 8],
+        [3, 9, 4],
+        [3, 4, 2],
+        [3, 2, 6],
+        [3, 6, 8],
+        [3, 8, 9],
+        [4, 9, 5],
+        [2, 4, 11],
+        [6, 2, 10],
+        [8, 6, 7],
+        [9, 8, 1],
+    ];
+    for _ in 0..levels {
+        let mut cache = std::collections::BTreeMap::new();
+        let mut split = Vec::with_capacity(tris.len() * 4);
+        for &[a, b, c] in &tris {
+            let ab = sphere_midpoint(&mut points, &mut cache, a, b);
+            let bc = sphere_midpoint(&mut points, &mut cache, b, c);
+            let ca = sphere_midpoint(&mut points, &mut cache, c, a);
+            split.extend([[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]]);
+        }
+        tris = split;
+    }
+    for p in &mut points {
+        *p *= radius;
+    }
+    (points, tris)
+}
+
+/// A smooth pebble scan: an [`icosphere`] stretched to a 24 x 18 x 14 mm ellipsoid and
+/// bumped radially by a few low-frequency waves whose phases follow `seed`. Deterministic,
+/// closed, nearly convex, with `20 * 4^levels` triangles, so almost every vertex is a corner
+/// of its hull.
+pub fn pebble_scan(levels: u32, seed: u64) -> (Vec<DVec3>, Vec<[u32; 3]>) {
+    let (mut points, tris) = icosphere(levels, 1.0);
+    let phase = |k: u64| {
+        let mixed = seed
+            .wrapping_mul(0x9e37_79b9)
+            .wrapping_add(k.wrapping_mul(0x85eb_ca6b));
+        (mixed % 1000) as f64 * (std::f64::consts::TAU / 1000.0)
+    };
+    let (p1, p2, p3) = (phase(1), phase(2), phase(3));
+    for p in &mut points {
+        let dir = *p;
+        let bump = 0.03_f64.mul_add(
+            2.0_f64.mul_add(dir.z, p3).cos(),
+            0.03_f64.mul_add(
+                3.0_f64.mul_add(dir.y, p2).sin(),
+                0.04 * 2.0_f64.mul_add(dir.x, p1).sin(),
+            ),
+        );
+        let scale = 1.0 + bump;
+        *p = DVec3::new(12.0 * dir.x, 9.0 * dir.y, 7.0 * dir.z) * scale;
     }
     (points, tris)
 }
@@ -213,7 +332,18 @@ pub fn box_enters(centre: DVec3, axes: [DVec3; 3], half: DVec3, lo: DVec3, hi: D
 /// Whether `stone` of `layout` reaches into the notch: a box-model stone is its axis-aligned
 /// box; an exact fit is its design's box (from `hulls`) under its pose.
 pub fn stone_enters_notch(layout: &RoughLayout, stone: &PlacedStone, hulls: &[DesignHull]) -> bool {
-    let (lo, hi) = (DVec3::from(NOTCH.0), DVec3::from(NOTCH.1));
+    stone_enters_box(layout, stone, hulls, NOTCH)
+}
+
+/// Whether `stone` of `layout` reaches into the box `(min, max)` (see
+/// [`stone_enters_notch`], which asks it of the notch).
+pub fn stone_enters_box(
+    layout: &RoughLayout,
+    stone: &PlacedStone,
+    hulls: &[DesignHull],
+    region: ([f64; 3], [f64; 3]),
+) -> bool {
+    let (lo, hi) = (DVec3::from(region.0), DVec3::from(region.1));
     let centre = DVec3::from(stone.pose.center_mm);
     if layout.exact_fit {
         let hull = hulls

@@ -27,6 +27,8 @@ fn fresh_from_spec_builds_the_requested_gear_symmetry_mirror_and_material() {
             specific_gravity_override: None,
             refractive_index_override: None,
             body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
         },
         preform: PreformSpec::block(1.0, 1.0, 2.0),
     };
@@ -69,6 +71,8 @@ fn effective_refractive_index_prefers_the_override_over_everything_else() {
         specific_gravity_override: None,
         refractive_index_override: Some(1.70),
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     assert_eq!(design.effective_refractive_index(), 1.70);
 }
@@ -81,6 +85,8 @@ fn effective_refractive_index_falls_back_to_the_resolved_material_when_there_is_
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let expected = crate::material::built_in_refractive_index("Quartz").unwrap();
     assert!((design.effective_refractive_index() - expected).abs() < 1e-9);
@@ -106,6 +112,8 @@ fn effective_refractive_index_falls_back_to_the_legacy_schedule_value_when_unset
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     assert_eq!(unresolved.effective_refractive_index(), 1.62);
 }

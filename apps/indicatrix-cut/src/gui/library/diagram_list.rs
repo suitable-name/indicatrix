@@ -15,15 +15,21 @@ use crate::{
                 refresh_diagram_list, refresh_diagram_list_via_source,
                 refresh_diagram_list_via_source_debounced,
             },
+            tutorial_state::{NarrowingMemory, library_is_narrowed, search_event},
         },
         render::camera_lighting::resubmit_live_solid,
         show_toast,
         solid_preview::preview_state::SolidPreviewState,
+        tutorial_events::raise,
     },
 };
+use indicatrix_editor::guide::viewing_events as events;
 use indicatrix_vault::{db::sqlite::Database, model::filter::AttributeRanges};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use std::sync::{Arc, Mutex};
+use std::{
+    rc::Rc,
+    sync::{Arc, Mutex},
+};
 use tracing::warn;
 
 /// Clears the search box, shape/gear dropdown selections, tag chip filter and
@@ -337,30 +343,43 @@ fn clear_recent_import_filter(ui: &MainWindow) {
     model.set_id_filter_label("".into());
 }
 
+/// The Shape drop-down's current choice, the way the list refresh takes it.
+fn selected_shape(ui: &MainWindow) -> SharedString {
+    let library = ui.global::<LibraryModel>();
+    library
+        .get_shape_options()
+        .row_data(library.get_selected_shape_index() as usize)
+        .unwrap_or_default()
+}
+
+/// The Gear drop-down's current choice, the way the list refresh takes it.
+fn selected_gear(ui: &MainWindow) -> SharedString {
+    let library = ui.global::<LibraryModel>();
+    library
+        .get_gear_options()
+        .row_data(library.get_selected_gear_index() as usize)
+        .unwrap_or_default()
+}
+
 pub(in crate::gui) fn setup_search_and_filter_callbacks(
     ui: &MainWindow,
     db: &Arc<Mutex<Database>>,
     source: &Arc<Mutex<LibrarySource>>,
 ) {
+    // Whether a search or a filter narrowed the list after the last change, shared by the
+    // four handlers: the tutorials wait for the moment the last one goes off.
+    let memory = Rc::new(NarrowingMemory::default());
+
     let db_search = Arc::clone(db);
     let source_search = Arc::clone(source);
     let ui_weak_search = ui.as_weak();
+    let memory_search = Rc::clone(&memory);
     ui.global::<LibraryModel>()
         .on_search_changed(move |text: SharedString| {
             if let Some(ui) = ui_weak_search.upgrade() {
                 clear_recent_import_filter(&ui);
-                let shape_idx = ui.global::<LibraryModel>().get_selected_shape_index() as usize;
-                let shape = ui
-                    .global::<LibraryModel>()
-                    .get_shape_options()
-                    .row_data(shape_idx)
-                    .unwrap_or_default();
-                let gear_idx = ui.global::<LibraryModel>().get_selected_gear_index() as usize;
-                let gear = ui
-                    .global::<LibraryModel>()
-                    .get_gear_options()
-                    .row_data(gear_idx)
-                    .unwrap_or_default();
+                let shape = selected_shape(&ui);
+                let gear = selected_gear(&ui);
 
                 refresh_diagram_list_via_source_debounced(
                     &ui,
@@ -370,23 +389,22 @@ pub(in crate::gui) fn setup_search_and_filter_callbacks(
                     &shape,
                     &gear,
                 );
+                // A tutorial step may wait for the search box to hold text, or to be empty.
+                raise(&ui, search_event(&text));
+                report_if_filters_went_off(&ui, &memory_search, &text, &shape, &gear);
             }
         });
 
     let db_shape = Arc::clone(db);
     let source_shape = Arc::clone(source);
     let ui_weak_shape = ui.as_weak();
+    let memory_shape = Rc::clone(&memory);
     ui.global::<LibraryModel>()
         .on_filter_shape_changed(move |shape: SharedString| {
             if let Some(ui) = ui_weak_shape.upgrade() {
                 clear_recent_import_filter(&ui);
                 let search = ui.global::<LibraryModel>().get_search_text();
-                let gear_idx = ui.global::<LibraryModel>().get_selected_gear_index() as usize;
-                let gear = ui
-                    .global::<LibraryModel>()
-                    .get_gear_options()
-                    .row_data(gear_idx)
-                    .unwrap_or_default();
+                let gear = selected_gear(&ui);
 
                 refresh_diagram_list_via_source(
                     &ui,
@@ -396,23 +414,22 @@ pub(in crate::gui) fn setup_search_and_filter_callbacks(
                     &shape,
                     &gear,
                 );
+                // A tutorial step may wait for a filter to change.
+                raise(&ui, events::LIBRARY_FILTERED);
+                report_if_filters_went_off(&ui, &memory_shape, &search, &shape, &gear);
             }
         });
 
     let db_gear = Arc::clone(db);
     let source_gear = Arc::clone(source);
     let ui_weak_gear = ui.as_weak();
+    let memory_gear = Rc::clone(&memory);
     ui.global::<LibraryModel>()
         .on_filter_gear_changed(move |gear: SharedString| {
             if let Some(ui) = ui_weak_gear.upgrade() {
                 clear_recent_import_filter(&ui);
                 let search = ui.global::<LibraryModel>().get_search_text();
-                let shape_idx = ui.global::<LibraryModel>().get_selected_shape_index() as usize;
-                let shape = ui
-                    .global::<LibraryModel>()
-                    .get_shape_options()
-                    .row_data(shape_idx)
-                    .unwrap_or_default();
+                let shape = selected_shape(&ui);
 
                 refresh_diagram_list_via_source(
                     &ui,
@@ -422,6 +439,8 @@ pub(in crate::gui) fn setup_search_and_filter_callbacks(
                     &shape,
                     &gear,
                 );
+                raise(&ui, events::LIBRARY_FILTERED);
+                report_if_filters_went_off(&ui, &memory_gear, &search, &shape, &gear);
             }
         });
 
@@ -436,22 +455,30 @@ pub(in crate::gui) fn setup_search_and_filter_callbacks(
         if let Some(ui) = ui_weak_range.upgrade() {
             clear_recent_import_filter(&ui);
             let search = ui.global::<LibraryModel>().get_search_text();
-            let shape_idx = ui.global::<LibraryModel>().get_selected_shape_index() as usize;
-            let shape = ui
-                .global::<LibraryModel>()
-                .get_shape_options()
-                .row_data(shape_idx)
-                .unwrap_or_default();
-            let gear_idx = ui.global::<LibraryModel>().get_selected_gear_index() as usize;
-            let gear = ui
-                .global::<LibraryModel>()
-                .get_gear_options()
-                .row_data(gear_idx)
-                .unwrap_or_default();
+            let shape = selected_shape(&ui);
+            let gear = selected_gear(&ui);
 
             refresh_diagram_list_via_source(&ui, &db_range, &source_range, &search, &shape, &gear);
+            // The range sliders, the Reset button and the Sort order all end here.
+            raise(&ui, events::LIBRARY_FILTERED);
+            report_if_filters_went_off(&ui, &memory, &search, &shape, &gear);
         }
     });
+}
+
+/// Reports `LIBRARY_FILTERS_RESET` to a running tutorial when this change took the last search
+/// or filter off the library. Changing a filter, picking another shape or sorting the list is
+/// not a reset, and neither is a change while nothing narrowed the list.
+fn report_if_filters_went_off(
+    ui: &MainWindow,
+    memory: &NarrowingMemory,
+    search: &str,
+    shape: &str,
+    gear: &str,
+) {
+    if memory.went_off(library_is_narrowed(ui, search, shape, gear)) {
+        raise(ui, events::LIBRARY_FILTERS_RESET);
+    }
 }
 
 /// Wires the tilt-performance filter panel's add/remove/clear-all callbacks.
@@ -554,6 +581,8 @@ pub(in crate::gui) fn setup_diagram_selection_and_export_callbacks(
                     i64::from(id),
                     &preview_state_select,
                 );
+                // A tutorial step may wait for a design to be selected.
+                raise(&ui, events::LIBRARY_DESIGN_SELECTED);
                 // Live Render tab, Solid mode: redraw the solid right away rather than
                 // leaving the previous design on screen. Both branches resolve their
                 // planes asynchronously (the LOCAL one on a worker thread, guarded by a

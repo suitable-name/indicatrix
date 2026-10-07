@@ -1,0 +1,80 @@
+// A push button of the Angle Sweep dialog: a label with an optional icon, filled when it is
+// the dialog's main action. Like every hand-drawn button it takes Tab, Space and Enter, shows a
+// focus ring, has a tooltip and tells a screen reader its name and what it does.
+import { Theme } from "../../theme.slint";
+
+export component SweepButton inherits Rectangle {
+    in property <string> text;
+    // One plain sentence: what the button does, or why it cannot be pressed right now. Shown as
+    // the tooltip and read after the label.
+    in property <string> hint;
+    // Leave unset for a text-only button.
+    in property <image> icon;
+    // The main action of the row: filled with the accent colour.
+    in property <bool> primary: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 30px;
+    min-width: button_row.preferred-width;
+    border-radius: Theme.radius-sm;
+    border-width: button_focus.has-focus ? 2px : (root.primary ? 0px : 1px);
+    // The ring is dark on the bright accent fill and light on the plain one, so it shows on both.
+    border-color: button_focus.has-focus
+        ? (root.primary ? Theme.text-on-accent : Theme.accent-cyan-hover)
+        : Theme.border-dialog;
+    opacity: root.enabled ? 1.0 : 0.45;
+    background: root.primary
+        ? (button_touch.has-hover && root.enabled ? Theme.accent-cyan-hover : Theme.accent-cyan)
+        : (button_touch.has-hover && root.enabled ? Theme.surface-raised : Theme.surface-sunken);
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.text;
+    accessible-description: root.hint;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
+
+    button_focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    button_touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
+    }
+
+    button_row := HorizontalLayout {
+        alignment: center;
+        spacing: 6px;
+        padding-left: 12px;
+        padding-right: 12px;
+        if root.icon.width > 0: Image {
+            source: root.icon;
+            colorize: root.primary ? Theme.text-on-accent : Theme.text-secondary;
+            width: 13px;
+            height: 13px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.text;
+            font-size: 12px;
+            font-weight: 700;
+            color: root.primary ? Theme.text-on-accent : Theme.text-primary;
+            vertical-alignment: center;
+        }
+    }
+}

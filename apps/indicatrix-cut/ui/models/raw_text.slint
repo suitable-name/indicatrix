@@ -1,0 +1,74 @@
+// "Edit as Text": the open design's cutting instructions as `.asc` text in a box you can edit,
+// with a live check, a summary of what applying the text would change and lose, and a line
+// comparison against the saved file or the snapshot. The Rust side is
+// `gui::editor::raw_text`; the dialog itself is `components/raw_text_dialog.slint`.
+
+// One line of the comparison. `kind` is 0 for a line in both texts, 1 for a line only the
+// text in the box has (added), 2 for a line only the other text has (removed) and 3 for a
+// run of unchanged lines folded away (its `text` says how many). `old_line` and `new_line`
+// are line numbers, empty where the line is not in that text: an added line has only a new
+// number and a removed line only an old one, so the two can be told apart without colour.
+export struct RawTextDiffRow {
+    kind: int,
+    old_line: string,
+    new_line: string,
+    text: string,
+}
+
+export global RawTextModel {
+    // Whether the dialog is showing.
+    in-out property <bool> is_open: false;
+    // The text in the box. Two-way bound to the editor, so Rust can replace it (opening, Revert).
+    in-out property <string> text;
+    // Waiting for the design's cut depths to be worked out before the text can be written.
+    in property <bool> busy: false;
+    // Why the text cannot be shown (the design does not solve); empty when it can.
+    in property <string> load_error;
+    // One sentence naming what the text cannot carry (notes, targets, relations, ...).
+    in property <string> omitted;
+    // The live check of the text: a plain sentence, and how to colour it (0 neutral, 1 ready to
+    // apply, 2 a problem with its line number).
+    in property <string> status;
+    in property <int> status_kind: 0;
+    // What applying the text would change, and what it would lose, as sentences.
+    in property <[string]> changed_lines;
+    in property <[string]> lost_lines;
+    // The text differs from what the design wrote, so there is something to lose by closing.
+    in property <bool> text_differs: false;
+    // The text is valid and would change the design.
+    in property <bool> can_apply: false;
+    // Asking whether to throw away edits that were not applied.
+    in-out property <bool> confirm_discard: false;
+
+    // The comparison. `compare_open` swaps the box for the comparison.
+    in-out property <bool> compare_open: false;
+    in property <bool> compare_busy: false;
+    in property <string> compare_title;
+    in property <string> compare_summary;
+    in property <[RawTextDiffRow]> diff_rows;
+
+    // Opens the dialog and writes the text (Edit > Edit as Text..., the command palette).
+    callback open();
+    // Closes the dialog; edits that were not applied are dropped.
+    callback close();
+    // The text was edited by the user (the whole text).
+    callback text_edited(string);
+    // Turns the text into the design as one undoable change.
+    callback apply();
+    // Writes the text again from the design, dropping the edits.
+    callback revert();
+    // Compares the text in the box with another text: 0 the saved file on disk, 1 the snapshot.
+    callback compare(int);
+
+    // The way out for the Escape key and the Close button: closes at once when there is
+    // nothing to lose, otherwise asks first.
+    public function request_close() {
+        if (root.confirm_discard) {
+            root.confirm_discard = false;
+        } else if (root.text_differs) {
+            root.confirm_discard = true;
+        } else {
+            root.close();
+        }
+    }
+}

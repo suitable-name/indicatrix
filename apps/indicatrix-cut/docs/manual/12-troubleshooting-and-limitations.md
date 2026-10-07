@@ -44,6 +44,9 @@ one place.
 | Live viewport or export silently uses the CPU even though your build has GPU support | The current scene declined the GPU path for this frame or batch -- either this machine has no usable graphics adapter (or it stopped responding), or the scene uses an HDR environment map too large for the graphics card's buffer limits. | This is a normal, per-frame fallback, not an error -- nothing fails to render. If you expect GPU rendering and never see it, confirm your build was compiled with GPU support and that **Local Compute** is not set to plain **CPU** (Chapter 2). |
 | High-resolution export fails outright partway through | You have **Compute: Remote only** selected and a remote chunk timed out or failed, with no local fallback available to pick up the remainder. | Switch to **Local + Remote** and re-export, or fix the remote worker first (Chapter 9). |
 | "Cannot export: &lt;reason&gt;" when clicking Export Edited .asc from the editor | The design is not currently in a solvable state. | Solve the design successfully first (Chapter 5), then export. |
+| A render job is **Failed** with "The HDR map ... changed since the job was added." | The `.hdr` file the job's lighting uses was edited, replaced or moved after you added the job. | Put the original file back and press **Resume**, or add the job again from the export dialog (Chapter 23). |
+| A render job is **Failed** with "The folder ... belongs to another render job." | The frame folder of a tilt video already holds frames, or a marker, from a different job or export. | Choose another folder when you add the job, or delete the frames in that folder, then press **Restart** (Chapter 23). |
+| The exported script does nothing on Windows, or PowerShell says running scripts is disabled | Windows blocks unsigned scripts by default. | Run it as `powershell -ExecutionPolicy Bypass -File run-render-jobs.ps1` (Chapter 23). |
 
 ## Catalogue problems
 
@@ -94,12 +97,6 @@ a full backtrace; attach that too if it exists.
 - **Deep Solve never modifies the design.** It is a read-only diagnostic
   that reports and suggests; nothing it finds is written back to the tier
   list unless you separately make the same change yourself (Chapter 8).
-- **The custom-material editor can only be opened from the Live Render
-  tab.** The Edit tab's Design Settings material combo lists your custom
-  materials and lets you pick one, but there is currently no button next
-  to it to create or edit one -- for that you still have to switch to the
-  Live Render tab and use the pencil button next to Render Material
-  (Chapter 2), then come back.
 - **The "Linked to design" toggle exists as two separate copies of the
   same control** -- one on the Live Render tab's own toolbar, one in the
   Edit tab's Design Settings panel (Chapter 6). Both control the same
@@ -144,6 +141,17 @@ a full backtrace; attach that too if it exists.
   reconstructed placeholder schedule (every mast at `0.0`, with its own
   warning) since the angle table alone is available for that reconstruction
   without a network round trip.
+- **Render jobs run one at a time, and only start when you press Start Queue.**
+  A picture or video you start directly from a dialog can render beside a
+  queued job, and both are then slower (Chapter 23).
+- **A render job uses the remote worker set up in Settings when it runs,** not
+  the one that was set up when you added it (Chapter 23).
+- **A paused still picture starts again from the beginning.** A paused tilt
+  video keeps its frames, which can take many gigabytes at large sizes, until
+  it finishes or you delete the folder (Chapter 23).
+- **Hybrid and remote renders of the same job are only statistically the same.**
+  A fixed CPU-only or GPU-only split gives the same picture every time
+  (Chapter 23).
 
 ## Next steps
 

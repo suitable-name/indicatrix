@@ -1,0 +1,72 @@
+// The sliders beside the main number fields: the Tier form's Angle field (with a "Typical"
+// menu) and the Preform tab's number fields. A slider is a stateless view (`ValueSlider`,
+// `components/value_slider.slint`): the ranges, steps, marked band and presets all come from
+// Rust (`indicatrix_editor::slider_ranges`) through the pure callbacks below, and the numbers
+// are written into the text fields in Rust's own format. Nothing here saves anything: the
+// Tier form is saved by "Save Tier", the Preform tab by "Apply Preform".
+
+// Everything one slider needs. Angle sliders fill `side`, `band_*` and `note`; Preform
+// sliders fill `note` only when they are switched off.
+export struct SliderSpec {
+    // Whether to show the slider at all (a girdle, a flat tier or a relation has none).
+    visible: bool,
+    // Whether the field holds a number the slider can show and change.
+    usable: bool,
+    // "Pavilion" or "Crown" for an angle slider, otherwise "".
+    side: string,
+    // The field's value (an angle's magnitude); 0 while not usable.
+    value: float,
+    minimum: float,
+    maximum: float,
+    // A plain drag, an arrow key or a click snaps to this; Shift snaps to `fine_step`.
+    step: float,
+    fine_step: float,
+    // The distance between the marks under the slider (also the Page Up and Page Down
+    // step); 0 for no marks.
+    mark: float,
+    // The marked band; no band while `band_to <= band_from`.
+    band_from: float,
+    band_to: float,
+    // A line of help under the slider, "" for none.
+    note: string,
+    // The value in words, for screen readers.
+    value_text: string,
+}
+
+// One entry of the "Typical" menu.
+export struct SliderPreset {
+    label: string,
+    // The angle itself, for the callback that applies it.
+    value: float,
+    // The angle as the menu shows it ("42.40°").
+    value_text: string,
+    // Why this angle, in one line.
+    reason: string,
+}
+
+export global SliderModel {
+    // The Tier form's Angle slider. Arguments: what the form holds ("" for a new tier, else
+    // the tier's block, "Horizontal" or "Driven"), the Angle field's text, the Name field's
+    // text, and the design's effective refractive index as text (`EditorModel.effective_ri_text`,
+    // passed so the answer follows a change of material).
+    pure callback angle_spec(string, string, string, string) -> SliderSpec;
+    // The "Typical" menu: the side ("Pavilion" or "Crown"), the refractive index text, and the
+    // material's name.
+    pure callback angle_presets(string, string, string) -> [SliderPreset];
+    // The text the slider writes into the Angle field for a value, keeping the field's own
+    // minus-sign convention (the second argument is the field's current text).
+    pure callback angle_text(float, string) -> string;
+    // The Angle field's text after an Up or Down key press: the current text and the step in
+    // degrees (negative for Down). Gives "" when the text is not a plain number (a calculation
+    // or a relation), which the field leaves as typed.
+    pure callback stepped_angle_text(string, float) -> string;
+    // The Angle text as the live margin bar should read it, given the side: a pavilion
+    // angle shown as a plain number is handed over with a minus sign.
+    pure callback margin_preview_text(string, string) -> string;
+    // A Preform slider. Arguments: the field ("half_width", "length_over_width", "depth" or
+    // "y_offset"), its text, the Depth field's text and the Girdle Diameter field's text
+    // (the Y-offset's range is half the depth in millimetres).
+    pure callback preform_spec(string, string, string, string) -> SliderSpec;
+    // The text a Preform slider writes into its field.
+    pure callback preform_text(float) -> string;
+}

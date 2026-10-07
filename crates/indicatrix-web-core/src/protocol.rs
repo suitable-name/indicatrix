@@ -81,10 +81,26 @@ use crate::{
 /// what they were scored under.
 /// 9: `CustomMaterialSpec::color_recipe`, the physics color recipe a custom material
 /// may carry (rendered from its stored resolved bands).
+/// 10: `RetargetParams::crown_follows_pavilion`, the crown policy that keeps the stone's
+/// silhouette (postcard has no field defaults, so the new field is a wire change).
+/// 11: `LightingSpec::head_shadow_deg` appended (the viewer's head-shadow radius), and
+/// the lighting combo reordered (`LightingPreset::index` now lists the lit presets first),
+/// so the preset index means something else than under 10.
+/// 12: the seven-band body colour of the path-aware L*C*h editor: `MaterialSelectionData` and
+/// `DesignMaterialOverrides` gain `body_color_bands` and `absorption_path_scale_override`,
+/// `CustomMaterialSpec` gains `absorption_bands` (postcard has no field defaults, so each is a
+/// wire change; an empty list and `None` are one byte each), and the solve role accepts
+/// `SolveRequest::BodyColor` (answered by `SolveResponse::BodyColor`), the editor's colour solve.
+/// 13: lighting wave. Six presets appended (`LightingPreset::{DaylightSun, Aset, ShopLights,
+/// WindowDaylight, WhiteTray, IlluminantA}`) and the lighting combo reordered, so
+/// `LightingPreset::index` (carried by `LightingSpec`) means something else than under 12.
+///
+/// 14: multi-start optimizer. `OptimizeParams::starts` appended (a `u32` varint, one byte
+/// for the web's 1; postcard has no field defaults, so it is a wire change).
 ///
 /// A change to any message's bytes must bump this and update the pinned bytes in this
 /// module's `wire_format_is_pinned` test.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// What [`ToWorker::Picture`] makes of a sum (see `crate::display`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

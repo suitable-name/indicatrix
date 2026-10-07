@@ -1,0 +1,308 @@
+import { Theme } from "../../theme.slint";
+import { ViewportModel } from "../../models/viewport.slint";
+import { EditorModel } from "../../models/editor.slint";
+import { PhysicscolorModel } from "../../models/physics_color.slint";
+import { LchEditor } from "../material_editor/lch_editor.slint";
+import { BodyColorEditorModel } from "../../models/body_color_editor.slint";
+
+// One text row of the colour popup ("Material default", "Custom color..."): a hover
+// highlight and a check mark on the selected row. Tab reaches it, Space or Enter picks it.
+component ColorChoiceRow inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected: false;
+    callback clicked();
+
+    height: 28px;
+    border-radius: Theme.radius-sm;
+    background: row_touch.has-hover ? Theme.surface-control-hover : (root.selected ? Theme.surface-selected : transparent);
+    border-width: row_focus.has-focus ? 2px : 0px;
+    border-color: Theme.accent-cyan-hover;
+
+    accessible-role: AccessibleRole.radio-button;
+    accessible-label: root.label;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+    accessible-action-default => { root.clicked(); }
+
+    row_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    row_touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 6px;
+        Text {
+            text: root.label;
+            font-size: 11px;
+            font-weight: root.selected ? 700 : 400;
+            color: Theme.text-primary;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        if root.selected: Image {
+            source: @image-url("../../icons/check.svg");
+            colorize: Theme.accent-cyan;
+            width: 11px;
+            height: 11px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// One round colour swatch of the popup. The name (`label`) is the tooltip and what a screen
+// reader reads; Tab reaches it, Space or Enter picks it.
+component ColorSwatch inherits Rectangle {
+    in property <string> label;
+    in property <color> fill;
+    in property <bool> selected: false;
+    callback picked();
+
+    width: 24px;
+    height: 24px;
+    border-radius: 12px;
+    background: root.fill;
+    border-width: (root.selected || swatch_focus.has-focus) ? 2px : 1px;
+    border-color: swatch_focus.has-focus ? Theme.accent-cyan-hover : (root.selected ? Theme.accent-cyan : Theme.border-control);
+
+    accessible-role: AccessibleRole.radio-button;
+    accessible-label: root.label;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+    accessible-action-default => { root.picked(); }
+
+    Tooltip { text: @markdown("\{root.label}"); }
+
+    swatch_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.picked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.picked(); }
+    }
+}
+
+// The Live Render toolbar's quick colour change: a pill with a colour dot that opens a
+// small popup -- "Material default", the same nine body colours the Edit tab's color box
+// offers, and "Custom color..." (the material editor's colour picker). No custom material
+// is needed. While the view shows the linked open design a pick is that design's own
+// colour (undoable, like the Edit tab's box); otherwise it only changes this view. Rust
+// (`gui::render::render_body_color`) owns every decision and pushes everything shown here
+// through `ViewportModel.render_color_*`; this file holds no colour logic.
+//
+// The pill is a button for the keyboard and a screen reader too: Tab reaches it, Space or
+// Enter opens the popup, and the popup's rows and swatches are Tab stops of their own.
+export component RenderColorControl inherits Rectangle {
+    // Set by the toolbar from the viewport width: drops the "Color" label, the dot stays.
+    in property <bool> compact: false;
+
+    // Inside the popup: the colour picker is shown instead of just the list.
+    property <bool> picker_open: false;
+
+    // Anything that can change what the pill shows asks Rust to recompute it. Local
+    // aliases so `changed` can watch a global's property.
+    property <string> tracked_readout: EditorModel.body_color_readout;
+    property <int> tracked_material: ViewportModel.selected_material_index;
+    property <int> tracked_reset: EditorModel.form_reset_pulse;
+    property <bool> tracked_physics: EditorModel.design_material_is_physics;
+    changed tracked_readout => { ViewportModel.render_color_refresh(); }
+    changed tracked_material => { ViewportModel.render_color_refresh(); }
+    changed tracked_reset => { ViewportModel.render_color_refresh(); }
+    changed tracked_physics => { ViewportModel.render_color_refresh(); }
+    init => { ViewportModel.render_color_refresh(); }
+
+    // Wording that names the physics color only in a build that has the physics color
+    // editor (`physical-color`), as the Design settings color box does.
+    property <string> tip: ViewportModel.render_color_physics
+        ? (PhysicscolorModel.ui_enabled
+            ? "Replaces the physical color \u{2014} unavailable for physics materials."
+            : "This material defines its own color.")
+        : (ViewportModel.render_color_targets_design
+            ? "Color -- show this design in another color without making a custom material. This is the same setting as the color box in the Edit tab's Design settings, and it can be undone."
+            : "Color -- try this stone in another color without making a custom material. Only this view changes; the design is not touched.");
+
+    function open_popup() {
+        root.picker_open = false;
+        ViewportModel.render_color_refresh();
+        popup.show();
+    }
+
+    height: 32px;
+    width: pill_layout.preferred-width;
+    background: (pill_touch.has-hover && ViewportModel.render_color_enabled) ? Theme.bg-elevated : Theme.hint-surface;
+    border-radius: Theme.radius-sm;
+    border-width: pill_focus.has-focus ? 2px : 1px;
+    border-color: pill_focus.has-focus ? Theme.accent-cyan-hover : Theme.border-medium;
+    opacity: ViewportModel.render_color_enabled ? 1.0 : 0.55;
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: "Color: " + ViewportModel.render_color_summary;
+    accessible-description: root.tip;
+    accessible-enabled: ViewportModel.render_color_enabled;
+    accessible-action-default => {
+        if ViewportModel.render_color_enabled {
+            root.open_popup();
+        }
+    }
+
+    Tooltip { text: @markdown("\{root.tip}"); }
+
+    pill_focus := FocusScope {
+        enabled: ViewportModel.render_color_enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.open_popup();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    pill_touch := TouchArea {
+        enabled: ViewportModel.render_color_enabled;
+        mouse-cursor: ViewportModel.render_color_enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.open_popup(); }
+    }
+
+    pill_layout := HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        spacing: 6px;
+        alignment: center;
+        // The colour dot: the colour the stone renders in, or a hollow ring for
+        // "Material default".
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                background: ViewportModel.render_color_has_swatch ? ViewportModel.render_color_current : transparent;
+                border-width: ViewportModel.render_color_has_swatch ? 1px : 2px;
+                border-color: ViewportModel.render_color_has_swatch ? Theme.border-control : Theme.text-secondary;
+                opacity: ViewportModel.render_color_busy ? 0.5 : 1.0;
+            }
+        }
+        if !root.compact: Text {
+            text: ViewportModel.render_color_busy ? "Matching..." : "Color";
+            font-size: 11px;
+            font-weight: 600;
+            color: Theme.text-primary;
+            vertical-alignment: center;
+        }
+    }
+
+    popup := PopupWindow {
+        x: 0px;
+        y: root.height + 4px;
+        width: 276px;
+        // Clicks inside (the picker's square, its hex box) must not close it; a choice
+        // closes it explicitly.
+        close-policy: PopupClosePolicy.close-on-click-outside;
+
+        Rectangle {
+            background: Theme.surface-dialog;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border-dialog;
+            drop-shadow-blur: 16px;
+            drop-shadow-color: Theme.modal-shadow;
+            height: card.preferred-height;
+
+            card := VerticalLayout {
+                padding: 10px;
+                spacing: 8px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: "Color";
+                        font-size: 12px;
+                        font-weight: 700;
+                        color: Theme.text-primary;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: ViewportModel.render_color_summary;
+                        font-size: 11px;
+                        color: Theme.accent-cyan;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                }
+                Text {
+                    text: ViewportModel.render_color_targets_design
+                        ? "Changes this design. You can undo it."
+                        : "Changes the view only. The design is not changed.";
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                }
+
+                ColorChoiceRow {
+                    label: "Material default";
+                    selected: ViewportModel.render_color_index == 0;
+                    clicked => {
+                        ViewportModel.render_color_chosen(0);
+                        popup.close();
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 4px;
+                    alignment: start;
+                    for tint[i] in ViewportModel.render_color_preset_swatches: ColorSwatch {
+                        fill: tint;
+                        label: ViewportModel.render_color_preset_labels[i];
+                        selected: ViewportModel.render_color_index == i + 1;
+                        picked => {
+                            ViewportModel.render_color_chosen(i + 1);
+                            popup.close();
+                        }
+                    }
+                }
+
+                ColorChoiceRow {
+                    label: "Custom colour (tone, saturation, hue)\u{2026}";
+                    selected: ViewportModel.render_color_index == ViewportModel.render_color_custom_index;
+                    clicked => {
+                        root.picker_open = true;
+                        // 0 = this design (one undo step), 2 = this view only.
+                        BodyColorEditorModel.target = ViewportModel.render_color_targets_design ? 0 : 2;
+                        BodyColorEditorModel.open_requested();
+                    }
+                }
+
+                if root.picker_open: LchEditor {
+                    enabled: ViewportModel.render_color_enabled;
+                    apply_hint: ViewportModel.render_color_targets_design
+                        ? "Use this colour for the design. It is one step you can undo."
+                        : "Use this colour for this view only. The design is not changed.";
+                    applied => {
+                        root.picker_open = false;
+                        popup.close();
+                    }
+                    cancelled => { root.picker_open = false; }
+                }
+            }
+        }
+    }
+}

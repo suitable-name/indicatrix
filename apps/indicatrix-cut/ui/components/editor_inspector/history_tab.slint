@@ -1,0 +1,382 @@
+import { ListView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { EditorModel } from "../../models/editor.slint";
+import { GuideModel } from "../../models/guide.slint";
+import { HelpTopics } from "../../models/help.slint";
+import { HistoryModel, HistoryRowData, HistoryThumb } from "../../models/history.slint";
+import { VariantsModel } from "../../models/variants.slint";
+import { HelpButton } from "../help_button.slint";
+import { CompactIcon } from "../compact_controls.slint";
+import { VariantsSection } from "variants_section.slint";
+
+// One step of the history: a small picture of the design at that step, what the step did,
+// and where it stands (the current step, or one that was undone).
+//
+// The data property is called `step`, not `row`: `row` is a built-in layout property of
+// every element and cannot be redeclared.
+component HistoryRowView inherits Rectangle {
+    in property <HistoryRowData> step;
+    // `false` while the guide locks undo/redo or the editor is busy: the row only looks.
+    in property <bool> usable;
+    // The keyboard cursor is on this row.
+    in property <bool> cursor;
+    // Whether Tab can stop on the row's save button. Only the row the cursor is on says yes, so a
+    // long list never puts one Tab stop per row between the list and the rest of the window.
+    in property <bool> reachable;
+    // The Advanced interface also shows the small save button on each row.
+    in property <bool> advanced;
+    callback chosen();
+    // The small save button on the row: keep the design as it was at this step as a variant.
+    callback save_variant();
+
+    // Asked again whenever `thumb_version` moves (a picture finished, or the list changed).
+    property <HistoryThumb> thumb: HistoryModel.thumbnail(root.step.position, HistoryModel.thumb_version);
+    // The tooltip: what a click on this row does. One tooltip, so its text is chosen here.
+    property <string> row_hint: !root.usable
+        ? "Going to a step is switched off while the editor is busy or the lesson has switched off Undo and Redo."
+        : (root.step.current
+            ? "The design stands at this step now."
+            : (root.step.undone
+                ? "Go forward to this step, which you undid. It stays in the list until you make a new change."
+                : "Go back to this step. The steps after it stay in the list, so you can come back."));
+
+    // The card plus the 4px gap that separates it from the next row (a ListView has no
+    // `spacing`).
+    height: 84px;
+
+    card := Rectangle {
+        y: 0px;
+        height: 80px;
+        background: root.step.current ? Theme.surface-selected : ((touch.has-hover && root.usable) ? Theme.bg-card-hover : Theme.bg-input);
+        border-radius: Theme.radius-sm;
+        border-width: root.cursor ? 2px : 1px;
+        border-color: root.cursor ? Theme.accent-cyan-hover : (root.step.current ? Theme.accent-cyan : Theme.border-subtle);
+        clip: true;
+        accessible-role: AccessibleRole.list-item;
+        accessible-label: root.step.title + ", " + root.step.detail + (root.step.current ? ", now" : "");
+        accessible-description: root.row_hint;
+        accessible-enabled: root.usable;
+        accessible-item-selectable: true;
+        accessible-item-selected: root.step.current;
+        accessible-action-default => {
+            if root.usable {
+                root.chosen();
+            }
+        }
+
+        Tooltip { text: @markdown("\{root.row_hint}"); }
+
+        touch := TouchArea {
+            enabled: root.usable;
+            clicked => { root.chosen(); }
+        }
+
+        HorizontalLayout {
+            padding: 4px;
+            spacing: 8px;
+
+            // The picture. A fixed box either way, so a row without a picture yet never
+            // shifts the layout when it arrives.
+            Rectangle {
+                width: 72px;
+                height: 72px;
+                background: Theme.surface-sunken;
+                border-radius: Theme.radius-sm;
+                opacity: root.step.undone ? 0.6 : 1.0;
+
+                if root.thumb.state == 1: Image {
+                    source: root.thumb.picture;
+                    width: 100%;
+                    height: 100%;
+                    image-fit: contain;
+                }
+                if root.thumb.state == 0: Text {
+                    text: "Drawing";
+                    font-size: 9px;
+                    color: Theme.text-muted;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                if root.thumb.state == 2: Text {
+                    text: "Does not solve";
+                    font-size: 9px;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                spacing: 2px;
+
+                Text {
+                    text: root.step.title;
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                    wrap: word-wrap;
+                    opacity: root.step.undone ? 0.6 : 1.0;
+                }
+                Text {
+                    text: root.step.detail;
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                    opacity: root.step.undone ? 0.6 : 1.0;
+                }
+                if root.step.current: HorizontalLayout {
+                    Rectangle {
+                        background: Theme.primary;
+                        border-radius: Theme.radius-sm;
+                        width: pill_text.preferred-width + 12px;
+                        height: pill_text.preferred-height + 4px;
+                        pill_text := Text {
+                            text: "Now";
+                            font-size: 9px;
+                            font-weight: 700;
+                            color: Theme.text-on-primary;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+
+            // Keeps the design as it was at this step as a variant (Advanced). It sits over the
+            // card's own touch area, so a click on it never jumps to the step.
+            if root.advanced: VerticalLayout {
+                alignment: start;
+                CompactIcon {
+                    enabled: root.usable;
+                    reachable: root.reachable;
+                    icon: @image-url("../../icons/save.svg");
+                    hint: "Save the design as it was at this step as a variant. See the glossary.";
+                    clicked => { root.save_variant(); }
+                }
+            }
+        }
+    }
+}
+
+// The Inspector's "History" tab: every step of the open design's undo history, newest at
+// the top, ending with "Start" (the design as opened or created). A click -- or Enter on
+// the row the keyboard cursor is on -- goes to that step. Steps after the current one are
+// the undone ones: dimmed, still there to go forward to until a new change is made.
+//
+// The list is virtualised (`ListView`): only the rows in view exist, and each asks
+// `HistoryModel.thumbnail` for its picture, so only the pictures you can see are drawn.
+// The whole list is one Tab stop. Up/Down move the cursor between steps (Up is newer), Home
+// goes to the newest, End to "Start", Enter or Space goes to the step the cursor is on.
+// Everything else (Ctrl+Z and the like) falls through to the window's shortcuts.
+//
+// This is the "Steps" view of `HistoryTab` below.
+component HistorySteps inherits Rectangle {
+    // Clicking is allowed unless the worked-example guide locks undo/redo or the editor is
+    // busy -- the same condition as the Undo and Redo buttons.
+    property <bool> usable: EditorModel.enabled && GuideModel.allows_history();
+    // The Simple interface leaves out the per-row save button (the "Save as variant..." button
+    // of the Variants view does the same for the design as it is now).
+    property <bool> advanced: GuideModel.shows_advanced();
+    // The position the keyboard cursor is on; -1 follows the current step.
+    property <int> cursor_position: -1;
+    property <int> effective_cursor: root.cursor_position >= 0
+        ? min(root.cursor_position, HistoryModel.step_count)
+        : HistoryModel.current_position;
+    // One row's height in the list, gap included (`HistoryRowView.height`).
+    property <length> row_height: 84px;
+
+    init => {
+        HistoryModel.opened();
+    }
+
+    // Whenever the history moves, the cursor goes back to following the current step.
+    property <int> tracked_current: HistoryModel.current_position;
+    changed tracked_current => {
+        root.cursor_position = -1;
+    }
+
+    // Scrolls the list just enough to show the row of `position` (the newest is on top).
+    function show_position(position: int) {
+        let top = (HistoryModel.step_count - position) * root.row_height;
+        let bottom = top + root.row_height;
+        if top < -steps_list.content-y {
+            steps_list.content-y = -top;
+        } else if bottom > -steps_list.content-y + steps_list.visible-height {
+            steps_list.content-y = steps_list.visible-height - bottom;
+        }
+    }
+
+    function move_cursor(position: int) {
+        root.cursor_position = max(0, min(position, HistoryModel.step_count));
+        root.show_position(root.cursor_position);
+    }
+
+    function go_to(position: int) {
+        if root.usable {
+            HistoryModel.jump(position);
+        }
+    }
+
+    scope := FocusScope {
+        accessible-role: AccessibleRole.list;
+        accessible-label: "History steps";
+        accessible-description: "Up and Down choose a step, Enter goes to it, Home chooses the newest step and End chooses Start.";
+        key-pressed(event) => {
+            if event.modifiers.control || event.modifiers.alt || event.modifiers.meta {
+                return reject;
+            }
+            if event.text == Key.UpArrow {
+                root.move_cursor(root.effective_cursor + 1);
+                return accept;
+            } else if event.text == Key.DownArrow {
+                root.move_cursor(root.effective_cursor - 1);
+                return accept;
+            } else if event.text == Key.Home {
+                root.move_cursor(HistoryModel.step_count);
+                return accept;
+            } else if event.text == Key.End {
+                root.move_cursor(0);
+                return accept;
+            } else if event.text == Key.Return || event.text == Key.Space {
+                root.go_to(root.effective_cursor);
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            spacing: 6px;
+
+            Text {
+                text: "History";
+                font-size: 12px;
+                font-weight: 700;
+                color: Theme.text-primary;
+            }
+            Text {
+                text: HistoryModel.step_count == 0
+                    ? "No changes yet. Every change you make is listed here, so you can go back to any of them."
+                    : "Click a step to go back to it. Steps after the current one are undone: they stay here until you make a new change.";
+                font-size: 10px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+
+            steps_list := ListView {
+                vertical-stretch: 1;
+                for entry in HistoryModel.rows: HistoryRowView {
+                    step: entry;
+                    usable: root.usable;
+                    advanced: root.advanced;
+                    cursor: scope.has-focus && root.effective_cursor == entry.position;
+                    reachable: root.effective_cursor == entry.position;
+                    chosen => {
+                        scope.focus();
+                        root.cursor_position = -1;
+                        root.go_to(entry.position);
+                    }
+                    save_variant => {
+                        if root.usable {
+                            VariantsModel.begin_save(entry.position);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// One of the two pills that switch the History tab between its views. It takes Tab, answers
+// Space and Enter, shows a ring while it has focus and is a tab (picked or not) to a screen
+// reader.
+component HistoryViewPill inherits Rectangle {
+    in property <string> label;
+    // One plain sentence: what the view holds. Shown as the tooltip.
+    in property <string> hint;
+    in property <bool> active;
+    callback clicked();
+
+    height: 22px;
+    width: view_text.preferred-width + 20px;
+    background: root.active ? Theme.primary : (view_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+    border-radius: Theme.radius-sm;
+    border-width: view_focus.has-focus ? 2px : 1px;
+    border-color: view_focus.has-focus ? Theme.accent-cyan-hover : (root.active ? Theme.accent-cyan : Theme.border-subtle);
+    accessible-role: AccessibleRole.tab;
+    accessible-label: root.label;
+    accessible-description: root.hint;
+    accessible-checkable: true;
+    accessible-checked: root.active;
+    accessible-action-default => { root.clicked(); }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    view_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+    view_touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+    view_text := Text {
+        text: root.label;
+        font-size: 10px;
+        font-weight: 600;
+        color: root.active ? Theme.text-on-primary : Theme.text-secondary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// The Inspector's "History" tab. Two views, chosen by the pills at its top: the steps of the
+// open design's undo history (`HistorySteps`), and the variants saved for the design
+// (`VariantsSection`, state in `models/variants.slint`). The "?" button opens Chapter 18.
+export component HistoryTab inherits Rectangle {
+    VerticalLayout {
+        spacing: 6px;
+
+        HorizontalLayout {
+            spacing: 6px;
+            HistoryViewPill {
+                label: "Steps";
+                hint: "Every change you made to this design, newest first. Click one to go back to it.";
+                active: VariantsModel.view == 0;
+                clicked => { VariantsModel.view = 0; }
+            }
+            HistoryViewPill {
+                label: "Variants";
+                hint: "Named copies of this design that you keep to come back to or to compare. See the glossary.";
+                active: VariantsModel.view == 1;
+                clicked => {
+                    VariantsModel.view = 1;
+                    // The guide's Variants lesson waits for the view to be opened.
+                    GuideModel.event("variants_opened");
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            VerticalLayout {
+                alignment: center;
+                HelpButton {
+                    topic: HelpTopics.history;
+                    hint: "Open the manual page on the History tab and saved variants";
+                }
+            }
+        }
+
+        if VariantsModel.view == 0: HistorySteps {
+            vertical-stretch: 1;
+        }
+        if VariantsModel.view == 1: VariantsSection {
+            vertical-stretch: 1;
+        }
+    }
+}

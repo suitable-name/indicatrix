@@ -71,6 +71,19 @@ impl<T> RedrawGate<T> {
             .take()
     }
 
+    /// Looks at the payload queued right now without taking it: `look` runs on it while the
+    /// slot is locked, so keep it short. `None` when nothing is queued.
+    ///
+    /// A worker that has just finished a job uses this to tell whether a newer one is already
+    /// waiting behind it (and so whether work only the older job needs is worth doing).
+    pub fn peek<R>(&self, look: impl FnOnce(&T) -> R) -> Option<R> {
+        self.slot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(look)
+    }
+
     /// The number of `submit` calls made so far, including coalesced ones. Exposed for
     /// tests only -- production callers act entirely on `submit`'s return value.
     #[cfg(test)]
@@ -157,6 +170,24 @@ mod tests {
     fn take_on_an_empty_gate_returns_none() {
         let gate: RedrawGate<u32> = RedrawGate::new();
         assert_eq!(gate.take(), None);
+    }
+
+    /// F3-17: a worker that has just finished a job can see whether a newer one is queued,
+    /// without taking it from the queue.
+    #[test]
+    fn peek_shows_the_queued_payload_and_leaves_it_there() {
+        let gate: RedrawGate<u32> = RedrawGate::new();
+        assert_eq!(gate.peek(|queued| *queued), None, "nothing queued yet");
+        gate.submit(1);
+        gate.submit(2);
+        assert_eq!(gate.peek(|queued| *queued), Some(2), "the latest one");
+        assert_eq!(
+            gate.peek(|queued| *queued),
+            Some(2),
+            "peeking takes nothing"
+        );
+        assert_eq!(gate.take(), Some(2));
+        assert_eq!(gate.peek(|queued| *queued), None, "taken");
     }
 
     #[test]

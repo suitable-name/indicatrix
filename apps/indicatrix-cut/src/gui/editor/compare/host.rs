@@ -26,6 +26,7 @@
 //! after the release, or after the last wheel tick.
 
 use super::{
+    metrics::{self, SessionMetrics, StripText, TiltEvent, TiltReport},
     origins::KeepGuard,
     render::{
         self, FrameEvent, FrameMsg, LatestWorker, Pixels, SideGeometry, TRACED_SPP, ViewRequest,
@@ -35,9 +36,10 @@ use super::{
     },
 };
 use crate::{
-    CompareModel, CompareWindow, MainWindow, gui::solid_preview::preview_state::CameraPose,
+    CompareMetricRow, CompareModel, CompareWindow, MainWindow,
+    gui::solid_preview::preview_state::CameraPose,
 };
-use slint::{ComponentHandle, Image, Timer, TimerMode, Weak};
+use slint::{ComponentHandle, Image, ModelRc, Timer, TimerMode, VecModel, Weak};
 use std::{
     cell::RefCell,
     sync::{
@@ -106,6 +108,9 @@ struct Host {
     ui: Option<Weak<MainWindow>>,
     next_id: u64,
     live: Option<LiveSession>,
+    /// The camera of an embedded session that was dropped (a proposal that did not solve)
+    /// while its dialog stays open: the next session continues from it.
+    retained_pose: Option<CameraPose>,
 }
 
 impl Host {
@@ -115,6 +120,7 @@ impl Host {
             ui: None,
             next_id: 0,
             live: None,
+            retained_pose: None,
         }
     }
 }
@@ -144,6 +150,15 @@ pub(super) struct LiveSession {
     size_px: (u32, u32),
     /// Whether the mouse button is held on the image (an orbit drag in progress).
     drag_held: bool,
+    /// A layout switch happened and the new slot size has not been pushed yet
+    /// ([`layout_switched`], cleared by [`set_size`]). A trace started now would render at
+    /// the previous layout's size, so [`submit_traced`] waits for the size first.
+    size_settling: bool,
+    /// How many times [`submit_traced`] has already waited for the size to settle.
+    settle_polls: u8,
+    /// The pose this session was opened with; stands in for the live pose until it has
+    /// solved, so a refresh that lands while this one is still solving keeps the camera.
+    seed_pose: Option<CameraPose>,
     ready: Option<ReadySession>,
 }
 
@@ -155,7 +170,10 @@ impl LiveSession {
 
     /// The session's current shared pose, once it has solved.
     pub(super) fn pose(&self) -> Option<CameraPose> {
-        self.ready.as_ref().map(|ready| ready.session.pose)
+        self.ready
+            .as_ref()
+            .map(|ready| ready.session.pose)
+            .or(self.seed_pose)
     }
 }
 
@@ -168,17 +186,31 @@ struct ReadySession {
     traced: LatestWorker<ViewRequest>,
     traced_timer: Timer,
     traced_progress: TracedProgress,
+    /// The samples per pixel each side's last traced frame used; below [`TRACED_SPP`]
+    /// only for a slow concave side.
+    traced_spp: [u32; 2],
+    /// The optical figures of both sides and the tilt run (see [`metrics`]).
+    metrics: SessionMetrics,
 }
 
 /// The status line for `live`'s current state.
 fn current_status(live: &LiveSession) -> String {
     let ready = live.ready.as_ref();
-    session::status_text(
+    let mut status = session::status_text(
         ready.map(|r| &r.session),
         live.renderer,
         ready.map_or(TracedProgress::Done, |r| r.traced_progress),
         TRACED_SPP,
-    )
+    );
+    if live.renderer == Renderer::Traced
+        && let Some(ready) = ready
+        && ready.traced_progress == TracedProgress::Done
+        && let Some(note) = session::reduced_spp_note(ready.traced_spp, TRACED_SPP)
+    {
+        status.push_str("  ·  ");
+        status.push_str(&note);
+    }
+    status
 }
 
 /// The status line while both sides are still solving.
@@ -278,13 +310,36 @@ pub(super) fn replace_live(new: NewLive) -> (u64, Option<LiveSession>) {
             renderer: new.renderer,
             size_px: new.size_px,
             drag_held: false,
+            size_settling: false,
+            settle_polls: 0,
+            seed_pose: None,
             ready: None,
         };
         (host.next_id, host.live.replace(live))
     })
 }
 
-/// Empties `handle`'s surface: no session, no images, `status` on the status line.
+/// Records the pose live session `id` was opened with (see [`LiveSession::pose`]).
+pub(super) fn seed_pose(id: u64, pose: CameraPose) {
+    COMPARE.with(|cell| {
+        if let Some(live) = cell.borrow_mut().live.as_mut().filter(|live| live.id == id) {
+            live.seed_pose = Some(pose);
+        }
+    });
+}
+
+/// The camera a dropped embedded session left behind, taken once.
+pub(super) fn take_retained_pose() -> Option<CameraPose> {
+    COMPARE.with(|cell| cell.borrow_mut().retained_pose.take())
+}
+
+/// Forgets the retained camera (the dialog is closing).
+fn clear_retained_pose() {
+    COMPARE.with(|cell| cell.borrow_mut().retained_pose = None);
+}
+
+/// Empties `handle`'s surface: no session, no images, no optical figures, `status` on the
+/// status line.
 pub(super) fn reset_surface(handle: &SurfaceHandle, status: &str) {
     handle.with_model(|model| {
         model.set_is_open(false);
@@ -293,7 +348,36 @@ pub(super) fn reset_surface(handle: &SurfaceHandle, status: &str) {
         model.set_after_image(Image::default());
         model.set_overlay_image(Image::default());
         model.set_status(status.into());
+        clear_strip(&model);
     });
+}
+
+/// Pushes `strip` into the metrics strip's properties of `model`.
+fn push_strip(model: &CompareModel<'_>, strip: &StripText) {
+    let rows: Vec<CompareMetricRow> = strip
+        .rows
+        .iter()
+        .map(|row| CompareMetricRow {
+            label: row.label.into(),
+            before: row.before.as_str().into(),
+            after: row.after.as_str().into(),
+            change: row.change.as_str().into(),
+            verdict: row.tone.word().into(),
+            tone: row.tone.code(),
+        })
+        .collect();
+    model.set_metric_rows(ModelRc::new(VecModel::from(rows)));
+    model.set_metric_summary(strip.summary.as_str().into());
+    model.set_metric_note(strip.note.as_str().into());
+    model.set_tilt_available(strip.tilt_available);
+    model.set_tilt_running(strip.tilt_running);
+    model.set_tilt_done(strip.tilt_done);
+    model.set_tilt_progress(strip.tilt_progress);
+}
+
+/// Empties the metrics strip of `model`.
+pub(super) fn clear_strip(model: &CompareModel<'_>) {
+    push_strip(model, &StripText::default());
 }
 
 /// Takes the live session iff it sits on `surface`.
@@ -335,6 +419,9 @@ pub(super) fn close_window(hide: bool) -> Option<CompareOrigin> {
 /// emptied pane.
 pub(super) fn drop_embedded(status: &str) {
     let dropped = take_live_on(Surface::Embedded);
+    if let Some(pose) = dropped.as_ref().and_then(LiveSession::pose) {
+        COMPARE.with(|cell| cell.borrow_mut().retained_pose = Some(pose));
+    }
     drop(dropped);
     if let Some(pane) = handle(Surface::Embedded) {
         reset_surface(&pane, status);
@@ -348,23 +435,38 @@ pub(super) fn close_embedded_session() {
         close_window(true);
     }
     drop_embedded("");
-}
-
-/// Whether the live session sits on `surface`.
-pub(super) fn is_live_on(surface: Surface) -> bool {
-    with_live_on(surface, |_| ()).is_some()
+    clear_retained_pose();
 }
 
 /// Records the image slot's new size on `surface`'s live session; `false` when the
 /// session is not on that surface.
 pub(super) fn set_size(surface: Surface, size_px: (u32, u32)) -> bool {
-    with_live_on(surface, |live| live.size_px = size_px).is_some()
+    with_live_on(surface, |live| {
+        live.size_px = size_px;
+        live.size_settling = false;
+        live.settle_polls = 0;
+    })
+    .is_some()
 }
 
 /// Switches `surface`'s live session to `renderer`; `false` when the session is not
 /// on that surface.
 pub(super) fn set_renderer(surface: Surface, renderer: Renderer) -> bool {
     with_live_on(surface, |live| live.renderer = renderer).is_some()
+}
+
+/// The layout (side by side, split, overlay) of `surface` changed. `renderer` is what the
+/// UI shows as selected (`CompareModel.renderer_index`), the single source of truth: the
+/// live session adopts it, so the highlighted renderer is the one that renders. The slot
+/// size is about to change with the layout, so a trace waits for that push instead of
+/// tracing at the old size. `false` when the session is not on that surface.
+pub(super) fn layout_switched(surface: Surface, renderer: Renderer) -> bool {
+    with_live_on(surface, |live| {
+        live.renderer = renderer;
+        live.size_settling = true;
+        live.settle_polls = 0;
+    })
+    .is_some()
 }
 
 /// Hands a worker report to the UI thread -- the `post` every worker is spawned
@@ -436,12 +538,13 @@ fn accept_frame(live: &mut LiveSession, msg: FrameMsg) -> Option<FrameUpdate> {
                 ready.traced_progress = TracedProgress::Rendering { side };
             }
         }
-        FrameEvent::Traced { before, after } => {
+        FrameEvent::Traced { before, after, spp } => {
             if ready
                 .frames
                 .accept(FrameKind::Traced, msg.generation, renderer)
             {
                 ready.traced_progress = TracedProgress::Done;
+                ready.traced_spp = spp;
                 update.images = Some((before, after));
             }
         }
@@ -516,9 +619,22 @@ fn submit_traced() {
     let status = with_live(|live| {
         let size = live.size_px;
         if live.renderer == Renderer::Traced
+            && session::traced_waits_for_layout(live.size_settling, live.settle_polls)
+            && let Some(ready) = live.ready.as_mut()
+        {
+            // The layout switched and its slot size has not arrived: look again shortly
+            // (bounded, in case the new layout kept the old size and no push follows).
+            live.settle_polls += 1;
+            ready.traced_timer.start(
+                TimerMode::SingleShot,
+                session::SIZE_SETTLE_POLL,
+                submit_traced,
+            );
+        } else if live.renderer == Renderer::Traced
             && session::traced_may_start(live.drag_held)
             && let Some(ready) = live.ready.as_mut()
         {
+            live.size_settling = false;
             ready.traced.submit(ViewRequest {
                 generation: ready.frames.generation(),
                 pose: ready.session.pose,
@@ -564,9 +680,9 @@ pub(super) fn change_pose(surface: Surface, change: impl FnOnce(CameraPose, f64)
     }
 }
 
-/// A freshly solved session arrives: keeps it iff it is still the live one, spawns
-/// its two workers, and renders the first view.
-pub(super) fn on_session_built(id: u64, session: CompareSession) {
+/// A freshly solved session arrives with its measured figures: keeps it iff it is still
+/// the live one, spawns its two workers, shows the figures, and renders the first view.
+pub(super) fn on_session_built(id: u64, session: CompareSession, metrics: SessionMetrics) {
     let sides = || {
         (
             SideGeometry::from_side(&session.before),
@@ -578,6 +694,7 @@ pub(super) fn on_session_built(id: u64, session: CompareSession) {
     let traced = render::spawn_traced_worker(id, sides(), Arc::clone(&latest), post_frame);
     let can_keep = session.can_keep();
     let labels = (session.before.label.clone(), session.after.label.clone());
+    let strip = metrics.strip();
     let stored = with_live(|live| {
         if live.id != id {
             return false;
@@ -590,6 +707,8 @@ pub(super) fn on_session_built(id: u64, session: CompareSession) {
             traced,
             traced_timer: Timer::default(),
             traced_progress: TracedProgress::Done,
+            traced_spp: [TRACED_SPP; 2],
+            metrics,
         });
         true
     });
@@ -600,8 +719,97 @@ pub(super) fn on_session_built(id: u64, session: CompareSession) {
         model.set_can_keep(can_keep);
         model.set_before_label(labels.0.into());
         model.set_after_label(labels.1.into());
+        push_strip(&model, &strip);
     });
     request_frames(Duration::ZERO);
+}
+
+/// "Tilt average": starts the tilt run of `surface`'s live session on a worker thread.
+/// Does nothing unless both sides were measured and no run is going or finished.
+pub(super) fn start_tilt(surface: Surface) {
+    let started = with_live_on(surface, |live| {
+        let id = live.id;
+        let ready = live.ready.as_mut()?;
+        let request = ready.metrics.begin_tilt(&ready.session)?;
+        Some((id, request, ready.metrics.strip()))
+    });
+    let Some((handle, Some((id, request, strip)))) = started else {
+        return;
+    };
+    let run = request.run;
+    handle.with_model(|model| push_strip(&model, &strip));
+    if let Err(reason) = metrics::spawn_tilt(id, request, post_tilt) {
+        warn!("{reason}");
+        let failed = with_live(|live| {
+            let ready = live.ready.as_mut().filter(|_| live.id == id)?;
+            ready
+                .metrics
+                .tilt_failed_to_start(run, reason)
+                .then(|| ready.metrics.strip())
+        });
+        if let Some((handle, Some(strip))) = failed {
+            handle.with_model(|model| push_strip(&model, &strip));
+        }
+    }
+}
+
+/// "Cancel" on the running tilt average of `surface`'s live session: the thread stops and
+/// its late reports are ignored.
+pub(super) fn cancel_tilt(surface: Surface) {
+    let cancelled = with_live_on(surface, |live| {
+        let ready = live.ready.as_mut()?;
+        ready.metrics.cancel_tilt().then(|| ready.metrics.strip())
+    });
+    if let Some((handle, Some(strip))) = cancelled {
+        handle.with_model(|model| push_strip(&model, &strip));
+    }
+}
+
+/// Hands a tilt thread's report to the UI thread -- the `post` every tilt thread is
+/// spawned with. Fails silently only once the event loop has already quit.
+fn post_tilt(report: TiltReport) {
+    let _ = slint::invoke_from_event_loop(move || deliver_tilt(report));
+}
+
+/// What one accepted tilt report changes on screen.
+enum TiltUpdate {
+    /// The progress bar moved.
+    Progress(f32),
+    /// The run ended: the whole strip changes.
+    Strip(Box<StripText>),
+}
+
+/// Shows a tilt report iff it belongs to the live session's running tilt run -- a
+/// cancelled run's or a replaced session's late reports change nothing.
+fn deliver_tilt(report: TiltReport) {
+    let TiltReport {
+        session_id,
+        run,
+        event,
+    } = report;
+    let update = with_live(|live| {
+        if live.id != session_id {
+            return None;
+        }
+        let ready = live.ready.as_mut()?;
+        match event {
+            TiltEvent::Progress { done } => ready
+                .metrics
+                .tilt_progress(run, done)
+                .then(|| TiltUpdate::Progress(ready.metrics.progress_fraction())),
+            TiltEvent::Finished(outcome) => ready
+                .metrics
+                .tilt_finished(run, &outcome)
+                .then(|| TiltUpdate::Strip(Box::new(ready.metrics.strip()))),
+        }
+    });
+    let Some((handle, Some(update))) = update else {
+        return;
+    };
+    handle.with_model(|model| match update {
+        TiltUpdate::Progress(fraction) => model.set_tilt_progress(fraction),
+        TiltUpdate::Strip(strip) => push_strip(&model, &strip),
+    });
 }
 
 #[cfg(test)]

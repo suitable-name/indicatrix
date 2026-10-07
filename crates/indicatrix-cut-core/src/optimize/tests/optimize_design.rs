@@ -43,7 +43,7 @@ fn optimize_design_on_a_freshly_imported_design_spends_no_evaluations() {
 /// otherwise a caller's progress ticker would show nothing at all for the one
 /// [`ObjectiveFidelity::Full`] scoring this path still performs. No
 /// [`SearchStage::FinalFull`] report follows, since the "nothing free" path never
-/// reaches [`build_outcome`].
+/// reaches `build_result`.
 #[test]
 fn optimize_design_reports_baseline_full_even_with_nothing_free_to_search() {
     let schedule = indicatrix_formats::asc::parse_asc(RBC_445).expect("fixture must parse");
@@ -56,6 +56,7 @@ fn optimize_design_reports_baseline_full_even_with_nothing_free_to_search() {
     let hooks = SearchHooks {
         cancel: None,
         on_progress: Some(&on_progress),
+        on_start: None,
     };
     let outcome = optimize_design(&imported, &material, &OptimizeConfig::default(), &hooks)
         .expect("a freshly imported, fully-anchored design must solve");

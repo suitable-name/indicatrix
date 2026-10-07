@@ -64,8 +64,8 @@ mod redraw_gate;
 mod scanline;
 
 pub use context::{
-    MaterialOverrides, MaterialSources, PlanesOwner, RenderContext, apply_material_overrides,
-    load_env_map, resolve_material, resolve_material_with_override,
+    ColorTarget, MaterialOverrides, MaterialSources, PlanesOwner, RenderContext,
+    apply_material_overrides, load_env_map, resolve_material, resolve_material_with_override,
 };
 pub use denoise::{
     DenoiseScratch, FirstHitSnapshot, denoise_and_tonemap_frame, tonemap_running_average,
@@ -238,6 +238,7 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                 lighting_preset,
                 backdrop,
                 surface_glare,
+                head_shadow_deg,
                 target_samples,
                 max_bounces,
                 exposure,
@@ -585,6 +586,7 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                         .studio(exposure, light_yaw, light_pitch)
                         .with_backdrop(backdrop.level())
                         .with_surface_glare(surface_glare)
+                        .with_head_shadow(head_shadow_deg)
                 },
                 EnvironmentSource::HdrMap,
             );
@@ -612,7 +614,9 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                         camera: &camera,
                         planes: &active_planes,
                         tools: &active_tools,
-                        fluorescence: fluorescence.as_deref().unwrap_or(Fluorescence::none()),
+                        fluorescence: fluorescence
+                            .as_deref()
+                            .unwrap_or_else(|| Fluorescence::none()),
                         facet_finishes,
                         material: &current_mat,
                         max_bounces,

@@ -143,7 +143,7 @@ impl ChromophoreCatalogue {
     #[must_use]
     pub fn end_member_fractions(
         &self,
-        recipe: &super::recipe::colorRecipe,
+        recipe: &super::recipe::ColorRecipe,
     ) -> Option<Vec<(String, f64)>> {
         let host = self.host(&recipe.host)?;
         host.end_member_fractions(|id| recipe.amount(id))
@@ -151,7 +151,7 @@ impl ChromophoreCatalogue {
 
     /// Linearly interpolated `(ri, sg)` for a recipe on a host with end members.
     #[must_use]
-    pub fn recipe_optics(&self, recipe: &super::recipe::colorRecipe) -> Option<(f64, f64)> {
+    pub fn recipe_optics(&self, recipe: &super::recipe::ColorRecipe) -> Option<(f64, f64)> {
         let fractions = self.end_member_fractions(recipe)?;
         let refs: Vec<(&str, f64)> = fractions.iter().map(|(k, v)| (k.as_str(), *v)).collect();
         Some(garnet_optics(&refs))
@@ -1512,7 +1512,11 @@ total_atom_density_cm3 = 5.0e22
             cat.selectable_elements("quartz")
                 .contains(&"Al".to_string())
         );
-        assert!(cat.selectable_elements("nonexistent").is_empty());
+        assert_eq!(
+            cat.selectable_elements("nonexistent").len(),
+            0,
+            "an unknown host offers no elements"
+        );
         assert_eq!(
             cat.selectable_treatments("corundum", &["Fe"])
                 .iter()

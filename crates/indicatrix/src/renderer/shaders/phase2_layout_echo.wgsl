@@ -27,7 +27,15 @@ struct GpuTransportParams {
     studio_model: u32,
     backdrop: f32,
     surface_glare: f32,
-    _pad_surface_glare: u32,
+    head_shadow_outer_cos: f32,
+    head_shadow_inner_cos: f32,
+    tent_flat: f32,
+    _pad_head_shadow1: u32,
+    _pad_head_shadow2: u32,
+    tent_walls: f32,
+    tent_cards: f32,
+    tent_spark: f32,
+    tent_ground: f32,
 }
 
 @group(0) @binding(0) var<storage, read> in_params: GpuTransportParams;
@@ -52,7 +60,15 @@ fn echo_transport_params() {
     out_params.studio_model = in_params.studio_model;
     out_params.backdrop = in_params.backdrop;
     out_params.surface_glare = in_params.surface_glare;
-    out_params._pad_surface_glare = in_params._pad_surface_glare;
+    out_params.head_shadow_outer_cos = in_params.head_shadow_outer_cos;
+    out_params.head_shadow_inner_cos = in_params.head_shadow_inner_cos;
+    out_params.tent_flat = in_params.tent_flat;
+    out_params._pad_head_shadow1 = in_params._pad_head_shadow1;
+    out_params._pad_head_shadow2 = in_params._pad_head_shadow2;
+    out_params.tent_walls = in_params.tent_walls;
+    out_params.tent_cards = in_params.tent_cards;
+    out_params.tent_spark = in_params.tent_spark;
+    out_params.tent_ground = in_params.tent_ground;
 }
 
 // `renderer::gpu::layout_check` echoes these four small uniform structs

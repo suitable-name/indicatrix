@@ -1,0 +1,287 @@
+import { LineEdit, ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { CommandPaletteModel } from "../models/command_palette.slint";
+import { EditorModel } from "../models/editor.slint";
+import { HelpTopics } from "../models/help.slint";
+import { HelpButton } from "help_button.slint";
+
+// One line of the palette's result list: the command's title, a dim reason underneath
+// when it cannot run right now, its category, and its key combination.
+component PaletteRowView inherits Rectangle {
+    in property <string> title;
+    in property <string> category;
+    in property <string> shortcut;
+    // Why the command cannot run right now; empty when it can.
+    in property <string> reason;
+    in property <bool> selected;
+    callback chosen();
+    callback hovered();
+
+    height: 38px;
+    background: root.selected ? Theme.surface-selected : transparent;
+    border-radius: Theme.radius-sm;
+    // The tooltip: what a click does, or why it cannot.
+    property <string> tip: root.reason == "" ? "Run this command." : "Cannot run right now: " + root.reason;
+
+    accessible-role: AccessibleRole.list-item;
+    accessible-label: root.reason == "" ? root.title : root.title + ". Not available: " + root.reason;
+    accessible-description: root.category + (root.shortcut != "" ? ". Shortcut " + root.shortcut : "");
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.chosen(); }
+
+    Tooltip { text: @markdown("\{root.tip}"); }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 8px;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 1px;
+            Text {
+                text: root.title;
+                font-size: 12px;
+                font-weight: 600;
+                color: root.reason == "" ? Theme.text-primary : (root.selected ? Theme.text-secondary : Theme.text-muted);
+                overflow: elide;
+            }
+            if root.reason != "": Text {
+                text: root.reason;
+                font-size: 10px;
+                color: root.selected ? Theme.text-secondary : Theme.text-muted;
+                overflow: elide;
+            }
+        }
+        Text {
+            width: 44px;
+            text: root.category;
+            font-size: 10px;
+            color: root.selected ? Theme.text-secondary : Theme.text-muted;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+        if root.shortcut != "": VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: chip_text.preferred-width + 12px;
+                height: 18px;
+                background: Theme.bg-input;
+                border-radius: Theme.radius-sm;
+                chip_text := Text {
+                    text: root.shortcut;
+                    font-size: 10px;
+                    font-weight: 600;
+                    color: Theme.accent-amber;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        // Highlight on real pointer movement only, so a list that scrolls under a resting
+        // pointer (arrow keys) does not move the highlight by itself.
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.move {
+                root.hovered();
+            }
+        }
+        clicked => { root.chosen(); }
+    }
+}
+
+// The command palette (Edit > Command Palette..., Ctrl+K, Ctrl+Shift+P): a search box over
+// every command in the app. Mounted by `GlobalDialogsOverlay` while
+// `CommandPaletteModel.open`; the list is filled by `gui::commands`.
+//
+// Keys, handled before the search field sees them: Up and Down move the highlight (and wrap
+// round), Page Up and Page Down move it a page, Home and End jump to the first and last row,
+// Enter runs the highlighted command, Escape closes. Ctrl+K and Ctrl+Shift+P close it again.
+// Every other key goes to the search field; keys the field ignores are swallowed here so the
+// shortcuts of the window underneath cannot fire while the palette is open.
+//
+// The keyboard focus stays in the search field, the way a combo box with a list works: the list
+// is driven by Up and Down, not by Tab, so the list rows take no Tab stop. A screen reader
+// reaches each row through its default action; the "?" in the footer is for the pointer.
+export component CommandPalette inherits Rectangle {
+    background: Theme.overlay-backdrop;
+
+    property <length> row_height: 38px;
+    // At most this many rows show at once; the list scrolls beyond it.
+    property <int> max_rows: 12;
+    property <length> card_top: min(root.height * 0.12, 90px);
+    // The search row, two dividers and the footer around the list.
+    property <length> chrome_height: 82px;
+    property <int> shown_rows: min(max(CommandPaletteModel.rows.length, 1), root.max_rows);
+    property <length> list_height: min(
+        root.row_height * root.shown_rows,
+        max(root.row_height, root.height - root.card_top - root.chrome_height - 16px));
+
+    // Keeps the highlighted row inside the visible part of the list, and returns to the top
+    // when Rust replaces the rows.
+    property <int> selected_row: CommandPaletteModel.selected;
+    property <int> row_generation: CommandPaletteModel.generation;
+    function reveal_selected() {
+        let top = root.row_height * CommandPaletteModel.selected;
+        let bottom = top + root.row_height;
+        if -list.content-y > top {
+            list.content-y = -top;
+        } else if -list.content-y + root.list_height < bottom {
+            list.content-y = root.list_height - bottom;
+        }
+    }
+    changed selected_row => { root.reveal_selected(); }
+    changed row_generation => { list.content-y = 0px; }
+
+    init => { search.focus(); }
+
+    FocusScope {
+        width: 100%;
+        height: 100%;
+
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape {
+                CommandPaletteModel.close_palette();
+                return accept;
+            } else if (event.modifiers.control || event.modifiers.meta)
+                    && (event.text == "k" || (event.modifiers.shift && event.text == "P")) {
+                CommandPaletteModel.close_palette();
+                return accept;
+            } else if event.text == Key.DownArrow {
+                CommandPaletteModel.move_by(1, true);
+                return accept;
+            } else if event.text == Key.UpArrow {
+                CommandPaletteModel.move_by(-1, true);
+                return accept;
+            } else if event.text == Key.PageDown {
+                CommandPaletteModel.move_by(root.max_rows - 1, false);
+                return accept;
+            } else if event.text == Key.PageUp {
+                CommandPaletteModel.move_by(1 - root.max_rows, false);
+                return accept;
+            } else if event.text == Key.Home {
+                CommandPaletteModel.selected = 0;
+                return accept;
+            } else if event.text == Key.End {
+                if CommandPaletteModel.rows.length > 0 {
+                    CommandPaletteModel.selected = CommandPaletteModel.rows.length - 1;
+                }
+                return accept;
+            } else if event.text == Key.Return {
+                if CommandPaletteModel.rows.length > 0 {
+                    CommandPaletteModel.activate(CommandPaletteModel.selected);
+                }
+                return accept;
+            } else if event.text == Key.Tab || event.text == Key.Backtab {
+                // Focus stays in the search field.
+                return accept;
+            }
+            return reject;
+        }
+
+        key-pressed(event) => {
+            return accept;
+        }
+
+        // A click outside the card closes the palette.
+        TouchArea {
+            clicked => { CommandPaletteModel.close_palette(); }
+        }
+
+        Rectangle {
+            x: (root.width - self.width) / 2;
+            y: root.card_top;
+            width: min(560px, root.width - 32px);
+            height: root.list_height + root.chrome_height;
+            background: Theme.surface-dialog;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border-dialog;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: Theme.modal-shadow;
+            clip: true;
+
+            // Isolates clicks inside the card from the backdrop above.
+            TouchArea {}
+
+            VerticalLayout {
+                Rectangle {
+                    height: 52px;
+                    HorizontalLayout {
+                        padding: 8px;
+                        search := LineEdit {
+                            text <=> CommandPaletteModel.query;
+                            placeholder-text: "Type to search commands";
+                            accessible-label: "Search commands";
+                            accessible-description: "Up and Down choose a command, Enter runs it, Escape closes the palette.";
+                            font-size: 14px;
+                            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                        }
+                    }
+                }
+                Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                Rectangle {
+                    height: root.list_height;
+                    accessible-role: AccessibleRole.list;
+                    accessible-label: "Matching commands";
+                    list := ScrollView {
+                        VerticalLayout {
+                            alignment: start;
+                            padding: 4px;
+                            for row[i] in CommandPaletteModel.rows: PaletteRowView {
+                                title: row.title;
+                                category: row.category;
+                                shortcut: row.shortcut;
+                                reason: row.reason;
+                                selected: CommandPaletteModel.selected == i;
+                                chosen => { CommandPaletteModel.activate(i); }
+                                hovered => { CommandPaletteModel.selected = i; }
+                            }
+                        }
+                    }
+                    if CommandPaletteModel.rows.length == 0: Text {
+                        text: "No commands match \"" + CommandPaletteModel.query + "\".";
+                        font-size: 12px;
+                        color: Theme.text-muted;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle { height: 1px; background: Theme.border-subtle; }
+                Rectangle {
+                    height: 28px;
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        Text {
+                            horizontal-stretch: 1;
+                            text: "Enter runs the highlighted command. Esc closes.";
+                            font-size: 10px;
+                            color: Theme.text-muted;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: CommandPaletteModel.rows.length == 1 ? "1 command" : CommandPaletteModel.rows.length + " commands";
+                            font-size: 10px;
+                            color: Theme.text-muted;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            padding-left: 8px;
+                            HelpButton { topic: HelpTopics.command-palette; hint: "Open the manual page on the command palette and the keyboard"; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

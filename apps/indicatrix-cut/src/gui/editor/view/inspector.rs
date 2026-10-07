@@ -5,19 +5,25 @@
 //! per-facet chip row ([`selected_tier_chips`]/[`push_selected_tier_chips`]).
 
 use super::state::{
-    EditorState, ScratchDelta, body_color_index_for, body_color_options, builtin_preset_names,
-    design_material_index_from_name, gear_index_from_teeth, index_chip_items, push_rows,
-    ri_source_text,
+    EditorState, ScratchDelta, builtin_preset_names, design_material_index_from_name,
+    gear_index_from_teeth, index_chip_items, push_rows, ri_source_text,
 };
 use crate::{
     EditorModel, IndexChipItem, MainWindow, ViewportModel,
     bridge::render_thread::RenderContext,
-    gui::editor::material_lookup::{
-        EditorMaterialLookup, material_guess, traced_gem_material, traced_material_for,
+    gui::{
+        editor::{
+            body_color_combo,
+            material_lookup::{
+                EditorMaterialLookup, material_guess, traced_gem_material, traced_material_for,
+            },
+        },
+        render::render_body_color::display_rgb,
     },
 };
 use indicatrix::optics::materials::GemMaterial;
 use indicatrix_cut_core::{Design, critical_angle_deg};
+use indicatrix_editor::material::{body_color_index_for_material, body_color_options};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::sync::{Arc, Mutex};
 
@@ -50,6 +56,7 @@ fn push_material_guess(ui: &MainWindow, design: &Design, n_d: f64) {
 /// different stone than the one rendered. Computed whether or not the viewport is
 /// linked; the toolbar only shows it while linked.
 fn body_color_readout(design: &Design, custom: &[GemMaterial]) -> String {
+    let rgb = design.material.body_color_override;
     design
         .material
         .body_color_label()
@@ -57,6 +64,10 @@ fn body_color_readout(design: &Design, custom: &[GemMaterial]) -> String {
             let (name, unresolved) = traced_material_for(design, custom);
             if unresolved.is_some() {
                 String::new()
+            } else if let Some(rgb) = rgb.filter(|rgb| body_color_combo::is_custom(Some(*rgb))) {
+                // A custom colour is named by its on-screen hex, not just "custom color".
+                let [r, g, b] = display_rgb(rgb);
+                format!("{name} (Custom #{r:02x}{g:02x}{b:02x})")
             } else {
                 format!("{name} ({color})")
             }
@@ -75,10 +86,11 @@ fn is_physics_material(design: &Design, ctx: &RenderContext) -> bool {
 
 /// The design settings panel's color combo half of [`refresh_design_settings`] --
 /// split out purely to keep that function under clippy's function-length lint. The
-/// option list is static, so it is pushed only while the combo does not hold it yet;
-/// the selected index is re-seeded from the design only when `material_changed` (the
-/// same [`ScratchDelta::material`] gate as the material combo, so an in-progress pick
-/// survives an unrelated refresh); `readout` (see [`body_color_readout`]) always.
+/// option list is "Material default", the nine presets and the trailing "Custom..." entry
+/// ([`body_color_combo`]); it is pushed only while the combo does not hold it yet. The selected index is re-seeded from the design only when
+/// `material_changed` (the same [`ScratchDelta::material`] gate as the material combo, so an
+/// in-progress pick survives an unrelated refresh); `readout` (see [`body_color_readout`])
+/// always.
 fn push_body_color_fields(
     ui: &MainWindow,
     design: &Design,
@@ -97,7 +109,7 @@ fn push_body_color_fields(
         )));
     }
     if material_changed {
-        model.set_body_color_index(body_color_index_for(design.material.body_color_override));
+        model.set_body_color_index(body_color_index_for_material(&design.material));
     }
     model.set_body_color_readout(readout.into());
     // The override replaces the whole absorption tensor, so it is unavailable (greyed out) for a

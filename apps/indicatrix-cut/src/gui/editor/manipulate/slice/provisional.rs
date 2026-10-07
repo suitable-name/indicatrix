@@ -7,13 +7,20 @@ use super::super::{
     frame_updates_mast_cache,
     handles::{CAMERA_FOV_DEG, ids_aligned},
 };
-use crate::gui::solid_preview::{facet_map::FacetMap, preview_state::FrameGeometry};
+use crate::gui::solid_preview::{
+    cut_slider::MODEL_ROUGH,
+    facet_map::FacetMap,
+    live_update::{CutLimit, limit_visible_tiers},
+    preview_state::FrameGeometry,
+};
 use glam::Vec3;
 use indicatrix::{
     geometry::meet_solver::{MeetConstraint, SolvedTier},
     optics::raytracer::Camera,
 };
-use indicatrix_cut_core::{ConstraintTier, Design, Edit, expected_orbit, rotate_indices};
+use indicatrix_cut_core::{
+    ConstraintTier, Design, Edit, design::TierRef, expected_orbit, rotate_indices,
+};
 use indicatrix_editor::{
     manipulate::{
         ScreenPoint, ScreenSize, SliceSide, SnappedFacet, slice_normal, slice_tier, snap_to_gear,
@@ -107,10 +114,53 @@ pub(in super::super) fn surviving_facets(
     })
 }
 
-/// Whether the Cut slider (`cutoff`, `-1` for the whole design) shows fewer tiers than
-/// reach `tier_index`, so the mesh on screen does not contain that tier at all.
-pub(in super::super) fn cut_hides_tier(cutoff: i32, tier_index: usize) -> bool {
-    usize::try_from(cutoff).is_ok_and(|through| through < tier_index)
+/// How many planes the stone of `design` has when the Cut slider has it cut back to
+/// `cut_steps` cutting steps (`None`: the finished stone): the preform's planes plus the
+/// facets of the tiers those steps have cut. The length a provisional frame's planes must
+/// have to be the provisional design at that cut ([`super::note_planes`]).
+///
+/// The same numbering the frame's facet ids use ([`FacetMap::from_design_cut`]), so it is
+/// right for the cutting-order cut of a design with concave tiers too, where the shown
+/// tiers are not a prefix of the stored ones.
+pub(in super::super) fn expected_plane_count(
+    design: &Design,
+    masts: &[SolvedTier],
+    cut_steps: Option<usize>,
+) -> usize {
+    let limit = cut_steps.map_or(CutLimit::Finished, CutLimit::Steps);
+    let visible = limit_visible_tiers(design, limit);
+    FacetMap::from_design_cut(design, masts, &[], visible.as_deref()).facet_count()
+}
+
+/// Whether the Cut slider moved since the provisional frame last submitted: the planes the
+/// preview holds for the slice were drawn at the OLD cut and must not be shown at the new
+/// one.
+pub(in super::super) fn cut_moved(previous: Option<usize>, now: Option<usize>) -> bool {
+    previous != now
+}
+
+/// Whether the Cut slider (`cutoff`, `-1` for the whole design, [`MODEL_ROUGH`] for the
+/// rough alone) stops short of the cutting step `step`, so the mesh on screen does not
+/// contain the tier cut at that step at all. At the rough every step is hidden, so the
+/// Slice hint appears.
+///
+/// `step` is a position in the cutting order ([`tier_step`]), the thing the slider counts. It
+/// is NOT a tier's stored index: once concave tiers exist the cutting order interleaves them
+/// with the flat tiers, so a flat tier's step is later than its stored index.
+pub(in super::super) fn cut_hides_tier(cutoff: i32, step: usize) -> bool {
+    cutoff == MODEL_ROUGH || usize::try_from(cutoff).is_ok_and(|through| through < step)
+}
+
+/// The cutting step that cuts the flat tier `tier_index` of `design`: its position in
+/// [`Design::preview_steps`], the order the Cut slider walks ([`Design::cutting_order`]:
+/// pavilion and girdle tiers, the concave pavilion steps, the flat crown tiers, the concave
+/// crown steps, the table last). It is the stored index itself only for a design stored in
+/// that order with no concave tiers. `None` when the design has no such tier.
+pub(in super::super) fn tier_step(design: &Design, tier_index: usize) -> Option<usize> {
+    design
+        .preview_steps()
+        .iter()
+        .position(|step| *step == TierRef::Flat(tier_index))
 }
 
 /// Whether Keep may commit a provisional tier with `surviving` facets on the stone: a
@@ -259,6 +309,9 @@ pub(super) struct ProvisionalSlice {
     /// How many of the tier's facets touch the stone in the latest provisional frame
     /// (`None` until one has landed for this design) -- see [`surviving_facets`].
     pub(super) surviving: Option<usize>,
+    /// The Cut slider's cut (`None`: finished) at the latest provisional replan; the
+    /// planes of the frame that answers it have [`expected_plane_count`] planes at it.
+    pub(super) cut_steps: Option<usize>,
 }
 
 impl ProvisionalSlice {
@@ -287,6 +340,7 @@ impl ProvisionalSlice {
             masts_new: false,
             awaiting: false,
             surviving: None,
+            cut_steps: None,
         }
     }
 
@@ -419,4 +473,110 @@ pub(super) fn rebuild_indices(p: &mut ProvisionalSlice, symmetric: bool) -> bool
     tier.detached.clear();
     p.facet_map = None;
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use indicatrix_cut_core::{PreformSpec, ScheduleMeta};
+
+    /// A flat crown tier pinned by a scale reference, like the Slice tool's provisional one.
+    fn provisional_tier() -> ConstraintTier {
+        ConstraintTier {
+            angle_deg: 30.0,
+            name: "Slice".to_owned(),
+            indices: vec![0.0],
+            constraint: MeetConstraint::ScaleReference(0.4),
+            imported_meet: None,
+            original_notes: None,
+            detached: Vec::new(),
+        }
+    }
+
+    /// The Cut slider counts cutting steps. In the concave fixture the groove (a pavilion
+    /// tool) is cut between the pavilion tiers and the crown tiers, so every crown tier --
+    /// and the provisional one, appended last -- is cut one step later than its stored index.
+    /// Comparing the slider with the stored index hid the hint one step too late.
+    #[test]
+    fn a_concave_step_between_flat_steps_moves_the_provisional_tiers_step() {
+        let mut design = Design::concave_fixture();
+        let index = design.tiers.len();
+        design
+            .apply_edit(Edit::AddTier {
+                index,
+                tier: provisional_tier(),
+            })
+            .expect("the provisional tier appends");
+        assert_eq!(
+            index, 5,
+            "five stored flat tiers before the provisional one"
+        );
+
+        // Cutting order: three pavilion/girdle tiers, the groove, the crown tiers (the
+        // provisional one last among them), then the crown dimple.
+        assert_eq!(tier_step(&design, 0), Some(0));
+        assert_eq!(tier_step(&design, 2), Some(2));
+        assert_eq!(tier_step(&design, 3), Some(4), "the groove is step 3");
+        assert_eq!(tier_step(&design, 5), Some(6));
+        assert_eq!(tier_step(&design, 9), None, "no such tier");
+
+        let step = tier_step(&design, index).expect("the tier is a step");
+        // The slider after step 5 stops one step short of the provisional tier, although
+        // its stored index (5) is not past 5.
+        assert!(cut_hides_tier(5, step), "through step 5 ends before step 6");
+        assert!(!cut_hides_tier(6, step), "through step 6 includes it");
+        assert!(!cut_hides_tier(-1, step), "-1 shows the whole design");
+        assert!(cut_hides_tier(MODEL_ROUGH, step), "the rough has no tier");
+    }
+
+    /// A planar design stored crown first is cut pavilion first: each tier's step is its place
+    /// in the cutting order, not its stored index, and the Slice hint follows the step.
+    #[test]
+    fn a_planar_design_stored_out_of_cutting_order_has_its_cutting_step() {
+        let design = Design::new(
+            PreformSpec::block(2.0, 1.0, 2.0),
+            ScheduleMeta::standard_round_brilliant(),
+            vec![
+                provisional_tier(),
+                ConstraintTier {
+                    angle_deg: -40.0,
+                    name: "Main".to_owned(),
+                    ..provisional_tier()
+                },
+                ConstraintTier {
+                    angle_deg: 0.0,
+                    name: "Table".to_owned(),
+                    ..provisional_tier()
+                },
+            ],
+        );
+        // The crown tier (stored first) is cut second, the pavilion tier first, the table last.
+        assert_eq!(tier_step(&design, 0), Some(1));
+        assert_eq!(tier_step(&design, 1), Some(0));
+        assert_eq!(tier_step(&design, 2), Some(2));
+        assert!(
+            cut_hides_tier(0, 1),
+            "through step 0 ends before the crown tier"
+        );
+        assert!(!cut_hides_tier(1, 1));
+    }
+
+    #[test]
+    fn without_concave_tiers_the_step_is_the_stored_index() {
+        let mut design = Design::concave_fixture();
+        design.concave_tiers.clear();
+        design.concave_tier_ids.clear();
+        let index = design.tiers.len();
+        design
+            .apply_edit(Edit::AddTier {
+                index,
+                tier: provisional_tier(),
+            })
+            .expect("the provisional tier appends");
+        for stored in 0..=index {
+            assert_eq!(tier_step(&design, stored), Some(stored));
+        }
+        assert!(cut_hides_tier(4, 5));
+        assert!(!cut_hides_tier(5, 5));
+    }
 }

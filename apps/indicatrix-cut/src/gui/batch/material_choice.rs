@@ -20,8 +20,9 @@ use indicatrix_vault::{db::sqlite::Database, model::material_match::RiPresetCand
 /// Camera pitches the candidates are measured at, in degrees: table-up, then two tilts.
 const SCORE_PITCHES_DEG: [f32; 3] = [90.0, 60.0, 30.0];
 
-/// The preset the candidates are lit by -- the one the tilt batch scores under.
-const SCORE_PRESET: LightingPreset = LightingPreset::RingLights;
+/// The preset the candidates are lit by -- the one the tilt batch scores under (the ISO
+/// hemisphere, formerly the ring lights).
+const SCORE_PRESET: LightingPreset = LightingPreset::IsoHemisphere;
 
 /// `material`'s balanced loss on `planes` (0-100, LOWER is better): the mean over
 /// [`SCORE_PITCHES_DEG`] of the equal-weight mean of windowing, extinction and

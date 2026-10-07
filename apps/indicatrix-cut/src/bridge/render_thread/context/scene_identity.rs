@@ -31,13 +31,16 @@ use std::sync::Arc;
 /// replaces the `Arc` when their content changes).
 struct SceneKey {
     dims: [u32; 4],
-    floats: [u32; 10],
+    floats: [u32; 11],
     c_axis: Option<[u32; 3]>,
     girdle_frosted: bool,
     lighting_preset: LightingPreset,
     backdrop: Backdrop,
     material_name: String,
     material_override: Option<GemMaterial>,
+    /// The view-only body colour that actually applies (`None` while it is dormant), as
+    /// bit patterns -- see `RenderContext::effective_view_body_color`.
+    view_color: Option<[u32; 3]>,
     active_planes: Arc<Vec<GpuFacetPlane>>,
     active_tools: Arc<Vec<ToolPrimitive>>,
     custom_materials: Arc<Vec<GemMaterial>>,
@@ -49,7 +52,7 @@ const fn dims(ctx: &RenderContext) -> [u32; 4] {
     [ctx.width, ctx.height, ctx.target_samples, ctx.max_bounces]
 }
 
-const fn floats(ctx: &RenderContext) -> [u32; 10] {
+const fn floats(ctx: &RenderContext) -> [u32; 11] {
     [
         ctx.yaw.to_bits(),
         ctx.pitch.to_bits(),
@@ -61,12 +64,18 @@ const fn floats(ctx: &RenderContext) -> [u32; 10] {
         ctx.edge_rounding_radius.to_bits(),
         ctx.stone_width_mm.to_bits(),
         ctx.surface_glare.to_bits(),
+        ctx.head_shadow_deg.to_bits(),
     ]
 }
 
 fn c_axis(ctx: &RenderContext) -> Option<[u32; 3]> {
     ctx.c_axis_override
         .map(|v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()])
+}
+
+fn view_color_bits(ctx: &RenderContext) -> Option<[u32; 3]> {
+    ctx.effective_view_body_color()
+        .map(|rgb| rgb.map(f32::to_bits))
 }
 
 fn same_fluorescence(a: Option<&Arc<Fluorescence>>, b: Option<&Arc<Fluorescence>>) -> bool {
@@ -96,6 +105,7 @@ impl SceneKey {
             backdrop: ctx.backdrop,
             material_name: ctx.material_name.clone(),
             material_override: ctx.material_override.clone(),
+            view_color: view_color_bits(ctx),
             active_planes: Arc::clone(&ctx.active_planes),
             active_tools: Arc::clone(&ctx.active_tools),
             custom_materials: Arc::clone(&ctx.custom_materials),
@@ -115,6 +125,7 @@ impl SceneKey {
             && self.backdrop == ctx.backdrop
             && self.material_name == ctx.material_name
             && self.material_override == ctx.material_override
+            && self.view_color == view_color_bits(ctx)
             && Arc::ptr_eq(&self.active_planes, &ctx.active_planes)
             && Arc::ptr_eq(&self.active_tools, &ctx.active_tools)
             && Arc::ptr_eq(&self.custom_materials, &ctx.custom_materials)
@@ -194,7 +205,7 @@ mod tests {
     fn every_kind_of_scene_change_bumps_the_generation() {
         let mut ctx = RenderContext::default();
         let mut last = ctx.scene_generation();
-        let changes: [fn(&mut RenderContext); 10] = [
+        let changes: [fn(&mut RenderContext); 11] = [
             |c| c.yaw += 0.1,
             |c| c.exposure = 2.0,
             |c| c.material_name = "Spinel".to_string(),
@@ -210,6 +221,7 @@ mod tests {
             |c| c.girdle_frosted = true,
             |c| c.width = 640,
             |c| c.surface_glare = 0.5,
+            |c| c.head_shadow_deg = 0.0,
         ];
         for change in changes {
             change(&mut ctx);

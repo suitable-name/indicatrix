@@ -20,7 +20,7 @@ use indicatrix_cut_core::{
 use indicatrix_formats::native::design::{MAX_ATTACHMENT_BYTES, is_iso8601_utc, is_uuid};
 use indicatrix_vault::{
     local::{apply_imported_extras, import_native_design},
-    model::{entry::FullDiagramRecord, file::AttachedFile},
+    model::{design_key::catalogue_design_uuid, entry::FullDiagramRecord, file::AttachedFile},
 };
 
 const NOW: &str = "2026-10-02T09:30:00Z";
@@ -382,4 +382,79 @@ fn the_written_file_holds_no_derived_field() {
         !text.contains("entry_id") && !text.contains("diagram_id"),
         "no row ids"
     );
+}
+
+/// The UUID a design gets when it opens is the one every later write carries: the first
+/// Save, a Save As (the state keeps the saved metadata), an autosave and a reopen.
+#[test]
+fn the_uuid_assigned_when_a_design_opens_is_what_every_write_carries() {
+    let opened = DesignFileExtras::default().with_design_uuid_assigned(None);
+    let uuid = opened.metadata.id.clone();
+    assert!(is_uuid(&uuid), "{uuid}");
+
+    // First Save: no new id is made, and the file holds the one assigned at open.
+    let first = assemble(&opened, None, NOW, || {
+        panic!("the design already has its UUID")
+    })
+    .expect("assembles");
+    assert_eq!(first.metadata.id, uuid);
+    let text = written(&DesignExtras {
+        metadata: Some(&first.metadata),
+        attachments: &first.attachments,
+        ..DesignExtras::default()
+    });
+    assert_eq!(design_from_str(&text).expect("opens").metadata.id, uuid);
+
+    // Save As elsewhere, later, from the metadata the first Save left in the state: a copy
+    // of the same design, so the same UUID (and so the same variants and progress).
+    let after_first_save = DesignFileExtras::new(first.metadata, first.attachments);
+    let second = assemble(
+        &after_first_save,
+        Some(&row(&["a"], false, false)),
+        "2026-10-03T00:00:00Z",
+        || panic!("Save As keeps the UUID"),
+    )
+    .expect("assembles");
+    assert_eq!(second.metadata.id, uuid);
+
+    // Autosave writes the state's metadata as it is, with no assembly step.
+    let autosave = written(&DesignExtras {
+        metadata: Some(&after_first_save.metadata),
+        ..DesignExtras::default()
+    });
+    assert_eq!(design_from_str(&autosave).expect("opens").metadata.id, uuid);
+
+    // Reopening the saved file keeps the id it carries.
+    let reopened =
+        DesignFileExtras::new(design_from_str(&text).expect("opens").metadata, Vec::new())
+            .with_design_uuid_assigned(None);
+    assert_eq!(reopened.metadata.id, uuid);
+}
+
+/// A catalogue design with no id of its own is named after its entry, the same way every
+/// time, and saving it to a file keeps that name.
+#[test]
+fn a_catalogue_design_without_an_id_is_named_after_its_entry_and_a_save_keeps_the_name() {
+    let url = "local://capps.asc";
+    let first = DesignFileExtras::default().with_design_uuid_assigned(Some(url));
+    let again = DesignFileExtras::default().with_design_uuid_assigned(Some(url));
+    assert_eq!(first.metadata.id, again.metadata.id);
+    assert_eq!(first.metadata.id, catalogue_design_uuid(url));
+
+    let saved = assemble(&first, Some(&row(&[], false, false)), NOW, || {
+        panic!("the design already has its UUID")
+    })
+    .expect("assembles");
+    assert_eq!(saved.metadata.id, catalogue_design_uuid(url));
+
+    // A catalogue design whose attached file carries an id keeps the file's id.
+    let with_file_id = DesignFileExtras::new(
+        DesignMetadata {
+            id: ID.to_string(),
+            ..DesignMetadata::default()
+        },
+        Vec::new(),
+    )
+    .with_design_uuid_assigned(Some(url));
+    assert_eq!(with_file_id.metadata.id, ID);
 }

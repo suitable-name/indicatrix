@@ -16,7 +16,7 @@ use crate::{
     },
     settings::{LightingPreset as SavedLightingPreset, LocalComputeTarget},
 };
-use indicatrix::{color::ColorSpace, optics::raytracer::LightingPreset};
+use indicatrix::color::ColorSpace;
 use slint::ComponentHandle;
 use std::{
     collections::VecDeque,
@@ -28,7 +28,7 @@ use std::{
 /// `export_dialog.slint`'s "Compute" pill index (0/1/2, see that property's own doc
 /// comment) -> [`ComputeTarget`]. Mirrors `gui::color_space_from_index`'s own
 /// int-discriminant convention.
-pub(super) const fn compute_target_from_index(index: i32) -> ComputeTarget {
+pub(in crate::gui) const fn compute_target_from_index(index: i32) -> ComputeTarget {
     match index {
         0 => ComputeTarget::LocalOnly,
         1 => ComputeTarget::RemoteOnly,
@@ -50,7 +50,7 @@ pub(super) const fn compute_target_from_index(index: i32) -> ComputeTarget {
 /// is what guarantees the base render AND every fanned-out preset render trace at the
 /// SAME cap.
 #[must_use]
-pub(super) const fn apply_export_bounce_cap(
+pub(in crate::gui) const fn apply_export_bounce_cap(
     mut scene: SceneSnapshot,
     max_bounces: u32,
 ) -> SceneSnapshot {
@@ -95,7 +95,8 @@ pub(super) fn apply_preset_to_scene(
     scene.light_yaw = preset.light_yaw_deg.to_radians();
     scene.light_pitch = preset.light_pitch_deg.to_radians().clamp(0.15, 1.55);
     scene.exposure = preset.exposure.clamp(0.2, 5.0);
-    scene.lighting_preset = LightingPreset::from_label(&preset.lighting_rig);
+    scene.lighting_preset =
+        crate::gui::optics::offered_lighting::offered_from_label(&preset.lighting_rig);
     // Applied unconditionally, matching `lighting_presets`' own live-apply -- unlike
     // camera yaw/pitch just below, `camera_distance` is a plain field (not an
     // `Option`), so every preset carries one.
@@ -120,9 +121,9 @@ pub(super) fn apply_preset_to_scene(
 /// One render this export queue still needs to produce: the base current-view render
 /// (`preset_label` empty) or one fanned-out preset render (`preset_label` the preset's
 /// name, used both for the `{preset}` template variable and the progress label).
-pub(super) struct ExportJob {
-    pub(super) scene: SceneSnapshot,
-    pub(super) preset_label: String,
+pub(in crate::gui) struct ExportJob {
+    pub(in crate::gui) scene: SceneSnapshot,
+    pub(in crate::gui) preset_label: String,
 }
 
 /// Everything shared across every job in one fan-out export, and across the recursive
@@ -189,7 +190,7 @@ pub(super) struct ExportQueue {
 /// used only for the `{colorspace}` template variable, so this doesn't need to be a
 /// method on `ColorSpace` itself (that type has no UI-facing concerns of its own; every
 /// other consumer works with the enum directly).
-pub(super) const fn colorspace_label(cs: ColorSpace) -> &'static str {
+pub(in crate::gui) const fn colorspace_label(cs: ColorSpace) -> &'static str {
     match cs {
         ColorSpace::Srgb => "sRGB",
         ColorSpace::DisplayP3 => "Display P3",
@@ -207,17 +208,63 @@ pub(super) const fn colorspace_label(cs: ColorSpace) -> &'static str {
 /// plus this job's own resolved scene (material name, lighting rig actually in effect,
 /// camera pose, exposure) and preset label.
 fn template_context_for_job(queue: &ExportQueue, job: &ExportJob) -> TemplateContext {
+    template_context(
+        DesignNames {
+            design: &queue.design,
+            designer: &queue.designer,
+            shape: &queue.shape,
+            ri: &queue.ri,
+        },
+        ExportSettingsView {
+            width: queue.width,
+            height: queue.height,
+            spp: queue.spp,
+            bounces: queue.bounces,
+            colorspace: &queue.colorspace,
+        },
+        job,
+    )
+}
+
+/// The design fields of a filename template, shared by every picture of one export.
+#[derive(Clone, Copy)]
+pub(in crate::gui) struct DesignNames<'a> {
+    pub(in crate::gui) design: &'a str,
+    pub(in crate::gui) designer: &'a str,
+    pub(in crate::gui) shape: &'a str,
+    pub(in crate::gui) ri: &'a str,
+}
+
+/// The export settings of a filename template, shared by every picture of one export.
+#[derive(Clone, Copy)]
+pub(in crate::gui) struct ExportSettingsView<'a> {
+    pub(in crate::gui) width: u32,
+    pub(in crate::gui) height: u32,
+    pub(in crate::gui) spp: u32,
+    pub(in crate::gui) bounces: u32,
+    pub(in crate::gui) colorspace: &'a str,
+}
+
+/// The `TemplateContext` of one picture: the whole export's design and settings, plus this
+/// picture's own scene (material name, lighting rig actually in effect, camera pose,
+/// exposure) and preset label. The immediate export and the render queue both name their
+/// files through it, so the two cannot drift apart.
+pub(in crate::gui) fn template_context(
+    names: DesignNames<'_>,
+    settings: ExportSettingsView<'_>,
+    job: &ExportJob,
+) -> TemplateContext {
     TemplateContext {
-        design: queue.design.clone(),
-        designer: queue.designer.clone(),
-        shape: queue.shape.clone(),
+        design: names.design.to_string(),
+        designer: names.designer.to_string(),
+        shape: names.shape.to_string(),
         material: job.scene.material.name.clone(),
-        ri: queue.ri.clone(),
-        width: queue.width,
-        height: queue.height,
-        spp: queue.spp,
-        bounces: queue.bounces,
-        colorspace: queue.colorspace.clone(),
+        ri: names.ri.to_string(),
+        width: settings.width,
+        height: settings.height,
+        spp: settings.spp,
+        bounces: settings.bounces,
+        colorspace: settings.colorspace.to_string(),
         preset: job.preset_label.clone(),
         lighting: job.scene.lighting_preset.label().to_string(),
         yaw_deg: job.scene.yaw.to_degrees(),

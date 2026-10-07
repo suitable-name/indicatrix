@@ -1,0 +1,78 @@
+import { Theme } from "../theme.slint";
+
+// A square button that shows only an icon (a dialog's close "x", a preset's pencil or trash
+// can). Drawn by hand like the pills in `pill_button.slint`, with the same keyboard reach (Tab,
+// then Space or Enter), a tooltip and a screen-reader label. The hit area is 24 px square by
+// default and never smaller than 20 px: a caller that wants it tighter sets `width` and
+// `height` to 20 px at the least.
+//
+// `hint` is required: for an icon with no text it is the only thing that says what the button
+// does, so it is both the tooltip and the accessible label.
+export component IconButton inherits Rectangle {
+    in property <image> icon;
+    // What the button does, in a few plain words ("Close the settings"). Tooltip and label.
+    in property <string> hint;
+    in property <color> tint: Theme.text-secondary;
+    in property <color> hover_fill: Theme.surface-raised;
+    // The "on" look, for a toggle (a panel that is open, a preset that is picked).
+    in property <bool> lit: false;
+    in property <color> lit_fill: Theme.accent-cyan;
+    in property <color> lit_hover_fill: Theme.accent-cyan-hover;
+    in property <color> lit_tint: Theme.text-on-accent;
+    // A toggle: a screen reader says whether it is on.
+    in property <bool> checkable: false;
+    in property <bool> enabled: true;
+    // The icon's size inside the button.
+    in property <length> glyph: 12px;
+    callback clicked();
+
+    width: 24px;
+    height: 24px;
+    border-radius: Theme.radius-sm;
+    opacity: root.enabled ? 1.0 : 0.45;
+    background: root.lit
+        ? (icon_touch.has-hover && root.enabled ? root.lit_hover_fill : root.lit_fill)
+        : (icon_touch.has-hover && root.enabled ? root.hover_fill : transparent);
+    border-width: icon_focus.has-focus ? 2px : 0px;
+    border-color: Theme.accent-cyan-hover;
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.hint;
+    accessible-checkable: root.checkable;
+    accessible-checked: root.lit;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    icon_focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    Image {
+        source: root.icon;
+        colorize: root.lit ? root.lit_tint : root.tint;
+        width: root.glyph;
+        height: root.glyph;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        image-fit: contain;
+    }
+
+    icon_touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
+    }
+}

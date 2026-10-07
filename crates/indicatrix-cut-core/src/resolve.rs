@@ -175,20 +175,27 @@ pub fn resolve_after_edit(
         // Shifts every later tier's index against `previous`, which is keyed by
         // position -- always fully re-solve rather than reason about a moving index space.
         // `MoveTier` renumbers every tier strictly between its two positions the same way.
-        Edit::AddTier { .. } | Edit::RemoveTier { .. } | Edit::MoveTier { .. } => design.solve(),
-        // All three replace exactly one tier's fields in place; every other tier
-        // keeps its index, so `previous` stays aligned.
-        Edit::ModifyTier { index, .. }
-        | Edit::SetConstraint { index, .. }
-        | Edit::SetIndices { index, .. } => {
-            design.resolve_dirty(previous, &BTreeSet::from([*index]))
-        }
         // Gear/symmetry/mirror feed `solve_meet_points` itself, and
         // `RemapIndices`/`RestoreIndices` can rewrite every tier's indices/detached
-        // at once -- the same "index-wheel position could have moved" case as
-        // `AddTier`/`RemoveTier`, so always fully re-solve.
-        Edit::SetSchedule { .. } | Edit::RemapIndices { .. } | Edit::RestoreIndices { .. } => {
-            design.solve()
+        // at once -- the same "index-wheel position could have moved" case. So does
+        // `ReplaceSchedule`, which swaps the whole tier list.
+        Edit::AddTier { .. }
+        | Edit::RemoveTier { .. }
+        | Edit::MoveTier { .. }
+        | Edit::SetSchedule { .. }
+        | Edit::RemapIndices { .. }
+        | Edit::RestoreIndices { .. }
+        | Edit::ReplaceSchedule(_) => design.solve(),
+        // All of these replace exactly one tier's fields in place; every other tier
+        // keeps its index, so `previous` stays aligned. `SetTierRelation` changes no
+        // mast itself, but it decides what the driven tier's angle is (the session
+        // sets the angle in the same step), so the driven tier counts as dirty
+        // exactly like an angle edit of it.
+        Edit::ModifyTier { index, .. }
+        | Edit::SetConstraint { index, .. }
+        | Edit::SetIndices { index, .. }
+        | Edit::SetTierRelation { index, .. } => {
+            design.resolve_dirty(previous, &BTreeSet::from([*index]))
         }
         // Same shape as `ModifyTier`, generalized to many indices at once.
         Edit::RetargetAngles { changes } => {
@@ -260,10 +267,12 @@ fn batch_needs_full_resolve(
             | Edit::MoveTier { .. }
             | Edit::SetSchedule { .. }
             | Edit::RemapIndices { .. }
-            | Edit::RestoreIndices { .. } => needs_full = true,
+            | Edit::RestoreIndices { .. }
+            | Edit::ReplaceSchedule(_) => needs_full = true,
             Edit::ModifyTier { index, .. }
             | Edit::SetConstraint { index, .. }
-            | Edit::SetIndices { index, .. } => {
+            | Edit::SetIndices { index, .. }
+            | Edit::SetTierRelation { index, .. } => {
                 dirty.insert(*index);
             }
             Edit::RetargetAngles { changes } => {

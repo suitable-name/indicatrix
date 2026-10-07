@@ -26,8 +26,17 @@
 //! never resolve as a subgraph) falls back to a full [`indicatrix_cut_core::Design::solve`];
 //! a successful full solve is authoritative regardless of timing, reported
 //! [`Freshness::Fresh`] too. Either path failing with [`indicatrix_cut_core::DesignSolveError`]
-//! reports [`Freshness::Unsolvable`], falling back to whatever `last_solved` planes
-//! are available -- never an empty `PreviewPlan::planes` when a prior frame exists.
+//! reports [`Freshness::Unsolvable`], falling back to the `last_solved` planes when they
+//! still describe this design. A `last_solved` that does not (it predates an add or
+//! remove) cannot be drawn, so `PreviewPlan::planes` is then empty and the renderer
+//! keeps its last closed stone; it never panics, since the plan worker runs this.
+//!
+//! # The Cut slider
+//!
+//! [`CutLimit`] says how much of the cut to draw: the finished stone, the flat tiers up to
+//! one index (the web slider), or the stone after k cutting steps with `0` the rough
+//! ([`plan_preview_limited`]). [`display_geometry`] gives any redraw path the same planes
+//! and tools for a limit, so they cannot disagree.
 //!
 //! # The injected [`Clock`]
 //!
@@ -41,10 +50,14 @@
 
 use glam::{DVec3, Vec3};
 use indicatrix::geometry::{
+    ToolPrimitive,
     cuts::StandardGemCuts,
     meet_solver::{MeetConstraint, SolveStrategy, SolvedTier},
 };
-use indicatrix_cut_core::{Design, DesignSolveError, design::TierRef};
+use indicatrix_cut_core::{
+    Design, DesignSolveError,
+    design::{TierRef, ToolPlacements},
+};
 use std::{collections::BTreeSet, time::Duration};
 
 /// Default over-budget threshold for [`plan_preview`]'s tier-2/3 decision.
@@ -140,8 +153,10 @@ fn narrow_planes(planes: Vec<(DVec3, f64)>) -> Vec<(Vec3, f32)> {
 /// Which flat tiers the "show through tier N" slider shows, indexed like
 /// `design.tiers`.
 ///
-/// A planar design (no concave tiers) keeps its stored order: tiers `0..=cutoff`. With
-/// concave tiers the slider walks [`Design::cutting_order`] (plan §4.4): the shown flat
+/// A planar design (no concave tiers) keeps its stored order: tiers `0..=cutoff` -- this is
+/// the web slider's "show through tier N of the table"; the desktop Cut slider uses
+/// [`CutLimit::Steps`], which follows [`Design::cutting_order`] for every design. With
+/// concave tiers this slider walks [`Design::cutting_order`] too (plan §4.4): the shown flat
 /// tiers are those cut up to and including flat tier `cutoff`, so the planes and the
 /// concave tools of one frame always describe the same step of the cut. For a design
 /// stored in cutting order the two rules agree.
@@ -162,6 +177,36 @@ pub(crate) fn visible_flat_tiers(design: &Design, cutoff: usize) -> Vec<bool> {
         }
     }
     visible
+}
+
+/// Which flat tiers (indexed like `design.tiers`) the planes of `limit` contain, `None`
+/// for the finished stone (every tier).
+///
+/// The same rule [`planes_for_display`] draws with, so a [`crate::facet_map::FacetMap`]
+/// built from it numbers the facets the way the drawn planes are numbered: the planes of
+/// a partly cut stone are the finished stone's planes with the hidden tiers' slices
+/// removed, in order.
+#[must_use]
+pub fn limit_visible_tiers(design: &Design, limit: CutLimit) -> Option<Vec<bool>> {
+    match limit {
+        CutLimit::Finished => None,
+        CutLimit::ThroughTier(cutoff) => Some(visible_flat_tiers(design, cutoff)),
+        CutLimit::Steps(steps) => {
+            let order = design.preview_steps();
+            if steps >= order.len() {
+                return None;
+            }
+            let mut visible = vec![false; design.tiers.len()];
+            for step in &order[..steps] {
+                if let TierRef::Flat(index) = step
+                    && let Some(slot) = visible.get_mut(*index)
+                {
+                    *slot = true;
+                }
+            }
+            Some(visible)
+        }
+    }
 }
 
 /// `planes` of `design` restricted to the flat tiers `visible` marks (the preform's
@@ -196,22 +241,98 @@ fn planes_of_visible_tiers(
         .collect()
 }
 
-/// [`plan_preview`]'s single choice of "the full arrangement" vs. "truncated through
-/// a tier cutoff" (the "show through tier N" viewport slider) -- routing every one
-/// of `plan_preview`'s five branches through here keeps that truncation decision in
+/// How much of the cut the preview draws: the Cut slider's position, in the one
+/// vocabulary [`plan_preview_limited`] and [`display_geometry`] understand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CutLimit {
+    /// Every tier: the finished stone.
+    #[default]
+    Finished,
+    /// The flat tiers up to and including this index into `Design::tiers` -- the
+    /// web app's slider, and what [`plan_preview`]'s `tier_cutoff` has always meant.
+    ThroughTier(usize),
+    /// The stone after this many cutting steps ([`Design::preview_steps`]); `0` is
+    /// the rough, the preform alone. A count at or past the last step is the
+    /// finished stone.
+    Steps(usize),
+}
+
+impl CutLimit {
+    /// The limit [`plan_preview`]'s `tier_cutoff` argument stands for.
+    #[must_use]
+    pub const fn from_tier_cutoff(tier_cutoff: Option<usize>) -> Self {
+        match tier_cutoff {
+            Some(through_tier) => Self::ThroughTier(through_tier),
+            None => Self::Finished,
+        }
+    }
+}
+
+/// What a viewport draws for a design under a [`CutLimit`]: the planes, the concave
+/// tools cut into them and where each tool came from.
+#[derive(Debug, Clone, Default)]
+pub struct DisplayGeometry {
+    /// The plane arrangement, in `Design::planes_from_solved`'s `n . x <= m` form.
+    pub planes: Vec<(DVec3, f64)>,
+    /// The concave tools subtracted from `planes`; empty for a planar design.
+    pub tools: Vec<ToolPrimitive>,
+    /// `(concave tier, placement)` of each tool, parallel to `tools`.
+    pub placements: ToolPlacements,
+}
+
+/// The geometry a viewport draws for `design` under `limit`, from a solved mast list.
+///
+/// The one entry every redraw path (the planner, the background-solve push, the full
+/// refresh, the optimise ghost) goes through, so they cannot disagree about what a Cut
+/// slider position shows.
+///
+/// Never panics. A `solved` that is not aligned with `design.tiers` (a stale list after
+/// an add or remove) has nothing to draw, so the result is empty -- except the rough
+/// ([`CutLimit::Steps`] of `0`), which needs no masts. Tools that do not resolve (an
+/// invalid concave tier, too many placements) are left out: the flat stone is truthful,
+/// a half-resolved set of tools is not.
+#[must_use]
+pub fn display_geometry(
+    design: &Design,
+    solved: &[SolvedTier],
+    limit: CutLimit,
+) -> DisplayGeometry {
+    let planes = planes_for_display(design, solved, limit);
+    let (tools, placements) = display_tools(design, solved, limit);
+    DisplayGeometry {
+        planes,
+        tools,
+        placements,
+    }
+}
+
+/// [`plan_preview`]'s single choice of "the full arrangement" vs. "truncated" (the
+/// "show through tier N" and Cut-step sliders) -- routing every one of
+/// `plan_preview`'s five branches through here keeps that truncation decision in
 /// exactly one place rather than five.
 ///
-/// `tier_cutoff.is_none()` reproduces [`Design::planes_from_solved`] exactly --
-/// the pre-existing behaviour for every caller that has no cutoff to offer. A planar
-/// design truncates by stored position ([`Design::planes_through_tier`]); a design
-/// with concave tiers follows [`visible_flat_tiers`], the same rule that picks the
-/// concave tools.
+/// [`CutLimit::Finished`] reproduces [`Design::planes_from_solved`] exactly. A planar
+/// [`CutLimit::ThroughTier`] truncates by stored position
+/// ([`Design::planes_through_tier`]); a design with concave tiers follows
+/// [`visible_flat_tiers`], the same rule that picks the concave tools.
+/// [`CutLimit::Steps`] follows [`Design::try_planes_after_steps`].
+///
+/// A `solved` that is not aligned with `design.tiers` yields no planes instead of
+/// panicking: this runs on the plan worker, which a panic would silently kill.
 fn planes_for_display(
     design: &Design,
     solved: &[SolvedTier],
-    tier_cutoff: Option<usize>,
+    limit: CutLimit,
 ) -> Vec<(DVec3, f64)> {
-    let Some(through_tier) = tier_cutoff else {
+    if let CutLimit::Steps(steps) = limit {
+        return design
+            .try_planes_after_steps(solved, steps)
+            .unwrap_or_default();
+    }
+    if solved.len() != design.tiers.len() {
+        return Vec::new();
+    }
+    let CutLimit::ThroughTier(through_tier) = limit else {
         return design.planes_from_solved(solved);
     };
     if design.concave_tiers.is_empty() {
@@ -227,6 +348,45 @@ fn planes_for_display(
     } else {
         planes_of_visible_tiers(design, solved, &visible)
     }
+}
+
+/// The concave tools to draw with [`display_geometry`]'s planes, and their placements.
+///
+/// Empty for a design without concave tiers (and so for every planar design, leaving the
+/// frame byte-identical), when `solved` is not aligned with the flat tiers, and when the
+/// concave tiers do not resolve.
+///
+/// For [`CutLimit::ThroughTier`] the tools are those that precede the first hidden flat
+/// tier in cutting order, where "hidden" is [`visible_flat_tiers`]'s rule -- the one that
+/// truncates the planes of the same frame, so a groove is never drawn into planes the
+/// slider has removed. [`CutLimit::Steps`] takes the concave tiers among its first steps.
+#[must_use]
+pub fn display_tools(
+    design: &Design,
+    solved: &[SolvedTier],
+    limit: CutLimit,
+) -> (Vec<ToolPrimitive>, ToolPlacements) {
+    if design.concave_tiers.is_empty() || solved.len() != design.tiers.len() {
+        return (Vec::new(), Vec::new());
+    }
+    let resolved = match limit {
+        CutLimit::Finished => design.concave_tools_from_solved(solved),
+        CutLimit::Steps(steps) => design.concave_tools_after_steps(solved, steps),
+        CutLimit::ThroughTier(cutoff) => {
+            // The first hidden flat tier in cutting order is the boundary; with no
+            // hidden tier everything is shown.
+            let visible = visible_flat_tiers(design, cutoff);
+            let boundary = design
+                .cutting_order()
+                .into_iter()
+                .find(|tier| matches!(tier, TierRef::Flat(i) if !visible[*i]));
+            boundary.map_or_else(
+                || design.concave_tools_from_solved(solved),
+                |first_hidden| design.concave_tools_through_tier(solved, first_hidden),
+            )
+        }
+    };
+    resolved.unwrap_or_default()
 }
 
 /// Every tier's mast read directly off its own [`MeetConstraint::ScaleReference`] --
@@ -267,6 +427,8 @@ fn masts_from_pinned_tiers(design: &Design) -> Vec<SolvedTier> {
 /// are always kept) via [`Design::planes_through_tier`] instead of the full
 /// [`Design::planes_from_solved`] arrangement -- see [`planes_for_display`]. `None`
 /// draws the full arrangement.
+///
+/// A thin wrapper over [`plan_preview_limited`] with [`CutLimit::from_tier_cutoff`].
 #[must_use]
 pub fn plan_preview(
     design: &Design,
@@ -277,13 +439,40 @@ pub fn plan_preview(
     clock: &dyn Clock,
     tier_cutoff: Option<usize>,
 ) -> PreviewPlan {
+    plan_preview_limited(
+        design,
+        last_solved,
+        dirty,
+        budget,
+        solver,
+        clock,
+        CutLimit::from_tier_cutoff(tier_cutoff),
+    )
+}
+
+/// [`plan_preview`] with the full [`CutLimit`] vocabulary: the desktop's Cut slider
+/// asks for "the stone after k cutting steps" ([`CutLimit::Steps`], `0` being the
+/// rough), which `tier_cutoff` cannot say.
+///
+/// Whatever the limit, `solved` in the result is the newest solve of the WHOLE design
+/// (never truncated), so the next edit still has masts to diff against.
+#[must_use]
+pub fn plan_preview_limited(
+    design: &Design,
+    last_solved: Option<&[SolvedTier]>,
+    dirty: &BTreeSet<usize>,
+    budget: Duration,
+    solver: &dyn DirtySolver,
+    clock: &dyn Clock,
+    limit: CutLimit,
+) -> PreviewPlan {
     if design
         .tiers
         .iter()
         .all(|tier| matches!(tier.constraint, MeetConstraint::ScaleReference(_)))
     {
         let solved = masts_from_pinned_tiers(design);
-        let planes = narrow_planes(planes_for_display(design, &solved, tier_cutoff));
+        let planes = narrow_planes(planes_for_display(design, &solved, limit));
         return PreviewPlan {
             planes,
             solved: Some(solved),
@@ -298,7 +487,7 @@ pub fn plan_preview(
     let Some(previous) = aligned_previous else {
         return match design.solve() {
             Ok(solved) => {
-                let planes = narrow_planes(planes_for_display(design, &solved, tier_cutoff));
+                let planes = narrow_planes(planes_for_display(design, &solved, limit));
                 PreviewPlan {
                     planes,
                     solved: Some(solved),
@@ -306,9 +495,17 @@ pub fn plan_preview(
                 }
             }
             Err(err) => {
-                let planes = last_solved.map_or_else(Vec::new, |previous| {
-                    narrow_planes(planes_for_display(design, previous, tier_cutoff))
-                });
+                // `last_solved` is `None` or misaligned here (an aligned one took the
+                // dirty-subgraph path above), so it cannot describe this design's tiers.
+                // `planes_for_display` draws nothing for it instead of panicking, which
+                // used to kill the plan worker and freeze the view until a restart; the
+                // renderer then keeps its last closed stone, dimmed, under the status.
+                // The rough needs no masts, so it is still drawn.
+                let planes = narrow_planes(planes_for_display(
+                    design,
+                    last_solved.unwrap_or(&[]),
+                    limit,
+                ));
                 PreviewPlan {
                     planes,
                     solved: None,
@@ -324,7 +521,7 @@ pub fn plan_preview(
 
     match result {
         Ok(new_solved) if elapsed <= budget => {
-            let planes = narrow_planes(planes_for_display(design, &new_solved, tier_cutoff));
+            let planes = narrow_planes(planes_for_display(design, &new_solved, limit));
             PreviewPlan {
                 planes,
                 solved: Some(new_solved),
@@ -334,7 +531,7 @@ pub fn plan_preview(
         Ok(new_solved) => {
             // Over budget: show the OLD planes, but chain the fresh (late) result
             // forward as the next call's `last_solved`.
-            let planes = narrow_planes(planes_for_display(design, previous, tier_cutoff));
+            let planes = narrow_planes(planes_for_display(design, previous, limit));
             PreviewPlan {
                 planes,
                 solved: Some(new_solved),
@@ -344,7 +541,7 @@ pub fn plan_preview(
             }
         }
         Err(err) => {
-            let planes = narrow_planes(planes_for_display(design, previous, tier_cutoff));
+            let planes = narrow_planes(planes_for_display(design, previous, limit));
             PreviewPlan {
                 planes,
                 solved: None,
@@ -355,424 +552,4 @@ pub fn plan_preview(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    // Only `crackotto_step_design` (below) needs these, and it is itself
-    // `#[cfg(not(target_arch = "wasm32"))]`.
-    #[cfg(not(target_arch = "wasm32"))]
-    use indicatrix::geometry::meet_solver::{Block, classify_blocks, meet_tier_inputs_from_asc};
-    use indicatrix_cut_core::{ConstraintTier, PreformSpec, ScheduleMeta};
-    use std::cell::Cell;
-
-    /// Always reports `0.0` -- for every test whose branch never reaches the
-    /// [`DirtySolver`] call at all (so the clock value is irrelevant), plus the
-    /// "resolves within budget" case (`elapsed` is then always `0 <= budget`).
-    struct ZeroClock;
-
-    impl Clock for ZeroClock {
-        fn now_ms(&self) -> f64 {
-            0.0
-        }
-    }
-
-    /// Reports `0.0` on its first call and `after_ms` on every call after --
-    /// simulates a slow [`DirtySolver::resolve_dirty`] without a real
-    /// `std::thread::sleep` (this crate must stay thread-free; see the crate
-    /// README). [`plan_preview`] reads the clock exactly once immediately before
-    /// and once immediately after the solver call, so two canned readings are
-    /// exactly what it needs.
-    struct JumpClock {
-        calls: Cell<u32>,
-        after_ms: f64,
-    }
-
-    impl JumpClock {
-        const fn new(after_ms: f64) -> Self {
-            Self {
-                calls: Cell::new(0),
-                after_ms,
-            }
-        }
-    }
-
-    impl Clock for JumpClock {
-        fn now_ms(&self) -> f64 {
-            let call = self.calls.get();
-            self.calls.set(call + 1);
-            if call == 0 { 0.0 } else { self.after_ms }
-        }
-    }
-
-    /// Proves a branch of [`plan_preview`] never falls through to `resolve_dirty`.
-    struct PanicSolver;
-
-    impl DirtySolver for PanicSolver {
-        fn resolve_dirty(
-            &self,
-            _design: &Design,
-            _previous: &[SolvedTier],
-            _dirty: &BTreeSet<usize>,
-        ) -> Result<Vec<SolvedTier>, DesignSolveError> {
-            panic!("DirtySolver::resolve_dirty must not be called on this branch");
-        }
-    }
-
-    /// Returns `result` immediately -- the "resolve finished" case, paired with
-    /// either [`ZeroClock`] (within budget) or [`JumpClock`] (over budget).
-    struct InstantSolver {
-        result: Vec<SolvedTier>,
-    }
-
-    impl DirtySolver for InstantSolver {
-        fn resolve_dirty(
-            &self,
-            _design: &Design,
-            _previous: &[SolvedTier],
-            _dirty: &BTreeSet<usize>,
-        ) -> Result<Vec<SolvedTier>, DesignSolveError> {
-            Ok(self.result.clone())
-        }
-    }
-
-    fn tier(name: &str, angle_deg: f64, constraint: MeetConstraint) -> ConstraintTier {
-        ConstraintTier {
-            angle_deg,
-            name: name.to_string(),
-            indices: vec![0.0],
-            constraint,
-            imported_meet: None,
-            original_notes: None,
-            detached: Vec::new(),
-        }
-    }
-
-    fn pinned_design() -> Design {
-        Design::new(
-            PreformSpec::block(1.0, 1.0, 1.0),
-            ScheduleMeta {
-                gear_teeth: 96,
-                ..ScheduleMeta::default()
-            },
-            vec![tier("Table", 0.0, MeetConstraint::ScaleReference(0.5))],
-        )
-    }
-
-    /// One anchored (`ScaleReference`) tier plus one free (`MeetExisting`) tier in the
-    /// same block, just enough real structure for `Design::solve()` to succeed.
-    fn free_design() -> Design {
-        Design::new(
-            PreformSpec::block(2.0, 1.0, 2.0),
-            ScheduleMeta {
-                gear_teeth: 96,
-                ..ScheduleMeta::default()
-            },
-            vec![
-                tier("C1", 30.0, MeetConstraint::ScaleReference(0.6)),
-                tier("C2", 40.0, MeetConstraint::MeetExisting),
-            ],
-        )
-    }
-
-    #[test]
-    fn pinned_only_design_never_calls_the_solver() {
-        let design = pinned_design();
-        let plan = plan_preview(
-            &design,
-            None,
-            &BTreeSet::new(),
-            DEFAULT_PREVIEW_BUDGET,
-            &PanicSolver,
-            &ZeroClock,
-            None,
-        );
-        assert_eq!(plan.freshness, Freshness::Pinned);
-        assert_ne!(plan.planes, [] as [(Vec3, f32); 0]);
-        assert_eq!(plan.solved.map(|s| s.len()), Some(1));
-    }
-
-    #[test]
-    fn cheap_free_design_resolves_fresh_within_budget() {
-        let design = free_design();
-        let previous = design.solve().expect("fixture must solve");
-        let solver = InstantSolver {
-            result: previous.clone(),
-        };
-        let dirty = BTreeSet::from([1]);
-
-        let plan = plan_preview(
-            &design,
-            Some(&previous),
-            &dirty,
-            Duration::from_millis(50),
-            &solver,
-            &ZeroClock,
-            None,
-        );
-        assert_eq!(plan.freshness, Freshness::Fresh);
-        assert!(plan.solved.is_some());
-        assert_ne!(plan.planes, [] as [(Vec3, f32); 0]);
-    }
-
-    #[test]
-    fn over_budget_solver_reports_stale_with_the_edited_tier_pending() {
-        let design = free_design();
-        let previous = design.solve().expect("fixture must solve");
-        let solver = InstantSolver {
-            result: previous.clone(),
-        };
-        let dirty = BTreeSet::from([1]);
-        let budget = Duration::from_millis(5);
-
-        let plan = plan_preview(
-            &design,
-            Some(&previous),
-            &dirty,
-            budget,
-            &solver,
-            &JumpClock::new(40.0),
-            None,
-        );
-        match plan.freshness {
-            Freshness::Stale { pending } => assert_eq!(pending, dirty),
-            other => panic!("expected Stale, got {other:?}"),
-        }
-        assert!(
-            plan.solved.is_some(),
-            "the fresh (late) result must still be chained forward as the next \
-             call's last_solved, even though this frame reports Stale"
-        );
-    }
-
-    #[test]
-    fn misaligned_previous_falls_back_to_a_full_solve() {
-        let design = free_design();
-        // Wrong length: stands in for a `last_solved` left over from before an
-        // `AddTier`/`RemoveTier` edit.
-        let stale_previous: Vec<SolvedTier> = Vec::new();
-        let dirty = BTreeSet::from([1]);
-
-        let plan = plan_preview(
-            &design,
-            Some(&stale_previous),
-            &dirty,
-            DEFAULT_PREVIEW_BUDGET,
-            &PanicSolver,
-            &ZeroClock,
-            None,
-        );
-        assert_eq!(plan.freshness, Freshness::Fresh);
-        assert_eq!(plan.solved.map(|s| s.len()), Some(design.tiers.len()));
-    }
-
-    #[test]
-    fn no_previous_at_all_also_falls_back_to_a_full_solve() {
-        let design = free_design();
-        let plan = plan_preview(
-            &design,
-            None,
-            &BTreeSet::new(),
-            DEFAULT_PREVIEW_BUDGET,
-            &PanicSolver,
-            &ZeroClock,
-            None,
-        );
-        assert_eq!(plan.freshness, Freshness::Fresh);
-        assert!(plan.solved.is_some());
-    }
-
-    /// A `Some` tier cutoff must actually shrink the drawn arrangement (via
-    /// `Design::planes_through_tier`) relative to the same design's uncut
-    /// `plan_preview` result, not just pass through as a no-op.
-    #[test]
-    fn tier_cutoff_truncates_the_drawn_plane_arrangement() {
-        let design = free_design();
-        let full = plan_preview(
-            &design,
-            None,
-            &BTreeSet::new(),
-            DEFAULT_PREVIEW_BUDGET,
-            &PanicSolver,
-            &ZeroClock,
-            None,
-        );
-        let truncated = plan_preview(
-            &design,
-            None,
-            &BTreeSet::new(),
-            DEFAULT_PREVIEW_BUDGET,
-            &PanicSolver,
-            &ZeroClock,
-            Some(0),
-        );
-        assert_eq!(full.freshness, Freshness::Fresh);
-        assert_eq!(truncated.freshness, Freshness::Fresh);
-        assert!(
-            truncated.planes.len() < full.planes.len(),
-            "cutting off after tier 0 must drop tier 1's own facet(s) from the drawn \
-             arrangement: full={}, truncated={}",
-            full.planes.len(),
-            truncated.planes.len()
-        );
-    }
-
-    /// A cutoff at or past the last tier index must reproduce the full arrangement
-    /// exactly -- `Design::planes_through_tier`'s own documented "every tier"
-    /// equivalence for `through_tier >= tiers.len()`, but exercised here through
-    /// `plan_preview`'s own entry point rather than the core function directly.
-    /// Uses `design.tiers.len()` itself (not `usize::MAX`) -- `planes_through_tier`
-    /// computes `through_tier + 1` internally, which would overflow for `MAX`.
-    #[test]
-    fn tier_cutoff_past_the_last_tier_matches_the_full_arrangement() {
-        let design = free_design();
-        let full = plan_preview(
-            &design,
-            None,
-            &BTreeSet::new(),
-            DEFAULT_PREVIEW_BUDGET,
-            &PanicSolver,
-            &ZeroClock,
-            None,
-        );
-        let uncut = plan_preview(
-            &design,
-            None,
-            &BTreeSet::new(),
-            DEFAULT_PREVIEW_BUDGET,
-            &PanicSolver,
-            &ZeroClock,
-            Some(design.tiers.len()),
-        );
-        assert_eq!(full.planes.len(), uncut.planes.len());
-    }
-
-    /// A design stored crown-first, with a pavilion groove: the slider must follow
-    /// cutting order for the planes as well as the tools. Stored-prefix truncation kept
-    /// only the crown tier's planes, so the pavilion groove was carved into a stone with
-    /// no pavilion.
-    #[test]
-    fn concave_tier_cutoff_follows_cutting_order_for_the_planes() {
-        let mut design = Design::concave_fixture();
-        // Stored: C40, C32, P-38, P-42, G90; cut: P-38, P-42, G90, (Groove), C40, C32, ...
-        design.tiers.reverse();
-        let uncut = plan_preview(
-            &design,
-            None,
-            &BTreeSet::new(),
-            DEFAULT_PREVIEW_BUDGET,
-            &PanicSolver,
-            &ZeroClock,
-            None,
-        );
-        let cut = plan_preview(
-            &design,
-            None,
-            &BTreeSet::new(),
-            DEFAULT_PREVIEW_BUDGET,
-            &PanicSolver,
-            &ZeroClock,
-            Some(0),
-        );
-        assert!(cut.solved.is_some());
-        assert_eq!(
-            visible_flat_tiers(&design, 0),
-            [true, false, true, true, true],
-            "everything cut before the stored-first crown tier, and that tier"
-        );
-        // Only the second crown tier (stored 1, four facets) is hidden.
-        assert_eq!(cut.planes.len() + 4, uncut.planes.len());
-    }
-
-    /// `indicatrix-cut-core`'s "CrackOtto-Step" fixture (PC 05.115, 103 tiers), re-authored
-    /// as a full [`Design`] rather than raw planes: every tier is implicit
-    /// `MeetExisting`, so one `ScaleReference` anchor is bootstrapped per
-    /// crown/pavilion/girdle block from that tier's real recorded mast, leaving the
-    /// rest genuinely free.
-    ///
-    /// `#[cfg(not(target_arch = "wasm32"))]`: its only caller
-    /// (`timing_resolve_dirty_on_crackotto_step_103_tier`) is gated the same way.
-    #[cfg(not(target_arch = "wasm32"))]
-    const CRACKOTTO_STEP_ASC: &str =
-        include_str!("../../indicatrix-cut-core/src/optimize_cost_probe_crackotto_step.asc");
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn crackotto_step_design() -> Design {
-        let schedule =
-            indicatrix_formats::asc::parse_asc(CRACKOTTO_STEP_ASC).expect("fixture must parse");
-        let mut inputs = meet_tier_inputs_from_asc(&schedule);
-        let blocks = classify_blocks(&inputs);
-        for block in [Block::Crown, Block::Pavilion, Block::Girdle] {
-            let anchored = inputs.iter().zip(&blocks).any(|(t, &b)| {
-                b == block && matches!(t.constraint, MeetConstraint::ScaleReference(_))
-            });
-            if anchored {
-                continue;
-            }
-            if let Some(i) = (0..inputs.len()).find(|&i| blocks[i] == block) {
-                inputs[i].constraint = MeetConstraint::ScaleReference(schedule.tiers[i].mast);
-            }
-        }
-        let tiers = inputs
-            .into_iter()
-            .zip(&schedule.tiers)
-            .map(|(input, original)| ConstraintTier {
-                angle_deg: input.angle_deg,
-                name: original.name.clone(),
-                indices: input.indices,
-                constraint: input.constraint,
-                imported_meet: None,
-                original_notes: None,
-                detached: Vec::new(),
-            })
-            .collect();
-        Design::new(
-            PreformSpec::block(2.0, 1.0, 2.0),
-            ScheduleMeta {
-                gemcad_version: schedule.gemcad_version.clone(),
-                gear_teeth: schedule.gear_teeth,
-                gear_reference_angle: schedule.gear_reference_angle,
-                symmetry_order: schedule.symmetry_order,
-                mirror: schedule.mirror,
-                refractive_index: schedule.refractive_index,
-                headers: schedule.headers.clone(),
-                footnotes: schedule.footnotes,
-            },
-            tiers,
-        )
-    }
-
-    /// `std::time::Instant`-based perf measurement, not a correctness check --
-    /// `#[cfg(not(target_arch = "wasm32"))]` (on top of `#[ignore]`) rather than an
-    /// injected [`Clock`], since this one measures `Design::resolve_dirty` directly
-    /// (bypassing `plan_preview`) and a canned `Clock` would defeat the point of a
-    /// real timing. See the crate README for why `wasm32-unknown-unknown` must
-    /// never see `Instant::now` even in a test that never runs there.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    #[ignore = "timing measurement, not a correctness check -- run with \
-                --release --ignored --nocapture"]
-    fn timing_resolve_dirty_on_crackotto_step_103_tier() {
-        let design = crackotto_step_design();
-        assert_eq!(
-            design.tiers.len(),
-            103,
-            "fixture must have its real tier count"
-        );
-        let baseline = design.solve().expect("must solve to get a starting point");
-
-        let mut edited = design;
-        edited.tiers[20].angle_deg += 0.5;
-        let dirty = BTreeSet::from([20]);
-
-        let start = std::time::Instant::now();
-        let result = edited
-            .resolve_dirty(&baseline, &dirty)
-            .expect("subgraph resolve");
-        let elapsed = start.elapsed();
-        assert_eq!(result.len(), 103);
-
-        println!(
-            "CrackOtto-Step (103 tiers): resolve_dirty for a single-tier edit: {elapsed:?} \
-             (DEFAULT_PREVIEW_BUDGET = {DEFAULT_PREVIEW_BUDGET:?})"
-        );
-    }
-}
+mod tests;

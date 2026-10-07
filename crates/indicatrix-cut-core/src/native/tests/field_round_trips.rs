@@ -238,6 +238,45 @@ fn body_color_override_round_trips_through_save_and_load() {
     assert_eq!(loaded.design.material, design.material);
 }
 
+/// A sidecar written with the old British key (`body_colour_override`, builds from
+/// 2026-09-28) must still give the design its body colour, and saving it again writes
+/// the current key only.
+#[test]
+fn a_sidecar_with_the_old_body_colour_spelling_still_applies_it() {
+    let mut design = simple_design();
+    let yellow = [0.2f32, 0.4, 2.8];
+    design.material = design.material.clone().with_body_color(Some(yellow));
+    let native = to_native_file(
+        &design,
+        "design.asc",
+        SIMPLE_ASC.as_bytes(),
+        None,
+        &SaveExtras::default(),
+    );
+    let current = to_toml_string(&native).expect("must serialize");
+    let old = current.replacen("body_color_override", "body_colour_override", 1);
+    assert_ne!(old, current);
+
+    let loaded = load_paired(SIMPLE_ASC, &old, false).expect("an old sidecar must load");
+    let got = loaded
+        .design
+        .material
+        .body_color_override
+        .expect("the old key must still apply");
+    assert_eq!(got.map(f32::to_bits), yellow.map(f32::to_bits));
+
+    let again = to_toml_string(&to_native_file(
+        &loaded.design,
+        "design.asc",
+        SIMPLE_ASC.as_bytes(),
+        None,
+        &SaveExtras::default(),
+    ))
+    .expect("must serialize");
+    assert_eq!(again.matches("body_color_override").count(), 1);
+    assert!(!again.contains("body_colour"));
+}
+
 /// A design with no override writes no `body_color_override` key at all, and such
 /// a file -- exactly what every sidecar written before the field existed looks
 /// like -- loads back as `None`.

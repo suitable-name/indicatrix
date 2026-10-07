@@ -32,19 +32,28 @@ fn sample_light_tent(
     sin_lp: f32,
     light_yaw: f32,
     observer: vec3<f32>,
+    shadow: vec2<f32>,
+    tent: vec4<f32>,
+    tent_flat: f32,
 ) -> f32 {
+    // `tent` = (walls, cards, spark, ground) = `TentParams`: exact identities at the light
+    // tent's own values (x * 1.0, and the ground literal 0.02), see the CPU twin.
+    // `tent_flat` blends the wall gradient towards its 30-degree value (0 = skipped).
     let horizon = horizon_blend(d);
-    var walls = fma(0.08, max(d.y, 0.0), 0.14);
+    var walls = fma(0.08, max(d.y, 0.0), 0.14) * tent.x;
+    if (tent_flat > 0.0) {
+        walls = fma(0.18 * tent.x, tent_flat, walls * (1.0 - tent_flat));
+    }
     var card: f32 = 0.0;
     for (var slot: u32 = 4u; slot < RING_LIGHT_COUNT; slot = slot + 4u) {
         let card_dir = studio_rig_ring_dir(slot, light_yaw, sin_lp);
         card = max(card, smoothstep_f32(CARD_OUTER_COS, CARD_INNER_COS, dot(d, card_dir)));
     }
-    walls = walls * fma(card, -0.9, 1.0);
+    walls = walls * fma(card * tent.y, -0.9, 1.0);
     let key = smoothstep_f32(TENT_KEY_OUTER_COS, TENT_KEY_INNER_COS, dot(d, key_dir)) * (1.4 * spot_mult);
-    let spark = smoothstep_f32(SPARK_OUTER_COS, SPARK_INNER_COS, dot(d, fill_dir)) * (5.0 * spot_mult);
-    let above = ((walls + key) + spark) * (horizon * observer_visibility(d, observer));
-    let ground = 0.02 * (1.0 - horizon);
+    let spark = smoothstep_f32(SPARK_OUTER_COS, SPARK_INNER_COS, dot(d, fill_dir)) * (5.0 * spot_mult) * tent.z;
+    let above = ((walls + key) + spark) * (horizon * observer_visibility(d, observer, shadow));
+    let ground = tent.w * (1.0 - horizon);
     return (above + ground) * (spec_power * exposure);
 }
 
@@ -97,16 +106,25 @@ fn studio_dispatch(
     sin_lp: f32,
     light_yaw: f32,
     observer: vec3<f32>,
+    shadow: vec2<f32>,
+    tent: vec4<f32>,
+    tent_flat: f32,
 ) -> f32 {
     switch (model) {
         case 1u: {
-            return sample_iso_hemisphere(d, spec_power, exposure, observer);
+            return sample_iso_hemisphere(d, spec_power, exposure, observer, shadow);
         }
         case 2u: {
-            return sample_light_tent(d, spec_power, spot_mult, exposure, key_dir, fill_dir, sin_lp, light_yaw, observer);
+            return sample_light_tent(d, spec_power, spot_mult, exposure, key_dir, fill_dir, sin_lp, light_yaw, observer, shadow, tent, tent_flat);
         }
         case 3u: {
-            return sample_daylight_dome(d, spec_power, exposure, key_dir, observer);
+            return sample_daylight_dome(d, spec_power, exposure, key_dir, observer, shadow);
+        }
+        case 4u: {
+            return aset_radiance(d, spec_power, exposure, key_dir, observer, shadow);
+        }
+        case 5u: {
+            return daylight_sun_radiance(d, spec_power, exposure, key_dir, observer, shadow);
         }
         default: {
             return sample_studio_rig(d, spec_power, spot_mult, exposure, key_dir, fill_dir, sin_lp, light_yaw);
@@ -137,7 +155,11 @@ fn sample_studio_environment_with_rig(
     observer: vec3<f32>,
 ) -> f32 {
     let d = normalize(dir_in);
-    let spec_power = studio_spectral_power(lambda_nm);
+    var spec_power = studio_spectral_power(lambda_nm);
+    if (params.studio_model == 4u) {
+        // The ASET model reads the wavelength itself (`rig::aset_spec_input`).
+        spec_power = lambda_nm;
+    }
 
     return studio_dispatch(
         params.studio_model,
@@ -150,6 +172,9 @@ fn sample_studio_environment_with_rig(
         sin_lp,
         params.studio_light_yaw,
         observer,
+        vec2<f32>(params.head_shadow_outer_cos, params.head_shadow_inner_cos),
+        vec4<f32>(params.tent_walls, params.tent_cards, params.tent_spark, params.tent_ground),
+        params.tent_flat,
     );
 }
 

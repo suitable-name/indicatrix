@@ -210,6 +210,12 @@ fn nee_contribution_hg_scatter(
 // not an oversight: both call sites below are convex-polyhedron surface points sampled
 // into their own true-outward half-space, so the very next bounce is guaranteed to
 // escape directly with no intervening `path_pdf` update.
+//
+// Two light-sampling techniques share this body, mirroring `sample_environment_for_nee`:
+// the HDR map's importance distribution (`env_mode == 2u`) and the analytic sun of
+// `LightingModel::DaylightSun` (`env_mode == 1u`, `studio_model == 5u`: a direction uniform
+// over the 0.27 degree disc about `key_dir`, `pdf = 1 / SUN_SOLID_ANGLE`, radiance
+// `daylight_sun_factor * (spd * exposure)`). `key_dir` is only read for the sun.
 fn nee_contribution_frosted_exterior(
     lambdas: ptr<function, array<f32, 8>>,
     ext_normal: vec3<f32>,
@@ -217,29 +223,64 @@ fn nee_contribution_frosted_exterior(
     bounce: u32,
     stokes: ptr<function, array<vec4<f32>, 8>>,
     radiance: ptr<function, array<f32, 8>>,
+    key_dir: vec3<f32>,
 ) {
     let u0 = f32(hash_u32(rng_seed ^ hash_u32(bounce ^ FROSTED_NEE_ENV_DIR_U_STREAM))) / 4294967295.0;
     let u1 = f32(hash_u32(rng_seed ^ hash_u32(bounce ^ FROSTED_NEE_ENV_DIR_V_STREAM))) / 4294967295.0;
-    let sample = dist2d_sample(u0, u1);
-    if (sample.pdf <= 0.0) {
+    let sun_mode = params.env_mode != 2u;
+    var light_dir = vec3<f32>(0.0, 0.0, 0.0);
+    var light_pdf: f32 = 0.0;
+    var hdr_rgb = vec3<f32>(0.0, 0.0, 0.0);
+    if (sun_mode) {
+        light_dir = daylight_sun_cone_direction(key_dir, u0, u1);
+        light_pdf = 1.0 / SUN_SOLID_ANGLE;
+    } else {
+        let sample = dist2d_sample(u0, u1);
+        light_dir = sample.dir;
+        light_pdf = sample.pdf;
+        hdr_rgb = sample.rgb;
+    }
+    if (light_pdf <= 0.0) {
         return;
     }
 
-    let cos_light = dot(sample.dir, ext_normal);
+    let cos_light = dot(light_dir, ext_normal);
     if (cos_light <= 0.0) {
         return;
     }
 
     let brdf_pdf = cos_light / PI;
-    let mis_weight = balance_heuristic(sample.pdf, brdf_pdf);
+    let mis_weight = balance_heuristic(light_pdf, brdf_pdf);
     if (mis_weight <= 0.0) {
         return;
     }
 
-    let nee_common = brdf_pdf * mis_weight / sample.pdf;
+    let nee_common = brdf_pdf * mis_weight / light_pdf;
     for (var k: u32 = 0u; k < 8u; k = k + 1u) {
-        let env_k = rgb_to_spectral_radiance(sample.rgb.x, sample.rgb.y, sample.rgb.z, (*lambdas)[k]);
+        var env_k: f32;
+        if (sun_mode) {
+            env_k = daylight_sun_factor(key_dir) * (studio_spectral_power((*lambdas)[k]) * params.studio_exposure);
+        } else {
+            env_k = rgb_to_spectral_radiance(hdr_rgb.x, hdr_rgb.y, hdr_rgb.z, (*lambdas)[k]);
+        }
         (*radiance)[k] = fma((*stokes)[k].x * nee_common * env_k, 1.0, (*radiance)[k]);
     }
+}
+
+// Whether this scene offers a light-sampling technique at all: an HDR map, or the analytic
+// sun (`environment_supports_nee` on the CPU). Gates the frosted-exterior NEE and the
+// MIS weight of a frosted continuation's escape. The Henyey-Greenstein scattering NEE stays
+// HDR-only (`params.env_mode == 2u`), see `nee_contribution_hg_scatter`'s CPU twin.
+fn nee_light_available() -> bool {
+    return params.env_mode == 2u || (params.env_mode == 1u && params.studio_model == 5u);
+}
+
+// `environment_nee_pdf`: the light-sampling technique's solid-angle pdf at `dir` -- the HDR
+// distribution's, or `daylight_sun_nee_pdf`'s (zero outside the disc).
+fn nee_light_pdf(dir: vec3<f32>, key_dir: vec3<f32>) -> f32 {
+    if (params.env_mode == 2u) {
+        return dist2d_pdf(dir);
+    }
+    return daylight_sun_nee_pdf(normalize(dir), key_dir);
 }
 

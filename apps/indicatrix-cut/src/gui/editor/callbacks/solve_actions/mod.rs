@@ -183,6 +183,8 @@ pub(in crate::gui::editor) fn clear_analysis_results(ui: &MainWindow) {
             Vec::<crate::OptimizeChangeRow>::new(),
         )));
     ui.global::<EditorModel>().set_optimize_can_apply(false);
+    // The Optimize tab's candidate list and picked candidate described the old design too.
+    crate::gui::editor::optimize_panel::clear_results(ui);
     // A replaced design has no
     // Deep Solve/Optimize result of its own yet (`EditorState::
     // deep_solve_result_generation`/`pending_optimize` both reset to `None` by

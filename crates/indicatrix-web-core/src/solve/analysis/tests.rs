@@ -112,11 +112,16 @@ fn quartz() -> MaterialSelectionData {
     }
 }
 
-fn shift_params(crown_fraction: f64, scale_crown_by_ratio: bool) -> RetargetParams {
+fn shift_params(
+    crown_fraction: f64,
+    scale_crown_by_ratio: bool,
+    crown_follows_pavilion: bool,
+) -> RetargetParams {
     RetargetParams {
         target: quartz(),
         crown_fraction,
         scale_crown_by_ratio,
+        crown_follows_pavilion,
         mode: RetargetModeData::Shift,
         optimize: OptimizeParams::default(),
     }
@@ -140,9 +145,13 @@ fn retargeted(response: SolveResponse) -> RetargetResultData {
 
 #[test]
 fn the_default_params_are_the_desktops_default_config() {
+    // The web pins one lane (sequential wasm); that is the only intended difference from the desktop default.
     assert_eq!(
         OptimizeParams::default().config(),
-        OptimizeConfig::default()
+        OptimizeConfig {
+            max_lanes: 1,
+            ..OptimizeConfig::default()
+        }
     );
     let mut params = OptimizeParams {
         seed: 9,
@@ -226,8 +235,13 @@ fn shift_retarget_through_the_handler_equals_build_proposal_on_every_template() 
     for (i, template) in TEMPLATES.iter().enumerate() {
         let design = template_design(i as i32 + 1);
         let toml = design_to_toml(&design).expect("encodes");
-        for (fraction, ratio) in [(0.0, false), (0.5, false), (0.0, true)] {
-            let params = shift_params(fraction, ratio);
+        for (fraction, ratio, follow) in [
+            (0.0, false, false),
+            (0.5, false, false),
+            (0.0, true, false),
+            (0.0, false, true),
+        ] {
+            let params = shift_params(fraction, ratio, follow);
             let got = retargeted(handle_solve(
                 &toml,
                 &SolveRequest::Retarget {
@@ -240,6 +254,7 @@ fn shift_retarget_through_the_handler_equals_build_proposal_on_every_template() 
             let crown = CrownShift {
                 fraction,
                 scale_by_ratio: ratio,
+                follow_pavilion: follow,
             };
             let direct =
                 retarget::build_proposal(&design, &target, crown, RetargetMode::Shift, &[])
@@ -270,7 +285,7 @@ fn optimize_mode_retarget_refuses_anchored_tiers_exactly_like_the_desktop_view()
     let design = rbc_445();
     let params = RetargetParams {
         mode: RetargetModeData::Optimize,
-        ..shift_params(0.0, false)
+        ..shift_params(0.0, false, true)
     };
     let got = retargeted(no_hooks(|hooks| run_retarget(&design, &params, &[], hooks)));
 
@@ -416,7 +431,7 @@ fn an_optimize_mode_retarget_equals_build_proposal() {
             max_evaluations: 4,
             ..OptimizeParams::default()
         },
-        ..shift_params(0.0, false)
+        ..shift_params(0.0, false, true)
     };
     let got = retargeted(no_hooks(|hooks| run_retarget(&design, &params, &[], hooks)));
     let target = resolved_material_from_selection(&params.target.clone().into(), &[]);

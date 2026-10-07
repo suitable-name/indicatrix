@@ -1,0 +1,103 @@
+import { Theme } from "../../theme.slint";
+import { DesignLightingModel } from "../../models/design_lighting.slint";
+import { SettingLabel } from "setting_label.slint";
+
+// One wide button of the "Lighting for this design" group. `kind` 1 is the main action (the
+// dialog's cyan). Tab reaches it, Space or Enter presses it.
+component DesignLightingButton inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <int> kind: 0;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 28px;
+    border-radius: Theme.radius-sm;
+    background: !root.enabled
+        ? Theme.surface-disabled
+        : (root.kind == 1
+            ? (design_touch.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan)
+            : (design_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken));
+    border-width: design_focus.has-focus ? 2px : (root.kind == 1 ? 0px : 1px);
+    border-color: design_focus.has-focus ? Theme.accent-cyan-hover : Theme.border-dialog;
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.text;
+    accessible-description: root.hint;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    design_focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    Text {
+        text: root.text;
+        font-size: 11px;
+        font-weight: root.kind == 1 ? 700 : 600;
+        color: !root.enabled ? Theme.text-disabled : (root.kind == 1 ? Theme.text-on-accent : Theme.text-secondary);
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    design_touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
+    }
+}
+
+// "Lighting for this design": remembers the lighting you see now for the open design.
+// It is kept in the library on this computer, never in the design file. Opening the
+// design later shows it again; opening a design without saved lighting brings your
+// normal lighting back. The group explains itself while no design is open, which is
+// also why the button is greyed out then.
+//
+// It applies when the design is opened in the Edit tab. A catalogue row browsed in the Live
+// Render view is only previewed, under the lighting you have set (manual, chapter 9).
+export component DesignLightingSection inherits VerticalLayout {
+    spacing: 6px;
+    padding-top: 8px;
+
+    SettingLabel {
+        text: "Lighting for this design";
+        hint: "Remember this lighting for the open design. It is kept in your library on this computer, not in the design file. It comes back when you open the design in the Edit tab, not while you only browse it in the catalogue.";
+    }
+
+    Text {
+        text: !DesignLightingModel.available ? "Open or create a design to save lighting for it." : (DesignLightingModel.has_saved ? DesignLightingModel.summary : "Nothing saved. This design uses your normal lighting.");
+        font-size: 11px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+
+    DesignLightingButton {
+        kind: 1;
+        text: "Use this lighting for this design";
+        hint: DesignLightingModel.available
+            ? "Save the lighting you see now (light, exposure, glare, backdrop and environment map) for this design. Saving again replaces it."
+            : "Open or create a design first.";
+        enabled: DesignLightingModel.available;
+        clicked => { DesignLightingModel.use_for_design(); }
+    }
+
+    if DesignLightingModel.has_saved: DesignLightingButton {
+        text: "Forget for this design";
+        hint: "Remove this design's saved lighting and go back to your normal lighting.";
+        clicked => { DesignLightingModel.forget_for_design(); }
+    }
+}

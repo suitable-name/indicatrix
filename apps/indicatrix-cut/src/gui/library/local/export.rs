@@ -31,22 +31,18 @@ fn concave_export_notice(
 
 /// `full`'s schedule rows split for a reconstructed `.asc`: the flat rows (the tier
 /// list) and one footnote pair per concave row, in the shape
-/// `Design::append_concave_footnotes` writes (facet line, then the tool line). Without
-/// the split a concave row would be written as a flat tier with a placeholder mast, a
-/// facet the stone does not have.
+/// `Design::append_concave_footnotes` writes (facet line, then the tool line; ASCII, each
+/// ending in the concave-footnote marker). Without the split a concave row would be written
+/// as a flat tier with a placeholder mast, a facet the stone does not have.
+///
+/// The lines come from cut-core's own footnote writer, so the shape is defined in one place.
 fn split_concave_rows(
     full: &indicatrix_vault::model::entry::FullDiagramRecord,
 ) -> (
     Vec<indicatrix_vault::model::angle::AngleSetting>,
     Vec<String>,
 ) {
-    let single_line = |text: &str| -> String {
-        text.split(['\r', '\n'])
-            .collect::<Vec<_>>()
-            .join(" ")
-            .trim()
-            .to_owned()
-    };
+    use indicatrix_cut_core::design::{concave_facet_footnote, concave_tool_footnote};
     let mut flat = Vec::with_capacity(full.angle_settings.len());
     let mut footnotes = Vec::new();
     for row in &full.angle_settings {
@@ -54,12 +50,11 @@ fn split_concave_rows(
             flat.push(row.clone());
             continue;
         }
-        footnotes.push(single_line(&format!(
-            "{}  {}  {}  {}",
-            row.facet, row.angle, row.index, row.notes
-        )));
+        footnotes.push(concave_facet_footnote(
+            &row.facet, &row.angle, &row.index, &row.notes,
+        ));
         if let Some(line) = &row.tool_line {
-            footnotes.push(single_line(line));
+            footnotes.push(concave_tool_footnote(line));
         }
     }
     (flat, footnotes)
@@ -593,7 +588,72 @@ pub fn sanitize_filename(title: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use indicatrix_vault::model::{entry::FullDiagramRecord, file::AttachedFile};
+    use indicatrix_vault::model::{
+        angle::AngleSetting, entry::FullDiagramRecord, file::AttachedFile,
+    };
+
+    /// One stored schedule row; a concave row carries a tool name and its tool line.
+    fn schedule_row(
+        order_index: u32,
+        facet: &str,
+        angle: &str,
+        index: &str,
+        notes: &str,
+        tool: Option<(&str, Option<&str>)>,
+    ) -> AngleSetting {
+        AngleSetting {
+            order_index,
+            facet: facet.to_string(),
+            angle: angle.to_string(),
+            index: index.to_string(),
+            notes: notes.to_string(),
+            tool: tool.map(|(name, _)| name.to_string()),
+            tool_line: tool.and_then(|(_, line)| line).map(str::to_string),
+        }
+    }
+
+    /// The reconstructed `.asc` keeps a concave row as the two footnote lines the editor's
+    /// export writes (the same lines `Design::append_concave_footnotes` pins in cut-core's own
+    /// tests), and leaves the flat rows as tiers.
+    #[test]
+    fn concave_rows_become_the_footnote_pair_the_editor_export_writes() {
+        let mut full = record_with(Vec::new());
+        full.angle_settings = vec![
+            schedule_row(0, "P1", "41.00", "3", "", None),
+            schedule_row(
+                1,
+                "Groove",
+                "-62.00",
+                "3 11.50 19",
+                "cut to depth",
+                Some((
+                    "Cylinder",
+                    Some(
+                        "CYL  +90.00°  X = 0.000, Y = 0.120, Z = 0.050  D/W = 0.250, reciprocating",
+                    ),
+                )),
+            ),
+            // No instructions and no stored tool line: one footnote, no trailing spaces.
+            schedule_row(2, "Pit", "40.00", "0", "", Some(("Cone", None))),
+            // A line break in the notes must not reach the file.
+            schedule_row(3, "Notch", "12.00", "5", "by\r\nhand", Some(("Ball", None))),
+        ];
+        let (flat, footnotes) = split_concave_rows(&full);
+        assert_eq!(flat.len(), 1);
+        assert_eq!(flat[0].facet, "P1");
+        assert_eq!(
+            footnotes,
+            vec![
+                "Groove  -62.00  3 11.50 19  cut to depth  [concave tier]".to_string(),
+                "CYL  +90.00 deg  X = 0.000, Y = 0.120, Z = 0.050  D/W = 0.250, reciprocating  \
+                 [concave tier]"
+                    .to_string(),
+                "Pit  40.00  0  [concave tier]".to_string(),
+                "Notch  12.00  5  by  hand  [concave tier]".to_string(),
+            ]
+        );
+        assert!(footnotes.iter().all(|line| line.is_ascii()));
+    }
 
     #[test]
     fn sanitize_filename_replaces_reserved_characters() {

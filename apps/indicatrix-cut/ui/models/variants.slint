@@ -1,0 +1,95 @@
+// The Inspector's Variants view (a sub-view of the History tab): named copies of the open
+// design that live in the local library, keyed by the design's id, never in the design file.
+// The Rust side is `gui::editor::variants`; the view itself is
+// `components/editor_inspector/variants_section.slint`.
+
+// One saved variant. `key` is its id in the library, as text: every callback that names a
+// variant passes it back, so a row that was deleted in the meantime is told apart from a
+// stale position.
+export struct VariantRowData {
+    key: string,
+    name: string,
+    // The cutter's note; empty when there is none.
+    note: string,
+    // "12 minutes ago" or a date.
+    age: string,
+    // The exact time, for the hover text.
+    exact: string,
+    // "from: Variant 2"; empty for a variant made from nothing.
+    parent: string,
+    // New variants are saved as made from this one.
+    opened_from: bool,
+    picture: image,
+    has_picture: bool,
+}
+
+// One line of the text comparison. `kind` is 0 for a line in both texts, 1 for a line only
+// the second design has (added), 2 for a line only the first design has (removed) and 3 for
+// a run of unchanged lines folded away (its `text` says how many). The line numbers are
+// empty where the line is not in that text, so the kinds can be told apart without colour.
+export struct VariantDiffRow {
+    kind: int,
+    old_line: string,
+    new_line: string,
+    text: string,
+}
+
+export global VariantsModel {
+    // What the History tab shows: 0 the list of steps, 1 the variants.
+    in-out property <int> view: 0;
+    // A real design is open (not the empty start-up placeholder), so variants can be saved.
+    in property <bool> design_open: false;
+    // The list for the open design has been read at least once.
+    in property <bool> loaded: false;
+    // A save, rename, delete or open is being worked out in the background.
+    in property <bool> busy: false;
+    // Why the list could not be read; empty when it could.
+    in property <string> list_error;
+    // The open design's variants, newest first.
+    in property <[VariantRowData]> rows;
+
+    // What can be compared: "Current design" first, then the variants, newest first.
+    in property <[string]> choices;
+    in-out property <int> compare_first: 0;
+    in-out property <int> compare_second: 1;
+
+    // The small form above the list. 0 closed, 1 save a new variant, 2 rename, 3 edit the
+    // note, 4 ask before deleting.
+    in property <int> form_mode: 0;
+    in property <string> form_title;
+    // One plain sentence under the title (what is being saved, or what will be deleted).
+    in property <string> form_hint;
+    // The label of the form's confirm button.
+    in property <string> form_ok;
+    // What is wrong with the text typed so far; empty when nothing is.
+    in property <string> form_error;
+    in-out property <string> form_name;
+    in-out property <string> form_note;
+
+    // The text comparison. `diff_open` swaps the variants for the comparison.
+    in-out property <bool> diff_open: false;
+    in property <bool> diff_busy: false;
+    in property <string> diff_title;
+    in property <string> diff_summary;
+    in property <[VariantDiffRow]> diff_rows;
+
+    // The list is on screen: read it again if it is out of date.
+    callback refresh();
+    // Opens the save form. -1 saves the design as it is now, 0 or more saves the design as
+    // it was at that history step (the History tab's row button, the palette).
+    callback begin_save(int);
+    // Open the rename, note and delete forms for the variant with this key.
+    callback begin_rename(string);
+    callback begin_note(string);
+    callback begin_delete(string);
+    // The form's confirm button, and its cancel button.
+    callback submit_form();
+    callback cancel_form();
+    // Replaces the open design with the variant (one undo step).
+    callback open_variant(string);
+    // Compare the two chosen designs: as pictures in the compare window, or as text.
+    callback compare_pictures();
+    callback compare_text();
+    // Leaves the text comparison.
+    callback close_diff();
+}

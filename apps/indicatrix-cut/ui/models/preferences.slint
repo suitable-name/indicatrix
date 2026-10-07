@@ -1,0 +1,44 @@
+// App-wide preferences: the Simple/Advanced switch, the UI scale, high contrast and
+// larger drag handles, plus the tutorial reset actions. Rust seeds these from the
+// settings file at start-up and persists every change
+// (`gui::preferences`, `AppSettings::{ui_mode, ui_scale_percent, high_contrast,
+// large_handles, first_run_tour_done, tutorials_completed}`).
+//
+// Other components read `PreferencesModel.simple_mode` to hide the controls most designs
+// do not need. The Preferences dialog (`components/preferences_dialog.slint`, Edit >
+// Preferences..., Ctrl+Comma) and the header's "Simple | Advanced" pill both write it.
+export global PreferencesModel {
+    // `true` shows only the controls most designs need; `false` shows every control.
+    in-out property <bool> simple_mode: false;
+    // The chosen UI scale in percent: `0` follows the operating system (Automatic), else
+    // one of 75, 90, 100, 110, 125, 150, 175, 200. Applied at the next start.
+    in-out property <int> ui_scale_percent: 0;
+    // The labels of the scale combo ("Automatic", "75 %", ...), pushed from Rust so the
+    // list lives next to the rule that validates it.
+    in property <[string]> ui_scale_options: [];
+    // Which of `ui_scale_options` is chosen; Rust keeps it in step with `ui_scale_percent`.
+    in-out property <int> ui_scale_index: 0;
+    // The high-contrast palette (`Theme.high-contrast`, set per window by Rust).
+    in-out property <bool> high_contrast: false;
+    // Larger drag handles and hit areas on the Solid viewport (touch screens and pens).
+    in-out property <bool> large_handles: false;
+    // `true` while the welcome tour is due to run (a brand-new install, or "Show the
+    // welcome tour again"). The tour itself reads this flag and clears it.
+    in-out property <bool> first_run_tour_pending: false;
+    // Whether the Preferences dialog is open.
+    in-out property <bool> dialog_open: false;
+
+    // The Simple | Advanced pill or the dialog changed `simple_mode` (it already holds the
+    // new value).
+    callback simple_mode_changed(bool);
+    // The scale combo picked `ui_scale_options[index]`.
+    callback ui_scale_changed(int);
+    // The High contrast toggle changed (`high_contrast` already holds the new value).
+    callback high_contrast_changed(bool);
+    // The Larger handles toggle changed (`large_handles` already holds the new value).
+    callback large_handles_changed(bool);
+    // "Reset tutorial progress": forget every finished tutorial.
+    callback reset_tutorials();
+    // "Show the welcome tour again".
+    callback show_tour_again();
+}

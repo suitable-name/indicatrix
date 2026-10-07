@@ -51,6 +51,10 @@ pub struct TierRow {
     pub angle_full: String,
     /// The tier's name.
     pub name: String,
+    /// The tier's code in cutting order (`P1`, `G1`, `C1`, `T`, `Culet`, a concave tier's
+    /// `P4`; see `indicatrix_cut_core::Design::tier_codes`) -- what the table's code column
+    /// and the cutting sheet's label column show. Empty only for a row built by hand.
+    pub code: String,
     /// The index list, display-rounded (see [`row_format::format_index_value`]).
     pub indices: String,
     /// The index list, full precision (see [`Self::angle_full`]).
@@ -105,6 +109,10 @@ pub struct TierRow {
     /// joined with two spaces (`"CYL  +10.00°  X = 0.000, ...  D/W = 0.400, plunge"`);
     /// empty for a flat row.
     pub tool_line: String,
+    /// The relation that drives this tier's angle, as a cutter reads it (`"C1 - 4"`),
+    /// or empty when the angle is free. A non-empty text is what the tier table's link
+    /// badge and the inspector's "Follows a relation" note are built from.
+    pub relation_text: String,
 }
 
 /// One per-facet chip in the inspector's Tier tab -- see

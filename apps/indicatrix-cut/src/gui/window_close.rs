@@ -59,6 +59,7 @@ pub(super) fn setup_close_confirm_callbacks(
         // outlive the main one.
         crate::gui::editor::close_compare_window();
         crate::gui::rough_plan::close_planner_window();
+        crate::gui::render_jobs::stop_for_app_close();
         let _ = ui.hide();
     });
 
@@ -89,6 +90,7 @@ pub(super) fn setup_close_confirm_callbacks(
         settings_store_discard.flush();
         crate::gui::editor::close_compare_window();
         crate::gui::rough_plan::close_planner_window();
+        crate::gui::render_jobs::stop_for_app_close();
         let _ = ui.hide();
     });
 }

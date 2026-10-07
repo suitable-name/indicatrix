@@ -1,0 +1,185 @@
+import { Button } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+// A small colour picker: a saturation/value square over the current hue, a hue strip, a swatch
+// of the chosen colour and Apply/Cancel. Port of the desktop's
+// `apps/indicatrix-cut/ui/components/material_editor/color_picker.slint` without the hex field
+// (the desktop formats and parses hex through a Rust callback; the web keeps the picker pure
+// Slint). The caller decides what `applied` does.
+//
+// Keyboard: Tab reaches the square and the strip. On the square the arrow keys change the
+// saturation (left, right) and the brightness (up, down) by 5 %; on the strip left and right
+// turn the hue by 5 degrees. The gradients are the colour space itself, not theme colours.
+export component ColorPicker inherits Rectangle {
+    // The colour the picker opens on.
+    in property <color> initial: #c0392b;
+    in property <string> apply-label: "Apply";
+    callback applied(color);
+    callback cancelled();
+
+    in-out property <float> hue: 0.0;
+    in-out property <float> sat: 0.8;
+    in-out property <float> val: 0.75;
+    property <color> current: Colors.hsv(root.hue, root.sat, root.val, 1.0);
+
+    function load(c: color) {
+        root.hue = c.to-hsv().hue;
+        root.sat = c.to-hsv().saturation;
+        root.val = c.to-hsv().value;
+    }
+    init => { root.load(root.initial); }
+
+    background: Theme.bg-input;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.border-medium;
+    height: content.preferred-height;
+
+    content := VerticalLayout {
+        padding: 8px;
+        spacing: 8px;
+
+        // Saturation (x) / value (y) square over the current hue.
+        sv := Rectangle {
+            height: 110px;
+            border-radius: 3px;
+            clip: true;
+            background: Colors.hsv(root.hue, 1.0, 1.0, 1.0);
+
+            accessible-role: AccessibleRole.slider;
+            accessible-label: "Saturation and brightness";
+            accessible-description: "Left and right change the saturation, up and down change the brightness.";
+            accessible-value: "saturation " + Math.round(root.sat * 100) + " percent, brightness " + Math.round(root.val * 100) + " percent";
+
+            Rectangle { background: @linear-gradient(90deg, #ffffff 0%, #ffffff00 100%); }
+            Rectangle { background: @linear-gradient(180deg, #00000000 0%, #000000 100%); }
+            Rectangle {
+                x: root.sat * parent.width - 5px;
+                y: (1.0 - root.val) * parent.height - 5px;
+                width: 10px;
+                height: 10px;
+                border-radius: 5px;
+                border-width: 2px;
+                border-color: #ffffff;
+                background: root.current;
+            }
+            sv-focus := FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.LeftArrow {
+                        root.sat = max(0.0, root.sat - 0.05);
+                    } else if event.text == Key.RightArrow {
+                        root.sat = min(1.0, root.sat + 0.05);
+                    } else if event.text == Key.UpArrow {
+                        root.val = min(1.0, root.val + 0.05);
+                    } else if event.text == Key.DownArrow {
+                        root.val = max(0.0, root.val - 0.05);
+                    } else {
+                        return reject;
+                    }
+                    return accept;
+                }
+            }
+            TouchArea {
+                pointer-event(e) => {
+                    if (e.button == PointerEventButton.left && (e.kind == PointerEventKind.down || e.kind == PointerEventKind.move)) {
+                        sv-focus.focus();
+                        root.sat = max(0.0, min(1.0, self.mouse-x / self.width));
+                        root.val = 1.0 - max(0.0, min(1.0, self.mouse-y / self.height));
+                    }
+                }
+                moved => {
+                    if (self.pressed) {
+                        root.sat = max(0.0, min(1.0, self.mouse-x / self.width));
+                        root.val = 1.0 - max(0.0, min(1.0, self.mouse-y / self.height));
+                    }
+                }
+            }
+            // The focus ring, drawn over the picture.
+            Rectangle {
+                border-radius: 3px;
+                border-width: sv-focus.has-focus ? 2px : 0px;
+                border-color: Theme.accent-cyan;
+            }
+        }
+
+        // Hue strip.
+        hue-strip := Rectangle {
+            height: 20px;
+            border-radius: 3px;
+            background: @linear-gradient(90deg, #ff0000 0%, #ffff00 17%, #00ff00 33%, #00ffff 50%, #0000ff 67%, #ff00ff 83%, #ff0000 100%);
+
+            accessible-role: AccessibleRole.slider;
+            accessible-label: "Hue";
+            accessible-description: "Left and right turn the hue.";
+            accessible-value: "" + Math.round(root.hue);
+            accessible-value-minimum: 0;
+            accessible-value-maximum: 360;
+            accessible-value-step: 5;
+            accessible-action-increment => { root.hue = min(359.9, root.hue + 5.0); }
+            accessible-action-decrement => { root.hue = max(0.0, root.hue - 5.0); }
+
+            Rectangle {
+                x: root.hue / 360.0 * parent.width - 2px;
+                width: 4px;
+                height: parent.height;
+                background: #ffffff;
+                border-width: 1px;
+                border-color: #000000;
+            }
+            hue-focus := FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.LeftArrow {
+                        root.hue = max(0.0, root.hue - 5.0);
+                    } else if event.text == Key.RightArrow {
+                        root.hue = min(359.9, root.hue + 5.0);
+                    } else {
+                        return reject;
+                    }
+                    return accept;
+                }
+            }
+            TouchArea {
+                pointer-event(e) => {
+                    if (e.button == PointerEventButton.left && (e.kind == PointerEventKind.down || e.kind == PointerEventKind.move)) {
+                        hue-focus.focus();
+                        root.hue = max(0.0, min(359.9, self.mouse-x / self.width * 360.0));
+                    }
+                }
+                moved => {
+                    if (self.pressed) {
+                        root.hue = max(0.0, min(359.9, self.mouse-x / self.width * 360.0));
+                    }
+                }
+            }
+            Rectangle {
+                border-radius: 3px;
+                border-width: hue-focus.has-focus ? 2px : 0px;
+                border-color: Theme.accent-cyan;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Rectangle {
+                width: 32px;
+                height: 24px;
+                border-radius: 3px;
+                background: root.current;
+                border-width: 1px;
+                border-color: Theme.border-medium;
+                accessible-role: AccessibleRole.image;
+                accessible-label: "Chosen colour";
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: "Cancel";
+                clicked => { root.cancelled(); }
+            }
+            Button {
+                text: root.apply-label;
+                primary: true;
+                clicked => { root.applied(root.current); }
+            }
+        }
+    }
+}

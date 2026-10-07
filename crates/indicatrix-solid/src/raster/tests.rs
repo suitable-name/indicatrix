@@ -811,7 +811,9 @@ fn edges_flagged_invisible_are_not_stroked() {
         rasterizer.render(&two_pieces_one_facet_mesh(visible), &camera, &style);
         rasterizer
             .color
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|px| px[..3] == style.edge_color)
             .count()
     };

@@ -57,6 +57,7 @@ fn take(ctx: &Ctx) {
                 design,
                 solved: solved.ok(),
                 label: label.clone(),
+                from_retarget_apply: false,
             });
         });
         if let Some(ui) = ctx.ui.upgrade() {

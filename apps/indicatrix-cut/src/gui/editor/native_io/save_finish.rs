@@ -10,8 +10,9 @@ use super::{
 use crate::{
     EditorModel, MainWindow,
     bridge::library::source::LibrarySource,
-    gui::{editor::state::EditorState, show_toast},
+    gui::{editor::state::EditorState, show_toast, tutorial_events::raise},
 };
+use indicatrix_editor::guide::viewing_events as events;
 use indicatrix_vault::db::sqlite::Database;
 use slint::ComponentHandle;
 use std::{
@@ -149,6 +150,8 @@ pub(super) fn finish_save_native_success(
             "success",
         );
     }
+    // A tutorial step may wait for the design to be saved (a draft counts: the file is there).
+    raise(ui, events::DESIGN_SAVED);
 
     // Registers (or updates) this design's own catalogue
     // row -- see `write_back_to_catalogue`'s own doc comment for exactly what gets

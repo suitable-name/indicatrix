@@ -18,8 +18,14 @@
 //! - [`connection`]: WAL/`open_read_only`/`:memory:` connection behaviour.
 //! - [`planner_exclusions`]: the Rough Planner exclusion mark -- toggling, the sorted
 //!   readers, and its independence from `updated_at`, re-saves, deletes and `ignored`.
+//! - [`design_side_data`]: saved variants, cutting progress and the lighting choice,
+//!   keyed by the design's UUID rather than by a catalogue entry.
+//! - [`design_side_migrations`]: those three tables on a fresh database, on one that
+//!   lacks them, and across repeated opens.
 
 mod connection;
+mod design_side_data;
+mod design_side_migrations;
 mod detail;
 mod entries;
 mod fixtures;

@@ -1,12 +1,23 @@
 import { Theme } from "../theme.slint";
 import { EditorModel } from "../models/editor.slint";
 import { GuideModel } from "../models/guide.slint";
+import { LibraryModel } from "../models/library.slint";
+import { TutorialsModel } from "../models/tutorials.slint";
+import { HelpTopics } from "../models/help.slint";
+import { HelpButton } from "help_button.slint";
+import { TouchButton } from "touch_button.slint";
 
 // A real card grid for the empty state (`EditorViewportOverlay`,
 // `components/app/viewport_overlay.slint`, shown until a real design is installed):
-// New Design..., Open Recent, Import a Folder, Open the Worked Example -- every
-// path out of the empty state a new user with no manual needs to reach a solved,
-// previewed design, none of them a dead end.
+// New Design..., Start from a library design, Open the Worked Example, Open Recent,
+// Import a Folder, and a link to the tutorial browser -- every path out of the empty state
+// a new user with no manual needs to reach a solved, previewed design, none of them a
+// dead end.
+//
+// Every card is a button for the keyboard and a screen reader (`TouchButton`): Tab walks the
+// cards in reading order, Space or Enter picks one, a ring shows the focus, and the tooltip
+// says in one sentence what the card does. A card the guide has locked is dimmed and says so.
+// The "?" in the corner opens the manual page on this screen.
 //
 // `recent_native_files`/`open_recent` mirror `MainWindow`'s own
 // `recent_native_files`/`open_recent_native_file` (declared on `root` there,
@@ -19,6 +30,15 @@ export component EmptyState inherits Rectangle {
     callback open_recent(string);
 
     background: Theme.bg-card;
+
+    // The manual page on this screen, in the top right corner. Positioned by hand, so it adds
+    // nothing to the grid's layout.
+    HelpButton {
+        x: parent.width - self.width - 12px;
+        y: 12px;
+        topic: HelpTopics.empty-state;
+        hint: "Open the manual page on starting a design";
+    }
 
     VerticalLayout {
         alignment: center;
@@ -50,21 +70,56 @@ export component EmptyState inherits Rectangle {
             Rectangle {
                 width: 150px;
                 height: 84px;
-                background: new_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                background: new_touch.has_hover ? Theme.bg-elevated : Theme.bg-input;
                 border-radius: Theme.radius-md;
                 border-width: GuideModel.highlight_target == "new_design_dialog" ? 2px : 1px;
                 border-color: GuideModel.highlight_target == "new_design_dialog" ? Theme.accent-cyan : Theme.border-medium;
                 opacity: GuideModel.allows_new_design() ? 1.0 : 0.4;
-                new_touch := TouchArea {
-                    enabled: GuideModel.allows_new_design();
-                    clicked => { EditorModel.new_dialog_open = true; }
-                }
                 VerticalLayout {
                     alignment: center;
                     padding: 10px;
                     spacing: 4px;
                     Text { text: "New Design..."; font-size: 11px; font-weight: 700; color: Theme.text-primary; horizontal-alignment: center; wrap: word-wrap; }
-                    Text { text: "Pick a preform, gear and a starting template."; font-size: 9px; color: Theme.text-muted; horizontal-alignment: center; wrap: word-wrap; }
+                    Text { text: "Pick a shape, a material and an index gear to start from."; font-size: 9px; color: Theme.text-muted; horizontal-alignment: center; wrap: word-wrap; }
+                }
+                new_touch := TouchButton {
+                    enabled: GuideModel.allows_new_design();
+                    label: "New Design";
+                    hint: GuideModel.allows_new_design()
+                        ? "Open the New Design window: pick a shape, a material and an index gear, then create the design."
+                        : GuideModel.locked_hint;
+                    ring_radius: Theme.radius-md;
+                    clicked => { EditorModel.new_dialog_open = true; }
+                }
+            }
+
+            // Start from a library design -- shows the library, puts the cursor in its
+            // search box and explains, in the hint line under the cards, how to open the
+            // chosen design into the editor with the existing Load Selected button.
+            // Locked with the other file actions while a guide has them locked.
+            Rectangle {
+                width: 150px;
+                height: 84px;
+                background: library_touch.has_hover ? Theme.bg-elevated : Theme.bg-input;
+                border-radius: Theme.radius-md;
+                border-width: 1px;
+                border-color: Theme.border-medium;
+                opacity: GuideModel.allows_file_ops() ? 1.0 : 0.4;
+                VerticalLayout {
+                    alignment: center;
+                    padding: 10px;
+                    spacing: 4px;
+                    Text { text: "Start from a library design"; font-size: 11px; font-weight: 700; color: Theme.text-primary; horizontal-alignment: center; wrap: word-wrap; }
+                    Text { text: "Pick a design from the library and open it in the editor."; font-size: 9px; color: Theme.text-muted; horizontal-alignment: center; wrap: word-wrap; }
+                }
+                library_touch := TouchButton {
+                    enabled: GuideModel.allows_file_ops();
+                    label: "Start from a library design";
+                    hint: GuideModel.allows_file_ops()
+                        ? "Go to the library list so you can pick a design and open it here with Load Selected."
+                        : GuideModel.locked_hint;
+                    ring_radius: Theme.radius-md;
+                    clicked => { TutorialsModel.show_library(); }
                 }
             }
 
@@ -77,19 +132,22 @@ export component EmptyState inherits Rectangle {
             Rectangle {
                 width: 150px;
                 height: 84px;
-                background: worked_example_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                background: worked_example_touch.has_hover ? Theme.bg-elevated : Theme.bg-input;
                 border-radius: Theme.radius-md;
                 border-width: 1px;
                 border-color: Theme.accent-cyan;
-                worked_example_touch := TouchArea {
-                    clicked => { GuideModel.start(); }
-                }
                 VerticalLayout {
                     alignment: center;
                     padding: 10px;
                     spacing: 4px;
                     Text { text: "Open the Worked Example"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; horizontal-alignment: center; wrap: word-wrap; }
                     Text { text: "A step-by-step guide that builds the manual's Chapter 7 stone with you."; font-size: 9px; color: Theme.text-muted; horizontal-alignment: center; wrap: word-wrap; }
+                }
+                worked_example_touch := TouchButton {
+                    label: "Open the Worked Example";
+                    hint: "Start the step-by-step guide that builds a round brilliant with you, one tier at a time.";
+                    ring_radius: Theme.radius-md;
+                    clicked => { GuideModel.start(); }
                 }
             }
         }
@@ -109,6 +167,8 @@ export component EmptyState inherits Rectangle {
                 border-width: 1px;
                 border-color: Theme.border-medium;
                 clip: true;
+                accessible-role: AccessibleRole.groupbox;
+                accessible-label: "Open Recent";
                 VerticalLayout {
                     padding: 8px;
                     spacing: 3px;
@@ -124,11 +184,13 @@ export component EmptyState inherits Rectangle {
                             Text {
                                 text: path;
                                 font-size: 9px;
-                                color: recent_touch.has-hover ? Theme.accent-cyan : Theme.text-secondary;
+                                color: recent_touch.has_hover ? Theme.accent-cyan : Theme.text-secondary;
                                 overflow: elide;
                             }
-                            recent_touch := TouchArea {
+                            recent_touch := TouchButton {
                                 enabled: GuideModel.allows_file_ops();
+                                label: "Open " + path;
+                                hint: GuideModel.allows_file_ops() ? "Open this design file in the editor." : GuideModel.locked_hint;
                                 clicked => { root.open_recent(path); }
                             }
                         }
@@ -136,27 +198,75 @@ export component EmptyState inherits Rectangle {
                 }
             }
 
-            // Import a Folder -- the existing Import control is a `PopupWindow`
-            // private to `header.slint` (`import_popup`, opened only by that
-            // file's own `import_btn.clicked`), with no public function this
-            // card could call to open it (see `header.slint`'s own
-            // `focus_search`, the one function it DOES expose publicly, for
-            // the pattern an `open_import()` equivalent would need). Rather
-            // than a click target that silently does nothing, this card
-            // points at the real control instead of duplicating it.
+            // Import a Folder -- a real action: it runs the same folder picker
+            // the toolbar's Import popup runs (`LibraryModel.pick_asc_folder`,
+            // handled in `gui::library::local::import::wiring`). The picker opens
+            // and, once a folder is chosen, the import of every .asc, .gem and
+            // .gcs file directly inside it starts in the same step, with its
+            // progress and result shown where an import started from the toolbar
+            // shows them. Subfolders are not walked from here (`false`); the
+            // popup's "include subfolders" switch is the way to ask for that.
+            // Greyed out while a guide step has file actions locked.
             Rectangle {
                 width: 150px;
                 height: 84px;
-                background: Theme.bg-input;
+                background: import_touch.has_hover ? Theme.bg-elevated : Theme.bg-input;
                 border-radius: Theme.radius-md;
                 border-width: 1px;
-                border-color: Theme.border-subtle;
+                border-color: Theme.border-medium;
+                opacity: GuideModel.allows_file_ops() ? 1.0 : 0.4;
                 VerticalLayout {
                     alignment: center;
                     padding: 10px;
                     spacing: 4px;
-                    Text { text: "Import a Folder"; font-size: 11px; font-weight: 700; color: Theme.text-secondary; horizontal-alignment: center; wrap: word-wrap; }
-                    Text { text: "Use the Import button in the toolbar above to bring in .asc, .gem or .gcs files."; font-size: 9px; color: Theme.text-muted; horizontal-alignment: center; wrap: word-wrap; }
+                    Text { text: "Import a Folder"; font-size: 11px; font-weight: 700; color: Theme.text-primary; horizontal-alignment: center; wrap: word-wrap; }
+                    Text { text: "Choose a folder of .asc, .gem or .gcs files to add to your library."; font-size: 9px; color: Theme.text-muted; horizontal-alignment: center; wrap: word-wrap; }
+                }
+                import_touch := TouchButton {
+                    enabled: GuideModel.allows_file_ops();
+                    label: "Import a Folder";
+                    hint: GuideModel.allows_file_ops()
+                        ? "Pick a folder; every .asc, .gem and .gcs file directly inside it is added to your library."
+                        : GuideModel.locked_hint;
+                    ring_radius: Theme.radius-md;
+                    clicked => { LibraryModel.pick_asc_folder(false); }
+                }
+            }
+        }
+
+        // The hint line for "Start from a library design", shown once that card was clicked.
+        if TutorialsModel.library_hint_visible: HorizontalLayout {
+            alignment: center;
+            Text {
+                max-width: 480px;
+                text: "Type a name in the search box at the top of the window, click a design in the list on the left, then click Load Selected on the command bar.";
+                font-size: 10px;
+                color: Theme.accent-cyan;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+
+        // The tutorial browser: one short lesson for each tool.
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: browse_txt.preferred-width + 16px;
+                height: 22px;
+                border-radius: Theme.radius-sm;
+                background: browse_touch.has_hover ? Theme.bg-elevated : transparent;
+                browse_txt := Text {
+                    text: "Browse all tutorials...";
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: Theme.accent-cyan;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                browse_touch := TouchButton {
+                    label: "Browse all tutorials";
+                    hint: "Open the list of short guided lessons, one for each tool.";
+                    clicked => { TutorialsModel.open_browser(); }
                 }
             }
         }

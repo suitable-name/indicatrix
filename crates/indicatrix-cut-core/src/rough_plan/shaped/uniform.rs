@@ -31,7 +31,7 @@ use super::{
 use crate::rough_plan::{
     CandidateDesign, CutOrder, FitMesh, PlanProgress, PlanSettings, RoughBlock, RoughLayout,
     SHAPED_UNIFORM_DESIGNS,
-    piece::{ASSIGNMENTS, Norm, stone_value, usable_rough},
+    piece::{ASSIGNMENTS, Norm, min_width_floor, stone_value, usable_rough},
     tree::{Bar, Leaf, Slab, Tree},
     uniform::{PER_DESIGN, cell_size, enumerate_grids},
 };
@@ -164,7 +164,7 @@ impl DesignEval<'_> {
             else {
                 continue;
             };
-            if k < self.min_width {
+            if k < min_width_floor(self.min_width) {
                 continue;
             }
             let value = self.norm.f * (k * k * k);

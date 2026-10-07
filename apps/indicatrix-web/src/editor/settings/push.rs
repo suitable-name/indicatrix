@@ -7,7 +7,7 @@ use crate::{AppWindow, DesignSettingsModel, app::state::DesignState, editor::ins
 use indicatrix_cut_core::critical_angle_deg;
 use indicatrix_editor::{
     material::{
-        body_color_index_for, body_color_options, design_material_index_from_name,
+        body_color_index_for_material, body_color_options, design_material_index_from_name,
         design_material_options, gear_index_from_teeth, ri_source_text,
     },
     material_lookup::material_guess,
@@ -54,6 +54,7 @@ pub(super) fn seed_printed(model: &DesignSettingsModel<'_>, design: Option<&Desi
 pub fn clear(ui: &AppWindow) {
     let model = ui.global::<DesignSettingsModel>();
     model.set_open(false);
+    model.set_color_picker_open(false);
     model.set_gear_remap_open(false);
     model.set_guess_text(SharedString::new());
     model.set_effective_ri_text(SharedString::new());
@@ -74,8 +75,14 @@ pub fn push(pcx: &PushCtx<'_>) {
     set_options_if_changed(&model.get_material_options(), &options, |m| {
         model.set_material_options(m);
     });
-    set_options_if_changed(&model.get_color_options(), &body_color_options(), |m| {
+    let color_options = body_color_options();
+    set_options_if_changed(&model.get_color_options(), &color_options, |m| {
         model.set_color_options(m);
+    });
+    // The custom-material editor picks from the presets only (no "Custom..." picker there).
+    let preset_colors = &color_options[..color_options.len().saturating_sub(1)];
+    set_options_if_changed(&model.get_custom_color_options(), preset_colors, |m| {
+        model.set_custom_color_options(m);
     });
     if pcx.delta.material {
         model.set_material_index(design_material_index_from_name(
@@ -89,7 +96,7 @@ pub fn push(pcx: &PushCtx<'_>) {
                 .map_or_else(String::new, |v| format!("{v:.4}"))
                 .into(),
         );
-        model.set_color_index(body_color_index_for(design.material.body_color_override));
+        model.set_color_index(body_color_index_for_material(&design.material));
         model.set_material_pending(false);
     }
     model.set_effective_ri_text(format!("{:.4}", pcx.n_d).into());

@@ -1,0 +1,60 @@
+import { Theme } from "../../theme.slint";
+
+// The name of one setting in the render settings dialog, with the tooltip that says what the
+// setting does. Hovering the name shows `hint`; a screen reader reads the name, then `note`,
+// then `hint`.
+//
+//     SettingLabel { text: "Stone Size"; note: "(from design)"; hint: "The width of the stone ..."; }
+//
+// `note` is a short remark after the name ("(not used with an HDR map)"), drawn dimmer. `icon`
+// is optional. The label takes the room a row has left over (`horizontal-stretch`), so a value
+// beside it sits at the right edge.
+export component SettingLabel inherits Rectangle {
+    in property <string> text;
+    in property <string> note;
+    // One or two plain sentences: what the setting does. Shown as the tooltip.
+    in property <string> hint;
+    in property <image> icon;
+    in property <color> label_color: Theme.text-muted;
+
+    horizontal-stretch: 1;
+    min-width: 0px;
+    preferred-width: label_row.preferred-width;
+    min-height: 16px;
+    preferred-height: max(16px, label_row.preferred-height);
+
+    // Qualified: a bare `text` here would mean this component's own `text` property.
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.note == "" ? root.text : root.text + " " + root.note;
+    accessible-description: root.hint;
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    label_row := HorizontalLayout {
+        alignment: start;
+        spacing: 6px;
+
+        if root.icon.width > 0: Image {
+            source: root.icon;
+            colorize: root.label_color;
+            width: 12px;
+            height: 12px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.text;
+            font-size: 11px;
+            font-weight: 600;
+            color: root.label_color;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if root.note != "": Text {
+            text: root.note;
+            font-size: 10px;
+            color: Theme.text-disabled;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}

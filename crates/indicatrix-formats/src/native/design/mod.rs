@@ -40,6 +40,6 @@ pub use path::{
     is_design_path,
 };
 pub use schema::{
-    CONCAVE_FRAME_V0, DESIGN_FORMAT, DESIGN_VERSION, DESIGN_VERSION_CONCAVE, DesignFile,
-    MAX_DESIGN_TIERS, ScheduleTable,
+    CONCAVE_FRAME_V0, DESIGN_FORMAT, DESIGN_VERSION, DESIGN_VERSION_CONCAVE,
+    DESIGN_VERSION_RELATIONS, DesignFile, MAX_DESIGN_TIERS, ScheduleTable,
 };

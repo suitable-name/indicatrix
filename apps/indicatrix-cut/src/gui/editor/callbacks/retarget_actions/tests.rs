@@ -9,17 +9,22 @@ use super::{
         initial_target_index, resolve_target_selection, resolved_material_from_selection,
         target_display_name, target_material_selection,
     },
-    proposal_view::retarget_view,
+    proposal_view::{candidate_row_views, retarget_view, search_summary_line},
     snapshot::{diff_row_view, diff_rows_from_deltas},
 };
 use crate::gui::editor::{
-    retarget::{CrownShift, RetargetMode},
+    retarget::{AnchorChange, CrownShift, RetargetMode},
     state::{EditorState, design_material_index_from_name, design_material_options},
 };
 use indicatrix::{geometry::meet_solver::MeetConstraint, optics::materials::GemMaterial};
 use indicatrix_cut_core::{
     ConstraintTier, Design, History, MaterialSelection, OptimizeConfig, PreformSpec,
     ResolvedMaterial, ScheduleMeta, diff_tiers,
+};
+use indicatrix_editor::retarget::{
+    metrics::RetargetMetrics,
+    search::{CandidateKind, CandidateNumbers, SearchCandidate, SearchReport, StartPoint},
+    validity::{InvalidReason, RetargetValidity, ValidityStatus},
 };
 use std::sync::atomic::Ordering as AtomicOrdering;
 
@@ -58,6 +63,8 @@ fn diamond_design() -> Design {
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     design
 }
@@ -171,7 +178,7 @@ fn apply_pending_retarget_pushes_exactly_one_retarget_angles_edit_and_solves() {
 
     let mut state = fresh_state_with(design);
     let generation = state.generation.load(AtomicOrdering::Relaxed);
-    let applied = apply_pending_retarget(&mut state, (proposal, generation), None)
+    let applied = apply_pending_retarget(&mut state, (proposal, generation), None, &[])
         .unwrap_or_else(|_| panic!("a fresh, matching-generation proposal must apply"));
     assert_eq!(applied, 1);
     assert!(state.history.can_undo());
@@ -204,14 +211,72 @@ fn apply_pending_retarget_combines_a_material_change_into_one_undo_step() {
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
-    apply_pending_retarget(&mut state, (proposal, generation), Some(material_change))
-        .unwrap_or_else(|_| panic!("a fresh, matching-generation proposal must apply"));
+    apply_pending_retarget(
+        &mut state,
+        (proposal, generation),
+        Some(material_change),
+        &[],
+    )
+    .unwrap_or_else(|_| panic!("a fresh, matching-generation proposal must apply"));
     assert_eq!(state.design.material.name.as_deref(), Some("Quartz"));
 
     // ONE undo step reverts both the angle retarget and the material change.
     assert!(state.undo().unwrap());
     assert_eq!(state.design.material.name.as_deref(), Some("Diamond"));
+    assert!(!state.history.can_undo());
+}
+
+#[test]
+fn apply_pending_retarget_commits_masts_angles_and_material_as_one_undo_step() {
+    let design = diamond_design();
+    let original = design.clone();
+    let custom: [GemMaterial; 0] = [];
+    let options = design_material_options(&custom);
+    let quartz_index = design_material_index_from_name(Some("Quartz"), &options);
+    let target = resolve_target_material(&design, &custom, quartz_index, "");
+    let (_, proposal) = retarget_view(
+        &design,
+        &target,
+        CrownShift::default(),
+        RetargetMode::Shift,
+        &[],
+    );
+    let proposal = proposal.expect("shift mode never fails");
+
+    let mut state = fresh_state_with(design);
+    let generation = state.generation.load(AtomicOrdering::Relaxed);
+    let anchors = [AnchorChange {
+        tier_index: 0,
+        old_mast: 0.5,
+        new_mast: 0.55,
+    }];
+    let material_change = MaterialSelection {
+        name: Some("Quartz".to_string()),
+        specific_gravity_override: None,
+        refractive_index_override: None,
+        body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
+    };
+    apply_pending_retarget(
+        &mut state,
+        (proposal, generation),
+        Some(material_change),
+        &anchors,
+    )
+    .unwrap_or_else(|_| panic!("a fresh, matching-generation proposal must apply"));
+    assert!(matches!(
+        state.design.tiers[0].constraint,
+        MeetConstraint::ScaleReference(mast) if (mast - 0.55).abs() < 1e-12
+    ));
+    assert_eq!(state.design.material.name.as_deref(), Some("Quartz"));
+
+    // The angle, the re-anchored mast and the material are ONE history entry.
+    assert!(state.undo().unwrap());
+    assert_eq!(state.design, original);
     assert!(!state.history.can_undo());
 }
 
@@ -233,7 +298,7 @@ fn apply_pending_retarget_refuses_a_stale_generation() {
 
     let mut state = fresh_state_with(design);
     let stale_generation = state.generation.load(AtomicOrdering::Relaxed) + 1;
-    let result = apply_pending_retarget(&mut state, (proposal, stale_generation), None);
+    let result = apply_pending_retarget(&mut state, (proposal, stale_generation), None, &[]);
     assert!(matches!(result, Err(RetargetApplyError::Stale)));
     assert!(
         !state.history.can_undo(),
@@ -252,6 +317,8 @@ fn initial_target_index_finds_the_designs_own_named_material() {
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let quartz_index = design_material_index_from_name(Some("Quartz"), &options);
     assert_eq!(initial_target_index(&material, &options), quartz_index);
@@ -266,6 +333,8 @@ fn initial_target_index_seeds_the_custom_ri_sentinel_for_a_nameless_override() {
         specific_gravity_override: None,
         refractive_index_override: Some(1.6),
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     assert_eq!(
         initial_target_index(&material, &options),
@@ -342,6 +411,8 @@ fn target_display_name_shows_custom_ri_for_a_nameless_override() {
         specific_gravity_override: None,
         refractive_index_override: Some(1.74),
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     assert_eq!(target_display_name(&selection), "Custom RI");
 }
@@ -353,6 +424,8 @@ fn target_display_name_shows_the_picked_material_name() {
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     assert_eq!(target_display_name(&selection), "Quartz");
 }
@@ -436,4 +509,131 @@ fn diff_rows_from_deltas_carries_the_tier_index_and_name_through() {
     assert_eq!(rows[1].tier_index, 1);
     assert_eq!(rows[1].name.as_str(), "Star");
     assert_eq!(rows[1].risk_label.as_str(), "Changed");
+}
+
+// --- The Optimize candidate list ---
+
+fn candidate_with(kind: CandidateKind, score: f32) -> SearchCandidate {
+    let mut validity = RetargetValidity::unchecked(&InvalidReason::NotClosed);
+    validity.status = ValidityStatus::Valid;
+    validity.reasons.clear();
+    SearchCandidate {
+        kind,
+        angles: Vec::new(),
+        anchors: Vec::new(),
+        validity,
+        metrics: RetargetMetrics::default(),
+        numbers: CandidateNumbers {
+            score,
+            windowing_pct: 4.5,
+            brilliance_pct: 81.0,
+            extinction_pct: 3.0,
+            yield_loss_pct: 40.5,
+        },
+        design: diamond_design(),
+    }
+}
+
+fn report_with(candidates: Vec<SearchCandidate>, evaluations: usize) -> SearchReport {
+    SearchReport {
+        start: StartPoint::Shift,
+        shift_validity: RetargetValidity::unchecked(&InvalidReason::NotClosed),
+        start_numbers: CandidateNumbers {
+            score: 10.0,
+            windowing_pct: 5.0,
+            brilliance_pct: 80.0,
+            extinction_pct: 3.0,
+            yield_loss_pct: 40.0,
+        },
+        candidates,
+        dropped: Vec::new(),
+        evaluations,
+        free_tiers: 4,
+        keep_look: false,
+    }
+}
+
+#[test]
+fn the_candidate_list_numbers_the_options_and_says_where_each_came_from() {
+    let rows = candidate_row_views(&[
+        candidate_with(CandidateKind::Optimized, 8.0),
+        candidate_with(CandidateKind::Shift, 9.5),
+        candidate_with(CandidateKind::Partial { percent: 40 }, 11.0),
+    ]);
+    assert_eq!(
+        rows.iter().map(|row| row.rank).collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    assert_eq!(rows[0].label, "Searched angles");
+    assert_eq!(rows[1].label, "Shift result");
+    assert_eq!(rows[2].label, "Part of the Shift change (40 %)");
+    assert_eq!(rows[0].score, "8.0");
+    assert_eq!(rows[0].windowing, "4.5 %");
+    assert_eq!(rows[0].brilliance, "81.0 %");
+    assert_eq!(rows[0].extinction, "3.0 %");
+    assert_eq!(rows[0].yield_loss, "40.5 %");
+    assert!(rows.iter().all(|row| row.verdict == "Valid"));
+}
+
+#[test]
+fn an_option_that_is_not_valid_is_not_called_valid() {
+    let mut candidate = candidate_with(CandidateKind::Optimized, 8.0);
+    candidate.validity.status = ValidityStatus::Invalid;
+    let rows = candidate_row_views(&[candidate]);
+    assert_eq!(rows[0].verdict, "Not valid");
+}
+
+#[test]
+fn the_search_summary_counts_the_options_and_the_steps() {
+    let two = report_with(
+        vec![
+            candidate_with(CandidateKind::Optimized, 8.0),
+            candidate_with(CandidateKind::Shift, 9.5),
+        ],
+        120,
+    );
+    assert_eq!(
+        search_summary_line(&two),
+        "2 valid options, best score first (lower is better). The search used 120 steps."
+    );
+    let one = report_with(vec![candidate_with(CandidateKind::Shift, 9.5)], 40);
+    assert!(search_summary_line(&one).starts_with("1 valid option, "));
+    assert_eq!(
+        search_summary_line(&report_with(Vec::new(), 40)),
+        "No valid option was found."
+    );
+}
+
+#[test]
+fn the_original_snapshot_label_names_the_target_and_is_told_from_a_users_own() {
+    use super::snapshot::original_snapshot_label;
+    let label = original_snapshot_label("Sapphire");
+    assert!(label.contains("Sapphire"));
+}
+
+#[test]
+fn the_original_snapshot_solve_prefers_the_cached_one_then_solves_never_a_wrong_length() {
+    use super::apply::original_solve_for_snapshot;
+    let session = indicatrix_editor::EditorSession::from_template(
+        indicatrix_cut_core::FreshDesignSpec {
+            gear_teeth: 96,
+            symmetry_order: 8,
+            mirror: true,
+            material: indicatrix_cut_core::MaterialSelection::none(),
+            preform: indicatrix_cut_core::PreformSpec::cylinder(96, 1.5, 1.0, 1.5),
+        },
+        1,
+    );
+    let design = session.design;
+    let solved = design.solve().expect("the fresh template solves");
+    // A matching cached solve is used as is.
+    let kept = original_solve_for_snapshot(Some(solved.clone()), &design).expect("cached");
+    assert_eq!(kept.len(), design.tiers.len());
+    // A cached solve of another design (wrong tier count) is dropped and the design solved.
+    let mut wrong = solved;
+    wrong.pop();
+    let fresh = original_solve_for_snapshot(Some(wrong), &design).expect("solved on the spot");
+    assert_eq!(fresh.len(), design.tiers.len());
+    // No cache: solved on the spot.
+    assert!(original_solve_for_snapshot(None, &design).is_some());
 }

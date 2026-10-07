@@ -24,7 +24,10 @@
 //! `upgrade_in_event_loop`), so anything they capture must be `Send` too. Every field
 //! `ExportQueue` holds (paths, strings, `SceneSnapshot`s, `ExportHandle`) already is.
 
-mod queue;
-mod wiring;
+mod advanced;
+// `pub(in crate::gui)`: the render job queue (`gui::render_jobs`) reuses the export's
+// folder resolution, fan-out, naming and scene helpers instead of copying them.
+pub(in crate::gui) mod queue;
+pub(in crate::gui) mod wiring;
 
 pub(in crate::gui) use wiring::setup_render_export_callbacks;

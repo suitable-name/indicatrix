@@ -8,7 +8,9 @@
 
 use super::{
     planes::{ReconstructedPlanesInput, apply_reconstructed_planes},
-    shared::{catalogue_material_guess, format_optional_proportion, sides_from_rows},
+    shared::{
+        catalogue_material_guess, format_optional_proportion, sides_from_rows, standard_codes,
+    },
 };
 use crate::{
     AngleItem, DiagramDetailData, FileItem, LibraryModel, MainWindow, TiltModel, ViewportModel,
@@ -178,12 +180,20 @@ fn angle_items(full: &FullDiagramRecord) -> Vec<AngleItem> {
             .iter()
             .map(|a| (a.facet.as_str(), a.angle.as_str(), a.index.as_str())),
     );
+    let labels: Vec<(&str, &str)> = full
+        .angle_settings
+        .iter()
+        .map(|a| (a.facet.as_str(), a.index.as_str()))
+        .collect();
+    let codes = standard_codes(&labels, &sides);
     full.angle_settings
         .iter()
         .zip(sides)
-        .map(|(a, side)| AngleItem {
+        .zip(codes)
+        .map(|((a, side), code)| AngleItem {
             order_idx: a.order_index as i32,
             side,
+            code: code.into(),
             facet: a.facet.clone().into(),
             angle: a.angle.trim_start_matches('-').to_string().into(),
             index_val: a.index.clone().into(),

@@ -1,0 +1,165 @@
+import { Theme } from "../theme.slint";
+
+// Two hand-drawn buttons for the tilt graph dialog and its video-export section, built once so
+// every one has the same hover, the same tooltip, the same keyboard reach (Tab, then Space or
+// Enter) and the same screen-reader wording. Like the pills in `pill_button.slint`, each wants a
+// `hint`: one plain sentence saying what it does, shown as the tooltip and read after the label.
+//
+//   * `ChipToggle`   -- a small on/off chip that carries a series colour (Brilliance in cyan,
+//                       Windowing in amber, a tilt axis in purple). `active` fills it with
+//                       `fill` and draws its label and border in `accent`.
+//   * `ActionButton` -- a plain text button (Copy, Close, Start, Cancel, Re-render). The caller
+//                       picks the colours.
+//
+// Neither is sized here beyond a height: a layout stretches them, or the caller sets `width`.
+
+// An on/off chip.
+export component ChipToggle inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <bool> active: false;
+    // The label and border colour while active, and the fill behind them.
+    in property <color> accent: Theme.accent-cyan;
+    in property <color> fill: Theme.tint-cyan;
+    // A small round swatch in `accent` before the label, so a chip can be matched to its line.
+    in property <bool> show_dot: false;
+    in property <bool> enabled: true;
+    in property <length> font_size: 10px;
+    callback toggled();
+
+    height: 24px;
+    min-width: 0px;
+    preferred-width: chip_row.preferred-width;
+    border-radius: Theme.radius-sm;
+    opacity: root.enabled ? 1.0 : 0.45;
+    background: root.active ? root.fill : (chip_touch.has-hover && root.enabled ? Theme.surface-raised : Theme.surface-sunken);
+    border-width: chip_focus.has-focus ? 2px : 1px;
+    border-color: chip_focus.has-focus ? Theme.accent-cyan-hover : (root.active ? root.accent : Theme.border-dialog);
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.text;
+    accessible-description: root.hint;
+    accessible-checkable: true;
+    accessible-checked: root.active;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.toggled();
+        }
+    }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    chip_focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.toggled();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    chip_row := HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 5px;
+        alignment: center;
+
+        if root.show_dot: VerticalLayout {
+            alignment: center;
+            Rectangle { width: 7px; height: 7px; border-radius: 3px; background: root.accent; }
+        }
+        Text {
+            text: root.text;
+            font-size: root.font_size;
+            font-weight: 600;
+            color: root.active ? root.accent : Theme.text-muted;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    chip_touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.toggled(); }
+    }
+}
+
+// A plain text button with colours the caller chooses.
+export component ActionButton inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <image> icon;
+    in property <color> fill: Theme.surface-sunken;
+    in property <color> hover_fill: Theme.surface-raised;
+    in property <color> ink: Theme.text-primary;
+    in property <color> edge: Theme.border-dialog;
+    in property <length> font_size: 11px;
+    in property <int> weight: 600;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 30px;
+    border-radius: Theme.radius-sm;
+    opacity: root.enabled ? 1.0 : 0.45;
+    background: action_touch.has-hover && root.enabled ? root.hover_fill : root.fill;
+    border-width: action_focus.has-focus ? 2px : 1px;
+    border-color: action_focus.has-focus ? Theme.accent-cyan-hover : root.edge;
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.text;
+    accessible-description: root.hint;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    action_focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 6px;
+        alignment: center;
+
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.icon;
+                colorize: root.ink;
+                width: 12px;
+                height: 12px;
+            }
+        }
+        Text {
+            text: root.text;
+            font-size: root.font_size;
+            font-weight: root.weight;
+            color: root.ink;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    action_touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
+    }
+}

@@ -2,7 +2,11 @@ import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { TiltModel, TiltVideoExportModel } from "../models/tilt.slint";
 import { ViewportModel } from "../models/viewport.slint";
+import { HelpTopics } from "../models/help.slint";
 import { StaleBadge } from "stale_badge.slint";
+import { HelpButton } from "help_button.slint";
+import { IconButton } from "icon_button.slint";
+import { ChipToggle, ActionButton } from "chip_toggle.slint";
 import { TiltCurveChart } from "performance_graph/tilt_curve_chart.slint";
 import { TiltVideoExportSection } from "performance_graph/tilt_video_export_section.slint";
 
@@ -182,12 +186,12 @@ export component PerformanceGraphDialog inherits Rectangle {
         // below, between the fixed title row and the fixed footer -- same idiom
         // as `tilt_batch_dialog.slint`'s own card (see its `height` doc comment).
         height: Math.min(720px, root.height - 80px);
-        background: #0f1523;
+        background: Theme.surface-graph;
         border-radius: Theme.radius-lg;
         border-width: 1px;
         border-color: Theme.border-dialog;
         drop-shadow-blur: 32px;
-        drop-shadow-color: #000000ee;
+        drop-shadow-color: Theme.shadow-heavy;
         drop-shadow-offset-y: 8px;
         clip: true;
 
@@ -226,23 +230,24 @@ export component PerformanceGraphDialog inherits Rectangle {
                     }
                 }
 
-                Rectangle {
-                    width: 26px;
-                    height: 26px;
-                    border-radius: 13px;
-                    background: close_touch.has-hover ? Theme.surface-raised : transparent;
-
-                    close_touch := TouchArea {
-                        clicked => { root.close(); }
+                HorizontalLayout {
+                    spacing: 6px;
+                    VerticalLayout {
+                        alignment: start;
+                        HelpButton {
+                            topic: HelpTopics.tilt-curves;
+                            hint: "Open the manual page on the tilt performance graph";
+                        }
                     }
-
-                    Image {
-                        source: @image-url("../icons/close.svg");
-                        colorize: Theme.text-muted;
-                        width: 13px;
-                        height: 13px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                    VerticalLayout {
+                        alignment: start;
+                        IconButton {
+                            icon: @image-url("../icons/close.svg");
+                            glyph: 13px;
+                            tint: Theme.text-muted;
+                            hint: "Close the tilt performance graph";
+                            clicked => { root.close(); }
+                        }
                     }
                 }
             }
@@ -324,7 +329,7 @@ export component PerformanceGraphDialog inherits Rectangle {
                 Rectangle {
                     horizontal-stretch: 1;
                     height: 52px;
-                    background: #131b2e;
+                    background: Theme.surface-chip;
                     border-radius: Theme.radius-sm;
                     border-width: 1px;
                     border-color: Theme.surface-raised;
@@ -347,7 +352,7 @@ export component PerformanceGraphDialog inherits Rectangle {
                 Rectangle {
                     horizontal-stretch: 1;
                     height: 52px;
-                    background: #131b2e;
+                    background: Theme.surface-chip;
                     border-radius: Theme.radius-sm;
                     border-width: 1px;
                     border-color: Theme.surface-raised;
@@ -370,7 +375,7 @@ export component PerformanceGraphDialog inherits Rectangle {
                 Rectangle {
                     horizontal-stretch: 1;
                     height: 52px;
-                    background: #131b2e;
+                    background: Theme.surface-chip;
                     border-radius: Theme.radius-sm;
                     border-width: 1px;
                     border-color: Theme.surface-raised;
@@ -384,7 +389,7 @@ export component PerformanceGraphDialog inherits Rectangle {
                             text: root.extra_axes_ready ? Math.round(root.active_extinction_values[90]) + "%" : "…";
                             font-size: 16px;
                             font-weight: 700;
-                            color: #ef4444;
+                            color: Theme.chart-extinction;
                         }
                     }
                 }
@@ -405,10 +410,10 @@ export component PerformanceGraphDialog inherits Rectangle {
             // with the header.
             if root.cache_is_stale: Rectangle {
                 height: 34px;
-                background: #7c2d1233;
+                background: Theme.notice-surface;
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
-                border-color: #ea580c;
+                border-color: Theme.notice-accent;
 
                 HorizontalLayout {
                     padding-left: 10px;
@@ -421,27 +426,24 @@ export component PerformanceGraphDialog inherits Rectangle {
                             + ", not the current material (" + root.material_name + ").";
                         font-size: 10px;
                         font-weight: 600;
-                        color: #fdba74;
+                        color: Theme.notice-text;
                         vertical-alignment: center;
                     }
 
-                    Rectangle {
-                        width: 130px;
-                        height: 22px;
-                        border-radius: Theme.radius-sm;
-                        background: rerender_touch.has-hover ? #f97316 : #ea580c;
-
-                        rerender_touch := TouchArea {
-                            clicked => { root.rerender_curve_with_current_material(); }
-                        }
-
-                        Text {
+                    VerticalLayout {
+                        alignment: center;
+                        ActionButton {
+                            width: 130px;
+                            height: 22px;
                             text: "Re-render fresh";
-                            font-size: 10px;
-                            font-weight: 700;
-                            color: Theme.text-on-accent;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                            hint: "Trace the tilt curve again with the material that is loaded now, instead of the one the saved curve was made with.";
+                            fill: Theme.notice-accent;
+                            hover_fill: Theme.notice-accent-hover;
+                            edge: Theme.notice-accent;
+                            ink: Theme.text-on-accent;
+                            font_size: 10px;
+                            weight: 700;
+                            clicked => { root.rerender_curve_with_current_material(); }
                         }
                     }
                 }
@@ -475,69 +477,36 @@ export component PerformanceGraphDialog inherits Rectangle {
                     spacing: 8px;
 
                     // Brilliance Channel Toggle
-                    Rectangle {
-                        height: 24px;
-                        border-radius: Theme.radius-sm;
-                        background: root.show_brilliance ? #0284c733 : Theme.surface-sunken;
-                        border-width: 1px;
-                        border-color: root.show_brilliance ? Theme.accent-cyan : Theme.border-dialog;
-
-                        TouchArea {
-                            clicked => { root.show_brilliance = !root.show_brilliance; }
-                        }
-
-                        HorizontalLayout {
-                            padding-left: 8px;
-                            padding-right: 8px;
-                            spacing: 5px;
-                            alignment: center;
-                            if !root.narrow: Rectangle { width: 7px; height: 7px; border-radius: 3px; background: Theme.accent-cyan; }
-                            Text { text: root.narrow ? "Brilliance" : "Brilliance % (Light Return)";font-size: 10px; font-weight: 600; color: root.show_brilliance ? Theme.accent-cyan : Theme.text-muted; }
-                        }
+                    ChipToggle {
+                        text: root.narrow ? "Brilliance" : "Brilliance % (Light Return)";
+                        hint: "Show or hide the brilliance line: how much of the light that enters the stone comes back out through the top.";
+                        active: root.show_brilliance;
+                        accent: Theme.accent-cyan;
+                        fill: Theme.tint-cyan;
+                        show_dot: !root.narrow;
+                        toggled => { root.show_brilliance = !root.show_brilliance; }
                     }
 
                     // Windowing Channel Toggle
-                    Rectangle {
-                        height: 24px;
-                        border-radius: Theme.radius-sm;
-                        background: root.show_windowing ? #d9770633 : Theme.surface-sunken;
-                        border-width: 1px;
-                        border-color: root.show_windowing ? Theme.accent-amber : Theme.border-dialog;
-
-                        TouchArea {
-                            clicked => { root.show_windowing = !root.show_windowing; }
-                        }
-
-                        HorizontalLayout {
-                            padding-left: 8px;
-                            padding-right: 8px;
-                            spacing: 5px;
-                            alignment: center;
-                            if !root.narrow: Rectangle { width: 7px; height: 7px; border-radius: 3px; background: Theme.accent-amber; }
-                            Text { text: root.narrow ? "Windowing" : "Windowing % (TIR Leakage)";font-size: 10px; font-weight: 600; color: root.show_windowing ? Theme.accent-amber : Theme.text-muted; }
-                        }
+                    ChipToggle {
+                        text: root.narrow ? "Windowing" : "Windowing % (TIR Leakage)";
+                        hint: "Show or hide the windowing line: how much light leaks straight through the stone instead of reflecting inside it.";
+                        active: root.show_windowing;
+                        accent: Theme.accent-amber;
+                        fill: Theme.tint-amber;
+                        show_dot: !root.narrow;
+                        toggled => { root.show_windowing = !root.show_windowing; }
                     }
 
                     // Extinction Channel Toggle
-                    Rectangle {
-                        height: 24px;
-                        border-radius: Theme.radius-sm;
-                        background: root.show_extinction ? #b91c1c33 : Theme.surface-sunken;
-                        border-width: 1px;
-                        border-color: root.show_extinction ? #ef4444 : Theme.border-dialog;
-
-                        TouchArea {
-                            clicked => { root.show_extinction = !root.show_extinction; }
-                        }
-
-                        HorizontalLayout {
-                            padding-left: 8px;
-                            padding-right: 8px;
-                            spacing: 5px;
-                            alignment: center;
-                            if !root.narrow: Rectangle { width: 7px; height: 7px; border-radius: 3px; background: #ef4444; }
-                            Text { text: root.narrow ? "Extinction" : "Extinction % (Shadows)"; font-size: 10px; font-weight: 600; color: root.show_extinction ? #ef4444 : Theme.text-muted; }
-                        }
+                    ChipToggle {
+                        text: root.narrow ? "Extinction" : "Extinction % (Shadows)";
+                        hint: "Show or hide the extinction line: how much of the stone looks dark, where it shows the viewer's own head or the room instead of light.";
+                        active: root.show_extinction;
+                        accent: Theme.chart-extinction;
+                        fill: Theme.tint-red;
+                        show_dot: !root.narrow;
+                        toggled => { root.show_extinction = !root.show_extinction; }
                     }
                 }
             }
@@ -593,76 +562,34 @@ export component PerformanceGraphDialog inherits Rectangle {
                     }
                 }
 
-                Rectangle {
-                    height: axis_pill_row.preferred-height;
-                    Tooltip { text: @markdown("Sweep direction (0°, 45°, 90°, 135°) or overlay all four."); }
-                axis_pill_row := HorizontalLayout {
+                HorizontalLayout {
                     spacing: 6px;
 
-                    for label[idx] in root.axis_labels : Rectangle {
-                        height: 24px;
-                        border-radius: Theme.radius-sm;
-                        background: root.selected_axis_index == idx ? #a855f733 : Theme.surface-sunken;
-                        border-width: 1px;
-                        border-color: root.selected_axis_index == idx ? Theme.accent-purple : Theme.border-dialog;
+                    for label[idx] in root.axis_labels : ChipToggle {
+                        text: root.narrow ? root.axis_short_labels[idx] : label;
+                        hint: "Plot the sweep seen from the " + root.axis_short_labels[idx] + " direction around the stone.";
+                        active: root.selected_axis_index == idx;
+                        accent: Theme.accent-purple;
+                        fill: Theme.tint-purple;
                         // Every axis (0 included) needs `extra_axes_ready`'s
                         // background sweep to have landed: axis 0's negative half is
                         // not something the live render thread can supply.
-                        opacity: root.extra_axes_ready ? 1.0 : 0.4;
-
-                        TouchArea {
-                            clicked => {
-                                if root.extra_axes_ready {
-                                    root.selected_axis_index = idx;
-                                }
-                            }
-                        }
-
-                        HorizontalLayout {
-                            padding-left: 8px;
-                            padding-right: 8px;
-                            alignment: center;
-                            Text {
-                                text: root.narrow ? root.axis_short_labels[idx] : label;
-                                font-size: 10px;
-                                font-weight: 600;
-                                color: root.selected_axis_index == idx ? Theme.accent-purple : Theme.text-muted;
-                            }
-                        }
+                        enabled: root.extra_axes_ready;
+                        toggled => { root.selected_axis_index = idx; }
                     }
 
                     // "All" overlay toggle -- draws every axis of every visible
                     // channel at once.
-                    Rectangle {
-                        height: 24px;
-                        border-radius: Theme.radius-sm;
-                        background: root.show_all_axes ? #a855f733 : Theme.surface-sunken;
-                        border-width: 1px;
-                        border-color: root.show_all_axes ? Theme.accent-purple : Theme.border-dialog;
-                        opacity: root.extra_axes_ready ? 1.0 : 0.4;
-
-                        TouchArea {
-                            clicked => {
-                                if root.extra_axes_ready {
-                                    root.show_all_axes = !root.show_all_axes;
-                                }
-                            }
-                        }
-
-                        HorizontalLayout {
-                            padding-left: 8px;
-                            padding-right: 8px;
-                            alignment: center;
-                            Text {
-                                text: "All";
-                                font-size: 10px;
-                                font-weight: 600;
-                                color: root.show_all_axes ? Theme.accent-purple : Theme.text-muted;
-                            }
-                        }
+                    ChipToggle {
+                        text: "All";
+                        hint: "Draw all four directions at once. The one you picked stays bright, the others fade.";
+                        active: root.show_all_axes;
+                        accent: Theme.accent-purple;
+                        fill: Theme.tint-purple;
+                        enabled: root.extra_axes_ready;
+                        toggled => { root.show_all_axes = !root.show_all_axes; }
                     }
                 }
-                } // axis_pills_hover wrapper
             }
             } // end axis-row VerticalLayout
 
@@ -713,44 +640,26 @@ export component PerformanceGraphDialog inherits Rectangle {
                 alignment: space-between;
                 spacing: 10px;
 
-                Rectangle {
+                ActionButton {
                     height: 32px;
-                    border-radius: Theme.radius-sm;
-                    background: copy_btn.has-hover ? Theme.surface-raised : Theme.surface-sunken;
-                    border-width: 1px;
-                    border-color: Theme.border-dialog;
-
-                    copy_btn := TouchArea {
-                        clicked => { root.copy_curve_data(); }
-                    }
-                    Tooltip { text: @markdown("Copy the full sweep, four axes × 181 points, to the clipboard."); }
-
-                    HorizontalLayout {
-                        padding-left: 12px;
-                        padding-right: 12px;
-                        spacing: 6px;
-                        alignment: center;
-                        // Wrapped so the fixed-size icon is centred in the row; a bare
-                        // fixed-height Image in a HorizontalLayout sits at its top.
-                        VerticalLayout {
-                            alignment: center;
-                            Image { source: @image-url("../icons/clipboard.svg"); colorize: Theme.text-primary; width: 12px; height: 12px; }
-                        }
-                        Text { text: "Copy 181-Point Data Table (4 Axes, ±90°)"; font-size: 11px; font-weight: 600; color: Theme.text-primary; vertical-alignment: center; }
-                    }
+                    icon: @image-url("../icons/clipboard.svg");
+                    text: "Copy 181-Point Data Table (4 Axes, ±90°)";
+                    hint: "Copy the full sweep, four directions of 181 points each, to the clipboard as a table.";
+                    clicked => { root.copy_curve_data(); }
                 }
 
-                Rectangle {
+                ActionButton {
                     width: 90px;
                     height: 32px;
-                    border-radius: Theme.radius-sm;
-                    background: done_btn.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan;
-
-                    done_btn := TouchArea {
-                        clicked => { root.close(); }
-                    }
-
-                    Text { text: "Close"; font-size: 12px; font-weight: 700; color: Theme.text-on-accent; horizontal-alignment: center; vertical-alignment: center; }
+                    text: "Close";
+                    hint: "Close the tilt performance graph.";
+                    fill: Theme.accent-cyan;
+                    hover_fill: Theme.accent-cyan-hover;
+                    edge: Theme.accent-cyan;
+                    ink: Theme.text-on-accent;
+                    font_size: 12px;
+                    weight: 700;
+                    clicked => { root.close(); }
                 }
             }
         }

@@ -1,6 +1,103 @@
 import { Slider } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { ExportModel } from "../../models/export.slint";
+import { GuideModel } from "../../models/guide.slint";
+import { TipBox } from "../tip_box.slint";
+
+// One row of the preset list: a check box drawn by hand, built as a real check box for the
+// keyboard (Tab, then Space or Enter) and for a screen reader.
+component PresetRow inherits Rectangle {
+    in property <string> name;
+    in property <bool> checked;
+    in property <bool> has_env_map;
+    in property <bool> enabled: true;
+    callback toggled();
+
+    height: 26px;
+    border-radius: Theme.radius-sm;
+    opacity: root.enabled ? 1.0 : 0.5;
+    background: Theme.surface-sunken;
+    border-width: row_focus.has-focus ? 2px : 1px;
+    border-color: row_focus.has-focus ? Theme.accent-cyan-hover : (root.checked ? Theme.accent-cyan : Theme.border-dialog);
+
+    accessible-role: AccessibleRole.checkbox;
+    accessible-label: root.has_env_map ? root.name + ", uses an HDR map" : root.name;
+    accessible-checked: root.checked;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.toggled();
+        }
+    }
+
+    Tooltip {
+        text: @markdown("Also render the stone with the \{root.name} lighting preset. It makes one more file next to the current view.");
+    }
+
+    row_focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.toggled();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    row_touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.toggled(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 6px;
+
+        Rectangle {
+            width: 14px;
+            height: 14px;
+            border-radius: 3px;
+            background: root.checked ? Theme.accent-cyan : transparent;
+            border-width: 1px;
+            border-color: root.checked ? Theme.accent-cyan : Theme.border-control;
+            y: (parent.height - self.height) / 2;
+
+            if root.checked: Image {
+                source: @image-url("../../icons/check.svg");
+                colorize: Theme.text-on-accent;
+                width: 9px;
+                height: 9px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        Text {
+            text: root.name;
+            font-size: 11px;
+            font-weight: 600;
+            color: Theme.text-primary;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+
+        // HDR badge: THIS preset lights the stone with an environment map.
+        // The GPU renders it directly; only a map past the adapter's
+        // storage-buffer limit falls back to the CPU (see the export
+        // wiring in `gui::render::render_export::wiring`).
+        if root.has_env_map: Text {
+            text: "HDR";
+            font-size: 11px;
+            font-weight: 600;
+            color: Theme.accent-amber;
+            vertical-alignment: center;
+        }
+    }
+}
 
 // Sample Count (a power-of-two slider) and preset fan-out -- split out of
 // `export_dialog.slint` to keep that file under its line budget.
@@ -8,6 +105,10 @@ import { ExportModel } from "../../models/export.slint";
 // `ExportDialog`'s own identically-named computed properties (kept there,
 // not duplicated here, since the dialog's footer/key handler need them too)
 // -- see that file's own doc comments for the exponent-vs-linear rationale.
+//
+// Sample Count is shown in both modes. The preset fan-out is an Advanced choice: it multiplies
+// the export time, so Simple mode leaves it out (the dialog's note says when presets are
+// ticked).
 export component ExportSamplesAndPresets inherits VerticalLayout {
     spacing: 14px;
 
@@ -20,20 +121,34 @@ export component ExportSamplesAndPresets inherits VerticalLayout {
     // hence the plain-language cost hint that appears near the top of the range.
     VerticalLayout {
         spacing: 6px;
-        Text { text: "Sample Count (higher = slower, smoother)"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+        Rectangle {
+            height: samples_caption.preferred-height;
+            Tooltip { text: @markdown("How many light rays are traced for every pixel of the picture. More rays give a smoother picture and take longer."); }
+            samples_caption := Text {
+                text: "Sample Count (higher = slower, smoother)";
+                font-size: 11px;
+                font-weight: 600;
+                color: Theme.text-secondary;
+                accessible-role: AccessibleRole.text;
+            }
+        }
 
         HorizontalLayout {
             alignment: space-between;
-            Text { text: "Samples per pixel:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-            Text { text: root.effective_samples; font-size: 13px; font-weight: 700; color: Theme.accent-cyan; }
+            Text { text: "Samples per pixel:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; accessible-role: AccessibleRole.text; }
+            Text { text: root.effective_samples; font-size: 13px; font-weight: 700; color: Theme.accent-cyan; accessible-role: AccessibleRole.text; }
         }
 
-        Slider {
-            minimum: 3;
-            maximum: 15;
-            step: 1;
-            value <=> ExportModel.sample_exponent_raw;
-            enabled: !ExportModel.is_exporting;
+        TipBox {
+            hint: "Drag to choose the sample count. Each step doubles it, and doubles the time too.";
+            Slider {
+                minimum: 3;
+                maximum: 15;
+                step: 1;
+                value <=> ExportModel.sample_exponent_raw;
+                enabled: !ExportModel.is_exporting;
+                accessible-label: "Samples per pixel (each step doubles it)";
+            }
         }
 
         if root.sample_exponent >= 14: Text {
@@ -41,6 +156,7 @@ export component ExportSamplesAndPresets inherits VerticalLayout {
             font-size: 11px;
             color: Theme.text-muted;
             wrap: word-wrap;
+            accessible-role: AccessibleRole.text;
         }
     }
 
@@ -48,79 +164,34 @@ export component ExportSamplesAndPresets inherits VerticalLayout {
     // export-usable; an empty list here means nobody has checked "usable for
     // export" on any preset yet (`settings_dialog.slint`'s own checkbox), so
     // there is nothing to fan out and showing an empty section would just be
-    // clutter.
-    if ExportModel.fanout_presets.length > 0: VerticalLayout {
+    // clutter. Advanced mode only.
+    if GuideModel.shows_advanced() && ExportModel.fanout_presets.length > 0: VerticalLayout {
         spacing: 6px;
-        Text {
-            text: "Also Render With These Presets";
-            font-size: 11px;
-            font-weight: 600;
-            color: Theme.text-secondary;
+        Rectangle {
+            height: presets_caption.preferred-height;
+            Tooltip { text: @markdown("Render the stone again with other lighting presets. Each ticked preset makes one more file next to the current view."); }
+            presets_caption := Text {
+                text: "Also Render With These Presets";
+                font-size: 11px;
+                font-weight: 600;
+                color: Theme.text-secondary;
+                accessible-role: AccessibleRole.text;
+            }
         }
         Text {
             text: "Each checked preset produces an ADDITIONAL file alongside the current view -- export time multiplies linearly with how many are selected.";
             font-size: 11px;
             color: Theme.text-muted;
             wrap: word-wrap;
+            accessible-role: AccessibleRole.text;
         }
 
-        for preset[idx] in ExportModel.fanout_presets: Rectangle {
-            height: 26px;
-            border-radius: Theme.radius-sm;
-            background: #0f172a;
-            border-width: 1px;
-            border-color: preset.selected ? Theme.accent-cyan : #334155;
-
-            fanout_touch := TouchArea {
-                enabled: !ExportModel.is_exporting;
-                clicked => { ExportModel.toggle_preset_selected(idx); }
-            }
-
-            HorizontalLayout {
-                padding-left: 8px;
-                padding-right: 8px;
-                spacing: 6px;
-
-                Rectangle {
-                    width: 14px;
-                    height: 14px;
-                    border-radius: 3px;
-                    background: preset.selected ? Theme.accent-cyan : transparent;
-                    border-width: 1px;
-                    border-color: preset.selected ? Theme.accent-cyan : Theme.border-control;
-                    y: (parent.height - self.height) / 2;
-
-                    if preset.selected: Image {
-                        source: @image-url("../../icons/check.svg");
-                        colorize: #0f172a;
-                        width: 9px;
-                        height: 9px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-
-                Text {
-                    text: preset.name;
-                    font-size: 11px;
-                    font-weight: 600;
-                    color: Theme.text-primary;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                }
-
-                // HDR badge: THIS preset lights the stone with an environment map.
-                // The GPU renders it directly; only a map past the adapter's
-                // storage-buffer limit falls back to the CPU (see the export
-                // wiring in `gui::render::render_export::wiring`).
-                if preset.has_env_map: Text {
-                    text: "HDR";
-                    font-size: 11px;
-                    font-weight: 600;
-                    color: Theme.accent-amber;
-                    vertical-alignment: center;
-                }
-            }
+        for preset[idx] in ExportModel.fanout_presets: PresetRow {
+            name: preset.name;
+            checked: preset.selected;
+            has_env_map: preset.has_env_map;
+            enabled: !ExportModel.is_exporting;
+            toggled => { ExportModel.toggle_preset_selected(idx); }
         }
     }
 }

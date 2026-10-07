@@ -1,0 +1,51 @@
+import { Theme } from "../theme.slint";
+
+// A standard widget (LineEdit, ComboBox, SpinBox, Slider) with a tooltip.
+//
+// The standard widgets draw their own look and have no tooltip of their own. Wrapping one in a
+// `TipBox` gives it the same hover hint every hand-drawn control in the program has, without
+// changing how the widget sizes itself or how it takes the keyboard:
+//
+//     TipBox {
+//         hint: "The stone's width across the girdle, in millimetres.";
+//         LineEdit { accessible-label: "Stone width in millimetres"; text <=> ...; }
+//     }
+//
+// Give the widget an `accessible-label` yourself: a screen reader does not read the caption
+// beside a `LineEdit` or `ComboBox` as its name.
+//
+// The wrapper takes the size the widget wants (minimum, preferred), so it sits in a layout like
+// the widget would. A caller that wants it to stretch sets `horizontal-stretch` on the `TipBox`.
+export component TipBox inherits Rectangle {
+    // One plain sentence: what the field is for. Empty: no tooltip.
+    in property <string> hint;
+
+    min-width: slot.min-width;
+    min-height: slot.min-height;
+    preferred-width: slot.preferred-width;
+    preferred-height: slot.preferred-height;
+
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
+
+    slot := VerticalLayout {
+        @children
+    }
+}
+
+// A caption above a form field. The caption carries the field's longer tooltip, so the technical
+// word on the label can be explained in plain language where the cutter looks for it.
+export component FieldCaption inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <length> font_size: 11px;
+
+    height: caption.preferred-height;
+    preferred-width: caption.preferred-width;
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
+    caption := Text {
+        text: root.text;
+        font-size: root.font_size;
+        color: Theme.text-muted;
+        accessible-role: AccessibleRole.text;
+    }
+}

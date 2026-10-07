@@ -1,4 +1,4 @@
-import { DiagramItem, AngleItem, FileItem, DiagramDetailData, OpticalMetricsData, LightingPresetItem, WorkerItem, PreviewThumbnails, PerformanceFilterRow, EditorTierItem, OptimizeResultRow, GearRemapRow } from "types.slint";
+import { DiagramItem, AngleItem, FileItem, DiagramDetailData, OpticalMetricsData, LightingPresetItem, WorkerItem, PreviewThumbnails, PerformanceFilterRow, EditorTierItem, OptimizeResultRow, OptimizeToneSwatches, GearRemapRow } from "types.slint";
 import { Theme } from "theme.slint";
 import { HeaderToolbar } from "components/header.slint";
 import { DiagramListView, CollapsedLibraryRail } from "components/diagram_list.slint";
@@ -10,10 +10,16 @@ import { Toast } from "components/toast.slint";
 // The visual before/after compare window (a second top-level OS window) and its
 // model -- see `models/compare.slint`.
 import { CompareWindow } from "compare_window.slint";
-import { CompareModel } from "models/compare.slint";
+import { CompareModel, CompareMetricRow } from "models/compare.slint";
 // The Rough Planner window (a separate top-level OS window, like `CompareWindow`)
 // and its model -- see `rough_planner_window.slint` and `models/rough_plan.slint`.
 import { RoughPlannerWindow } from "rough_planner_window.slint";
+// "Locate inclusion from photos..." and the camera rigs it uses (two more top-level windows
+// opened from the Rough Planner) and the photo canvas's structs -- see `locate_window.slint`,
+// `rig_window.slint` and `components/locate/photo_canvas.slint`.
+import { LocateWindow } from "locate_window.slint";
+import { RigWindow, RigViewRow } from "rig_window.slint";
+import { CanvasMarker, CanvasPath, PhotoSlot, ReportRow } from "components/locate/photo_canvas.slint";
 import { EditorView } from "components/editor_view.slint";
 import { EditorStatusStrip } from "components/editor_status_strip.slint";
 // `RetargetRowItem` stays imported here (not just where `RetargetDialog` is
@@ -36,7 +42,9 @@ import { ManipulateModel } from "models/manipulate.slint";
 import { ActivityModel, ActivityItem } from "models/activity.slint";
 import { ViewportModel } from "models/viewport.slint";
 import { PhysicscolorModel, PhysicsRow, PhysicsAddOption, PhysicsTreatment } from "models/physics_color.slint";
-import { RetargetModel } from "models/retarget.slint";
+// The material editor's Dispersion section (Sellmeier/Cauchy coefficients) -- see `models/dispersion_editor.slint`.
+import { DispersionEditorModel, DispersionView } from "models/dispersion_editor.slint";
+import { RetargetModel, RetargetCandidateItem } from "models/retarget.slint";
 import { ExportModel } from "models/export.slint";
 import { SettingsModel } from "models/settings.slint";
 import { RemoteWorkerModel } from "models/remote_worker.slint";
@@ -46,26 +54,121 @@ import { LibraryModel } from "models/library.slint";
 import { EditorModel } from "models/editor.slint";
 // Guidance layer globals: see each file's own doc comment.
 import { GuideModel, GuideStepData, GuideAllow } from "models/guide.slint";
+// The tutorial browser (Help > Tutorials...) and the welcome dialog -- see `models/tutorials.slint`.
+import { TutorialsModel, TutorialRowData } from "models/tutorials.slint";
+// "Build this design": a library design as a step-by-step rebuild lesson -- see `models/build_design.slint`.
+import { BuildDesignModel } from "models/build_design.slint";
+import { TutorialBrowser } from "components/tutorial_browser.slint";
+import { WelcomeDialog } from "components/welcome_dialog.slint";
 import { ShortcutsModel, ShortcutItem } from "models/shortcuts.slint";
+// App-wide preferences (Simple/Advanced, UI scale, high contrast, larger handles) and the
+// colour tokens, which Rust reaches per window for the high-contrast switch.
+import { PreferencesModel } from "models/preferences.slint";
+// The command palette (Edit > Command Palette..., Ctrl+K) -- see `models/command_palette.slint`.
+import { CommandPaletteModel, PaletteRow } from "models/command_palette.slint";
+// The overall Good / Check / Problem verdict in the status strip -- see `models/verdict.slint`.
+import { VerdictModel, VerdictReasonData } from "models/verdict.slint";
 import { TemplateGalleryModel, TemplateCardData } from "models/templates.slint";
+// A design's own remembered lighting (settings dialog) -- see `models/design_lighting.slint`.
+import { DesignLightingModel } from "models/design_lighting.slint";
+// The Inspector's History tab (undo history with pictures, jump to a step) -- see `models/history.slint`.
+import { HistoryModel, HistoryRowData, HistoryThumb } from "models/history.slint";
+// The History tab's Variants view (named copies of the design kept in the library) -- see `models/variants.slint`.
+import { VariantsModel, VariantRowData, VariantDiffRow } from "models/variants.slint";
+// Tier relations (a tier's angle follows other tiers) -- see `models/relation.slint`.
+import { RelationModel } from "models/relation.slint";
+// The Inspector's Optimize tab (objective, ranges, candidates) -- see `models/optimize.slint`.
+import { OptimizeModel, OptimizeRangeRow, OptimizeCandidateRow } from "models/optimize.slint";
+// Sliders beside the Angle field and the Preform number fields -- see `models/sliders.slint`.
+import { SliderModel, SliderSpec, SliderPreset } from "models/sliders.slint";
+// The tier table's and Tier form's number boxes read by Rust -- see `models/tier_table.slint`.
+import { TierTableModel } from "models/tier_table.slint";
+// The Design settings panel's "advanced settings in use" question -- see `models/design_settings.slint`.
+import { DesignSettingsModel } from "models/design_settings.slint";
+// The path-aware L*C*h body-colour editor's state -- see `models/body_color_editor.slint`.
+import { BodyColorEditorModel } from "models/body_color_editor.slint";
+// The library's cutting table keyboard cursor question -- see `models/cutting_table.slint`.
+import { CuttingTableModel } from "models/cutting_table.slint";
+// "Edit as Text": the cutting instructions as editable `.asc` text -- see `models/raw_text.slint`.
+import { RawTextModel, RawTextDiffRow } from "models/raw_text.slint";
+import { RawTextDialog } from "components/raw_text_dialog.slint";
+// The in-app help: the manual viewer window, the glossary dialog and their model -- see
+// `models/help.slint`.
+import { HelpModel, HelpNavItem, HelpBlock, HelpSearchHit, GlossaryRow } from "models/help.slint";
+import { HelpWindow } from "components/help_window.slint";
+import { GlossaryDialog } from "components/glossary_dialog.slint";
 // The Rough Planner (Library > Plan Rough...) -- see `models/rough_plan.slint`.
 import { RoughPlanModel, RoughPlanResult, RoughPlanStoneGroup, RoughMetric, RoughCutRow, SavedRoughPlanRow } from "models/rough_plan.slint";
+// Edit > Angle Sweep...: one tier's angle over a range, as a table, a chart and CSV -- see
+// `models/sweep.slint`.
+import { SweepModel, SweepCellItem, SweepRowItem, SweepColumnItem, SweepPathItem, SweepLegendItem } from "models/sweep.slint";
+import { SweepDialog } from "components/sweep_dialog.slint";
+// Cutting mode: the cutting instructions one step per page over the whole window, with done
+// marks kept per design -- see `models/cutting_mode.slint`.
+import { CuttingModeModel, CmChip, CmWheelMark, CmWheelScale } from "models/cutting_mode.slint";
+import { CuttingModeScreen } from "components/cutting_mode/cutting_mode_screen.slint";
+// The render queue: Jobs window, header chip and "Add to Queue" -- see `models/render_jobs.slint`.
+import { RenderJobsModel, RenderJobRow } from "models/render_jobs.slint";
 
 export {
     DiagramItem, AngleItem, FileItem, DiagramDetailData, OpticalMetricsData,
     LightingPresetItem, WorkerItem, PerformanceFilterRow, EditorTierItem,
-    OptimizeResultRow, GearRemapRow, RetargetRowItem,
+    OptimizeResultRow, OptimizeToneSwatches, GearRemapRow, RetargetRowItem,
     PhysicscolorModel, PhysicsRow, PhysicsAddOption, PhysicsTreatment,
-    SolidPreviewModel, ManipulateModel, ViewportModel, RetargetModel, ExportModel, SettingsModel,
+    DispersionEditorModel, DispersionView,
+    SolidPreviewModel, ManipulateModel, ViewportModel, RetargetModel, RetargetCandidateItem, ExportModel, SettingsModel,
     RemoteWorkerModel, BatchModel, TiltModel, TiltVideoExportModel, LibraryModel, EditorModel, UndoRedoLabels,
     // ActivityModel: the app's background-activity/status model -- see ui/models/activity.slint.
     ActivityModel, ActivityItem,
     // Guidance globals: guide, keyboard shortcuts overlay, template gallery -- see each global's doc comment.
     GuideModel, GuideStepData, GuideAllow, ShortcutsModel, ShortcutItem, TemplateGalleryModel, TemplateCardData,
+    // The tutorial browser's global and its row struct -- see ui/models/tutorials.slint.
+    TutorialsModel, TutorialRowData,
+    // Starts the "Build this design" lesson for a library design -- see ui/models/build_design.slint.
+    BuildDesignModel,
+    // A design's own remembered lighting -- see ui/models/design_lighting.slint.
+    DesignLightingModel,
+    // The History tab's global and its row structs -- see ui/models/history.slint.
+    HistoryModel, HistoryRowData, HistoryThumb,
+    // The Variants view's global and its row structs -- see ui/models/variants.slint.
+    VariantsModel, VariantRowData, VariantDiffRow,
+    // Tier relations: remove, explain, linked step series -- see ui/models/relation.slint.
+    RelationModel,
+    // The Optimize tab's global and its row structs -- see ui/models/optimize.slint.
+    OptimizeModel, OptimizeRangeRow, OptimizeCandidateRow,
+    // The sliders beside the Angle and Preform fields -- see ui/models/sliders.slint.
+    SliderModel, SliderSpec, SliderPreset,
+    // The tier table's and Tier form's number boxes -- see ui/models/tier_table.slint.
+    TierTableModel,
+    // The Design settings panel's note question -- see ui/models/design_settings.slint.
+    DesignSettingsModel,
+    // The L*C*h body-colour editor's state -- see ui/models/body_color_editor.slint.
+    BodyColorEditorModel,
+    // The library cutting table's keyboard cursor question -- see ui/models/cutting_table.slint.
+    CuttingTableModel,
+    // The Edit as Text dialog's global and its row struct -- see ui/models/raw_text.slint.
+    RawTextModel, RawTextDiffRow,
     // The visual compare window and its model -- see ui/models/compare.slint.
-    CompareWindow, CompareModel,
+    CompareWindow, CompareModel, CompareMetricRow,
     // The Rough Planner window, global and its row structs -- see ui/rough_planner_window.slint.
-    RoughPlannerWindow, RoughPlanModel, RoughPlanResult, RoughPlanStoneGroup, RoughMetric, RoughCutRow, SavedRoughPlanRow
+    RoughPlannerWindow, RoughPlanModel, RoughPlanResult, RoughPlanStoneGroup, RoughMetric, RoughCutRow, SavedRoughPlanRow,
+    // The photo-locating windows and their row structs -- see ui/locate_window.slint, ui/rig_window.slint.
+    LocateWindow, RigWindow, RigViewRow, CanvasMarker, CanvasPath, PhotoSlot, ReportRow,
+    // The Angle Sweep dialog's global and its row structs -- see ui/models/sweep.slint.
+    SweepModel, SweepCellItem, SweepRowItem, SweepColumnItem, SweepPathItem, SweepLegendItem,
+    // Cutting mode's global and its chip and wheel structs -- see ui/models/cutting_mode.slint.
+    CuttingModeModel, CmChip, CmWheelMark, CmWheelScale,
+    // The help window and its global, with the row structs -- see ui/models/help.slint.
+    HelpWindow, HelpModel, HelpNavItem, HelpBlock, HelpSearchHit, GlossaryRow,
+    // Preferences (ui/models/preferences.slint) and the colour tokens (ui/theme.slint, the
+    // high-contrast flag is set per window from `gui::preferences`).
+    PreferencesModel, Theme,
+    // The command palette's global and its row struct -- see ui/models/command_palette.slint.
+    CommandPaletteModel, PaletteRow,
+    // The overall verdict's global and its reason row -- see ui/models/verdict.slint.
+    VerdictModel, VerdictReasonData,
+    // The render queue's global and its row struct -- see ui/models/render_jobs.slint.
+    RenderJobsModel, RenderJobRow
 }
 
 // --- Sizing notes -----------------------------------------------------------
@@ -221,6 +324,61 @@ export component MainWindow inherits Window {
     }
     changed active_tab => { root.sync_library_auto_collapse(); }
 
+    // The command palette bumps `restore_focus_pulse` whenever it closes. Its search field
+    // held the keyboard focus and is removed with it, which would leave no focused item and
+    // silence every shortcut until the next click; taking the focus back here avoids that.
+    // A command chosen in the palette runs a moment after this (see `gui::commands`), so a
+    // dialog that command opens still ends up with the focus.
+    property <int> command_palette_focus_pulse: CommandPaletteModel.restore_focus_pulse;
+    changed command_palette_focus_pulse => { global_shortcuts.focus(); }
+
+    // The empty state's "Start from a library design" card bumps `library_search_pulse`
+    // (after opening the library panel): the cursor goes into the library's search box.
+    property <int> library_search_pulse: TutorialsModel.library_search_pulse;
+    changed library_search_pulse => { header_toolbar.focus_search(); }
+
+    // Whether the welcome dialog shows: a new user's first start (or "Show the welcome tour
+    // again"), once Preferences and the start-up restore question are out of the way.
+    property <bool> welcome_open: PreferencesModel.first_run_tour_pending && EditorModel.enabled
+        && !PreferencesModel.dialog_open && EditorModel.startup_restore_path == "";
+    // The browser and the welcome dialog hold the keyboard while open and take it with them
+    // when they go; the main window takes it back here, unless the answer opened a dialog of
+    // its own (the New Design dialog, the unsaved-changes question), which keeps it.
+    property <bool> tutorials_browser_open: TutorialsModel.browser_open;
+    changed tutorials_browser_open => {
+        if !root.tutorials_browser_open && !EditorModel.new_dialog_open && !EditorModel.unsaved_dialog_open {
+            global_shortcuts.focus();
+        }
+    }
+    changed welcome_open => {
+        if !root.welcome_open && !EditorModel.new_dialog_open && !EditorModel.unsaved_dialog_open {
+            global_shortcuts.focus();
+        }
+    }
+    // The Edit as Text dialog holds the keyboard while open (its text box takes it on opening)
+    // and the main window takes it back when the dialog closes.
+    property <bool> raw_text_open: RawTextModel.is_open;
+    changed raw_text_open => {
+        if !root.raw_text_open && !EditorModel.new_dialog_open && !EditorModel.unsaved_dialog_open {
+            global_shortcuts.focus();
+        }
+    }
+    // The Angle Sweep dialog the same way: it takes the keyboard on opening and gives it back.
+    property <bool> sweep_open: SweepModel.dialog_open;
+    changed sweep_open => {
+        if !root.sweep_open && !EditorModel.new_dialog_open && !EditorModel.unsaved_dialog_open {
+            global_shortcuts.focus();
+        }
+    }
+    // Cutting mode the same way: its screen takes the keyboard on opening and the main window
+    // takes it back when the screen closes.
+    property <bool> cutting_mode_open: CuttingModeModel.open;
+    changed cutting_mode_open => {
+        if !root.cutting_mode_open && !EditorModel.new_dialog_open && !EditorModel.unsaved_dialog_open {
+            global_shortcuts.focus();
+        }
+    }
+
     // --- MENU BAR ---
     // NOTE: the Slint compiler requires `MenuBar` to be a direct child of a
     // `Window`-inheriting component ("MenuBar can only be within a Window
@@ -272,10 +430,16 @@ export component MainWindow inherits Window {
             // Experimental: the `.gcs` writer follows the published Gem Cut Studio
             // 1.1 file description; the command bar's "Export..." entry carries
             // the tooltip saying so (a `MenuItem` has no tooltip).
-            MenuItem {
+            // Advanced: the Simple interface leaves it out, as it does the command bar's entry.
+            if GuideModel.shows_advanced(): MenuItem {
                 title: "Export as Gem Cut Studio (.gcs)... (experimental)";
                 enabled: EditorModel.enabled && GuideModel.allows_file_ops();
                 activated => { EditorModel.export_gcs(); }
+            }
+            // The render queue's Jobs window (also opened by the header's Jobs chip).
+            MenuItem {
+                title: "Render Jobs...";
+                activated => { RenderJobsModel.panel_open = true; }
             }
             // "Export Cutting Sheet (HTML)..."/"Export Diagram (PNG)..." live on
             // the command bar's own "Export..." split button
@@ -303,6 +467,58 @@ export component MainWindow inherits Window {
                 enabled: EditorModel.enabled && EditorModel.can_redo && GuideModel.allows_history();
                 activated => { EditorModel.redo(); }
             }
+            // The cutting instructions as editable `.asc` text (`gui::editor::raw_text`). Not
+            // offered while a confirm dialog waits for an answer, like the command palette.
+            // Edit as Text and Angle Sweep are advanced: the Simple interface leaves them out of
+            // the menu (the palette still lists them, with its own availability rules).
+            if GuideModel.shows_advanced(): MenuItem {
+                title: "Edit as Text...";
+                enabled: EditorModel.enabled && EditorModel.has_design && GuideModel.allows_advanced()
+                    && !RawTextModel.is_open && !EditorModel.unsaved_dialog_open
+                    && !EditorModel.write_confirm_open && !EditorModel.mismatch_dialog_open
+                    && !root.close_confirm_open;
+                activated => { RawTextModel.open(); }
+            }
+            // One tier's angle over a range, as a table, a chart and CSV (`gui::editor::sweep`).
+            // Not offered while a confirm dialog waits for an answer, like the command palette.
+            if GuideModel.shows_advanced(): MenuItem {
+                title: "Angle Sweep...";
+                enabled: EditorModel.enabled && EditorModel.has_design && GuideModel.allows_advanced()
+                    && !SweepModel.dialog_open && !EditorModel.unsaved_dialog_open
+                    && !EditorModel.write_confirm_open && !EditorModel.mismatch_dialog_open
+                    && !root.close_confirm_open;
+                activated => { SweepModel.open_dialog(); }
+            }
+            // The cutting steps one page at a time over the whole window, with done marks kept
+            // for the design (`gui::editor::cutting_mode`). Dim while there is nothing to cut
+            // (no design, no tiers, a design that does not solve); the command bar's Cut Mode
+            // button shows the reason. Not offered while a confirm dialog waits for an answer.
+            MenuItem {
+                title: "Cutting Mode...";
+                enabled: EditorModel.enabled && CuttingModeModel.unavailable_reason() == ""
+                    && GuideModel.allows_advanced() && !CuttingModeModel.open
+                    && !EditorModel.unsaved_dialog_open && !EditorModel.write_confirm_open
+                    && !EditorModel.mismatch_dialog_open && !root.close_confirm_open;
+                activated => { CuttingModeModel.open_cutting_mode(); }
+            }
+            // App-wide preferences, not about one design: the Simple/Advanced interface,
+            // UI scale, high contrast, larger handles and tutorials. Locked with the other
+            // advanced controls while the worked-example guide runs.
+            MenuItem {
+                title: "Preferences... (Ctrl+,)";
+                enabled: GuideModel.allows_advanced();
+                activated => { PreferencesModel.dialog_open = true; }
+            }
+            // A search box over every command in the app (`gui::commands`). Not offered
+            // while a confirm dialog waits for an answer, so the palette cannot be used to
+            // act behind it.
+            MenuItem {
+                title: "Command Palette... (Ctrl+K)";
+                enabled: !EditorModel.unsaved_dialog_open && !EditorModel.write_confirm_open
+                    && !EditorModel.mismatch_dialog_open && !root.close_confirm_open
+                    && EditorModel.startup_restore_path == "";
+                activated => { CommandPaletteModel.open_palette(); }
+            }
         }
         // Whole-catalogue batches (`gui::batch::regenerate_all`): each item opens the
         // same confirm step the other triggers use. Disabled only while that batch is
@@ -312,17 +528,18 @@ export component MainWindow inherits Window {
         // `*_visible` left the menu dead whenever a dialog was left open.
         Menu {
             title: "Library";
-            MenuItem {
+            // The three whole-library batches are advanced: the Simple interface leaves them out.
+            if GuideModel.shows_advanced(): MenuItem {
                 title: "Regenerate All Preview Images...";
                 enabled: !BatchModel.preview_batch_running;
                 activated => { LibraryModel.regenerate_all_previews(); }
             }
-            MenuItem {
+            if GuideModel.shows_advanced(): MenuItem {
                 title: "Regenerate All Tilt Curves...";
                 enabled: !BatchModel.tilt_batch_running;
                 activated => { LibraryModel.regenerate_all_tilt_curves(); }
             }
-            MenuItem {
+            if GuideModel.shows_advanced(): MenuItem {
                 title: "Regenerate Both...";
                 enabled: !BatchModel.preview_batch_running && !BatchModel.tilt_batch_running;
                 activated => { LibraryModel.regenerate_all_previews_and_tilt_curves(); }
@@ -331,12 +548,51 @@ export component MainWindow inherits Window {
                 title: "Plan Rough...";
                 activated => { RoughPlanModel.open(); }
             }
+            // The actions of the library list's right-click menu, for the design selected in the
+            // list, so they can be reached from the keyboard too (a right-click menu is mouse
+            // only). Dim while no design is selected.
+            Menu {
+                title: "Selected Design";
+                enabled: LibraryModel.selected_entry_id >= 0;
+                MenuItem {
+                    title: "Generate Previews";
+                    activated => { LibraryModel.generate_previews_for_entry(LibraryModel.selected_entry_id); }
+                }
+                MenuItem {
+                    title: "Compute Tilt Curves";
+                    activated => { LibraryModel.compute_tilt_curves_for_entry(LibraryModel.selected_entry_id); }
+                }
+                MenuItem {
+                    title: "Ignore or Un-ignore";
+                    activated => { LibraryModel.toggle_ignored(LibraryModel.selected_entry_id); }
+                }
+                MenuItem {
+                    title: "Exclude from or Include in Planner";
+                    activated => { LibraryModel.toggle_planner_excluded(LibraryModel.selected_entry_id); }
+                }
+                MenuItem {
+                    title: "Build this Design";
+                    enabled: !BuildDesignModel.busy;
+                    activated => { BuildDesignModel.start(LibraryModel.selected_entry_id); }
+                }
+            }
         }
         Menu {
             title: "Help";
+            // Opens the in-app help window at the contents (`gui::help`); the glossary is
+            // a dialog over this window (`GlossaryDialog`, mounted below).
             MenuItem {
                 title: "User Manual";
                 activated => { root.open_user_manual(); }
+            }
+            // The manual page for what is on screen (F1); Rust picks it (`gui::help::context`).
+            MenuItem {
+                title: "Help for This Screen (F1)";
+                activated => { HelpModel.open_context_help(); }
+            }
+            MenuItem {
+                title: "Glossary";
+                activated => { HelpModel.open_glossary(""); }
             }
             // Opens the keyboard-shortcuts overlay and the worked-example
             // walkthrough -- see `ui/models/shortcuts.slint`/`ui/models/guide.slint`.
@@ -348,6 +604,13 @@ export component MainWindow inherits Window {
                 title: "Guide: New Design Walkthrough";
                 enabled: EditorModel.enabled;
                 activated => { GuideModel.start(); }
+            }
+            // The tutorial browser: a short guided lesson for each tool -- see
+            // `ui/models/tutorials.slint`.
+            MenuItem {
+                title: "Tutorials...";
+                enabled: EditorModel.enabled;
+                activated => { TutorialsModel.open_browser(); }
             }
         }
     }
@@ -364,6 +627,12 @@ export component MainWindow inherits Window {
             // Every action arm also checks the same `GuideModel.allows_*()` helper
             // as its button, so a control the worked-example guide locks stays
             // locked from the keyboard too (the key is still swallowed).
+            // Cutting mode covers the window and takes every key; its own screen handles them
+            // first, this is the fallback when the keyboard focus is somewhere else.
+            if CuttingModeModel.open {
+                CuttingModeModel.handle_key(event.text, event.modifiers.control || event.modifiers.meta || event.modifiers.alt);
+                return accept;
+            }
             if (event.modifiers.control || event.modifiers.meta) && event.modifiers.shift && event.text == "S" {
                 if EditorModel.enabled && GuideModel.allows_file_ops() {
                     EditorModel.save_native_as();
@@ -437,6 +706,22 @@ export component MainWindow inherits Window {
                     root.active_tab_changed(2);
                 }
                 return accept;
+            } else if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "," {
+                // Opens the Preferences dialog. A text field that is being typed into
+                // keeps its own keys, like `?` below; the guide's lock follows the menu item.
+                if !EditorModel.text_focus && GuideModel.allows_advanced() {
+                    PreferencesModel.dialog_open = true;
+                }
+                return accept;
+            } else if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "k" {
+                // Opens the command palette from anywhere, also while a text field has
+                // focus: neither Ctrl+K nor Ctrl+Shift+P types a character, so no field
+                // needs them. The palette's own search field keeps focus once it is open.
+                CommandPaletteModel.open_palette();
+                return accept;
+            } else if (event.modifiers.control || event.modifiers.meta) && event.modifiers.shift && event.text == "P" {
+                CommandPaletteModel.open_palette();
+                return accept;
             } else if event.text == Key.F5 {
                 // Documented (appendix-b-keyboard-shortcuts.md, 05-solving.md); gated the
                 // same way the command bar's own Solve button is (`editor_command_bar.slint`)
@@ -444,6 +729,11 @@ export component MainWindow inherits Window {
                 if EditorModel.enabled && !EditorModel.solve_running && GuideModel.allows_solve() {
                     EditorModel.solve();
                 }
+                return accept;
+            } else if event.text == Key.F1 {
+                // Help for this screen: the manual page for what is on screen (Rust picks it,
+                // `gui::help::context`). Types no character, so it also works in a text field.
+                HelpModel.open_context_help();
                 return accept;
             } else if !event.modifiers.control && !event.modifiers.meta && !event.modifiers.alt
                     && (event.text == "1" || event.text == "2" || event.text == "3" || event.text == "4")
@@ -508,7 +798,9 @@ export component MainWindow inherits Window {
             spacing: 6px;
 
             // 1. TOP BAR
-            header_toolbar := HeaderToolbar { compact: root.width < 1100px; }
+            // 1160px, not the 1100px stacking threshold below: the Simple | Advanced pill
+            // widens the logo cluster by ~130px, and the one-row header needs about 1140px.
+            header_toolbar := HeaderToolbar { compact: root.width < 1160px; }
 
             // 2. MAIN SPLIT WORKSPACE
             HorizontalLayout {
@@ -707,6 +999,30 @@ export component MainWindow inherits Window {
             docked: root.active_tab == 0 && root.render_view_tab == 1 && EditorModel.enabled && root.width >= 1100px + (GuideModel.open ? 272px : 0px);
         }
 
+        // Cutting mode (Edit > Cutting Mode..., the command bar's Cut Mode, the palette): the
+        // cutting steps one page at a time over the whole window -- see
+        // `models/cutting_mode.slint`. At the default z and before the dialogs below, so the
+        // palette, the confirm questions and the glossary still draw above it. The wrapping
+        // `FocusScope` takes the keyboard on opening and swallows every key, Tab included, so
+        // no shortcut can fire on the design underneath; `CuttingModeModel.handle_key` decides
+        // what the keys mean (Esc leaves). A key with Ctrl, Alt or Meta held does nothing there.
+        if CuttingModeModel.open: FocusScope {
+            x: 0px;
+            y: 0px;
+            width: 100%;
+            height: 100%;
+            init => { self.focus(); }
+            key-pressed(event) => {
+                CuttingModeModel.handle_key(event.text, event.modifiers.control || event.modifiers.meta || event.modifiers.alt);
+                return accept;
+            }
+
+            CuttingModeScreen {
+                width: 100%;
+                height: 100%;
+            }
+        }
+
         // Every dialog driven only by a global model -- see
         // `GlobalDialogsOverlay`'s own doc comment
         // (`components/app/global_dialogs.slint`) for the full list and why this
@@ -723,6 +1039,143 @@ export component MainWindow inherits Window {
             y: 0px;
             width: 100%;
             height: 100%;
+        }
+
+        // The glossary (Help > Glossary, "More in the glossary" in a tooltip) -- see
+        // `models/help.slint`. Same wrapping-`FocusScope` convention as the dialogs
+        // above: Escape closes it, every other key is swallowed so a shortcut cannot
+        // fire on the design underneath, and Tab moves between its own controls.
+        if HelpModel.glossary_open: FocusScope {
+            x: 0px;
+            y: 0px;
+            width: 100%;
+            height: 100%;
+            z: 420;
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    HelpModel.glossary_open = false;
+                } else if event.text == Key.Tab || event.text == Key.Backtab {
+                    return reject;
+                }
+                return accept;
+            }
+
+            GlossaryDialog {
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        // The Edit as Text dialog (Edit > Edit as Text..., the palette) -- see
+        // `models/raw_text.slint`. Same wrapping-`FocusScope` convention: every key the text
+        // box does not use is swallowed so a shortcut cannot fire on the design underneath.
+        // Escape leaves the comparison first, then closes (asking first when there are edits
+        // that were not applied); Tab moves between the dialog's own controls.
+        if RawTextModel.is_open: FocusScope {
+            x: 0px;
+            y: 0px;
+            width: 100%;
+            height: 100%;
+            z: 415;
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    if RawTextModel.compare_open {
+                        RawTextModel.compare_open = false;
+                    } else {
+                        RawTextModel.request_close();
+                    }
+                } else if event.text == Key.Tab || event.text == Key.Backtab {
+                    return reject;
+                }
+                return accept;
+            }
+
+            RawTextDialog {
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        // The Angle Sweep dialog (Edit > Angle Sweep..., the palette) -- see `models/sweep.slint`.
+        // Same wrapping-`FocusScope` convention: Escape stops a running sweep, else closes
+        // the dialog; every other key the number fields do not use is swallowed so a shortcut
+        // cannot fire on the design underneath; Tab moves between the dialog's own controls.
+        if SweepModel.dialog_open: FocusScope {
+            x: 0px;
+            y: 0px;
+            width: 100%;
+            height: 100%;
+            z: 405;
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    if SweepModel.running {
+                        SweepModel.cancel();
+                    } else {
+                        SweepModel.close_dialog();
+                    }
+                } else if event.text == Key.Tab || event.text == Key.Backtab {
+                    return reject;
+                }
+                return accept;
+            }
+
+            SweepDialog {
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        // The tutorial browser (Help > Tutorials..., the palette, the empty state) -- see
+        // `models/tutorials.slint`. Same wrapping-`FocusScope` convention as the glossary
+        // above: Escape closes it, every other key is swallowed, Tab moves between its own
+        // controls. Its search box takes the keyboard when it opens.
+        if TutorialsModel.browser_open: FocusScope {
+            x: 0px;
+            y: 0px;
+            width: 100%;
+            height: 100%;
+            z: 410;
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    TutorialsModel.close_browser();
+                } else if event.text == Key.Tab || event.text == Key.Backtab {
+                    return reject;
+                }
+                return accept;
+            }
+
+            TutorialBrowser {
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        // The welcome dialog: shown once to a new user and whenever Preferences > "Show the
+        // welcome tour again" asks for it (it waits until Preferences and the start-up
+        // restore question are out of the way). Escape means "Not now", Enter takes the tour.
+        if root.welcome_open: FocusScope {
+            x: 0px;
+            y: 0px;
+            width: 100%;
+            height: 100%;
+            z: 430;
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    TutorialsModel.tour_dismiss();
+                } else if event.text == Key.Return {
+                    TutorialsModel.tour_start();
+                } else if event.text == Key.Tab || event.text == Key.Backtab {
+                    return reject;
+                }
+                return accept;
+            }
+
+            WelcomeDialog {
+                width: 100%;
+                height: 100%;
+            }
         }
 
         // Window-close unsaved-changes guard -- see `close_confirm_open`'s own doc

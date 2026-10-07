@@ -75,7 +75,10 @@ impl RoughBase {
     /// # Errors
     ///
     /// Returns [`ShapeError::NonPositiveSize`] if any dimension is non-positive or non-finite,
-    /// or [`ShapeError::TooLarge`] if any dimension exceeds 2000 mm.
+    /// [`ShapeError::TooLarge`] if any dimension exceeds 2000 mm, or
+    /// [`ShapeError::NothingLeft`] for a hull whose id is not registered. The registration
+    /// check reads the registry's table only; it never rebuilds a scaled copy that was
+    /// dropped from memory.
     pub fn validate(&self) -> Result<(), ShapeError> {
         let (lens, count) = match *self {
             Self::Block { x_mm, y_mm, z_mm }
@@ -91,7 +94,7 @@ impl RoughBase {
         };
 
         if let Self::Hull { id, .. } = *self
-            && hull::vertices(id).is_none()
+            && !hull::is_registered(id)
         {
             return Err(ShapeError::NothingLeft);
         }

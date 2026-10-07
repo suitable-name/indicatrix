@@ -1,0 +1,11 @@
+// One question the Design settings panel asks Rust: whether a control the Simple interface hides
+// holds a value other than its default. The panel (`components/editor_design_settings.slint`)
+// uses it to show the one-line note "Some advanced settings are in use". The rule and its tests
+// are in Rust: `gui::editor::design_settings_model`.
+export global DesignSettingsModel {
+    // In this order: the RI Override text, the Extra Header Lines text, the Footnotes text, the
+    // Gear Ref. Angle text, the five Printed Proportions texts joined into one string, and the
+    // Mirror switch. `true` when any of them is off its default (an empty field, an angle of
+    // zero, Mirror off). The Simple interface hides all of them and they still apply.
+    pure callback advanced_in_use(string, string, string, string, string, bool) -> bool;
+}

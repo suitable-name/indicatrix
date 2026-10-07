@@ -424,8 +424,9 @@ pub fn fit_shortlisted(
 ///
 /// The LP of an orientation is solved against the convex region as before. A result that
 /// would enter the held basins (exact stage) or improve the polish is then verified
-/// against the mesh by a cutting-plane loop (a row from the triangle that blocks it least
-/// per round, at most six rounds) and replaced by the verified, smaller pose, or dropped. Every fit
+/// against the mesh by a cutting-plane loop (each round adds the blocking walls the
+/// centre satisfies, up to 64 rows, at most twelve rounds) and replaced by the verified,
+/// smaller pose, or dropped. Every fit
 /// returned therefore lies in the material, `mesh.inset_mm` clear of the surface; near a
 /// notch it may be smaller than the best possible. With `None` it is
 /// [`fit_shortlisted`], bit for bit.

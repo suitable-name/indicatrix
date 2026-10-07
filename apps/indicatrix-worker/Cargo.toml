@@ -85,7 +85,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 # `enroll`/`enroll_client` modules: key-material zeroization on drop (already a direct
 # dependency of `rustls`).
-zeroize = "1.9"
+zeroize = "1.9.1"
 
 # Payload codec measurement only (`examples/payload_codec_bench.rs`). The production
 # codecs now live in `indicatrix-net` (`radiance::payload`, behind its default-on

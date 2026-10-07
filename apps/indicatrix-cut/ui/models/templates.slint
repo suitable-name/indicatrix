@@ -1,27 +1,63 @@
-// The New Design template
-// gallery's data -- pushed once at startup from
-// `gui::editor::templates::setup_template_gallery`
-// (`apps/indicatrix-cut/src/gui/editor/templates.rs`), which wraps
-// `indicatrix_cut_core::templates::TEMPLATES`. Every entry is `ready` (selectable)
-// today -- see that Rust module's own doc comment.
+// The New Design dialog's template gallery and options -- pushed from
+// `gui::editor::templates` (`apps/indicatrix-cut/src/gui/editor/templates.rs`), which
+// wraps `indicatrix_editor::templates::gallery_cards` (the cards, in the dialog's
+// section order) and handles the callbacks below in
+// `gui::editor::callbacks::tier_actions::new_design`.
 export struct TemplateCardData {
-    /// The template's display name -- also what `new_design_dialog.slint`
-    /// writes into `EditorModel.new_template_index`'s matching selection
-    /// (index 0 = "Empty", index n >= 1 = `TEMPLATES[n - 1]`, by position in
-    /// this list).
+    /// The template's display name.
     name: string,
-    /// A short shape/fold description shown under the name.
+    /// A short shape/fold line shown under the name.
     shape: string,
-    /// One sentence describing the design.
+    /// One sentence describing the design (the card's tooltip).
     description: string,
-    /// Whether selecting this card and clicking Create actually seeds this
-    /// template's tiers today. A not-ready card still shows its full
-    /// description (so the gallery previews the whole built-in set), but
-    /// `template_gallery.slint` disables selecting it, with a tooltip
-    /// explaining why -- see that file's own doc comment.
+    /// Whether the card can be selected; every card can today.
     ready: bool,
+    /// The index `EditorModel.new_template_index` takes when this card is picked:
+    /// 0 is "Empty", n >= 1 is `TEMPLATES[n - 1]`. It is NOT the card's position in
+    /// its section: the sections regroup the templates, the numbers never change.
+    template_index: int,
+    /// "Designed for Sapphire (n 1.768)", or empty for the blank design.
+    designed_for: string,
+    /// The solid thumbnail, once the worker thread has drawn it (see `has_thumbnail`).
+    thumbnail: image,
+    /// Whether `thumbnail` holds a picture yet. Until then the card shows an empty
+    /// tile, never a stand-in glyph.
+    has_thumbnail: bool,
 }
 
 export global TemplateGalleryModel {
-    in property <[TemplateCardData]> templates: [];
+    /// The "Shapes" section: round brilliant, oval, cushion, emerald, princess.
+    in property <[TemplateCardData]> shapes: [];
+    /// The "Round variants and teaching designs" section.
+    in property <[TemplateCardData]> variants: [];
+    /// The blank design: one card, or none before startup has pushed it.
+    in property <[TemplateCardData]> blank: [];
+
+    /// The gears the selected template can be cut on, as the combo shows them; the
+    /// template's own gear (96) first.
+    in property <[string]> gear_options: [];
+    in-out property <int> gear_index: 0;
+    /// The materials to cut from: built-in, then custom ones.
+    in property <[string]> material_options: [];
+    in-out property <int> material_index: 0;
+    /// The stone width in millimetres, as typed. Empty means "not set yet".
+    in-out property <string> width_text: "6.5";
+    /// "Designed for Sapphire (n 1.768)" for the selected template.
+    in property <string> designed_for: "";
+    /// What the chosen material means for the selected template's facet angles.
+    in property <string> material_note: "";
+    /// The selected template's description.
+    in property <string> description: "";
+
+    /// The dialog was opened: Rust fills the options for the selected template and
+    /// starts drawing any thumbnail it has not drawn yet.
+    callback dialog_shown();
+    /// A card was picked (its `template_index`; `EditorModel.new_template_index`
+    /// already holds it).
+    callback template_chosen(int);
+    /// The material combo changed (its new index).
+    callback material_chosen(int);
+    /// Create: template index, gear combo index, material combo index, width text.
+    /// Rust validates, then builds the design (or asks about unsaved changes first).
+    callback create(int, int, int, string);
 }

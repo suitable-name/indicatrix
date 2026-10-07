@@ -98,6 +98,8 @@ fn parse_yield_form_preserves_the_current_material_name_and_ri_override_regardle
         specific_gravity_override: None,
         refractive_index_override: Some(1.74),
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let (_, material) = parse_yield_form("", 0, "4.1", &current).unwrap();
     assert_eq!(material.name.as_deref(), Some("My Custom Garnet"));
@@ -237,18 +239,40 @@ fn parse_design_material_form_keeps_the_body_color_only_for_the_same_material() 
 fn body_color_combo_index_round_trips_every_preset_and_the_default() {
     let options = body_color_options();
     assert_eq!(options[0], "Material default");
-    assert_eq!(options.len(), 10);
+    assert_eq!(options.len(), 11);
+    assert_eq!(
+        options.last().map(String::as_str),
+        Some(BODY_COLOR_CUSTOM_LABEL)
+    );
+    assert_eq!(body_color_custom_index(), 10);
     assert_eq!(body_color_from_index(0), None);
     assert_eq!(body_color_index_for(None), 0);
-    for index in 1..options.len() as i32 {
+    for index in 1..body_color_custom_index() {
         let rgb = body_color_from_index(index);
         assert!(rgb.is_some(), "index {index} must name a preset");
         assert_eq!(body_color_index_for(rgb), index);
     }
     assert_eq!(body_color_from_index(99), None);
     assert_eq!(body_color_from_index(-1), None);
-    assert_eq!(body_color_index_for(Some([0.5, 0.5, 0.5])), 0);
     assert_eq!(options[6], "Yellow");
+}
+
+#[test]
+fn an_unlisted_body_color_triple_maps_to_the_custom_entry() {
+    let custom = Some([0.5, 0.5, 0.5]);
+    assert_eq!(body_color_index_for(custom), body_color_custom_index());
+    // The custom entry names no table triple; an Apply keeps the design's own.
+    assert_eq!(body_color_from_index(body_color_custom_index()), None);
+    assert_eq!(
+        body_color_for_apply(body_color_custom_index(), custom),
+        custom
+    );
+    assert_eq!(body_color_for_apply(body_color_custom_index(), None), None);
+    assert_eq!(body_color_for_apply(0, custom), None);
+    assert_eq!(body_color_for_apply(2, custom), body_color_from_index(2));
+    // A solved triple (any finite triple) round-trips through the index.
+    let solved = Some([0.123, 0.456, 0.789]);
+    assert_eq!(body_color_index_for(solved), body_color_custom_index());
 }
 
 // --- gear_index_from_teeth / gear_choice_to_teeth ---
@@ -358,6 +382,8 @@ fn ri_source_text_reports_a_typed_override_first_regardless_of_material() {
         specific_gravity_override: None,
         refractive_index_override: Some(1.62),
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let text = ri_source_text(&material, &[]);
     assert!(text.contains("override"));
@@ -376,6 +402,8 @@ fn ri_source_text_names_a_custom_catalogue_material_before_a_same_named_built_in
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let text = ri_source_text(&material, std::slice::from_ref(&custom));
     assert!(text.contains("custom catalogue material"));
@@ -389,6 +417,8 @@ fn ri_source_text_names_a_built_in_when_no_custom_entry_matches() {
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let text = ri_source_text(&material, &[]);
     assert!(text.contains("built-in material"));
@@ -402,6 +432,8 @@ fn ri_source_text_flags_an_unrecognized_name_and_no_selection_as_the_legacy_fall
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     assert!(ri_source_text(&unrecognized, &[]).contains("legacy imported value"));
     assert!(ri_source_text(&MaterialSelection::none(), &[]).contains("legacy imported value"));

@@ -432,6 +432,76 @@ fn unnamed_flat_cutting_rows_are_labelled_by_cutting_position() {
     assert_eq!(first_crown.facet, "#5");
 }
 
+/// A planar design's schedule is in cutting order too, no longer in stored order: the fixture
+/// is stored top-down (table first), the rows open with the girdle and the pavilion and close
+/// with the table, each row's side the solver's classification of the tier it shows.
+#[test]
+fn cutting_rows_of_a_planar_design_follow_the_cutting_order() {
+    use crate::view_model::yield_report::cutting_instructions_rows;
+
+    let design = Design::new(
+        indicatrix_cut_core::PreformSpec::block(2.0, 1.0, 2.0),
+        indicatrix_cut_core::ScheduleMeta::standard_round_brilliant(),
+        ConstraintTier::standard_round_brilliant(),
+    );
+    let solved = design.solve().expect("every tier is pinned");
+    let rows = cutting_instructions_rows(&design, &solved);
+    let facets: Vec<&str> = rows.iter().map(|row| row.facet.as_str()).collect();
+    assert_eq!(
+        facets,
+        [
+            "Girdle",
+            "Pavilion Main",
+            "Lower Girdle",
+            "Culet",
+            "Star",
+            "Crown Main",
+            "Upper Girdle",
+            "Table"
+        ]
+    );
+    let sides: Vec<i32> = rows.iter().map(|row| row.side).collect();
+    assert_eq!(sides, [0, -1, -1, -1, 1, 1, 1, 1]);
+    let positions: Vec<i32> = rows.iter().map(|row| row.order_idx).collect();
+    assert_eq!(positions, [0, 1, 2, 3, 4, 5, 6, 7]);
+}
+
+/// The tier table keeps the stored order, but each row's code is the one the cutting order
+/// gives it: the fixture is stored table first, so the table row reads `T` and the girdle
+/// (stored fifth) reads `G1`; a concave tier's code continues its letter's count.
+#[test]
+fn tier_rows_carry_their_code_in_cutting_order() {
+    let planar = Design::new(
+        indicatrix_cut_core::PreformSpec::block(2.0, 1.0, 2.0),
+        indicatrix_cut_core::ScheduleMeta::standard_round_brilliant(),
+        ConstraintTier::standard_round_brilliant(),
+    );
+    let rows = tier_items(&planar, planar.effective_refractive_index());
+    let codes: Vec<&str> = rows.iter().map(|row| row.code.as_str()).collect();
+    assert_eq!(codes, ["T", "C1", "C2", "C3", "G1", "P1", "P2", "Culet"]);
+    let stale = tier_items_stale(&planar, planar.effective_refractive_index());
+    assert_eq!(
+        stale
+            .iter()
+            .map(|row| row.code.as_str())
+            .collect::<Vec<_>>(),
+        codes,
+        "the stale rows carry the same codes"
+    );
+
+    let concave = Design::concave_fixture();
+    let rows = tier_items(&concave, concave.effective_refractive_index());
+    let (flat, tools) = rows.split_at(concave.tiers.len());
+    let flat_codes: Vec<&str> = flat.iter().map(|row| row.code.as_str()).collect();
+    assert_eq!(flat_codes, ["G1", "P1", "P2", "C1", "C2"]);
+    let tool_codes: Vec<&str> = tools.iter().map(|row| row.code.as_str()).collect();
+    assert_eq!(
+        tool_codes,
+        ["P3", "C3"],
+        "the groove follows the two flat pavilion tiers, the dimple the two crown tiers"
+    );
+}
+
 #[test]
 fn tier_rows_append_concave_rows_with_their_tool_line() {
     use crate::view_model::TierRowKind;
@@ -451,4 +521,45 @@ fn tier_rows_append_concave_rows_with_their_tool_line() {
     }
     assert_eq!(concave[0].block, "Pavilion");
     assert_eq!(concave[1].block, "Crown");
+}
+
+/// The tier table's link badge and the inspector note read `relation_text`: empty for a
+/// free tier, the relation as a cutter reads it for a driven one, and gone again once the
+/// relation is cleared. The concave rows never carry one.
+#[test]
+fn a_driven_tier_row_carries_its_relation_text() {
+    let mut state = EditorSession::fresh();
+    for (index, (name, angle)) in [("P1", -41.0), ("P2", -39.0)].into_iter().enumerate() {
+        state
+            .apply(Edit::AddTier {
+                index,
+                tier: ConstraintTier {
+                    angle_deg: angle,
+                    name: name.to_string(),
+                    indices: vec![0.0, 24.0],
+                    constraint: MeetConstraint::ScaleReference(0.65),
+                    imported_meet: None,
+                    original_notes: None,
+                    detached: Vec::new(),
+                },
+            })
+            .unwrap();
+    }
+    let n_d = state.design.effective_refractive_index();
+    let rows = tier_items_stale(&state.design, n_d);
+    assert!(rows.iter().all(|row| row.relation_text.is_empty()));
+
+    state.set_tier_relation(1, "=P1 - 2").unwrap();
+    let rows = tier_items_stale(&state.design, n_d);
+    assert_eq!(rows[0].relation_text, "");
+    assert_eq!(rows[1].relation_text, "P1 - 2");
+    assert_eq!(rows[1].angle_deg.as_str(), "39.00", "the value still shows");
+
+    state.clear_tier_relation(1).unwrap();
+    let rows = tier_items_stale(&state.design, n_d);
+    assert_eq!(rows[1].relation_text, "");
+
+    let concave = Design::concave_fixture();
+    let rows = tier_items(&concave, concave.effective_refractive_index());
+    assert!(rows.iter().all(|row| row.relation_text.is_empty()));
 }

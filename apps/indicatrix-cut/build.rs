@@ -22,7 +22,16 @@
 //! handed by Cargo.
 
 fn main() {
-    slint_build::compile("ui/app.slint").unwrap();
+    // The app is dark only (the palette in `ui/theme.slint` has no light variant), so the
+    // standard widgets (Button, LineEdit, ComboBox, Slider ...) must be dark too, whatever the
+    // system theme is. The `-dark` suffix makes the Slint compiler fix the style's colour scheme
+    // to dark for every window, from the first frame; without it the widgets followed the
+    // system theme at start-up and only a change of the high-contrast switch could pin them.
+    slint_build::compile_with_config(
+        "ui/app.slint",
+        slint_build::CompilerConfiguration::new().with_style("fluent-dark".to_string()),
+    )
+    .unwrap();
 
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_OS");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {

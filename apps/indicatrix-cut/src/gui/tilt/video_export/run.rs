@@ -19,24 +19,25 @@
 //! finish_export_queue`'s single decrement point and `bridge::export_thread::
 //! spawn_export`'s "`on_done` fires on every exit path, including a caught panic".
 
-use super::{encode, metrics, overlay, params, render};
+use super::{
+    encode,
+    frames::{self, FrameReporter, FramesOutcome},
+    metrics, params,
+};
 use crate::{
     ActivityModel, MainWindow, TiltVideoExportModel,
     bridge::{
-        export_thread::{AccumulationCarry, RemoteSelection, SceneSnapshot},
+        export_thread::{RemoteSelection, SceneSnapshot},
         render_thread::RenderContext,
     },
     gui::progress_eta::{EtaEstimator, format_eta},
     settings::LocalComputeTarget,
 };
-use indicatrix::{color::ColorSpace, renderer::gpu_backend::GpuBackend};
+use indicatrix::color::ColorSpace;
 use slint::ComponentHandle;
 use std::{
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex, atomic::AtomicBool},
     time::Instant,
 };
 
@@ -44,31 +45,34 @@ use std::{
 /// background thread takes over. `Send`: every field is already `Send` (a
 /// `SceneSnapshot`, plain numbers/strings, `Vec<f32>` curves, and a `RemoteSelection`),
 /// the same bar `bridge::export_thread::spawn_export` holds its own request state to.
-pub(super) struct VideoExportRequest {
-    pub(super) scene: SceneSnapshot,
-    pub(super) axis_index: usize,
-    pub(super) start_deg: f64,
-    pub(super) end_deg: f64,
-    pub(super) step_deg: f64,
-    pub(super) total_frames: usize,
-    pub(super) fps: u32,
-    pub(super) width: u32,
-    pub(super) height: u32,
-    pub(super) samples_per_pixel: u32,
-    pub(super) color_space: ColorSpace,
-    pub(super) out_dir: PathBuf,
-    pub(super) out_name: String,
-    pub(super) selection: metrics::MetricSelection,
-    pub(super) curves: metrics::MetricCurves,
-    pub(super) keep_frames: bool,
+///
+/// Public inside this group: a render job builds the same request (`gui::render_jobs::convert`) and
+/// runs it through [`frames::render_frames`].
+pub struct VideoExportRequest {
+    pub scene: SceneSnapshot,
+    pub axis_index: usize,
+    pub start_deg: f64,
+    pub end_deg: f64,
+    pub step_deg: f64,
+    pub total_frames: usize,
+    pub fps: u32,
+    pub width: u32,
+    pub height: u32,
+    pub samples_per_pixel: u32,
+    pub color_space: ColorSpace,
+    pub out_dir: PathBuf,
+    pub out_name: String,
+    pub selection: metrics::MetricSelection,
+    pub curves: metrics::MetricCurves,
+    pub keep_frames: bool,
     /// The remote side: always `ComputeTarget::Both` for a video (see this group's own
     /// `mod.rs` doc comment on why there is no video-side "Compute" control), the
     /// configured remote endpoint (`AppSettings::remote`, read from the SAME settings
     /// store the still-image export reads), and the section's "Transfer" choice.
-    pub(super) remote: RemoteSelection,
+    pub remote: RemoteSelection,
     /// `RenderContext::local_compute_target`, read from the SAME persisted setting the
     /// still-image export and the live viewport both use.
-    pub(super) local_compute: LocalComputeTarget,
+    pub local_compute: LocalComputeTarget,
 }
 
 /// Spawns the background render loop for `request`. Never blocks the UI thread; checks
@@ -128,20 +132,6 @@ fn finish_video_export(render_ctx: &Arc<Mutex<RenderContext>>) {
     RenderContext::lock(render_ctx).export_active_count -= 1;
 }
 
-/// One video export run's outcome, once every frame has either all rendered or the run
-/// stopped early -- kept distinct from a plain `Option` so [`run`] reports EXACTLY one
-/// of cancelled/failed/done, rather than the previous shape where a frame-write
-/// failure (reported from inside the frame loop) and a plain user cancel both
-/// collapsed to the same `None` and were then BOTH reported by the caller.
-enum FramesOutcome {
-    /// Every frame rendered and saved; ready to encode.
-    Done(Vec<PathBuf>),
-    /// `cancel` was observed before every frame finished.
-    Cancelled,
-    /// A frame's render or its PNG write failed outright.
-    Failed(String),
-}
-
 fn run(
     ui_weak: &slint::Weak<MainWindow>,
     render_ctx: &Arc<Mutex<RenderContext>>,
@@ -152,11 +142,11 @@ fn run(
     let digits = params::frame_number_digits(request.total_frames);
     let frame_paths = match render_all_frames(ui_weak, request, cancel, activity_id) {
         FramesOutcome::Done(paths) => paths,
-        FramesOutcome::Cancelled => {
+        FramesOutcome::Cancelled { .. } => {
             report_cancelled(ui_weak, render_ctx, activity_id);
             return;
         }
-        FramesOutcome::Failed(message) => {
+        FramesOutcome::Failed { message, .. } => {
             report_failure(ui_weak, render_ctx, &message, activity_id);
             return;
         }
@@ -182,124 +172,63 @@ fn run(
     report_done(ui_weak, render_ctx, &request.out_dir, &outcome, activity_id);
 }
 
-/// Renders every frame of `request`'s sweep in order, writing each as a numbered PNG.
-/// Acquires ONE [`GpuBackend`] and one [`AccumulationCarry`] for the WHOLE sweep --
-/// never once per frame -- and reuses both across every frame via
-/// [`render::render_frame_rgba`], the tilt video's own thin wrapper around the SAME
-/// `bridge::export_thread::render_accumulation` core the still-image export uses. See
-/// this group's own `mod.rs` doc comment for where `request`'s compute configuration
-/// came from.
+/// Renders every frame of `request`'s sweep through [`frames::render_frames`] (every
+/// frame, never skipping one: the direct export always starts a fresh folder), reporting
+/// into the dialog and the status strip through a [`SlintFrameReporter`]. See
+/// [`frames::render_frames`] for the compute setup and this group's own `mod.rs` doc
+/// comment for where `request`'s compute configuration came from.
 fn render_all_frames(
     ui_weak: &slint::Weak<MainWindow>,
     request: &VideoExportRequest,
     cancel: &AtomicBool,
     activity_id: i32,
 ) -> FramesOutcome {
-    // The full angle list, not a per-index `frame_angle_deg` call: at most 18001 `f64`s
-    // (~144KB even at the finest required 0.01° step), negligible next to the per-frame
-    // RGBA buffers this loop deliberately never holds more than one of at a time (see
-    // this module's own "never all frames in memory at once" doc comment).
-    let angles = params::frame_angles(request.start_deg, request.end_deg, request.step_deg);
-    let mut frame_paths = Vec::with_capacity(request.total_frames);
-
-    // ---- Compute setup, once for the whole video -----------------------------------
-    // Adapter acquisition, remote probing, and hybrid/remote calibration are all far
-    // too slow to repeat every frame -- see `bridge::export_thread::AccumulationCarry`'s
-    // own doc comment for what `carry` seeds forward from frame to frame.
-    let gpu = match request.local_compute {
-        LocalComputeTarget::Cpu => GpuBackend::disabled(),
-        LocalComputeTarget::CpuGpu | LocalComputeTarget::Gpu => GpuBackend::acquire(),
-    };
-    let mut carry = AccumulationCarry::default();
     // The whole sweep's own time-remaining estimator, fed once per completed frame
-    // (`frames_done / frames_total`, below) -- fresh for every call to this
-    // function, since a new run's render rate has nothing to do with a previous
-    // run's. See `gui::progress_eta`'s own module doc comment for why a rolling
-    // regression rather than "seconds since last frame".
-    let mut eta = EtaEstimator::default();
-    let config = render::VideoComputeConfig {
-        remote: request.remote.clone(),
-        local_compute: request.local_compute,
+    // (`frames_done / frames_total`) -- fresh for every call to this function, since a
+    // new run's render rate has nothing to do with a previous run's. See
+    // `gui::progress_eta`'s own module doc comment for why a rolling regression rather
+    // than "seconds since last frame".
+    let mut reporter = SlintFrameReporter {
+        ui_weak: ui_weak.clone(),
+        activity_id,
+        eta: EtaEstimator::default(),
     };
-
-    for (index, &tilt_deg) in angles.iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
-            return FramesOutcome::Cancelled;
-        }
-        let started = Instant::now();
-        let (cam_yaw, cam_pitch) = crate::gui::tilt::tilt_hover_preview::camera_pose_for_axis_tilt(
-            request.axis_index,
-            tilt_deg,
-        );
-
-        let ui_weak_progress = ui_weak.clone();
-        let total_frames = request.total_frames;
-        let outcome = render::render_frame_rgba(
-            &request.scene,
-            request.width,
-            request.height,
-            request.samples_per_pixel,
-            cam_yaw,
-            cam_pitch,
-            request.color_space,
-            &config,
-            &gpu,
-            &mut carry,
-            cancel,
-            move |progress| {
-                report_frame_progress(
-                    &ui_weak_progress,
-                    index,
-                    total_frames,
-                    progress.fraction,
-                    progress.note,
-                    activity_id,
-                );
-            },
-        );
-        let mut rgba = match outcome {
-            render::FrameOutcome::Rendered(rgba) => rgba,
-            render::FrameOutcome::Cancelled => return FramesOutcome::Cancelled,
-            render::FrameOutcome::Failed(message) => {
-                return FramesOutcome::Failed(format!(
-                    "Frame {} of {}: {message}",
-                    index + 1,
-                    request.total_frames
-                ));
-            }
-        };
-        if request.selection.count() > 0 {
-            let readings =
-                metrics::readings_for_frame(request.selection, &request.curves, tilt_deg);
-            overlay::draw_overlay(&mut rgba, request.width, request.height, &readings);
-        }
-
-        let path = request
-            .out_dir
-            .join(params::frame_file_name(index + 1, request.total_frames));
-        if let Err(e) = save_png(&path, request.width, request.height, &rgba) {
-            return FramesOutcome::Failed(format!("Failed to write {}: {e}", path.display()));
-        }
-        frame_paths.push(path);
-
-        let now = Instant::now();
-        eta.observe(now, (index + 1) as f64 / request.total_frames.max(1) as f64);
-        report_progress(
-            ui_weak,
-            index + 1,
-            request.total_frames,
-            started.elapsed().as_secs_f32(),
-            format_eta(eta.eta(now)),
-            activity_id,
-        );
-    }
-    FramesOutcome::Done(frame_paths)
+    frames::render_frames(request, false, cancel, &mut reporter)
 }
 
-fn save_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
-    let image = image::RgbaImage::from_raw(width, height, rgba.to_vec())
-        .ok_or_else(|| "pixel buffer size did not match dimensions".to_string())?;
-    image.save(path).map_err(|e| e.to_string())
+/// Writes the frame loop's progress into `TiltVideoExportModel` and the status strip's
+/// `ActivityChip` -- exactly the two reports the loop made before it moved to `frames`.
+struct SlintFrameReporter {
+    ui_weak: slint::Weak<MainWindow>,
+    activity_id: i32,
+    eta: EtaEstimator,
+}
+
+impl FrameReporter for SlintFrameReporter {
+    fn frame_progress(&mut self, index: usize, total: usize, fraction: f32, note: Option<String>) {
+        report_frame_progress(
+            &self.ui_weak,
+            index,
+            total,
+            fraction,
+            note,
+            self.activity_id,
+        );
+    }
+
+    fn frame_saved(&mut self, _index: usize, frames_done: usize, total: usize, frame_secs: f32) {
+        let now = Instant::now();
+        self.eta
+            .observe(now, frames_done as f64 / total.max(1) as f64);
+        report_progress(
+            &self.ui_weak,
+            frames_done,
+            total,
+            frame_secs,
+            format_eta(self.eta.eta(now)),
+            self.activity_id,
+        );
+    }
 }
 
 /// Reports one completed frame's progress: the dialog's own frame counter/last-frame
@@ -415,32 +344,7 @@ fn report_done(
     activity_id: i32,
 ) {
     finish_video_export(render_ctx);
-    let message = match outcome {
-        encode::EncodeOutcome::Mp4(path) => format!("Exported {}", path.display()),
-        encode::EncodeOutcome::Gif {
-            path,
-            mp4_failure_reason,
-        } => mp4_failure_reason.as_ref().map_or_else(
-            || {
-                format!(
-                    "ffmpeg not found on PATH -- exported an animated GIF instead: {}",
-                    path.display()
-                )
-            },
-            |reason| {
-                format!(
-                    "ffmpeg could not produce an MP4 ({reason}) -- exported an animated \
-                     GIF instead: {}",
-                    path.display()
-                )
-            },
-        ),
-        encode::EncodeOutcome::FramesOnly { readme } => format!(
-            "No video muxer available -- left the frame sequence in {} (see {})",
-            out_dir.display(),
-            readme.display()
-        ),
-    };
+    let (_, message) = frames::encode_outcome_message(outcome, out_dir);
     let ui_weak = ui_weak.clone();
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
         let model = ui.global::<TiltVideoExportModel>();
@@ -456,7 +360,9 @@ fn report_done(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{super::render, *};
+    use crate::bridge::export_thread::AccumulationCarry;
+    use indicatrix::renderer::gpu_backend::GpuBackend;
 
     fn test_config() -> render::VideoComputeConfig {
         render::VideoComputeConfig {
@@ -511,7 +417,7 @@ mod tests {
         let render::FrameOutcome::Rendered(rgba) = outcome else {
             panic!("expected a rendered frame");
         };
-        save_png(&path, 8, 8, &rgba).unwrap();
+        frames::save_png_atomic(&path, 8, 8, &rgba).unwrap();
 
         let entries: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
@@ -545,7 +451,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("frame_001.png");
         let rgba = vec![255u8; 4 * 4 * 4];
-        save_png(&path, 4, 4, &rgba).unwrap();
+        frames::save_png_atomic(&path, 4, 4, &rgba).unwrap();
         let decoded = image::open(&path).unwrap();
         assert_eq!((decoded.width(), decoded.height()), (4, 4));
         let _ = std::fs::remove_dir_all(&dir);

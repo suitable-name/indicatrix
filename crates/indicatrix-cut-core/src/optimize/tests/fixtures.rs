@@ -94,3 +94,11 @@ pub(super) fn design_with_real_meet_structure(text: &str) -> Design {
 pub(super) fn rbc_445() -> Design {
     design_with_real_meet_structure(RBC_445)
 }
+
+/// [`RBC_445`] imported the way a catalogue file is: every tier a `ScaleReference`
+/// at the file's own mast, nothing meet-derived -- the design the optimizer finds
+/// nothing free in unless it is asked to vary anchored tiers.
+pub(super) fn imported_rbc() -> Design {
+    let schedule = indicatrix_formats::asc::parse_asc(RBC_445).expect("fixture must parse");
+    Design::from_asc_schedule(PreformSpec::block(2.0, 1.0, 2.0), &schedule)
+}

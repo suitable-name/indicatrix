@@ -1,25 +1,37 @@
 //! The coordinate-descent search itself: [`OptimizeConfig`]/[`SearchHooks`]
 //! (user-visible knobs and cancellation), the deterministic tour order
-//! ([`seeded_permutation`]), and [`optimize_design`] -- split into
-//! [`baseline_report`]/[`run_search`]/[`build_outcome`], see that function's
+//! ([`seeded_permutation`]), and [`optimize_design`] (with its
+//! [`OptimizeOptions`] sibling [`optimize_design_with`]) -- split into
+//! [`baseline_report`]/[`run_search`]/[`build_result`], see that function's
 //! own doc comment ("Why this is three functions, not one") for why.
 
 use super::{
-    candidate::{
-        BaselineWarningCounts, CandidateOutcome, SearchContext, build_free_angle_candidate,
-        evaluate_candidate, evaluate_candidate_pair, free_tier_indices, yield_loss_pct,
-    },
-    objective::{
-        CANONICAL_LIGHTING_PRESET, ObjectiveComponents, ObjectiveFidelity, ObjectiveWeights,
-        evaluate_objective_under, to_gpu_planes,
-    },
-    polish,
+    candidate::{BaselineWarningCounts, SearchContext, apply_free_angles},
+    guard::ShapeGuard,
+    objective::{CANONICAL_LIGHTING_PRESET, ObjectiveComponents, ObjectiveWeights},
+    options::{OptimizeOptions, OptimizeResult},
+    pool::CandidatePool,
+    space::{Anchor, SearchSpace},
 };
-use crate::{
-    design::{Design, DesignSolveError},
-    manufacturability::{DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, check_manufacturability},
+use crate::design::{Design, DesignSolveError};
+use indicatrix::{
+    color::metrics::FaceUpTone,
+    optics::{materials::GemMaterial, raytracer::LightingPreset},
 };
-use indicatrix::optics::{materials::GemMaterial, raytracer::LightingPreset};
+use std::collections::BTreeMap;
+
+#[cfg(doc)]
+use super::{candidate::evaluate_candidate_pair, objective::ObjectiveFidelity, polish};
+
+mod multi;
+mod result;
+mod stages;
+
+use super::multistart::{
+    effective_starts as effective_starts_for, polished_starts, screening_draws,
+};
+use result::build_result;
+use stages::{StartRun, baseline_report, run_polish_stage, run_search};
 
 /// Which phase of [`optimize_design`] a [`SearchHooks::on_progress`] call reports on.
 ///
@@ -40,9 +52,16 @@ pub enum SearchStage {
     /// section).
     Polish,
     /// Scoring the point the search ended on, at [`ObjectiveFidelity::Full`],
-    /// after the last [`Self::Coordinate`]/[`Self::Polish`] report -- always
-    /// exactly one report.
+    /// after the last [`Self::Coordinate`]/[`Self::Polish`] report -- exactly one
+    /// report for an ordinary run. A run that asked for alternatives
+    /// ([`OptimizeOptions::keep_candidates`] above one) scores each alternative at
+    /// [`ObjectiveFidelity::Full`] too, one by one, and reports this stage again for
+    /// every one of them (so a progress display stays on "scoring the result").
     FinalFull,
+    /// A multi-start run ([`OptimizeConfig::starts`] above one) drawing and scoring its
+    /// extra starting points at [`ObjectiveFidelity::Fast`], one evaluation per draw,
+    /// before any descent. Never reported by a single-start run.
+    Screening,
 }
 
 impl SearchStage {
@@ -58,10 +77,11 @@ impl SearchStage {
             Self::Coordinate => 1,
             Self::Polish => 2,
             Self::FinalFull => 3,
+            Self::Screening => 4,
         }
     }
 
-    /// The inverse of [`Self::to_code`]. Any value outside `0..=3` (never
+    /// The inverse of [`Self::to_code`]. Any value outside `0..=4` (never
     /// produced by [`Self::to_code`] itself) decodes to [`Self::Coordinate`],
     /// the stage a progress reader is safest defaulting to before the first real
     /// report arrives.
@@ -71,6 +91,7 @@ impl SearchStage {
             0 => Self::BaselineFull,
             2 => Self::Polish,
             3 => Self::FinalFull,
+            4 => Self::Screening,
             _ => Self::Coordinate,
         }
     }
@@ -86,14 +107,33 @@ impl SearchStage {
 /// every point this module's own doc comment on [`SearchStage`] names -- including
 /// the polish stage's own evaluations and the two fixed full-fidelity scorings.
 ///
-/// Both fields default to `None` ([`SearchHooks::default`]) for a caller (e.g. a
-/// test) that wants neither.
+/// Every field defaults to `None` ([`SearchHooks::default`]) for a caller (e.g. a
+/// test) that wants none of them.
 #[derive(Default)]
 pub struct SearchHooks<'a> {
     /// Flag polled during the search; setting it stops the search early.
     pub cancel: Option<&'a std::sync::atomic::AtomicBool>,
     /// Callback invoked with the evaluation count and current stage.
     pub on_progress: Option<&'a dyn Fn(usize, SearchStage)>,
+    /// Callback invoked by a multi-start run ([`OptimizeConfig::starts`] above one) on
+    /// the calling thread, each time the lane the caller's thread runs begins a start
+    /// (descent or polish). Never called by a single-start run.
+    pub on_start: Option<&'a dyn Fn(StartProgress)>,
+}
+
+/// What a multi-start run tells [`SearchHooks::on_start`].
+///
+/// Which start the calling thread's lane is beginning, out of how many, and the best
+/// `Fast` score any finished start has reached so far (the starting design's own `Fast`
+/// score before the first wave ends).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StartProgress {
+    /// Zero-based index of the start (`0` is the design's own descent).
+    pub index: usize,
+    /// How many starts are planned or already run (at least `index + 1`).
+    pub count: usize,
+    /// The best `Fast` score reached so far, lower is better.
+    pub best_fast_score: f32,
 }
 
 impl SearchHooks<'_> {
@@ -176,6 +216,17 @@ pub struct OptimizeConfig {
     /// the preset the viewport shows is optimized for what the user sees. Defaults to
     /// [`CANONICAL_LIGHTING_PRESET`].
     pub lighting: LightingPreset,
+    /// How many different starting arrangements the search tries; `0` and `1` (the
+    /// default) run the single descent from the design itself, bit for bit as before
+    /// this field existed. Above one the run screens extra starting points and splits
+    /// [`Self::max_evaluations`] between the starts (see the parent module's "Several
+    /// starts" section). Reduced automatically by [`effective_starts`] when the budget
+    /// is too small to give every start a few sweeps.
+    pub starts: usize,
+    /// How many starts run side by side on their own threads in a multi-start run;
+    /// `0` (the default) picks half of the available parallelism. The result never
+    /// depends on this number. Ignored by a single-start run and on `wasm32`.
+    pub max_lanes: usize,
 }
 
 impl Default for OptimizeConfig {
@@ -189,8 +240,20 @@ impl Default for OptimizeConfig {
             polish_start_step_deg: Some(0.5),
             polish_max_evaluations: None,
             lighting: CANONICAL_LIGHTING_PRESET,
+            starts: 1,
+            max_lanes: 0,
         }
     }
+}
+
+/// How many starts a run with `config` and `free_tier_count` free tiers really uses.
+///
+/// [`OptimizeConfig::starts`] capped so every start gets at least `8 * free_tier_count`
+/// evaluations (four sweeps), and never below one. `1` means the run is exactly the
+/// single-start search.
+#[must_use]
+pub fn effective_starts(config: &OptimizeConfig, free_tier_count: usize) -> usize {
+    effective_starts_for(config.starts, config.max_evaluations, free_tier_count)
 }
 
 /// The inclusive evaluation budget across both search stages for a design with
@@ -206,8 +269,28 @@ impl Default for OptimizeConfig {
 /// evaluations are included in `N` -- `config.max_evaluations` alone would silently
 /// exclude the polish stage's budget, reading as the counter blowing past its own
 /// stated maximum.
+///
+/// For a multi-start run ([`effective_starts`] above one) the figure also holds the
+/// screening draws (`4 * (starts - 1)`, at most 64) and one polish budget per polished
+/// start; this function assumes one polished start (the default
+/// [`OptimizeOptions::keep_candidates`]), [`inclusive_max_evaluations_for`] takes the
+/// real one. A single-start run is unchanged.
 #[must_use]
 pub fn inclusive_max_evaluations(config: &OptimizeConfig, free_tier_count: usize) -> usize {
+    inclusive_max_evaluations_for(config, 1, free_tier_count)
+}
+
+/// [`inclusive_max_evaluations`] for a request that keeps `keep_candidates` candidates.
+///
+/// A multi-start run polishes the best `max(1, keep_candidates)` of its starts, each
+/// with its own polish budget. Identical to [`inclusive_max_evaluations`] for a
+/// single-start run, whatever `keep_candidates` is.
+#[must_use]
+pub fn inclusive_max_evaluations_for(
+    config: &OptimizeConfig,
+    keep_candidates: usize,
+    free_tier_count: usize,
+) -> usize {
     let polish_max = config
         .polish_start_step_deg
         .filter(|&step| step > 0.0)
@@ -216,7 +299,13 @@ pub fn inclusive_max_evaluations(config: &OptimizeConfig, free_tier_count: usize
                 .polish_max_evaluations
                 .unwrap_or(3 * free_tier_count + 20)
         });
-    config.max_evaluations + polish_max
+    let starts = effective_starts(config, free_tier_count);
+    if starts <= 1 {
+        return config.max_evaluations + polish_max;
+    }
+    config.max_evaluations
+        + screening_draws(starts)
+        + polished_starts(starts, keep_candidates) * polish_max
 }
 
 /// One accepted change [`optimize_design`] proposes: tier `index`'s angle moves from
@@ -286,8 +375,9 @@ pub struct OptimizeOutcome {
 }
 
 /// Runs a deterministic coordinate (pattern) search over `design`'s free tier angles
-/// (see [`free_tier_indices`]) to minimize [`super::objective::ObjectiveWeights::score`].
+/// (see [`super::free_tier_indices`]) to minimize [`super::objective::ObjectiveWeights::score`].
 ///
+/// [`optimize_design_with`] is the same search with an [`OptimizeOptions`] request.
 /// Entirely synchronous on the calling thread (aside from the two short-lived
 /// worker threads [`evaluate_candidate_pair`] spawns per tier decision) -- a caller
 /// that needs the whole search off the UI thread wraps this call the same way
@@ -329,7 +419,7 @@ pub struct OptimizeOutcome {
 ///
 /// # A freshly-imported design has nothing to optimize
 ///
-/// If [`free_tier_indices`] is empty, this returns immediately with
+/// If [`super::free_tier_indices`] is empty, this returns immediately with
 /// `evaluations: 0` and `before == after` -- `hooks.cancel` is never consulted,
 /// though `hooks.on_progress` still receives [`baseline_report`]'s one
 /// [`SearchStage::BaselineFull`] report, since that scoring happens regardless of
@@ -351,7 +441,7 @@ pub struct OptimizeOutcome {
 ///
 /// Split into [`baseline_report`] (measure the starting point), [`run_search`] (the
 /// coordinate-descent stage), [`run_polish_stage`] (the Nelder-Mead hand-off), and
-/// [`build_outcome`] (measure the ending point and diff it against the start) to
+/// [`build_result`] (measure the ending point and diff it against the start) to
 /// stay under clippy's `too_many_lines`, with the starting-point measurements
 /// bundled into one [`Baseline`] and the two stages' results bundled into
 /// [`SearchRunSummary`] so the split does not trade "one long function" for
@@ -362,31 +452,151 @@ pub fn optimize_design(
     config: &OptimizeConfig,
     hooks: &SearchHooks<'_>,
 ) -> Result<OptimizeOutcome, DesignSolveError> {
-    let baseline = baseline_report(design, material, &config.weights, config.lighting, hooks)?;
+    optimize_design_with(design, material, config, &OptimizeOptions::default(), hooks)
+        .map(|result| result.outcome)
+}
+
+/// [`optimize_design`] with an [`OptimizeOptions`] request, returning ranked alternatives.
+///
+/// The search is the same two-stage one (see that function's "Algorithm" and "Two
+/// stages" sections), over a space the request may widen or narrow, and it returns the
+/// best result plus the alternatives.
+///
+/// With [`OptimizeOptions::default`] this is exactly [`optimize_design`]: same free
+/// tiers, same candidates, same outcome bits. The request may
+///
+/// - let `ScaleReference` tiers with a hinge move too
+///   ([`OptimizeOptions::vary_anchored`]; their masts follow their hinges, reported as
+///   [`OptimizeResult::mast_changes`]),
+/// - confine tiers to angle ranges ([`OptimizeOptions::angle_bounds`]),
+/// - reject candidates that lose the girdle band or a table facet
+///   ([`OptimizeOptions::min_girdle_fraction`]),
+/// - keep several distinct end points ([`OptimizeOptions::keep_candidates`]), and
+/// - favour options that keep the stone's table size and crown-to-pavilion ratio
+///   ([`OptimizeOptions::shape_target`], a penalty in every score).
+///
+/// The weights may also carry a face-up tone term
+/// ([`ObjectiveWeights::tone_weight`](super::objective::ObjectiveWeights::tone_weight),
+/// `tone_goal`). The result always reports the tones ([`OptimizeResult::tone_before`],
+/// [`OptimizeCandidate::tone`](super::OptimizeCandidate::tone)) and the lighting preset they
+/// were measured under ([`OptimizeResult::lighting`]); [`OptimizeResult::tone_goal`] is
+/// `Some` iff the tone was weighted.
+///
+/// # Several candidates
+///
+/// During both stages the run keeps the best distinct states it saw by fast score
+/// (distinct: some free angle at least the separation apart, see
+/// [`OptimizeOptions::candidate_separation_deg`]). At the end the end point and the
+/// best of those states are re-scored at [`ObjectiveFidelity::Full`], one by one
+/// (cancellable between scorings; each reports [`SearchStage::FinalFull`]), those that
+/// change something and score no worse than the starting design become
+/// [`OptimizeResult::candidates`], best full score first, and `outcome` describes the
+/// first of them. With one candidate (the default) there is no extra scoring and the
+/// list holds the end point alone.
+///
+/// # Errors
+///
+/// Propagates [`Design::solve`]'s [`DesignSolveError`] if `design` itself (before any
+/// candidate is even tried) does not solve.
+///
+/// # Panics
+///
+/// Never in practice; see [`optimize_design`].
+pub fn optimize_design_with(
+    design: &Design,
+    material: &GemMaterial,
+    config: &OptimizeConfig,
+    options: &OptimizeOptions,
+    hooks: &SearchHooks<'_>,
+) -> Result<OptimizeResult, DesignSolveError> {
+    let baseline = baseline_report(design, material, config, options, hooks)?;
 
     if baseline.free.is_empty() {
-        return Ok(OptimizeOutcome {
-            before: baseline.before,
-            before_score: baseline.before_score,
-            before_yield_loss_pct: baseline.before_yield_loss_pct,
-            after: baseline.before,
-            after_score: baseline.before_score,
-            after_yield_loss_pct: baseline.before_yield_loss_pct,
-            evaluations: 0,
-            changes: Vec::new(),
-            cancelled: false,
-            polish_evaluations: 0,
-            polish_improvement: 0.0,
-        });
+        return Ok(OptimizeResult::unchanged(
+            OptimizeOutcome {
+                before: baseline.before,
+                before_score: baseline.before_score,
+                before_yield_loss_pct: baseline.before_yield_loss_pct,
+                after: baseline.before,
+                after_score: baseline.before_score,
+                after_yield_loss_pct: baseline.before_yield_loss_pct,
+                evaluations: 0,
+                changes: Vec::new(),
+                cancelled: false,
+                polish_evaluations: 0,
+                polish_improvement: 0.0,
+            },
+            config.lighting,
+            baseline.tone_before,
+            (config.weights.tone_weight > 0.0).then_some(config.weights.tone_goal),
+        ));
     }
 
+    let space = SearchSpace::new(options, baseline.anchors.clone());
     let ctx = SearchContext {
         material,
         weights: &config.weights,
         baseline_warnings: &baseline.warnings,
         lighting: config.lighting,
+        space: &space,
+        guard: baseline.guard.as_ref(),
+        shape_target: options.shape_target,
     };
-    let coord = run_search(design, config, &ctx, &baseline, hooks);
+    let pool = CandidatePool::new(
+        options.candidate_capacity(),
+        options
+            .candidate_separation_deg
+            .unwrap_or(config.min_step_deg),
+    );
+    let starts = effective_starts(config, baseline.free.len());
+    let (current, pool, summary) = if starts <= 1 {
+        run_single_start(design, config, &ctx, &baseline, pool, hooks)
+    } else {
+        multi::run_multi_start(
+            &multi::MultiRun {
+                design,
+                config,
+                options,
+                ctx: &ctx,
+                baseline: &baseline,
+                starts,
+            },
+            hooks,
+        )
+    };
+
+    let best_angles: Vec<f64> = baseline
+        .free
+        .iter()
+        .map(|&i| current.tiers[i].angle_deg)
+        .collect();
+    let rivals: Vec<Design> = pool
+        .rivals(&best_angles)
+        .into_iter()
+        .filter_map(|entry| apply_free_angles(design, &baseline.free, &entry.angles, &space))
+        .collect();
+
+    Ok(build_result(
+        design, &current, &rivals, &ctx, &baseline, hooks, &summary,
+    ))
+}
+
+/// The single-descent search: the coordinate stage from `design` itself, then the polish
+/// stage. What [`optimize_design_with`] runs whenever [`effective_starts`] is one.
+fn run_single_start(
+    design: &Design,
+    config: &OptimizeConfig,
+    ctx: &SearchContext,
+    baseline: &Baseline,
+    pool: CandidatePool,
+    hooks: &SearchHooks<'_>,
+) -> (Design, CandidatePool, SearchRunSummary) {
+    let start = StartRun {
+        max_evaluations: config.max_evaluations,
+        seed: config.seed,
+        initial_score: baseline.before_score_fast,
+    };
+    let coord = run_search(design, config, ctx, baseline, pool, hooks, &start);
     let coord_evaluations = coord.evaluations;
     let coord_cancelled = coord.cancelled;
 
@@ -396,9 +606,10 @@ pub fn optimize_design(
             evaluations: 0,
             improvement: 0.0,
             cancelled: true,
+            pool: coord.pool,
         }
     } else {
-        run_polish_stage(design, &baseline.free, config, &ctx, hooks, coord)
+        run_polish_stage(design, baseline, config, ctx, hooks, coord)
     };
 
     let summary = SearchRunSummary {
@@ -406,16 +617,10 @@ pub fn optimize_design(
         cancelled: coord_cancelled || polish.cancelled,
         polish_evaluations: polish.evaluations,
         polish_improvement: polish.improvement,
+        starts_run: 1,
+        best_start: 0,
     };
-
-    Ok(build_outcome(
-        design,
-        &polish.current,
-        &ctx,
-        &baseline,
-        hooks,
-        &summary,
-    ))
+    (polish.current, polish.pool, summary)
 }
 
 /// [`optimize_design`]'s "measure the starting point" half, bundled into one
@@ -441,284 +646,45 @@ struct Baseline {
     /// too (rather than recomputed) so [`OptimizeOutcome::before_yield_loss_pct`]
     /// can report the same figure the score itself was blended from.
     before_yield_loss_pct: f32,
+    /// The starting design's face-up tone, from the `Full` baseline scoring (always
+    /// measured, weighted or not).
+    tone_before: Option<FaceUpTone>,
     warnings: BaselineWarningCounts,
     free: Vec<usize>,
-}
-
-/// Builds [`optimize_design`]'s [`Baseline`].
-///
-/// Reports [`SearchStage::BaselineFull`] (evaluations `0`, since none of
-/// `config`'s budget is spent here) through `hooks` before running the one
-/// [`ObjectiveFidelity::Full`] scoring this function performs -- that scoring
-/// alone measures ~1.3s on a small real design (see the parent
-/// module's "Cost first" doc section); without this report, a caller's progress
-/// display would read as a frozen counter before the search had even started.
-///
-/// # Errors
-///
-/// Propagates [`Design::solve`]'s [`DesignSolveError`].
-fn baseline_report(
-    design: &Design,
-    material: &GemMaterial,
-    weights: &ObjectiveWeights,
-    lighting: LightingPreset,
-    hooks: &SearchHooks<'_>,
-) -> Result<Baseline, DesignSolveError> {
-    hooks.report(0, SearchStage::BaselineFull);
-    let baseline_solved = design.solve()?;
-    let baseline_planes = design.planes_from_solved(&baseline_solved);
-    let warnings = BaselineWarningCounts::count(&check_manufacturability(
-        design,
-        &baseline_solved,
-        DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2,
-    ));
-    let before = evaluate_objective_under(
-        &to_gpu_planes(&baseline_planes),
-        material,
-        ObjectiveFidelity::Full,
-        lighting,
-    );
-    let before_yield_loss_pct = yield_loss_pct(design, &baseline_planes);
-    let before_score = weights.score_with_yield(&before, before_yield_loss_pct);
-    // Same planes, same yield figure -- just re-scored at `Fast` so `run_search`
-    // has a same-fidelity baseline to compare its `Fast`-scored candidates
-    // against (see `Baseline::before_score_fast`'s own doc comment).
-    let before_fast = evaluate_objective_under(
-        &to_gpu_planes(&baseline_planes),
-        material,
-        ObjectiveFidelity::Fast,
-        lighting,
-    );
-    let before_score_fast = weights.score_with_yield(&before_fast, before_yield_loss_pct);
-    let free = free_tier_indices(design);
-    Ok(Baseline {
-        before,
-        before_score,
-        before_score_fast,
-        before_yield_loss_pct,
-        warnings,
-        free,
-    })
-}
-
-/// [`optimize_design`]'s coordinate-descent stage itself -- see that function's own
-/// doc comment for the algorithm. Returns the design the stage ended on, that
-/// design's own [`ObjectiveFidelity::Fast`] score (so [`run_polish_stage`] does not
-/// have to re-evaluate the point it starts from), how many candidate evaluations
-/// were spent, and whether [`SearchHooks::cancel`] cut it short.
-///
-/// When [`OptimizeConfig::polish_start_step_deg`] is disabled (`None` or
-/// non-positive), this behaves bit-for-bit as it did before the polish stage
-/// existed: the one extra check this function performs (below the `if
-/// !improved_this_sweep` halving) is a no-op in that case, never changing which
-/// candidates are tried or accepted.
-fn run_search(
-    design: &Design,
-    config: &OptimizeConfig,
-    ctx: &SearchContext,
-    baseline: &Baseline,
-    hooks: &SearchHooks<'_>,
-) -> CoordinateStageOutcome {
-    let free = &baseline.free;
-    let mut current = design.clone();
-    // Seeded from the `Fast`-fidelity baseline, not `baseline.before_score`
-    // (`Full`) -- every candidate this loop compares against `current_score` is
-    // itself scored at `Fast` (see `evaluate_candidate`), so mixing in a `Full`
-    // starting figure could accept a candidate that only reproduces the true
-    // starting point, never actually improving anything. See
-    // `Baseline::before_score_fast`'s own doc comment for the measured case this
-    // fixes.
-    let mut current_score = baseline.before_score_fast;
-    let mut evaluations = 0usize;
-    let mut step_deg = config.initial_step_deg;
-    let mut sweep_index = 0u64;
-    let mut cancelled = false;
-
-    'search: while step_deg >= config.min_step_deg && evaluations < config.max_evaluations {
-        let order = seeded_permutation(
-            free.len(),
-            config.seed ^ sweep_index.wrapping_mul(0x9E37_79B9_7F4A_7C15),
-        );
-        sweep_index += 1;
-        let mut improved_this_sweep = false;
-
-        for &free_slot in &order {
-            if hooks.is_cancelled() {
-                cancelled = true;
-                break 'search;
-            }
-            if evaluations >= config.max_evaluations {
-                break;
-            }
-            let tier_index = free[free_slot];
-            let original_deg = current.tiers[tier_index].angle_deg;
-
-            let (best, spent) = evaluate_candidate_pair(
-                &current,
-                tier_index,
-                original_deg,
-                step_deg,
-                ctx,
-                current_score,
-            );
-            evaluations += spent;
-            hooks.report(evaluations, SearchStage::Coordinate);
-
-            if let Some((new_deg, new_score)) = best {
-                current.tiers[tier_index].angle_deg = new_deg;
-                current_score = new_score;
-                improved_this_sweep = true;
-            }
-        }
-
-        if !improved_this_sweep {
-            step_deg /= 2.0;
-            // Hand off to the polish stage once the coordinate stage's own step has
-            // become fine enough that further axis-aligned halving is exactly the
-            // grinding-on-a-ridge behavior `optimize_design`'s "Two stages" doc
-            // section describes -- a no-op check when polishing is disabled.
-            let should_hand_off = config
-                .polish_start_step_deg
-                .is_some_and(|threshold| threshold > 0.0 && step_deg < threshold);
-            if should_hand_off {
-                break;
-            }
-        }
-    }
-
-    CoordinateStageOutcome {
-        design: current,
-        score: current_score,
-        evaluations,
-        cancelled,
-    }
+    /// Where each anchored free tier turns, read from the starting design's own solve.
+    anchors: BTreeMap<usize, Anchor>,
+    /// The girdle/table guard measured on the starting design, when the request
+    /// asked for one (and the starting design closes, so there is something to keep).
+    guard: Option<ShapeGuard>,
 }
 
 /// [`run_search`]'s return, bundled into one struct purely to keep
 /// [`run_polish_stage`]'s own argument count under clippy's `too_many_arguments`
 /// lint (see [`optimize_design`]'s "why this is more than one function" note): the
 /// design and score the coordinate stage ended on, how many evaluations it spent,
-/// and whether [`SearchHooks::cancel`] cut it short.
+/// whether [`SearchHooks::cancel`] cut it short, and the candidate pool so far.
 struct CoordinateStageOutcome {
     design: Design,
     score: f32,
     evaluations: usize,
     cancelled: bool,
-}
-
-/// [`optimize_design`]'s "best point in, best point out" half for the polish stage:
-/// builds the Fast-fidelity scoring closure [`polish::run_polish`] needs (via
-/// [`build_free_angle_candidate`]/[`evaluate_candidate`] -- the exact same
-/// solve/close/manufacturability gate the coordinate stage's candidates go through)
-/// and, if the polish stage's own result strictly improves on `current_score`,
-/// applies it to `current`'s free tiers. Never touches a tier outside `free`.
-///
-/// Disabled ([`OptimizeConfig::polish_start_step_deg`] is `None` or non-positive)
-/// short-circuits to a zero-evaluation, unchanged [`PolishStageOutcome`] before ever
-/// building the closure or calling [`polish::run_polish`].
-///
-/// `coord`'s own `evaluations` is only for progress reporting: each call the
-/// `evaluate` closure below makes reports `hooks.report` with
-/// [`SearchStage::Polish`] and a running total that STARTS from
-/// `coord.evaluations` rather than from zero, so a caller's own evaluation
-/// counter keeps climbing smoothly across the coordinate-to-polish hand-off
-/// instead of resetting or freezing for the whole polish stage. Only ever
-/// called with `coord.cancelled == false` -- see [`optimize_design`]'s own call
-/// site.
-fn run_polish_stage(
-    design: &Design,
-    free: &[usize],
-    config: &OptimizeConfig,
-    ctx: &SearchContext,
-    hooks: &SearchHooks<'_>,
-    coord: CoordinateStageOutcome,
-) -> PolishStageOutcome {
-    let current = coord.design;
-    let current_score = coord.score;
-    let coord_evaluations = coord.evaluations;
-    let Some(start_step) = config.polish_start_step_deg.filter(|&step| step > 0.0) else {
-        return PolishStageOutcome {
-            current,
-            evaluations: 0,
-            improvement: 0.0,
-            cancelled: false,
-        };
-    };
-
-    let starting_point: Vec<f64> = free.iter().map(|&i| current.tiers[i].angle_deg).collect();
-    let max_evaluations = config
-        .polish_max_evaluations
-        .unwrap_or_else(|| 3 * free.len() + 20);
-    let min_spread = config.min_step_deg / 2.0;
-
-    let mut polish_evaluations_done = 0usize;
-    let evaluate = |angles: &[f64]| -> f32 {
-        let score = build_free_angle_candidate(design, free, &starting_point, angles).map_or(
-            f32::INFINITY,
-            |candidate| match evaluate_candidate(
-                &candidate,
-                ctx.material,
-                ctx.weights,
-                ctx.baseline_warnings,
-                ctx.lighting,
-            ) {
-                CandidateOutcome::Rejected => f32::INFINITY,
-                CandidateOutcome::Accepted { score } => score,
-            },
-        );
-        polish_evaluations_done += 1;
-        hooks.report(
-            coord_evaluations + polish_evaluations_done,
-            SearchStage::Polish,
-        );
-        score
-    };
-
-    let result = polish::run_polish(
-        &starting_point,
-        current_score,
-        start_step,
-        max_evaluations,
-        min_spread,
-        &|| hooks.is_cancelled(),
-        evaluate,
-    );
-
-    if result.score < current_score {
-        let mut improved = current;
-        for (&tier_index, &angle) in free.iter().zip(&result.point) {
-            improved.tiers[tier_index].angle_deg = angle;
-        }
-        PolishStageOutcome {
-            current: improved,
-            evaluations: result.evaluations,
-            improvement: current_score - result.score,
-            cancelled: result.cancelled,
-        }
-    } else {
-        PolishStageOutcome {
-            current,
-            evaluations: result.evaluations,
-            improvement: 0.0,
-            cancelled: result.cancelled,
-        }
-    }
+    pool: CandidatePool,
 }
 
 /// [`run_polish_stage`]'s return: the design it ended on (whether or not the polish
-/// stage's own point was actually adopted -- its score is not carried separately,
-/// since [`build_outcome`] always re-solves and re-scores `current` at
-/// [`ObjectiveFidelity::Full`] regardless), how many evaluations the polish stage
-/// spent, the score improvement adopted (`0.0` if none), and whether cancellation
-/// cut it short.
+/// stage's own point was actually adopted), how many evaluations the polish stage
+/// spent, the score improvement adopted (`0.0` if none), whether cancellation cut it
+/// short, and the candidate pool as it ended. [`build_result`] always re-solves and
+/// re-scores `current` at [`ObjectiveFidelity::Full`], so no `Fast` score is kept.
 struct PolishStageOutcome {
     current: Design,
     evaluations: usize,
     improvement: f32,
     cancelled: bool,
+    pool: CandidatePool,
 }
 
-/// Everything about a finished (both-stage) search run that [`build_outcome`] needs
+/// Everything about a finished (both-stage) search run that [`build_result`] needs
 /// beyond the design it ended on -- bundled solely to keep that function's argument
 /// count reasonable (see [`optimize_design`]'s own "why this is more than one
 /// function" note).
@@ -727,86 +693,8 @@ struct SearchRunSummary {
     cancelled: bool,
     polish_evaluations: usize,
     polish_improvement: f32,
-}
-
-/// [`optimize_design`]'s "measure the ending point" half: re-solves `current` (see
-/// that function's own `# Panics` section for why the `.expect()` inside this is
-/// safe), scores it at [`ObjectiveFidelity::Full`], and diffs its tier angles against
-/// `design`'s original ones to build the [`AngleChange`] list.
-///
-/// Reports [`SearchStage::FinalFull`] through `hooks` (evaluations
-/// `summary.evaluations`, unchanged by this call -- same reasoning as
-/// [`baseline_report`]'s own report) before running its own
-/// [`ObjectiveFidelity::Full`] scoring -- this call is as expensive as the
-/// baseline's; without this report, a caller's progress ticker would stay stuck
-/// on its last coordinate/polish reading through the whole final scoring,
-/// reading as the run having already finished when it had not.
-fn build_outcome(
-    design: &Design,
-    current: &Design,
-    ctx: &SearchContext,
-    baseline: &Baseline,
-    hooks: &SearchHooks<'_>,
-    summary: &SearchRunSummary,
-) -> OptimizeOutcome {
-    hooks.report(summary.evaluations, SearchStage::FinalFull);
-    let final_solved = current
-        .solve()
-        .expect("current was only ever advanced via evaluate_candidate-accepted, solvable states");
-    let final_planes = current.planes_from_solved(&final_solved);
-    let after = evaluate_objective_under(
-        &to_gpu_planes(&final_planes),
-        ctx.material,
-        ObjectiveFidelity::Full,
-        ctx.lighting,
-    );
-    let after_yield_loss_pct = yield_loss_pct(current, &final_planes);
-    let after_score = ctx.weights.score_with_yield(&after, after_yield_loss_pct);
-    // The search accepts candidates on the `Fast` objective; the `Full` measurement here
-    // is the gate. When it does not confirm the search's end point as an improvement, the
-    // outcome proposes no change: the design is reported as it is, with the evaluations
-    // that were spent.
-    if after_score > baseline.before_score {
-        return OptimizeOutcome {
-            before: baseline.before,
-            before_score: baseline.before_score,
-            before_yield_loss_pct: baseline.before_yield_loss_pct,
-            after: baseline.before,
-            after_score: baseline.before_score,
-            after_yield_loss_pct: baseline.before_yield_loss_pct,
-            evaluations: summary.evaluations,
-            changes: Vec::new(),
-            cancelled: summary.cancelled,
-            polish_evaluations: summary.polish_evaluations,
-            polish_improvement: 0.0,
-        };
-    }
-
-    let changes: Vec<AngleChange> = design
-        .tiers
-        .iter()
-        .zip(&current.tiers)
-        .enumerate()
-        .filter_map(|(index, (before_tier, after_tier))| {
-            (before_tier.angle_deg != after_tier.angle_deg).then_some(AngleChange {
-                index,
-                from_deg: before_tier.angle_deg,
-                to_deg: after_tier.angle_deg,
-            })
-        })
-        .collect();
-
-    OptimizeOutcome {
-        before: baseline.before,
-        before_score: baseline.before_score,
-        before_yield_loss_pct: baseline.before_yield_loss_pct,
-        after,
-        after_score,
-        after_yield_loss_pct,
-        evaluations: summary.evaluations,
-        changes,
-        cancelled: summary.cancelled,
-        polish_evaluations: summary.polish_evaluations,
-        polish_improvement: summary.polish_improvement,
-    }
+    /// How many starts ran (`1` for a single-start search).
+    starts_run: usize,
+    /// Which start's end point is the result (`0` is the design's own descent).
+    best_start: usize,
 }

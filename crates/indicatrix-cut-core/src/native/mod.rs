@@ -48,13 +48,21 @@
 
 mod convert;
 mod design_file;
+mod dispersion_dto;
 mod load;
 mod save;
 #[cfg(test)]
 mod tests;
+mod unknown_keys;
+
+pub use dispersion_dto::{
+    dispersion_dto_from_json, dispersion_model_dto, dispersion_model_from_dto,
+    dispersion_model_from_json, dispersion_model_to_json,
+};
+pub use unknown_keys::UnknownFileKeys;
 
 pub use convert::{
-    SaveExtras, Snapshotcolor, color_recipe_dto, gem_material_from_custom_snapshot,
+    SaveExtras, SnapshotColor, color_recipe_dto, gem_material_from_custom_snapshot,
     gem_material_from_custom_snapshot_keeping_recipe, snapshot_color, to_native_file,
 };
 pub use design_file::{
@@ -76,7 +84,7 @@ pub use indicatrix_formats::native::design::{
     AttachmentBlob, AttachmentRole, DesignFile, DesignFileError, DesignMetadata, FileKind,
 };
 pub use indicatrix_formats::native::{
-    CustomMaterialSnapshot, FORMAT_VERSION, FingerprintCheck, HistoryTable,
+    CustomMaterialSnapshot, DispersionModelDto, FORMAT_VERSION, FingerprintCheck, HistoryTable,
     LEGACY_NATIVE_EXTENSION_SUFFIX, MaterialTable, NATIVE_EXTENSION_SUFFIX, NativeDesignFile,
     NativeFormatError, NativeMeetConstraint, NativePreformShape, PreformTable, SourceTable,
     TierTable, asc_path_for_native, check_fingerprint, from_toml_str as parse_toml_string,

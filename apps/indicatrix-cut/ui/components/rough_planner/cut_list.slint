@@ -2,6 +2,7 @@ import { Theme } from "../../theme.slint";
 import { LineEdit, ComboBox } from "std-widgets.slint";
 import { RoughPlanModel, RoughCutRow } from "../../models/rough_plan.slint";
 import { RoughPill } from "fields.slint";
+import { TipBox, FieldCaption } from "../tip_box.slint";
 
 // Compact field for cut parameters that reports edits directly. The incoming
 // `text` is pushed into the `LineEdit` again on every change: once the user has
@@ -10,6 +11,8 @@ import { RoughPill } from "fields.slint";
 // show.
 component CutParamField inherits VerticalLayout {
     in property <string> label;
+    // One plain sentence: what the number means. The tooltip of the caption and the field.
+    in property <string> hint;
     in property <string> text;
     in property <bool> editable: true;
     // The field of a cut that was just added takes the keyboard focus when it appears,
@@ -43,31 +46,32 @@ component CutParamField inherits VerticalLayout {
         root.dirty = false;
     }
 
-    Text {
-        text: root.label;
-        font-size: 10px;
-        color: Theme.text-muted;
-    }
-    field := LineEdit {
-        min-width: 0px;
-        text: root.text;
-        enabled: root.editable;
-        edited(t) => {
-            root.dirty = true;
-            root.edited(t);
-        }
-        accepted => {
-            if root.dirty {
-                root.dirty = false;
-                root.committed();
+    FieldCaption { text: root.label; hint: root.hint; font_size: 10px; }
+    TipBox {
+        hint: root.hint;
+        field := LineEdit {
+            min-width: 0px;
+            text: root.text;
+            enabled: root.editable;
+            accessible-label: root.label;
+            accessible-description: root.hint;
+            edited(t) => {
+                root.dirty = true;
+                root.edited(t);
             }
-        }
-        changed has-focus => {
-            if self.has-focus {
-                root.focused();
-            } else if root.dirty {
-                root.dirty = false;
-                root.committed();
+            accepted => {
+                if root.dirty {
+                    root.dirty = false;
+                    root.committed();
+                }
+            }
+            changed has-focus => {
+                if self.has-focus {
+                    root.focused();
+                } else if root.dirty {
+                    root.dirty = false;
+                    root.committed();
+                }
             }
         }
     }
@@ -78,17 +82,79 @@ component CutParamField inherits VerticalLayout {
 component FaceCombo inherits VerticalLayout {
     in property <[string]> options;
     in property <int> index;
+    in property <string> hint;
+    in property <string> label;
     in property <bool> editable: true;
     callback picked(int);
 
     changed index => { combo.current-index = root.index; }
 
-    combo := ComboBox {
-        min-width: 0px;
-        model: root.options;
-        current-index: root.index;
-        enabled: root.editable;
-        selected(value) => { root.picked(self.current-index); }
+    TipBox {
+        hint: root.hint;
+        combo := ComboBox {
+            min-width: 0px;
+            model: root.options;
+            current-index: root.index;
+            enabled: root.editable;
+            accessible-label: root.label;
+            selected(value) => { root.picked(self.current-index); }
+        }
+    }
+}
+
+// The small delete button of a cut row: a 20 px square that takes Tab, Space and Enter, has a
+// tooltip, and names the cut it deletes for a screen reader.
+component CutDelete inherits Rectangle {
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: 20px;
+    height: 20px;
+    border-radius: Theme.radius-sm;
+    background: !root.enabled ? Theme.surface-disabled
+        : (del_touch.has-hover ? Theme.danger-surface-hover : Theme.danger-surface);
+    border-width: del_focus.has-focus ? 2px : 1px;
+    border-color: !root.enabled ? Theme.border-subtle
+        : (del_focus.has-focus ? Theme.accent-cyan-hover : Theme.danger-border);
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    property <string> tip: root.enabled ? root.label : "Not while a plan is running. Wait for it to finish, or cancel it.";
+
+    Tooltip { text: @markdown("\{root.tip}"); }
+
+    del_focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    Text {
+        text: "\u{00D7}";
+        font-size: 12px;
+        font-weight: 700;
+        color: root.enabled ? Theme.danger : Theme.text-disabled;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    del_touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: self.enabled ? pointer : default;
+        clicked => { root.clicked(); }
     }
 }
 
@@ -119,6 +185,12 @@ component CutRowItem inherits Rectangle {
     border-radius: Theme.radius-sm;
     border-width: 1px;
     border-color: root.is_selected ? Theme.accent-cyan : Theme.border-subtle;
+
+    accessible-role: AccessibleRole.list-item;
+    accessible-label: "Cut " + (root.index + 1) + ": " + root.cut.title;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.is_selected;
+    accessible-action-default => { root.selected(); }
 
     Timer {
         interval: 40ms;
@@ -155,29 +227,10 @@ component CutRowItem inherits Rectangle {
             }
 
             // Deleting edits the model, which a running plan is using.
-            Rectangle {
-                width: 18px;
-                height: 18px;
-                border-radius: Theme.radius-sm;
-                background: RoughPlanModel.running ? Theme.surface-disabled
-                    : (del_touch.has-hover ? Theme.danger-surface-hover : Theme.danger-surface);
-                border-width: 1px;
-                border-color: RoughPlanModel.running ? Theme.border-subtle : Theme.danger-border;
-
-                Text {
-                    text: "\u{00D7}";
-                    font-size: 12px;
-                    font-weight: 700;
-                    color: RoughPlanModel.running ? Theme.text-disabled : Theme.danger;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-
-                del_touch := TouchArea {
-                    enabled: !RoughPlanModel.running;
-                    mouse-cursor: self.enabled ? pointer : default;
-                    clicked => { root.remove(); }
-                }
+            CutDelete {
+                label: "Delete cut " + (root.index + 1) + ": " + root.cut.title;
+                enabled: !RoughPlanModel.running;
+                clicked => { root.remove(); }
             }
         }
 
@@ -191,6 +244,8 @@ component CutRowItem inherits Rectangle {
 
         // Which edge or corner the cut sits on (faces have a direction instead)
         if root.cut.kind != 2: FaceCombo {
+            label: root.cut.kind == 0 ? "Edge of the cut" : "Corner of the cut";
+            hint: root.cut.kind == 0 ? "Which edge of the block this cut takes off." : "Which corner of the block this cut takes off.";
             options: root.cut.kind == 0 ? RoughPlanModel.edge_options : RoughPlanModel.corner_options;
             index: root.cut.face_index;
             editable: !RoughPlanModel.running;
@@ -205,6 +260,7 @@ component CutRowItem inherits Rectangle {
             spacing: 6px;
             CutParamField {
                 label: "Setback A (mm)";
+                hint: "How far from the edge or corner the cut starts, along the first side, in millimetres.";
                 autofocus: RoughPlanModel.focus_cut_row == root.index;
                 autofocused => { root.reveal_pending = true; }
                 text: root.cut.a;
@@ -215,6 +271,7 @@ component CutRowItem inherits Rectangle {
             }
             CutParamField {
                 label: "Setback B (mm)";
+                hint: "How far from the edge or corner the cut starts, along the second side, in millimetres.";
                 text: root.cut.b;
                 editable: !RoughPlanModel.running;
                 edited(t) => { RoughPlanModel.cut_field_edited(root.index, 1, t); }
@@ -227,6 +284,7 @@ component CutRowItem inherits Rectangle {
             spacing: 6px;
             CutParamField {
                 label: "Setback A (mm)";
+                hint: "How far from the edge or corner the cut starts, along the first side, in millimetres.";
                 autofocus: RoughPlanModel.focus_cut_row == root.index;
                 autofocused => { root.reveal_pending = true; }
                 text: root.cut.a;
@@ -237,6 +295,7 @@ component CutRowItem inherits Rectangle {
             }
             CutParamField {
                 label: "Setback B (mm)";
+                hint: "How far from the edge or corner the cut starts, along the second side, in millimetres.";
                 text: root.cut.b;
                 editable: !RoughPlanModel.running;
                 edited(t) => { RoughPlanModel.cut_field_edited(root.index, 1, t); }
@@ -245,6 +304,7 @@ component CutRowItem inherits Rectangle {
             }
             CutParamField {
                 label: "Setback C (mm)";
+                hint: "How far from the corner the cut starts, along the third side, in millimetres.";
                 text: root.cut.c;
                 editable: !RoughPlanModel.running;
                 edited(t) => { RoughPlanModel.cut_field_edited(root.index, 2, t); }
@@ -257,6 +317,7 @@ component CutRowItem inherits Rectangle {
             spacing: 6px;
             CutParamField {
                 label: "Azimuth (\u{00B0})";
+                hint: "The compass direction the face looks toward, in degrees around the vertical axis. A vertical face ignores it.";
                 autofocus: RoughPlanModel.focus_cut_row == root.index;
                 autofocused => { root.reveal_pending = true; }
                 text: root.cut.azimuth;
@@ -267,6 +328,7 @@ component CutRowItem inherits Rectangle {
             }
             CutParamField {
                 label: "Elevation (\u{00B0})";
+                hint: "How steeply the face tilts, in degrees: 0 is a vertical face, 90 a flat top.";
                 text: root.cut.elevation;
                 editable: !RoughPlanModel.running;
                 edited(t) => { RoughPlanModel.cut_field_edited(root.index, 4, t); }
@@ -275,6 +337,7 @@ component CutRowItem inherits Rectangle {
             }
             CutParamField {
                 label: "Depth (mm)";
+                hint: "How deep the face cuts into the rough, in millimetres.";
                 text: root.cut.depth;
                 editable: !RoughPlanModel.running;
                 edited(t) => { RoughPlanModel.cut_field_edited(root.index, 5, t); }
@@ -325,11 +388,13 @@ export component CutList inherits VerticalLayout {
         // and the window keeps showing the model it is planning).
         RoughPill {
             text: "Undo";
+            hint: RoughPlanModel.running ? "Not while a plan is running." : "Take back the last change to the shape. Ctrl+Z does the same.";
             enabled: RoughPlanModel.can_undo && !RoughPlanModel.running;
             clicked => { RoughPlanModel.undo_shape(); }
         }
         RoughPill {
             text: "Redo";
+            hint: RoughPlanModel.running ? "Not while a plan is running." : "Do the change to the shape again that Undo took back. Ctrl+Y does the same.";
             enabled: RoughPlanModel.can_redo && !RoughPlanModel.running;
             clicked => { RoughPlanModel.redo_shape(); }
         }
@@ -342,22 +407,33 @@ export component CutList inherits VerticalLayout {
 
         RoughPill {
             text: "+Edge";
+            hint: RoughPlanModel.base_kind != 0 ? "Edge cuts need a block of rough."
+                : (RoughPlanModel.running ? "Not while a plan is running." : "Add a cut that takes off one edge of the block.");
             enabled: RoughPlanModel.base_kind == 0 && !RoughPlanModel.running;
             clicked => { RoughPlanModel.add_cut(0); }
         }
         RoughPill {
             text: "+Corner";
+            hint: RoughPlanModel.base_kind != 0 ? "Corner cuts need a block of rough."
+                : (RoughPlanModel.running ? "Not while a plan is running." : "Add a cut that takes off one corner of the block.");
             enabled: RoughPlanModel.base_kind == 0 && !RoughPlanModel.running;
             clicked => { RoughPlanModel.add_cut(1); }
         }
         RoughPill {
             text: "+Face";
+            hint: RoughPlanModel.running ? "Not while a plan is running." : "Add a flat cut through the rough, set by a direction, a tilt and a depth.";
             active: true;
             enabled: !RoughPlanModel.running;
             clicked => { RoughPlanModel.add_cut(2); }
         }
         RoughPill {
             text: "Face from view";
+            hint: RoughPlanModel.running ? "Not while a plan is running."
+                : (RoughPlanModel.view_mode != 0 && !RoughPlanModel.face_from_view_armed
+                    ? "Show the Rough view first: a face is picked on the rough, not on a result."
+                    : (RoughPlanModel.face_from_view_armed
+                        ? "Stop picking a face in the view. Escape does the same."
+                        : "Then click a face of the rough in the 3D view to add a cut along it."));
             active: RoughPlanModel.face_from_view_armed;
             // It picks a face of the rough in the model view; the result view shows
             // the stones instead. An armed pick can still be switched off there.

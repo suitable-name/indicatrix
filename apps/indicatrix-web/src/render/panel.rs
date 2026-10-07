@@ -22,6 +22,8 @@ pub(super) fn push_panel(ui: &AppWindow, settings: &RenderSettings) {
     model.set_light_yaw_deg(settings.light_yaw_deg);
     model.set_light_pitch_deg(settings.light_pitch_deg);
     model.set_light_direction_used(settings.uses_light_direction());
+    model.set_head_shadow_deg(settings.head_shadow_deg);
+    model.set_head_shadow_used(settings.uses_head_shadow());
     model.set_backdrop_index(settings.backdrop_index);
     model.set_bounces(settings.max_bounces as i32);
     model.set_target_spp(settings.target_spp as i32);
@@ -45,6 +47,7 @@ fn read_panel(ui: &AppWindow, settings: &RenderSettings) -> RenderSettings {
         exposure: model.get_exposure(),
         light_yaw_deg: model.get_light_yaw_deg(),
         light_pitch_deg: model.get_light_pitch_deg(),
+        head_shadow_deg: model.get_head_shadow_deg(),
         backdrop_index: model.get_backdrop_index(),
         max_bounces: unsigned(model.get_bounces()),
         target_spp: unsigned(model.get_target_spp()),

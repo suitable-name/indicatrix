@@ -30,6 +30,28 @@ fn native_file_round_trips_through_toml_text() {
     assert_eq!(native, parsed);
 }
 
+/// A tier without a relation writes no `angle_relation` key (so a relation-less sidecar's
+/// bytes are what they always were), one with a relation round-trips it, and a sidecar
+/// from before the field existed loads with none.
+#[test]
+fn a_tier_relation_is_written_only_when_present_and_round_trips() {
+    let plain = to_toml_string(&sample_file()).expect("must serialize");
+    assert!(!plain.contains("angle_relation"));
+    let parsed = from_toml_str(&plain).expect("must parse");
+    assert_eq!(parsed.tiers[0].angle_relation, None);
+
+    let mut native = sample_file();
+    native.tiers[0] = native.tiers[0]
+        .clone()
+        .with_angle_relation(Some("@4 - 2".to_string()));
+    let text = to_toml_string(&native).expect("must serialize");
+    assert_eq!(text.matches("angle_relation = \"@4 - 2\"").count(), 1);
+    let parsed = from_toml_str(&text).expect("must parse its own output");
+    assert_eq!(parsed, native);
+    assert_eq!(parsed.tiers[0].angle_relation.as_deref(), Some("@4 - 2"));
+    assert_eq!(to_toml_string(&parsed).expect("must serialize"), text);
+}
+
 /// Determinism: serializing the same document twice must produce byte-identical text
 /// (the module doc comment's "Format: TOML" section).
 #[test]
@@ -295,6 +317,117 @@ fn custom_snapshot_without_body_color_writes_no_absorption_rgb_key() {
     assert_eq!(custom.body_color(), None);
 }
 
+/// Each dispersion model kind survives a TOML text round trip exactly, written as a
+/// `[material.custom.dispersion_model]` table with a `kind` key.
+#[test]
+fn custom_snapshot_dispersion_model_round_trips_through_toml_text() {
+    let models = [
+        (
+            "sellmeier1",
+            DispersionModelDto::Sellmeier1 {
+                b1: 1.039_612_2,
+                c1: 0.006_000_699,
+            },
+        ),
+        (
+            "sellmeier3",
+            DispersionModelDto::Sellmeier3 {
+                b: [1.039_612_2, 0.231_792_35, 1.010_469_4],
+                c: [0.006_000_699, 0.020_017_914, 103.56065],
+            },
+        ),
+        (
+            "cauchy",
+            DispersionModelDto::Cauchy {
+                a: 1.7,
+                b: 0.006,
+                c: -0.00001,
+            },
+        ),
+    ];
+    for (kind, model) in models {
+        let mut native = sample_file();
+        let snapshot = CustomMaterialSnapshot::new(1.7, 0.02, 0.0, None, "Cubic", "Isotropic")
+            .with_dispersion_model(Some(model.clone()));
+        native.material = native.material.with_custom(Some(snapshot.clone()));
+        let text = to_toml_string(&native).expect("must serialize");
+        assert!(
+            text.contains("[material.custom.dispersion_model]"),
+            "{text}"
+        );
+        assert!(text.contains(&format!("kind = \"{kind}\"")), "{text}");
+        let parsed = from_toml_str(&text).expect("must parse its own output");
+        let custom = parsed.material.custom.expect("custom snapshot loads back");
+        assert_eq!(custom.dispersion_model, Some(model), "{kind}");
+        assert_eq!(custom, snapshot, "{kind}");
+        assert!(
+            custom.unknown.is_empty(),
+            "the table is not left in unknown"
+        );
+    }
+}
+
+/// A snapshot without a model writes no `dispersion_model` key at all (so every file made
+/// before the field existed keeps its bytes) and a file without one loads with `None`.
+#[test]
+fn custom_snapshot_without_a_dispersion_model_writes_no_key() {
+    let mut native = sample_file();
+    let snapshot =
+        CustomMaterialSnapshot::new(1.62, 0.017, -0.021, None, "Trigonal", "UniaxialNegative");
+    native.material = native.material.with_custom(Some(snapshot));
+    let text = to_toml_string(&native).expect("must serialize");
+    assert!(!text.contains("dispersion_model"), "{text}");
+    let parsed = from_toml_str(&text).expect("must parse");
+    let custom = parsed.material.custom.expect("custom snapshot loads back");
+    assert_eq!(custom.dispersion_model, None);
+}
+
+/// A hand-written table with whole numbers loads; one this build cannot read (a model kind
+/// from a newer build, or a missing coefficient) loads as `None` without failing the file.
+#[test]
+fn an_unreadable_dispersion_model_loads_as_none_and_a_hand_written_one_loads() {
+    let mut native = sample_file();
+    native.material = native
+        .material
+        .with_custom(Some(CustomMaterialSnapshot::new(
+            1.62,
+            0.017,
+            0.0,
+            None,
+            "Cubic",
+            "Isotropic",
+        )));
+    let base = to_toml_string(&native).expect("must serialize");
+
+    let by_hand = format!(
+        "{base}\n[material.custom.dispersion_model]\nkind = \"sellmeier1\"\nb1 = 1\nc1 = 0.01\n"
+    );
+    let custom = from_toml_str(&by_hand)
+        .expect("a whole number is a valid coefficient")
+        .material
+        .custom
+        .expect("custom snapshot loads back");
+    assert_eq!(
+        custom.dispersion_model,
+        Some(DispersionModelDto::Sellmeier1 { b1: 1.0, c1: 0.01 })
+    );
+
+    for bad in [
+        "kind = \"tabulated\"\nsamples = [1.5, 1.6]\n",
+        "kind = \"cauchy\"\na = 1.7\n",
+        "kind = \"sellmeier3\"\nb = [1.0, 2.0]\nc = [0.1, 0.2, 0.3]\n",
+    ] {
+        let text = format!("{base}\n[material.custom.dispersion_model]\n{bad}");
+        let custom = from_toml_str(&text)
+            .expect("an unreadable table must not fail the whole file")
+            .material
+            .custom
+            .expect("custom snapshot loads back");
+        assert_eq!(custom.dispersion_model, None, "{bad}");
+        assert_eq!(custom.mean_ri, 1.62, "the plain numbers are still there");
+    }
+}
+
 /// A material with no custom snapshot must not even write a `[material.custom]`
 /// table, and must still load back as `None`.
 #[test]
@@ -341,6 +474,153 @@ fn material_table_without_a_body_color_override_omits_the_key_and_loads_as_none(
     assert!(!text.contains("body_color_override"));
     let parsed = from_toml_str(&text).expect("must parse");
     assert_eq!(parsed.material.body_color_override, None);
+}
+
+/// The N-band colour of a design (bands + path scale) is written next to the triple, round
+/// trips bit for bit, and a file without the keys loads as `None` with no key written.
+#[test]
+fn material_table_body_color_bands_round_trip_next_to_the_triple() {
+    let mut native = sample_file();
+    let rows = vec![[460.0f64, 45.0, 0.25], [620.0, 45.0, 0.5]];
+    native.material = native
+        .material
+        .with_body_color_override(Some([0.2, 0.4, 2.8]))
+        .with_body_color_bands_override(Some(rows.clone()), Some(24.5));
+    let text = to_toml_string(&native).expect("must serialize");
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        compact.contains("body_color_override=[0.2,0.4,2.8"),
+        "{text}"
+    );
+    assert!(
+        compact.contains("absorption_path_scale_override=24.5"),
+        "{text}"
+    );
+    let parsed = from_toml_str(&text).expect("must parse its own output");
+    assert_eq!(parsed.material.body_color_bands_override, Some(rows));
+    assert_eq!(parsed.material.absorption_path_scale_override, Some(24.5));
+    assert_eq!(parsed, native);
+
+    let plain = to_toml_string(&sample_file()).expect("must serialize");
+    assert!(!plain.contains("body_color_bands_override"), "{plain}");
+    assert!(!plain.contains("absorption_path_scale_override"), "{plain}");
+    let old = from_toml_str(&plain).expect("an old file loads");
+    assert_eq!(old.material.body_color_bands_override, None);
+    assert_eq!(old.material.absorption_path_scale_override, None);
+}
+
+/// A custom snapshot's `absorption_bands_per_mm` sits next to `absorption_rgb`, round trips
+/// with the identical `f32` bits, and an old snapshot (no key) loads with `None`.
+#[test]
+fn custom_snapshot_absorption_bands_round_trip_next_to_the_triple() {
+    let mut native = sample_file();
+    let rows = [[460.0_f32, 45.0, 0.2], [620.0, 45.0, 0.6]];
+    let snapshot = CustomMaterialSnapshot::new(
+        1.62,
+        0.017,
+        -0.021,
+        Some(3.06),
+        "Trigonal",
+        "UniaxialNegative",
+    )
+    .with_body_color(Some([0.2, 0.6, 1.8]))
+    .with_absorption_bands(&rows);
+    native.material = native.material.with_custom(Some(snapshot.clone()));
+    let text = to_toml_string(&native).expect("must serialize");
+    assert!(text.contains("absorption_bands_per_mm"), "{text}");
+    assert!(text.contains("absorption_rgb"), "{text}");
+    let parsed = from_toml_str(&text).expect("must parse its own output");
+    let custom = parsed.material.custom.expect("custom snapshot loads back");
+    assert_eq!(custom, snapshot);
+    let got = custom.absorption_bands().expect("bands load back");
+    assert_eq!(got.len(), 2);
+    for (g, r) in got.iter().zip(rows) {
+        assert_eq!(g.map(f32::to_bits), r.map(f32::to_bits));
+    }
+
+    // An old snapshot (triple only) loads with no bands and writes no key.
+    let old =
+        CustomMaterialSnapshot::new(1.62, 0.017, -0.021, None, "Trigonal", "UniaxialNegative")
+            .with_body_color(Some([0.2, 0.6, 1.8]));
+    native.material = native.material.with_custom(Some(old));
+    let text = to_toml_string(&native).expect("must serialize");
+    assert!(!text.contains("absorption_bands_per_mm"), "{text}");
+    let parsed = from_toml_str(&text).expect("must parse");
+    let custom = parsed.material.custom.expect("custom snapshot loads back");
+    assert_eq!(custom.absorption_bands(), None);
+    assert!(custom.body_color().is_some());
+}
+
+/// `sample_file()`'s text with `line` added as the first line of its `[material]` table.
+fn sample_text_with_material_line(line: &str) -> String {
+    let text = to_toml_string(&sample_file()).expect("must serialize");
+    let marker = "[material]\n";
+    assert!(text.contains(marker), "{text}");
+    text.replacen(marker, &format!("{marker}{line}\n"), 1)
+}
+
+/// Builds from 2026-09-28 wrote the key as `body_colour_override`. Such a file must load
+/// the override, keep nothing of the old key in the carry-over table, and write
+/// the current spelling exactly once when saved again.
+#[test]
+fn the_old_british_body_colour_key_loads_and_is_saved_under_the_new_spelling() {
+    let old = sample_text_with_material_line("body_colour_override = [0.2, 0.4, 2.8]");
+    let parsed = from_toml_str(&old).expect("an old file must load");
+    let got = parsed.material.body_color_override.expect("override loads");
+    assert_eq!(got.map(f64::to_bits), [0.2f64, 0.4, 2.8].map(f64::to_bits));
+    assert!(
+        parsed.material.unknown.is_empty(),
+        "the old key must not linger in the carry-over table: {:?}",
+        parsed.material.unknown
+    );
+
+    let saved = to_toml_string(&parsed).expect("must serialize");
+    assert_eq!(saved.matches("body_color_override").count(), 1, "{saved}");
+    assert!(!saved.contains("body_colour"), "{saved}");
+    // The re-saved text is exactly what a build writes for the same value.
+    let mut fresh = sample_file();
+    fresh.material = fresh
+        .material
+        .with_body_color_override(Some([0.2, 0.4, 2.8]));
+    assert_eq!(saved, to_toml_string(&fresh).expect("must serialize"));
+}
+
+/// A file a campaign build re-saved after the respelling can hold both keys. It must
+/// still open (a plain serde alias would refuse it), the new key wins, and the old one is
+/// gone after the next save.
+#[test]
+fn a_file_with_both_body_colour_spellings_loads_with_the_new_one_winning() {
+    let both = sample_text_with_material_line(
+        "body_colour_override = [9.0, 9.0, 9.0]\nbody_color_override = [0.2, 0.4, 2.8]",
+    );
+    let parsed = from_toml_str(&both).expect("a file with both keys must load");
+    assert_eq!(parsed.material.body_color_override, Some([0.2, 0.4, 2.8]));
+    assert!(parsed.material.unknown.is_empty());
+    let saved = to_toml_string(&parsed).expect("must serialize");
+    assert_eq!(saved.matches("body_color_override").count(), 1, "{saved}");
+    assert!(!saved.contains("body_colour"), "{saved}");
+}
+
+/// An old-spelling key that is not a colour triple is not applied and not lost: it is
+/// carried over untouched like any other key this build cannot read.
+#[test]
+fn a_malformed_old_body_colour_key_is_carried_over_untouched() {
+    let odd = sample_text_with_material_line("body_colour_override = \"amber\"");
+    let parsed = from_toml_str(&odd).expect("the file must still load");
+    assert_eq!(parsed.material.body_color_override, None);
+    assert_eq!(
+        parsed
+            .material
+            .unknown
+            .get("body_colour_override")
+            .and_then(toml::Value::as_str),
+        Some("amber")
+    );
+    let saved = to_toml_string(&parsed).expect("must serialize");
+    assert!(
+        saved.contains("body_colour_override = \"amber\""),
+        "{saved}"
+    );
 }
 
 // --- `NativeDesignFile::history` round-trips through TOML text ---

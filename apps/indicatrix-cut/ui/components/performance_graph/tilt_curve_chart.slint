@@ -80,11 +80,15 @@ export component TiltCurveChart inherits Rectangle {
     }
 
     height: 180px;
-    background: #050811;
+    background: Theme.chart-bg;
     border-radius: Theme.radius-md;
     border-width: 1px;
-    border-color: #1e293b;
+    border-color: Theme.chart-border;
     clip: true;
+
+    // A screen reader cannot read a drawn curve: say what it shows and where the numbers are.
+    accessible-role: AccessibleRole.image;
+    accessible-label: "Tilt performance chart: brilliance, windowing and extinction from minus 90 to plus 90 degrees of tilt. The summary figures above the chart give the values at 0 degrees; the Copy button below copies every value.";
 
     // Real loading state: no partial/fallback data exists to show in the
     // meantime, since even axis 0 needs its negative half swept
@@ -107,9 +111,9 @@ export component TiltCurveChart inherits Rectangle {
     // referencing a conditionally-instantiated element's geometry from an
     // always-present sibling, so these two literals must stay in sync
     // with `plot`'s own `y: 10px; height: 140px;` by hand.
-    Rectangle { y: 10px + 140px * 0.25; width: 100%; height: 1px; background: #1e293b44; }
-    Rectangle { y: 10px + 140px * 0.50; width: 100%; height: 1px; background: #1e293b66; }
-    Rectangle { y: 10px + 140px * 0.75; width: 100%; height: 1px; background: #1e293b44; }
+    Rectangle { y: 10px + 140px * 0.25; width: 100%; height: 1px; background: Theme.chart-grid; }
+    Rectangle { y: 10px + 140px * 0.50; width: 100%; height: 1px; background: Theme.chart-grid-mid; }
+    Rectangle { y: 10px + 140px * 0.75; width: 100%; height: 1px; background: Theme.chart-grid; }
 
     Text { x: 6px; y: 10px - 4px; text: "100%"; font-size: 11px; color: Theme.text-disabled; }
     Text { x: 6px; y: 10px + 140px * 0.25 - 4px; text: "75%"; font-size: 11px; color: Theme.text-disabled; }
@@ -152,7 +156,7 @@ export component TiltCurveChart inherits Rectangle {
             width: 100%; height: 100%; fit: fill;
             commands: path;
             viewbox-width: 100; viewbox-height: 100;
-            stroke: #ef4444;
+            stroke: Theme.chart-extinction;
             stroke-width: root.selected_axis_index == idx ? 2px : 1.2px;
             opacity: root.selected_axis_index == idx ? 1.0 : 0.28;
             fill: transparent;
@@ -184,7 +188,7 @@ export component TiltCurveChart inherits Rectangle {
             width: 100%; height: 100%; fit: fill;
             commands: root.active_extinction_path;
             viewbox-width: 100; viewbox-height: 100;
-            stroke: #ef4444;
+            stroke: Theme.chart-extinction;
             stroke-width: 2px;
             fill: transparent;
         }
@@ -212,7 +216,7 @@ export component TiltCurveChart inherits Rectangle {
             x: plot.width * 0.5 - 0.5px;
             width: 1px;
             height: 100%;
-            background: #33415577;
+            background: Theme.chart-guide;
         }
 
         // Hover tooltip: a transparent `TouchArea` over the whole plot
@@ -231,7 +235,7 @@ export component TiltCurveChart inherits Rectangle {
             x: plot.width * ((root.snap_tilt_deg(tooltip_area.mouse-x, plot.width) + 90.0) / 180.0) - 0.5px;
             width: 1px;
             height: 100%;
-            background: #94a3b877;
+            background: Theme.chart-crosshair;
         }
     }
 
@@ -268,10 +272,10 @@ export component TiltCurveChart inherits Rectangle {
         y: plot.y + Math.max(0px, Math.min(plot.height - self.card_h, tooltip_area.mouse-y - self.card_h - 8px));
         width: self.card_w;
         height: self.card_h;
-        background: #0f1523ee;
+        background: Theme.surface-graph-popup;
         border-radius: Theme.radius-sm;
         border-width: 1px;
-        border-color: #334155;
+        border-color: Theme.border-dialog;
 
         // Requests a fresh mini preview render for exactly this hovered
         // pose whenever the snapped tilt angle changes; `gui::
@@ -332,7 +336,7 @@ export component TiltCurveChart inherits Rectangle {
             }
             if root.show_extinction: HorizontalLayout {
                 spacing: 5px;
-                Rectangle { width: 7px; height: 7px; border-radius: 3px; background: #ef4444; }
+                Rectangle { width: 7px; height: 7px; border-radius: 3px; background: Theme.chart-extinction; }
                 Text {
                     text: "Extinction " + Math.round(root.interpolated_value(root.active_extinction_values, tooltip_card.tilt_deg)) + "%";
                     font-size: 11px;
@@ -365,7 +369,7 @@ export component TiltCurveChart inherits Rectangle {
             horizontal-stretch: 1;
             text: val;
             font-size: 11px;
-            color: idx == 3 ? Theme.accent-cyan : #64748b;
+            color: idx == 3 ? Theme.accent-cyan : Theme.text-muted;
             font-weight: idx == 3 ? 700 : 400;
             horizontal-alignment: center;
         }

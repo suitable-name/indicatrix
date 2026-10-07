@@ -5,13 +5,37 @@
 
 use super::sheet::{ConcaveRowInfo, CutSheetRow, CuttingSheet};
 use crate::{
-    design::{ConcaveTier, ConstraintTier, Design, SolveMismatch, TierRef},
+    design::{
+        ConcaveTier, ConstraintTier, Design, SolveMismatch, TierLabelInfo, TierRef,
+        cutting_order::meet_inputs,
+    },
     edit::EditError,
 };
 use indicatrix::{
-    geometry::meet_solver::{MeetConstraint, MeetNameResolver, MeetTierInput, SolvedTier},
+    geometry::meet_solver::{MeetConstraint, MeetNameResolver, SolvedTier, TokenResolution},
     optics::materials::GemMaterial,
 };
+
+/// One name of a `MeetNamed` instruction as the sheet prints it: the code of the tier it
+/// names (`Pavilion Main` becomes `P1`), `-`-joined for a compound vertex spec
+/// (`1-2-G1` becomes `P1-P2-G1`). A word that names no tier (a meet-point word such as
+/// `PCP`, connective prose, a name that does not resolve) stays as the designer wrote it.
+fn meet_name_as_code(
+    name: &str,
+    resolver: &MeetNameResolver<'_>,
+    codes: &[TierLabelInfo],
+) -> String {
+    if let TokenResolution::Tiers(tiers) = resolver.resolve_token(name) {
+        let parts: Option<Vec<&str>> = tiers
+            .iter()
+            .map(|&tier| codes.get(tier).map(|label| label.code.as_str()))
+            .collect();
+        if let Some(parts) = parts.filter(|parts| !parts.is_empty()) {
+            return parts.join("-");
+        }
+    }
+    name.trim().to_owned()
+}
 
 /// Builds one tier's printable meet instruction -- see
 /// [`super::sheet::CutSheetRow::meet_instruction`]. Mirrors
@@ -20,7 +44,15 @@ use indicatrix::{
 /// synthesized from the constraint), but only ever accepts non-blank
 /// recorded notes and always falls back to a readable phrase for
 /// [`MeetConstraint::MeetExisting`] instead of an empty string.
-fn meet_instruction(tier: &ConstraintTier) -> String {
+///
+/// A recorded note is the designer's own text and prints verbatim. `MeetNamed`
+/// targets print as their tiers' `codes` (`Meet P1, P2, G1`), in the order the
+/// constraint stores them.
+pub(super) fn meet_instruction(
+    tier: &ConstraintTier,
+    resolver: &MeetNameResolver<'_>,
+    codes: &[TierLabelInfo],
+) -> String {
     if let (MeetConstraint::ScaleReference(_), Some(notes)) =
         (&tier.constraint, &tier.original_notes)
         && !notes.trim().is_empty()
@@ -29,7 +61,14 @@ fn meet_instruction(tier: &ConstraintTier) -> String {
     }
     match &tier.constraint {
         MeetConstraint::MeetExisting => "Meet at previously cut facets".to_string(),
-        MeetConstraint::MeetNamed(names) => format!("Meet {}", names.join(", ")),
+        MeetConstraint::MeetNamed(names) => format!(
+            "Meet {}",
+            names
+                .iter()
+                .map(|name| meet_name_as_code(name, resolver, codes))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         MeetConstraint::ScaleReference(mast) => format!("Set to mast depth {mast:.4}"),
     }
 }
@@ -37,10 +76,11 @@ fn meet_instruction(tier: &ConstraintTier) -> String {
 /// A concave tier's facet-line row. It has no mast and no depth (its cut is
 /// bounded by the tool, not by a solved plane), so both read as zero or absent
 /// and the meet column prints the tier's own instructions, else "cut to depth"; the tool line's values ride in
-/// [`CutSheetRow::concave`].
-fn concave_row(tier: &ConcaveTier, sequence: usize) -> CutSheetRow {
+/// [`CutSheetRow::concave`]. `code` is the tier's code (`P4`).
+fn concave_row(tier: &ConcaveTier, code: &str, sequence: usize) -> CutSheetRow {
     CutSheetRow {
         sequence,
+        code: code.to_owned(),
         name: tier.name.clone(),
         angle_deg: tier.angle_deg.abs(),
         indices: tier.indices.clone(),
@@ -63,25 +103,6 @@ fn concave_row(tier: &ConcaveTier, sequence: usize) -> CutSheetRow {
             motion: tier.motion,
         }),
     }
-}
-
-/// Builds one [`MeetTierInput`] per tier of `tiers`, for
-/// [`MeetNameResolver`] -- the same conversion
-/// `indicatrix::geometry::meet_solver::meet_tier_inputs_from_asc` does from a
-/// parsed `.asc` schedule, done here directly from a [`Design`]'s own
-/// authoritative [`ConstraintTier::constraint`] instead (no solved mast
-/// needed: a tier's constraint already carries its `ScaleReference` value
-/// when it has one, so this never has to solve first).
-fn meet_tier_inputs(tiers: &[ConstraintTier]) -> Vec<MeetTierInput> {
-    tiers
-        .iter()
-        .map(|tier| MeetTierInput {
-            angle_deg: tier.angle_deg,
-            indices: tier.indices.clone(),
-            constraint: tier.constraint.clone(),
-            names: tier.names().into_iter().map(str::to_string).collect(),
-        })
-        .collect()
 }
 
 /// Resolves `tier`'s own [`MeetConstraint::MeetNamed`] against an
@@ -120,7 +141,7 @@ impl Design {
             index: tier_index,
             tier_count,
         })?;
-        let inputs = meet_tier_inputs(&self.tiers);
+        let inputs = meet_inputs(&self.tiers);
         let resolver = MeetNameResolver::new(&inputs);
         Ok(resolve_meets(tier, &resolver))
     }
@@ -238,29 +259,19 @@ impl Design {
         }
         let mm_per_unit = yield_report.mm_per_unit;
 
-        let inputs = meet_tier_inputs(&self.tiers);
+        let inputs = meet_inputs(&self.tiers);
         let resolver = MeetNameResolver::new(&inputs);
-        let canonical_labels = crate::design::labelling::compute_tier_labels(&self.tiers);
+        let codes = self.tier_codes();
         let flat_row = |i: usize, sequence: usize| {
             let (tier, solved_tier) = (&self.tiers[i], &solved[i]);
-            let name = if tier.name.is_empty() {
-                canonical_labels
-                    .get(i)
-                    .map_or_else(String::new, |l| l.display_name.clone())
-            } else if crate::design::labelling::is_legacy_123_abc(&tier.name) {
-                canonical_labels
-                    .get(i)
-                    .map_or_else(|| tier.name.clone(), |l| l.display_name.clone())
-            } else {
-                tier.name.clone()
-            };
             CutSheetRow {
                 sequence,
-                name,
+                code: codes.flat[i].code.clone(),
+                name: tier.name.clone(),
                 angle_deg: tier.angle_deg.abs(),
                 indices: tier.indices.clone(),
                 mast: solved_tier.mast,
-                meet_instruction: meet_instruction(tier),
+                meet_instruction: meet_instruction(tier, &resolver, &codes.flat),
                 meets_tiers: resolve_meets(tier, &resolver),
                 cheater_offset_deg: self.cheater_offset_deg(i),
                 angle_of_elevation_deg: tier.angle_deg.abs(),
@@ -268,22 +279,19 @@ impl Design {
                 concave: None,
             }
         };
-        // A design without concave tiers keeps its stored tier order, so every
-        // planar sheet stays byte-identical to what it was before concave
-        // tiers existed; with concave tiers the sheet follows `cutting_order`
-        // so each tool line sits at the end of its section, above the table.
-        let rows = if self.concave_tiers.is_empty() {
-            (0..self.tiers.len()).map(|i| flat_row(i, i + 1)).collect()
-        } else {
-            self.cutting_order()
-                .into_iter()
-                .enumerate()
-                .map(|(position, tier_ref)| match tier_ref {
-                    TierRef::Flat(i) => flat_row(i, position + 1),
-                    TierRef::Concave(i) => concave_row(&self.concave_tiers[i], position + 1),
-                })
-                .collect()
-        };
+        // Every design -- planar or not -- is printed in `cutting_order`: the pavilion
+        // section first, each tool line at the end of its section, the table last.
+        let rows = self
+            .cutting_order()
+            .into_iter()
+            .enumerate()
+            .map(|(position, tier_ref)| match tier_ref {
+                TierRef::Flat(i) => flat_row(i, position + 1),
+                TierRef::Concave(i) => {
+                    concave_row(&self.concave_tiers[i], &codes.concave[i].code, position + 1)
+                }
+            })
+            .collect();
 
         Ok(CuttingSheet { header, rows })
     }

@@ -87,6 +87,7 @@ pub fn validate_scene(scene: &SceneState) -> Result<(), String> {
         ("exposure", scene.exposure),
         ("backdrop", scene.backdrop),
         ("surface_glare", scene.surface_glare),
+        ("head_shadow_deg", scene.head_shadow_deg),
     ] {
         if !v.is_finite() {
             return Err(format!("scene.{name} must be finite (got {v})"));
@@ -105,49 +106,7 @@ pub fn validate_scene(scene: &SceneState) -> Result<(), String> {
         ));
     }
 
-    if scene.planes.is_empty() {
-        return Err("scene.planes must not be empty".to_string());
-    }
-    if scene.planes.len() > MAX_PLANES {
-        return Err(format!(
-            "scene.planes has {} facet(s), exceeding the maximum of {MAX_PLANES}",
-            scene.planes.len()
-        ));
-    }
-    for (i, plane) in scene.planes.iter().enumerate() {
-        let normal = Vec3::from_array(plane.normal);
-        if !normal.is_finite() {
-            return Err(format!(
-                "scene.planes[{i}].normal is non-finite: {:?}",
-                plane.normal
-            ));
-        }
-        if normal.length() <= 1e-6 {
-            return Err(format!(
-                "scene.planes[{i}].normal is degenerate (near-zero length): {:?}",
-                plane.normal
-            ));
-        }
-        if !plane.d.is_finite() {
-            return Err(format!("scene.planes[{i}].d is non-finite: {}", plane.d));
-        }
-    }
-
-    // Concave tools (v19). The count bound is the shared cap the kernel's tool scan is
-    // sized for; each primitive is checked by the same validator the desktop applies, so
-    // a worker never feeds the tracer a tool with a non-finite, degenerate or
-    // out-of-range field.
-    if scene.tools.len() > indicatrix::geometry::MAX_TOOL_PRIMITIVES {
-        return Err(format!(
-            "scene.tools has {} primitive(s), exceeding the maximum of {}",
-            scene.tools.len(),
-            indicatrix::geometry::MAX_TOOL_PRIMITIVES
-        ));
-    }
-    for (i, tool) in scene.tools.iter().enumerate() {
-        tool.validate()
-            .map_err(|e| format!("scene.tools[{i}] is invalid: {e}"))?;
-    }
+    check_planes_and_tools(scene)?;
 
     // Fluorescent emitters (v20): at most `MAX_EMITTERS` of at most `MAX_BANDS` excitation
     // and emission bands each, every value finite, quantum yields in [0, 1] -- the
@@ -207,6 +166,58 @@ pub fn validate_scene(scene: &SceneState) -> Result<(), String> {
     }
 
     validate_environment(scene)
+}
+
+/// Checks the facet planes and the concave tools of `scene`.
+///
+/// # Errors
+///
+/// Returns a message naming the first plane or tool that is empty, oversized or malformed.
+fn check_planes_and_tools(scene: &SceneState) -> Result<(), String> {
+    if scene.planes.is_empty() {
+        return Err("scene.planes must not be empty".to_string());
+    }
+    if scene.planes.len() > MAX_PLANES {
+        return Err(format!(
+            "scene.planes has {} facet(s), exceeding the maximum of {MAX_PLANES}",
+            scene.planes.len()
+        ));
+    }
+    for (i, plane) in scene.planes.iter().enumerate() {
+        let normal = Vec3::from_array(plane.normal);
+        if !normal.is_finite() {
+            return Err(format!(
+                "scene.planes[{i}].normal is non-finite: {:?}",
+                plane.normal
+            ));
+        }
+        if normal.length() <= 1e-6 {
+            return Err(format!(
+                "scene.planes[{i}].normal is degenerate (near-zero length): {:?}",
+                plane.normal
+            ));
+        }
+        if !plane.d.is_finite() {
+            return Err(format!("scene.planes[{i}].d is non-finite: {}", plane.d));
+        }
+    }
+
+    // Concave tools (v19). The count bound is the shared cap the kernel's tool scan is
+    // sized for; each primitive is checked by the same validator the desktop applies, so
+    // a worker never feeds the tracer a tool with a non-finite, degenerate or
+    // out-of-range field.
+    if scene.tools.len() > indicatrix::geometry::MAX_TOOL_PRIMITIVES {
+        return Err(format!(
+            "scene.tools has {} primitive(s), exceeding the maximum of {}",
+            scene.tools.len(),
+            indicatrix::geometry::MAX_TOOL_PRIMITIVES
+        ));
+    }
+    for (i, tool) in scene.tools.iter().enumerate() {
+        tool.validate()
+            .map_err(|e| format!("scene.tools[{i}] is invalid: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Rejects an absorption band list longer than the GPU encoding's fixed-size array.
@@ -414,7 +425,8 @@ mod tests {
             environment: indicatrix_net::scene::SceneEnvironment::Studio,
             surface_glare: 1.0,
             tools: Vec::new(),
-            fluorescence: Default::default(),
+            fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
+            head_shadow_deg: 16.0,
         }
     }
 
@@ -483,6 +495,14 @@ mod tests {
         scene.surface_glare = f32::NAN;
         let err = validate_scene(&scene).unwrap_err();
         assert!(err.contains("surface_glare"), "{err}");
+    }
+
+    #[test]
+    fn rejects_non_finite_head_shadow() {
+        let mut scene = valid_scene();
+        scene.head_shadow_deg = f32::NAN;
+        let err = validate_scene(&scene).unwrap_err();
+        assert!(err.contains("head_shadow_deg"), "{err}");
     }
 
     #[test]
@@ -691,7 +711,7 @@ mod tests {
         scene.fluorescence = Fluorescence::new(vec![bad]);
         assert!(validate_scene(&scene).is_err(), "non-finite emission width");
 
-        let mut bad = emitter.clone();
+        let mut bad = emitter;
         bad.excitation = vec![AbsorptionBand::new(410.0, 20.0, 1.0); MAX_BANDS + 1];
         scene.fluorescence = Fluorescence::new(vec![bad]);
         assert!(validate_scene(&scene).is_err(), "too many bands");

@@ -67,7 +67,7 @@ This setting is remembered across sessions.
 ## Reading the status strip after Solve
 
 One **status strip** runs the width of the Edit tab: always a single colored
-dot plus one line, and a **Log** link at the right that opens every current
+dot plus one line, and a **Details** link at the right that opens every current
 message in full. The solver's own state always leads there — see "The
 status strip's priority order" below — so a running or failed solve can
 never end up hidden behind something less important.
@@ -103,11 +103,19 @@ happened to be flagged:
 6. Deep Solve's own in-progress or verdict message (Chapter 8).
 7. The catalogue material-suggestion banner (Chapter 6), last of all.
 
-Click **Log** at the right of the strip to see every one of these — the
+Click **Details** at the right of the strip to see every one of these — the
 validation message, Deep Solve's status, every manufacturability warning
 in full, the rough-fit note, and the material suggestion — at once, rather
 than only the single highest-priority line. Nothing the strip has no room
 to show is ever unreachable, only one click away.
+
+Everything on the strip can be reached with Tab and pressed with Space or Enter,
+and a screen reader hears each piece by name: the solver state, the verdict
+badge, the message, Details, and the buttons inside the Details list. Pointing at the
+solver state says in a sentence what it means. The **?** at the right end of the
+strip opens this section. The Simple interface (Chapter 17) leaves out the
+solve-duration figure, and the **Pin** column of Deep Solve's results in the Details
+list; the Advanced interface shows both.
 
 ## Manufacturability warnings
 
@@ -129,10 +137,80 @@ always run:
 These warnings are informational — they do not block Solve or export — but
 they flag rows worth revisiting before you cut the stone for real. Each
 warning also badges its own tier's row with a small ⚠ glyph in the tier
-table (Chapter 3), so you do not have to open Log to see which rows are
+table (Chapter 3), so you do not have to open Details to see which rows are
 affected. Like the status strip, they go stale (cleared, not left showing
 an outdated result) the instant you make another edit, and only reappear
 after the next Solve.
+
+## The overall verdict
+
+Right beside the solver state at the left of the status strip sits one small
+badge with one word: **Good**, **Check** or **Problem**. It sums up the whole
+design, so you do not have to read the strip, the manufacturability list, the
+proportion chips and the tier table to learn whether the stone is sound.
+Hover over it for the verdict as a plain sentence ("Looks good: closes, no
+warnings." or "Check 3 things."); click it, or Tab to it and press Enter, for
+the list of reasons behind the word. Esc closes the list, and so does its close
+button. The list has its own **?**, which opens this section. A screen reader
+reads the badge as "Overall verdict: Good" (or Check, or Problem) followed by the
+same sentence, and each reason in the list as "Problem:", "Check:" or "Good:"
+followed by the sentence, with a **Show** and a **Fix** button that say which
+reason they belong to.
+
+| Word | Meaning |
+|---|---|
+| **Good** | The design solves and closes, nothing in the manufacturability list applies, no facet lets light out of the bottom and no proportion is outside its usual range. |
+| **Check** | The stone can be cut, but something deserves a look: a manufacturability warning, a facet below the critical angle, a missing table, a proportion outside the usual range, or an optical figure past its first threshold. |
+| **Problem** | The design does not solve or the facets do not close into a stone, or an optical figure is far past its threshold. Fix these before cutting. |
+
+The badge is recomputed whenever a solve lands (the button, the automatic
+solve, or a finished preview update), never on its own and never with a
+solve of its own. After any edit it stays visible but dimmed, and its Fix
+buttons wait, until the next solve brings the new verdict.
+
+### The reasons, Show and Fix
+
+Every reason is one plain sentence, worst first. **Show** selects the tier
+the sentence is about, exactly as clicking its row would. **Fix** is offered
+only where a safe tool exists:
+
+| Reason | Fix | What it does |
+|---|---|---|
+| An index position sits between gear teeth. | **Snap to teeth** | Rounds each such position to the nearest tooth (positions that become the same tooth merge). |
+| Facets of a tier are cut away entirely by later tiers. | **Remove** | After a confirmation: removes only the cut-away facets from the tier, or the whole tier when all of them are gone. It first checks that the finished stone is unchanged. |
+| A tier meets a tier that is cut later. | **Move later** | Moves the tier to just after the last tier it meets, so the schedule is cut in a workable order. |
+| A pavilion facet is below the critical angle (windowing). | **Steepen** | Turns the facet about its girdle-side edge to the critical angle plus 2 degrees, so the girdle stays where it is. It is checked with the same gate Retarget uses and refused when the result would not be a valid stone. |
+| The crown has no table. | **Add a table** | Adds a flat top at 0 degrees, using the quick-add height when that keeps every crown facet, otherwise the nearest height that does. |
+
+A Fix is **one undo step**: a single Ctrl+Z puts everything back, and a
+toast says what changed. Each fix is planned on a copy of the design first
+and refused, with a plain sentence and no change, when it cannot be made
+safely: for example a pavilion angle driven by a relation, an angle the
+material would need beyond 89.5 degrees, or a result that no longer solves.
+While a guide or tutorial step has locked the tier table (Chapters 7 and 22)
+the Fix buttons are dimmed and say so in their tooltips. Other reasons (an unsafe meet name, a
+concave-tool finding, a proportion outside its range, a crown facet that may
+leak) have no Fix: change the design yourself, then look at the verdict again.
+
+### Where the thresholds come from
+
+The structural reasons follow the manufacturability checks above and the
+tier table's windowing badge. The three optical figures come from the same
+fast table-up measurement the Retarget dialog's table uses, in the design's
+material under the viewport's lighting, and are only measured when the stone
+closes and the design names a material:
+
+| Figure | Check | Problem |
+|---|---|---|
+| Windowing (light straight out of the bottom) | above 15 % | above 30 % |
+| Extinction (light lost inside) | above 40 % | above 60 % |
+| Brilliance (light back to the eye, table up) | below 25 % | below 10 % |
+
+The windowing thresholds are the ones to trust most. The extinction and
+brilliance thresholds are loose starting points, not measured limits: they
+are meant to flag a stone that is plainly poor, not to rank good ones. All of
+them are named constants at the top of the verdict code, so they are easy to
+tighten once enough real stones have been compared.
 
 ## Abandon Solve
 

@@ -1,0 +1,275 @@
+import { LineEdit, ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { TutorialsModel, TutorialRowData } from "../models/tutorials.slint";
+import { PreferencesModel } from "../models/preferences.slint";
+import { HelpTopics } from "../models/help.slint";
+import { HelpButton } from "help_button.slint";
+import { IconButton } from "icon_button.slint";
+import { TipButton } from "compact_controls.slint";
+import { TipBox } from "tip_box.slint";
+
+// A section heading with a hairline under it.
+component SectionHeading inherits Rectangle {
+    in property <string> text;
+    height: 26px;
+    Text {
+        x: 4px;
+        y: 4px;
+        text: root.text;
+        font-size: 11px;
+        font-weight: 700;
+        color: Theme.accent-cyan;
+        accessible-role: AccessibleRole.text;
+    }
+    Rectangle {
+        x: 0px;
+        y: parent.height - 1px;
+        width: parent.width;
+        height: 1px;
+        background: Theme.border-subtle;
+    }
+}
+
+// One tutorial: its name, a "Done" mark when it has been finished, one or two lines on what it
+// teaches, and a Start (or Restart) button. A tutorial that cannot start right now says why
+// in place of a third line and its button is dim.
+component TutorialRow inherits Rectangle {
+    in property <TutorialRowData> data;
+    // Not called `start`: inside this component that name would hide the `start` of
+    // `alignment: start;` below.
+    callback start_clicked();
+
+    height: 70px;
+    border-radius: Theme.radius-sm;
+    background: row_touch.has-hover ? Theme.surface-control-hover : transparent;
+
+    accessible-role: AccessibleRole.list-item;
+    accessible-label: root.data.title + (root.data.done ? ", done" : "") + ". " + root.data.summary + (root.data.blocked_reason != "" ? " Cannot start now: " + root.data.blocked_reason : "");
+    accessible-action-default => {
+        if root.data.blocked_reason == "" {
+            root.start_clicked();
+        }
+    }
+
+    // Hover only: the row itself is not a target, the Start button is.
+    row_touch := TouchArea {}
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 6px;
+        padding-bottom: 6px;
+        spacing: 10px;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 2px;
+            alignment: center;
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                height: 16px;
+                Text {
+                    text: root.data.title;
+                    font-size: 12px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                }
+                if root.data.done: HorizontalLayout {
+                    spacing: 3px;
+                    alignment: start;
+                    // The tick is an icon: the UI font has no check-mark symbol.
+                    VerticalLayout {
+                        alignment: center;
+                        Image {
+                            source: @image-url("../icons/check.svg");
+                            colorize: Theme.success;
+                            width: 11px;
+                            height: 11px;
+                            image-fit: contain;
+                        }
+                    }
+                    Text {
+                        text: "Done";
+                        font-size: 10px;
+                        font-weight: 700;
+                        color: Theme.success;
+                        vertical-alignment: center;
+                    }
+                }
+                Text {
+                    text: root.data.step_text;
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+            }
+            Text {
+                height: 28px;
+                text: root.data.summary;
+                font-size: 10px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+                overflow: elide;
+            }
+            if root.data.blocked_reason != "": Text {
+                height: 13px;
+                text: root.data.blocked_reason;
+                font-size: 10px;
+                color: Theme.accent-amber;
+                overflow: elide;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            TipButton {
+                width: 84px;
+                text: root.data.start_label;
+                reader_label: root.data.start_label + " " + root.data.title;
+                hint: root.data.blocked_reason == "" ? (root.data.done ? "Run this tutorial again from its first step." : "Start this tutorial. A panel walks you through it, step by step.") : "Cannot start now: " + root.data.blocked_reason;
+                primary: !root.data.done;
+                enabled: root.data.blocked_reason == "";
+                clicked => { root.start_clicked(); }
+            }
+        }
+    }
+}
+
+// The tutorial browser (Help > Tutorials..., the command palette's "Tutorials...", the empty
+// state): every tutorial by section, with a search box, a finished mark and Start/Restart.
+// Mounted by `app.slint` inside a wrapping `FocusScope` that closes it on Escape. Rust
+// (`gui::editor::guide::browser`) lists the tutorials and starts the chosen one.
+export component TutorialBrowser inherits Rectangle {
+    background: Theme.overlay-backdrop;
+
+    // The search box takes the keyboard as soon as the browser opens.
+    init => { search.focus(); }
+
+    // The backdrop: a click outside the card closes the browser.
+    TouchArea {
+        clicked => { TutorialsModel.close_browser(); }
+    }
+
+    Rectangle {
+        width: min(580px, parent.width - 40px);
+        height: min(600px, parent.height - 40px);
+        background: Theme.surface-dialog;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-dialog;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.modal-shadow;
+        clip: true;
+
+        // Isolates clicks inside the card from the backdrop above, and hands the keyboard
+        // back to the search box so Escape still closes the browser after a click on the card.
+        TouchArea {
+            clicked => { search.focus(); }
+        }
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    horizontal-stretch: 1;
+                    text: "Tutorials";
+                    font-size: 14px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    HelpButton { topic: HelpTopics.tutorials; hint: "Open the manual page on the tutorials"; }
+                }
+                IconButton {
+                    icon: @image-url("../icons/close.svg");
+                    hint: "Close the tutorials";
+                    tint: Theme.text-secondary;
+                    clicked => { TutorialsModel.close_browser(); }
+                }
+            }
+
+            Text {
+                text: "Short guided lessons, one for each tool. Start one and a panel walks you through it, step by step.";
+                font-size: 10px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+
+            TipBox {
+                hint: "Type to narrow the list. Enter starts the first tutorial in it.";
+                search := LineEdit {
+                    placeholder-text: "Search tutorials";
+                    accessible-label: "Search tutorials";
+                    text <=> TutorialsModel.query;
+                    edited => { TutorialsModel.query_changed(self.text); }
+                    // Enter starts the first tutorial in the list, when it can start.
+                    accepted => {
+                        if TutorialsModel.rows.length > 0 && TutorialsModel.rows[0].blocked_reason == "" {
+                            TutorialsModel.start(TutorialsModel.rows[0].id);
+                        }
+                    }
+                }
+            }
+
+            ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    alignment: start;
+                    spacing: 2px;
+
+                    for row in TutorialsModel.rows: VerticalLayout {
+                        spacing: 2px;
+                        if row.first_in_category: SectionHeading { text: row.category; }
+                        TutorialRow {
+                            data: row;
+                            start_clicked => { TutorialsModel.start(row.id); }
+                        }
+                    }
+
+                    if TutorialsModel.rows.length == 0: Text {
+                        text: "No tutorial matches your search.";
+                        font-size: 11px;
+                        color: Theme.text-muted;
+                        horizontal-alignment: center;
+                        height: 48px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 10px;
+                Text {
+                    horizontal-stretch: 1;
+                    text: TutorialsModel.progress_text;
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                TipButton {
+                    text: "Reset progress";
+                    hint: "Forget which tutorials you have finished, so every one shows as new again.";
+                    clicked => {
+                        PreferencesModel.reset_tutorials();
+                        TutorialsModel.refresh();
+                    }
+                }
+                TipButton {
+                    text: "Close";
+                    hint: "Close the tutorials. Escape does the same.";
+                    primary: true;
+                    clicked => { TutorialsModel.close_browser(); }
+                }
+            }
+        }
+    }
+}

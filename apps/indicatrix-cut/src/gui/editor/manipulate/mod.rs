@@ -39,6 +39,17 @@
 //! landing over a live session makes the session re-render itself, and a design that
 //! moved on discards it (see `slice`'s "Keeping the provisional picture on screen").
 //!
+//! # The Diagram view
+//!
+//! [`diagram`] puts the same three handles on the 2D Diagram view's panels. The handle
+//! layout comes from `indicatrix_editor::manipulate::diagram2d` and the panel layout the
+//! diagram frame carried out through [`FrameGeometry`]; the drag itself is the SAME
+//! path (`drag_begin` / `drag_move` through the [`EditIntentQueue`](super::edit_intent::EditIntentQueue),
+//! one undo step, Escape cancels), except that the index handle turns the tier about the
+//! panel centre (`ActiveDrag::rotation`). The pointer coordinates the
+//! view hands over there are UNZOOMED (see `diagram`'s own doc). The Slice tool is not
+//! offered in the Diagram view.
+//!
 //! # Staying cheap
 //!
 //! [`on_frame_landed`] runs after EVERY solid-preview frame (an orbit produces dozens a
@@ -48,11 +59,14 @@
 //! the handles are left exactly where the drag started (the pixel-to-value mapping is
 //! fixed for the gesture) and only the "follows your drag" feedback is refreshed.
 
+mod diagram;
 mod drag;
 mod handles;
 mod slice;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_large_handles;
 
 use crate::{
     MainWindow, ManipulateModel,
@@ -64,14 +78,19 @@ use crate::{
             view::SolidLastSolved,
         },
         solid_preview::{
+            diagram2d::PanelKind,
             facet_map::FacetMap,
             preview_state::{FrameGeometry, SolidPickState, SolidPreviewState},
         },
+        tutorial_events::raise,
     },
 };
 use indicatrix::geometry::meet_solver::SolvedTier;
 use indicatrix_cut_core::ConstraintTier;
-use indicatrix_editor::manipulate::{FacetFrame, HandleKind, HandleLayout, SnapMode};
+use indicatrix_editor::{
+    guide::viewing_events as events,
+    manipulate::{FacetFrame, HandleKind, HandleLayout, SnapMode},
+};
 use slint::ComponentHandle as _;
 use std::{
     cell::RefCell,
@@ -150,6 +169,9 @@ struct Target {
     /// Whether `tier` is the provisional slice tier (an index one past the committed
     /// design's last tier) rather than a tier of `EditorState`.
     provisional: bool,
+    /// Set when the handles sit on a Diagram panel: which panel, which handles it offers,
+    /// and the index handle's rotation about the panel centre. `None` in the 3D views.
+    diagram: Option<diagram::DiagramPlacement>,
 }
 
 /// The [`FacetMap`] of one (design generation, solved-masts generation) pair, kept so
@@ -174,6 +196,9 @@ struct HandleSession {
     drag: Option<drag::ActiveDrag>,
     /// The Slice tool's line gesture and provisional tier.
     slice: slice::SliceState,
+    /// The Diagram panel the pointer last entered that offered handles; the handles sit on
+    /// it while it keeps offering them (see `diagram::follow_pointer`).
+    diagram_panel: Option<PanelKind>,
 }
 
 impl HandleSession {
@@ -185,6 +210,7 @@ impl HandleSession {
             hover_hint_active: false,
             drag: None,
             slice: slice::SliceState::new(),
+            diagram_panel: None,
         }
     }
 }
@@ -333,12 +359,19 @@ fn wire_provisional_buttons(ui: &MainWindow, ctx: &Shared) {
     let symmetric_ctx = ctx.clone();
     model.on_slice_symmetric_toggled(move || {
         if let Some(ui) = ui_weak.upgrade() {
+            // Remembered across sessions (the Slice mode itself is not).
+            crate::gui::preferences::persist_slice_symmetric(
+                ui.global::<ManipulateModel>().get_slice_symmetric(),
+            );
             slice::symmetric_toggled(&ui, &symmetric_ctx);
+            // A tutorial step may wait for the Symmetric pill to be used.
+            raise(&ui, events::SLICE_SYMMETRIC_TOGGLED);
         }
     });
 }
 
-/// Hit-testing, hover and the Snap pill.
+/// Hit-testing, hover and the Snap pill (which is remembered, see
+/// `gui::preferences::persist_snap_off`).
 fn wire_pointer_callbacks(ui: &MainWindow, ctx: &Shared) {
     let model = ui.global::<ManipulateModel>();
     let ui_weak = ui.as_weak();
@@ -358,7 +391,14 @@ fn wire_pointer_callbacks(ui: &MainWindow, ctx: &Shared) {
     let snap_ctx = ctx.clone();
     model.on_snap_toggled(move || {
         if let Some(ui) = ui_weak.upgrade() {
+            // Remembered across sessions. The toolbar pill and the Preferences dialog's
+            // switch both end here, so both are saved.
+            crate::gui::preferences::persist_snap_off(
+                ui.global::<ManipulateModel>().get_snap_off(),
+            );
             handles::refresh_hover_hint(&ui, &snap_ctx);
+            // A tutorial step may wait for the Snap pill to be clicked.
+            raise(&ui, events::SNAP_TOGGLED);
         }
     });
 }

@@ -20,9 +20,12 @@ export global RetargetModel {
     in-out property <bool> is-open: false;
     // 0 Shift (the deterministic critical-angle shift), 1 Optimize (shift, then search).
     in-out property <int> mode-index: 0;
-    // How far crown tiers follow the pavilion critical-angle delta, 0..1.
+    // How far crown tiers follow the pavilion critical-angle delta, 0..1. Precedence: scale
+    // by ratio > follow the pavilion > fraction. `crown-follows-pavilion` (the default)
+    // stretches every crown angle with the pavilion, so the stone keeps its silhouette.
     in-out property <float> crown-fraction: 0.0;
     in-out property <bool> scale-crown-by-ratio: false;
+    in-out property <bool> crown-follows-pavilion: true;
     // The target: the material combo (built-ins, custom materials, "Custom RI...") and an
     // optional typed RI.
     in property <[string]> material-options: [];
@@ -195,7 +198,7 @@ export component RetargetDialog inherits Rectangle {
                         minimum: 0.0;
                         maximum: 1.0;
                         value <=> RetargetModel.crown-fraction;
-                        enabled: !RetargetModel.scale-crown-by-ratio && !RetargetModel.is-busy;
+                        enabled: !RetargetModel.scale-crown-by-ratio && !RetargetModel.crown-follows-pavilion && !RetargetModel.is-busy;
                         changed(value) => {
                             if RetargetModel.mode-index == 0 { RetargetModel.proposal-changed(); }
                         }
@@ -208,21 +211,38 @@ export component RetargetDialog inherits Rectangle {
                     alignment: end;
                     CheckBox {
                         enabled: !RetargetModel.is-busy;
+                        text: "Crown follows the pavilion";
+                        checked <=> RetargetModel.crown-follows-pavilion;
+                        toggled => { RetargetModel.proposal-changed(); }
+                    }
+                    CheckBox {
+                        enabled: !RetargetModel.is-busy;
                         text: "Scale crown by ratio";
                         checked <=> RetargetModel.scale-crown-by-ratio;
                         toggled => { RetargetModel.proposal-changed(); }
                     }
                 }
             }
-            // On a phone-width dialog the checkbox gets its own line under the mode row.
-            if root.narrow: HorizontalLayout {
-                CheckBox {
-                    enabled: !RetargetModel.is-busy;
-                    text: "Scale crown by ratio";
-                    checked <=> RetargetModel.scale-crown-by-ratio;
-                    toggled => { RetargetModel.proposal-changed(); }
+            // On a phone-width dialog the checkboxes get their own lines under the mode row.
+            if root.narrow: VerticalLayout {
+                HorizontalLayout {
+                    CheckBox {
+                        enabled: !RetargetModel.is-busy;
+                        text: "Crown follows the pavilion";
+                        checked <=> RetargetModel.crown-follows-pavilion;
+                        toggled => { RetargetModel.proposal-changed(); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
                 }
-                Rectangle { horizontal-stretch: 1; }
+                HorizontalLayout {
+                    CheckBox {
+                        enabled: !RetargetModel.is-busy;
+                        text: "Scale crown by ratio";
+                        checked <=> RetargetModel.scale-crown-by-ratio;
+                        toggled => { RetargetModel.proposal-changed(); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
             }
 
             if RetargetModel.is-busy: VerticalLayout {

@@ -28,13 +28,20 @@ carries the same "Indicatrix Cut" name next to a small gem icon.
 
 ## The main window
 
-A **menu bar** (File / Edit / Help) runs above everything else. File
+A **menu bar** (File / Edit / Library / Help) runs above everything else. File
 mirrors the editor's New / Open / Save / Save As / Export Edited .asc,
 plus an **Open Recent** submenu of design files you have saved or opened
 (Chapters 3 and 11; greyed out on a build without the editor — see the
 Limitation note below); Edit mirrors Undo/Redo, each says what it
-will actually do once there is something to act on; and Help → User Manual
-opens this manual's own `README.md` in your system's default viewer.
+will actually do once there is something to act on, and also opens
+**Preferences...** (Chapter 17); Library runs the whole-catalogue
+batches (regenerate preview images and tilt curves; Advanced interface only),
+has a **Selected Design** submenu with the card actions for the design you
+selected (Chapter 2), and opens the Rough
+Planner (Chapter 15); and Help → User Manual
+opens this manual in a help window of its own, with a chapter list, search, Back and
+Forward (see "Help inside the app" in the manual's `README.md`). Help → **Help for
+This Screen** (F1) opens the manual at the page for whatever is on screen.
 Appendix B lists the keyboard shortcuts that work alongside it. While the
 Edit tab has unsaved changes, the window title carries a leading "* " so
 you always know at a glance whether the file on disk matches what's on
@@ -42,10 +49,12 @@ screen (Chapter 11).
 
 Below the menu bar, the window is divided into three areas:
 
-- A **top toolbar** running the full width of the window: the app name and a
-  status line on the left, then a search box, a Shape filter, a Gear filter,
+- A **top toolbar** running the full width of the window: the app name, a
+  status line, the library badge and a small **Simple | Advanced** pill on the
+  left, then a search box, a Shape filter, a Gear filter,
   a Filters button (for the advanced range filters), an Import button, and a
-  Remote button on the right.
+  Remote button on the right. In the Simple interface the Remote button is
+  hidden until a remote worker is set up (Chapter 10).
 - A **catalogue panel** on the left, listing every design that matches your
   current search and filters. You can collapse this panel to a thin rail to
   give the render viewport more room, using the collapse control at its edge;
@@ -59,10 +68,18 @@ Below the menu bar, the window is divided into three areas:
     The Edit sub-tab is the cutting-design editor covered in Chapters 3–8.
   - **Cutting Instructions** — a plain table of every facet's angle, index, and
     notes, filterable to All Steps / Pavilion / Crown, with a "Copy
-    Schedule" button and a click-to-copy on any row.
+    Instructions" button and a click-to-copy on any row (Chapter 2).
   - **Files & Downloads** — any original file(s) attached to the design in
     the catalogue (typically the source `.asc`), each with a "Save / Export"
     button and a "Copy URL" button.
+
+**Simple or Advanced.** The **Simple | Advanced** pill in the top toolbar chooses
+how many controls the app shows: Simple shows the controls most designs need,
+Advanced shows every control. Change it any time; it only hides or shows
+controls and never touches your designs. A brand-new installation starts in
+Simple, and an installation that was used before the switch existed stays in
+Advanced. The same switch is in Edit → Preferences... (Chapter 17), together
+with the interface scale, high contrast and larger drag handles.
 
 If a design has no cutting instructions recorded, the Cutting Instructions tab shows
 "No cutting instructions recorded for this diagram." If it has no attached
@@ -76,12 +93,19 @@ Opening the Edit sub-tab (Chapter 3) before any design has been created,
 loaded or opened shows a card grid instead of a blank viewport, with four ways
 in. Once a design exists the grid is gone for good -- a brand-new design with
 no tiers yet shows its preform with a small "no tiers yet" hint and a
-**+ Add Tier** button instead:
+**+ Add Tier** button instead. Every card can be reached with Tab and pressed
+with Space or Enter, and the **?** in the corner opens this section:
 
-- **New Design...** opens the New Design dialog (Chapter 3), with a
-  template gallery of six cards -- Empty plus five built-in faceting
-  designs -- each shown with a shape-glyph placeholder rather than a live
-  thumbnail. Every card is selectable.
+- **New Design...** opens the New Design dialog (Chapter 3), with a template
+  gallery in three sections: **Shapes** (the five everyday outlines: round
+  brilliant, oval, cushion, emerald step cut and princess), **Round variants
+  and teaching designs** (a shallow and a deep round brilliant and two
+  teaching designs) and **Blank** (the Empty design). Every card with a stone
+  shows a small solid picture of it, drawn in the background the first time
+  you open the dialog (the picture tile stays empty for a moment until it is
+  ready). Picking a stone lets you choose the material, the index gear and
+  the stone's width in millimetres before you create it; Chapter 7 describes
+  the options. Every card is selectable.
 - **Open the Worked Example** opens the in-app guide panel at its first step,
   which walks you through building Chapter 7's stone yourself: an Empty design
   from the New Design dialog, then the girdle, pavilion, crown and table tier
@@ -89,9 +113,13 @@ no tiers yet shows its preform with a small "no tiers yet" hint and a
   Round Brilliant" template instead.)
 - **Open Recent** shows your four most-recently-used design files -- the top
   of the list File > Open Recent keeps, which holds up to ten.
-- **Import a Folder** points you at the Import button in the top toolbar
-  (see "Bringing your own designs in" below); it is not a second Import
-  control of its own.
+- **Import a Folder** opens the folder picker straight away: choose a folder
+  and every `.asc`, `.gem` and `.gcs` file directly inside it is imported into
+  your library, with the same progress and summary as an import started from the
+  Import button in the top toolbar (see "Bringing your own designs in" below).
+  Subfolders are not included from this card; use the Import button's panel and
+  turn on "Include subfolders" first if you want them. It is greyed out while a
+  guide step has file actions locked.
 
 ## The worked-example guide and the keyboard-shortcuts overlay
 
@@ -110,9 +138,12 @@ opens an in-app list of every shortcut in Appendix B -- both are generated
 from the same table, so they cannot drift apart from each other.
 
 Every template in the gallery creates a design that solves and closes as a
-solid; the gallery is deliberately small (five templates) because each one is
-verified to close before it ships. Step, cushion, oval and trillion outlines
-need facet topology the templates do not model yet.
+solid; the gallery is deliberately small (nine templates) because each one is
+verified to close, on every gear the dialog offers for it, before it ships. The
+oval, cushion, emerald step cut and princess templates sit beside the round
+brilliant in the Shapes section; a trillion (triangular) outline needs facet
+topology the templates do not model yet. A design created from a template
+starts as that template: undoing does not take it back to an empty schedule.
 
 ## Whether the editor is available to you
 

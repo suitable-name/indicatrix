@@ -13,13 +13,19 @@
 //!   `DesignFile` along with its convex hull vertices; if not, it relies on its preform
 //!   to close and is stored as `Unbounded` with no extents or hull.
 //! - A design's concave tiers (curved-tool cuts) only ever remove material from the facet
-//!   stone, so they change the volume and nothing else. The hull vertices and the caliper
-//!   extents (width, length, height) still come from the flat facet planes -- the fit
-//!   places the OUTER hull, which a cut never enlarges -- while `volume` is the volume of
-//!   the facet stone minus the tools (`mesh_volume(build_solid_mesh_geom(..))`). The tools
-//!   are resolved against that same facet stone (`Design::facet_geometry_from_solved`),
-//!   so the preform never moves them. Tools that remove the whole stone leave nothing to
-//!   measure: the design counts as unmeasurable, like one that does not close. A design
+//!   stone, so the carved stone's outline is never larger than the flat one. A design WITH
+//!   tools is measured from its CARVED mesh (`build_solid_mesh_geom(..)`): `volume` is the
+//!   carved volume, and the vertices of the carved mesh are reduced to their convex hull
+//!   (`shape::hull::design_outline`, the rough planner's own incremental hull), which gives
+//!   the stored hull corners and the caliper extents (width, length, height). A tool that
+//!   removes a vertex setting the outline therefore lets the planner place the stone
+//!   tighter; a groove or dimple inside the outline changes nothing. Only the reduced hull
+//!   corners are stored, never the raw mesh vertices, so the fit stage stays as fast as for
+//!   a planar design. A design WITHOUT tools is measured from the flat facet planes exactly
+//!   as before, bit for bit. The tools are resolved against the facet stone
+//!   (`Design::facet_geometry_from_solved`), so the preform never moves them. Tools that
+//!   remove the whole stone leave nothing to measure: the design counts as unmeasurable,
+//!   like one that does not close. A design
 //!   whose concave tiers cannot be resolved is not measured at all (see
 //!   [`Loaded::ConcaveUnresolved`]): planning it as a flat stone would overstate its
 //!   yield and carat.
@@ -46,6 +52,7 @@ use indicatrix::geometry::{
     },
     tool::ToolPrimitive,
 };
+use indicatrix_cut_core::rough_plan::shape::hull::design_outline;
 use indicatrix_vault::{
     db::sqlite::Database,
     model::{
@@ -118,28 +125,56 @@ pub(super) fn measure_record(full: &FullDiagramRecord) -> Measurement {
     ))
 }
 
-/// The volume of the stone bounded by `facets` after `tools` have cut it, or `None` when
-/// the carved stone is not a closed solid (the tools removed all of it). Without tools
-/// this is not consulted, so a planar design keeps the volume `measure_solid_with_vertices`
-/// gave it, bit for bit.
-fn carved_volume(facets: &[(DVec3, f64)], tools: &[ToolPrimitive]) -> Option<f64> {
+/// The volume of the stone bounded by `facets` after `tools` have cut it and the corners of
+/// its carved mesh, or `None` when the carved stone is not a closed solid (the tools removed
+/// all of it). Without tools this is not consulted, so a planar design keeps the figures
+/// `measure_solid_with_vertices` gave it, bit for bit.
+fn carved_stone(facets: &[(DVec3, f64)], tools: &[ToolPrimitive]) -> Option<(f64, Vec<DVec3>)> {
     match build_solid_mesh_geom(facets, tools) {
-        SolidStatus::Closed(mesh) => Some(mesh_volume(&mesh)),
+        SolidStatus::Closed(mesh) => {
+            let corners = mesh
+                .rings
+                .iter()
+                .flat_map(|(_, ring)| ring.iter().copied())
+                .collect();
+            Some((mesh_volume(&mesh), corners))
+        }
         _ => None,
     }
 }
 
-/// `metrics` with its volume replaced by the carved one; `None` when the tools remove the
-/// whole stone. Unchanged without tools.
+/// `metrics` and `verts` of the flat facet stone, replaced by the carved stone's: the
+/// volume of the carved solid, and the width, length and height of the convex hull of its
+/// vertices (a tool that removes a vertex setting the outline makes the stone smaller, so
+/// the planner may place it tighter). `verts` becomes that hull's corners, the only points
+/// the fit stage sees. `None` when the tools remove the whole stone. Unchanged without
+/// tools. If the carved vertices have no hull the flat outline is kept: it is the larger
+/// one, so a planned stone still fits.
 fn carve(
     metrics: SolidMetrics,
+    verts: Vec<DVec3>,
     facets: &[(DVec3, f64)],
     tools: &[ToolPrimitive],
-) -> Option<SolidMetrics> {
+) -> Option<(SolidMetrics, Vec<DVec3>)> {
     if tools.is_empty() {
-        return Some(metrics);
+        return Some((metrics, verts));
     }
-    carved_volume(facets, tools).map(|volume| SolidMetrics { volume, ..metrics })
+    let (volume, mesh_corners) = carved_stone(facets, tools)?;
+    let Some(outline) = design_outline(&mesh_corners) else {
+        return Some((SolidMetrics { volume, ..metrics }, verts));
+    };
+    let extents = outline.extents;
+    let carved = SolidMetrics {
+        volume,
+        width_caliper: extents.width_caliper,
+        length_caliper: extents.length_caliper,
+        width_axis: extents.width_axis,
+        length_axis: extents.length_axis,
+        total_height: extents.height,
+        vertex_count: outline.corners.len(),
+        ..metrics
+    };
+    Some((carved, outline.corners))
 }
 
 /// Measures `planes` (in the tracer's `n . x + d <= 0` convention) that came from `source`;
@@ -169,7 +204,7 @@ fn measure_planes(
             let facets = &halfspaces[start..];
             // `None` when the facets do not close or the tools remove everything.
             let measured = measure_solid_with_vertices(facets)
-                .and_then(|(metrics, verts)| Some((carve(metrics, facets, tools)?, verts)));
+                .and_then(|(metrics, verts)| carve(metrics, verts, facets, tools));
             match measured {
                 Some((metrics, verts)) => {
                     let extents = extents_of(&metrics);
@@ -537,300 +572,4 @@ pub(super) fn load_extents_and_hulls(db: &Mutex<Database>, ids: &[i64]) -> Resul
 mod cache_tests;
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        BTreeMap, CataloguePlanesSource, GpuFacetPlane, SolidExtents, SolidExtentsSource,
-        SolidHull, StoredSolidExtents, ids_needing_scan, measure_planes,
-    };
-    use glam::Vec3;
-    use indicatrix::geometry::tool::ToolPrimitive;
-
-    /// The six planes of an axis-aligned box centred on the origin with the given half sizes.
-    fn box_planes(half: [f32; 3]) -> Vec<GpuFacetPlane> {
-        [
-            Vec3::X,
-            Vec3::NEG_X,
-            Vec3::Y,
-            Vec3::NEG_Y,
-            Vec3::Z,
-            Vec3::NEG_Z,
-        ]
-        .into_iter()
-        .map(|normal| {
-            let along = normal.abs().dot(Vec3::from(half));
-            GpuFacetPlane::new(normal, -along)
-        })
-        .collect()
-    }
-
-    /// The bounding box `(min, max)` of a hull's vertices.
-    fn hull_bounds(hull: &SolidHull) -> ([f32; 3], [f32; 3]) {
-        let mut min = [f32::INFINITY; 3];
-        let mut max = [f32::NEG_INFINITY; 3];
-        for v in &hull.vertices {
-            for axis in 0..3 {
-                min[axis] = min[axis].min(v[axis]);
-                max[axis] = max[axis].max(v[axis]);
-            }
-        }
-        (min, max)
-    }
-
-    #[test]
-    fn a_design_file_is_measured_from_its_facet_planes_without_the_preform() {
-        // A preform box that is tighter than the facets along z: measuring every plane
-        // would give a 1 mm long stone instead of the facets' 3 mm.
-        let mut planes = box_planes([0.5, 0.5, 0.5]);
-        let preform_plane_count = planes.len();
-        planes.extend(box_planes([0.5, 0.25, 1.5]));
-
-        let (extents, source, hull) = measure_planes(
-            CataloguePlanesSource::DesignFile,
-            preform_plane_count,
-            &planes,
-            &[],
-        );
-        assert_eq!(source, SolidExtentsSource::DesignFile);
-        let extents = extents.expect("the facet planes close");
-        for (got, want) in [
-            (extents.width_caliper, 1.0),
-            (extents.length_caliper, 3.0),
-            (extents.height, 0.5),
-            (extents.volume, 1.5),
-        ] {
-            assert!((got - want).abs() < 1e-6, "{got} vs {want}");
-        }
-
-        let hull = hull.expect("a design file keeps its hull");
-        assert_eq!(hull.vertices.len(), 8);
-        let (min, max) = hull_bounds(&hull);
-        for (axis, half) in [0.5_f32, 0.25, 1.5].into_iter().enumerate() {
-            assert!(
-                (max[axis] - half).abs() < 1e-6,
-                "axis {axis} max {}",
-                max[axis]
-            );
-            assert!(
-                (min[axis] + half).abs() < 1e-6,
-                "axis {axis} min {}",
-                min[axis]
-            );
-        }
-    }
-
-    #[test]
-    fn hull_vertices_are_the_solids_vertices_narrowed_to_f32() {
-        let half = 0.1_f32;
-        let planes = box_planes([half; 3]);
-        let (_, _, hull) = measure_planes(CataloguePlanesSource::DesignFile, 0, &planes, &[]);
-        let hull = hull.expect("a hull");
-        assert_eq!(hull.vertices.len(), 8);
-        for v in &hull.vertices {
-            for c in v {
-                assert_eq!(
-                    c.abs(),
-                    half,
-                    "each coordinate is the plane offset, as an f32"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn facet_planes_that_do_not_close_leave_the_design_unbounded_even_with_a_closed_preform() {
-        let mut planes = box_planes([0.5, 0.5, 0.5]);
-        let preform_plane_count = planes.len();
-        // Only the x and y faces: open along z.
-        planes.extend(box_planes([0.5, 0.25, 1.5]).into_iter().take(4));
-
-        let (extents, source, hull) = measure_planes(
-            CataloguePlanesSource::DesignFile,
-            preform_plane_count,
-            &planes,
-            &[],
-        );
-        assert_eq!(source, SolidExtentsSource::Unbounded);
-        assert!(extents.is_none() && hull.is_none());
-    }
-
-    #[test]
-    fn a_preform_count_past_the_end_measures_nothing_instead_of_panicking() {
-        let planes = box_planes([0.5, 0.5, 0.5]);
-        let (extents, source, hull) =
-            measure_planes(CataloguePlanesSource::DesignFile, 100, &planes, &[]);
-        assert_eq!(source, SolidExtentsSource::Unbounded);
-        assert!(extents.is_none() && hull.is_none());
-    }
-
-    #[test]
-    fn angle_table_planes_are_measured_whole_and_never_get_a_hull() {
-        // The preform count means nothing for the angle table's synthetic planes.
-        let planes = box_planes([0.5, 0.25, 1.5]);
-        let (extents, source, hull) =
-            measure_planes(CataloguePlanesSource::AngleTable, 3, &planes, &[]);
-        assert_eq!(source, SolidExtentsSource::AngleTable);
-        assert!(hull.is_none());
-        let extents = extents.expect("the box closes");
-        assert!((extents.volume - 1.5).abs() < 1e-6);
-    }
-
-    /// A ball tool of `radius` centred at `centre`.
-    fn ball(centre: [f32; 3], radius: f32) -> ToolPrimitive {
-        ToolPrimitive {
-            kind: 0,
-            sweep_kind: 0,
-            _pad: [0; 2],
-            origin: [centre[0], centre[1], centre[2], radius],
-            axis: [0.0, 1.0, 0.0, 0.0],
-            profile: [0.0; 4],
-            sweep_dir: [0.0; 4],
-        }
-    }
-
-    #[test]
-    fn a_concave_tool_lowers_the_volume_and_nothing_else() {
-        // A 1 x 0.5 x 3 box with a ball dimple (radius 0.2) centred on its top face: the
-        // lower half of the ball is carved out of the stone.
-        let planes = box_planes([0.5, 0.25, 1.5]);
-        let tool = ball([0.0, 0.25, 0.0], 0.2);
-        let (flat, _, flat_hull) =
-            measure_planes(CataloguePlanesSource::DesignFile, 0, &planes, &[]);
-        let (carved, source, carved_hull) =
-            measure_planes(CataloguePlanesSource::DesignFile, 0, &planes, &[tool]);
-        assert_eq!(source, SolidExtentsSource::DesignFile);
-        let (flat, carved) = (flat.expect("closes"), carved.expect("still closes"));
-
-        let removed = flat.volume - carved.volume;
-        let hemisphere = 2.0 / 3.0 * std::f64::consts::PI * 0.2_f64.powi(3);
-        assert!(
-            (removed - hemisphere).abs() < 0.1 * hemisphere,
-            "removed {removed} vs a hemisphere's {hemisphere}"
-        );
-        // Width, length and height stay the flat stone's, to the bit.
-        for (got, want) in [
-            (carved.width_caliper, flat.width_caliper),
-            (carved.length_caliper, flat.length_caliper),
-            (carved.width_axis, flat.width_axis),
-            (carved.length_axis, flat.length_axis),
-            (carved.height, flat.height),
-        ] {
-            assert_eq!(got.to_bits(), want.to_bits());
-        }
-        assert_eq!(carved_hull, flat_hull, "the fit outline is the outer hull");
-    }
-
-    #[test]
-    fn tools_are_measured_against_the_facets_not_the_preform() {
-        // The leading preform box is tighter than the facets; the carve must still
-        // use the facet stone (a tool in the facet stone's top face).
-        let mut planes = box_planes([0.5, 0.1, 0.5]);
-        let preform_plane_count = planes.len();
-        planes.extend(box_planes([0.5, 0.25, 1.5]));
-        let tool = ball([0.0, 0.25, 0.0], 0.2);
-        let (extents, _, _) = measure_planes(
-            CataloguePlanesSource::DesignFile,
-            preform_plane_count,
-            &planes,
-            &[tool],
-        );
-        let volume = extents.expect("closes").volume;
-        assert!(volume < 1.5 && volume > 1.45, "{volume}");
-    }
-
-    #[test]
-    fn tools_that_remove_the_whole_stone_make_it_unmeasurable() {
-        let planes = box_planes([0.5, 0.25, 1.5]);
-        let everything = ball([0.0, 0.0, 0.0], 10.0);
-        let (extents, source, hull) =
-            measure_planes(CataloguePlanesSource::DesignFile, 0, &planes, &[everything]);
-        assert_eq!(source, SolidExtentsSource::Unbounded);
-        assert!(extents.is_none() && hull.is_none());
-    }
-
-    #[test]
-    fn a_planar_design_keeps_the_volume_of_the_plain_measure_bit_for_bit() {
-        use indicatrix::geometry::stone_metrics::measure_solid_with_vertices;
-        let planes = box_planes([0.3, 0.17, 1.1]);
-        let halfspaces: Vec<_> = planes
-            .iter()
-            .copied()
-            .map(GpuFacetPlane::to_halfspace_f64)
-            .collect();
-        let (plain, _) = measure_solid_with_vertices(&halfspaces).expect("closes");
-        let (extents, _, _) = measure_planes(CataloguePlanesSource::DesignFile, 0, &planes, &[]);
-        assert_eq!(
-            extents.expect("closes").volume.to_bits(),
-            plain.volume.to_bits()
-        );
-    }
-
-    fn extents() -> SolidExtents {
-        SolidExtents {
-            width_caliper: 1.0,
-            length_caliper: 1.5,
-            width_axis: 1.0,
-            length_axis: 1.5,
-            height: 0.7,
-            volume: 0.9,
-        }
-    }
-
-    fn row(source: SolidExtentsSource, usable: bool) -> StoredSolidExtents {
-        StoredSolidExtents {
-            extents: usable.then(extents),
-            source,
-        }
-    }
-
-    fn hull() -> SolidHull {
-        SolidHull {
-            vertices: vec![[0.0, 0.0, 0.0]; 4],
-        }
-    }
-
-    #[test]
-    fn a_design_without_any_row_needs_a_full_scan() {
-        let (missing, outlines_only) =
-            ids_needing_scan(&[1, 2], &BTreeMap::new(), &BTreeMap::new());
-        assert_eq!(missing, vec![1, 2]);
-        assert!(!outlines_only);
-    }
-
-    #[test]
-    fn a_design_file_row_without_a_hull_needs_an_outline_scan() {
-        let extents_map = BTreeMap::from([(7, row(SolidExtentsSource::DesignFile, true))]);
-        let (missing, outlines_only) = ids_needing_scan(&[7], &extents_map, &BTreeMap::new());
-        assert_eq!(missing, vec![7]);
-        assert!(outlines_only);
-
-        let hulls = BTreeMap::from([(7, hull())]);
-        let (missing, outlines_only) = ids_needing_scan(&[7], &extents_map, &hulls);
-        assert_eq!(missing, Vec::<i64>::new());
-        assert!(!outlines_only, "nothing to scan is not an outline scan");
-    }
-
-    #[test]
-    fn unbounded_and_angle_table_rows_never_get_a_hull_so_are_not_rescanned() {
-        let extents_map = BTreeMap::from([
-            (1, row(SolidExtentsSource::Unbounded, false)),
-            (2, row(SolidExtentsSource::AngleTable, true)),
-            (3, row(SolidExtentsSource::DesignFile, false)),
-        ]);
-        let (missing, outlines_only) = ids_needing_scan(&[1, 2, 3], &extents_map, &BTreeMap::new());
-        assert_eq!(missing, Vec::<i64>::new());
-        assert!(!outlines_only);
-    }
-
-    #[test]
-    fn a_mixed_set_is_a_full_scan_of_exactly_the_missing_ids() {
-        let extents_map = BTreeMap::from([
-            (1, row(SolidExtentsSource::DesignFile, true)),
-            (2, row(SolidExtentsSource::DesignFile, true)),
-            (3, row(SolidExtentsSource::Unbounded, false)),
-        ]);
-        let hulls = BTreeMap::from([(1, hull())]);
-        let (missing, outlines_only) = ids_needing_scan(&[1, 2, 3, 4], &extents_map, &hulls);
-        assert_eq!(missing, vec![2, 4]);
-        assert!(!outlines_only, "id 4 has no extents at all");
-    }
-}
+mod tests;

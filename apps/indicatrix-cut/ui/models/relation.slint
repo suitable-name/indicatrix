@@ -1,0 +1,20 @@
+// Tier relations in the desktop editor: a tier's angle can follow other tiers' angles
+// (`P2 = P1 - 2`). The relation itself is typed into the Tier form's Angle field with a
+// leading "=" (`EditorModel.save_tier`), and the table row's `EditorTierItem.relation_text`
+// says which tiers follow one. This global holds the few actions around that, which have
+// no other home. The Rust side is `gui::editor::relation_ui` (plus `tier_generation.rs`
+// for the linked ladder).
+export global RelationModel {
+    // The Tier form's "Remove relation": the tier at this table row keeps its current
+    // angle but no longer follows anything. One Undo step.
+    callback remove_relation(int);
+    // The angle cell of a tier that follows a relation was asked to edit (double-click or
+    // F2). Nothing is edited; Rust shows why in a toast. (Up/Down and the wheel go through
+    // `EditorModel.nudge_angle`, which says the same thing.)
+    callback explain_driven_angle();
+    // The Steps panel's "Generate" with "Keep linked" ticked. The same arguments as
+    // `EditorModel.generate_step_series`: name prefix, start angle, angle step, tier count,
+    // index list and optional anchor. Every tier after the first follows the first, so
+    // later changes to the first tier move the whole ladder.
+    callback generate_step_series_linked(string, string, string, int, string, string);
+}

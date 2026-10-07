@@ -15,10 +15,18 @@ use super::{
 use crate::{
     EditorModel, MainWindow,
     bridge::render_thread::RenderContext,
-    gui::{editor::state::EditorState, show_toast},
+    gui::{
+        editor::{
+            cut_sheet::{current_date_text, write_cutting_sheet_html_with},
+            state::EditorState,
+        },
+        show_toast,
+        tutorial_events::raise,
+    },
 };
 use indicatrix::geometry::meet_solver::SolvedTier;
 use indicatrix_cut_core::Design;
+use indicatrix_editor::{cut_sheet::SheetDetails, guide::viewing_events as events};
 use slint::ComponentHandle;
 use std::{
     cell::RefCell,
@@ -70,12 +78,15 @@ pub(in crate::gui::editor) fn setup_export_cutting_sheet_callback(
             return;
         };
         crate::gui::editor::stall_guard::stall_guard("export_cutting_sheet", || {
-            let (design, base_name, generation) = {
+            // The open design's own file details (title, designer, shape, notes) head the
+            // printed sheet; read here so no `EditorState` borrow outlives this block.
+            let (design, base_name, generation, file_metadata) = {
                 let st = state.borrow();
                 (
                     st.design.clone(),
                     suggested_file_name(&st),
                     st.generation.load(Ordering::Relaxed),
+                    st.file_extras.metadata.clone(),
                 )
             };
             let render_ctx = Arc::clone(&render_ctx);
@@ -105,6 +116,13 @@ pub(in crate::gui::editor) fn setup_export_cutting_sheet_callback(
                             // Custom-catalogue-aware: the printed "Refractive index" row
                             // must match a CUSTOM material's own `n_D`.
                             let custom_materials = snapshot_custom_materials(&render_ctx);
+                            // Empty file fields fall back to the design's `.asc` header lines;
+                            // the date is the export month and year.
+                            let details = SheetDetails::from_metadata(
+                                &design,
+                                &file_metadata,
+                                &current_date_text(),
+                            );
                             let base = base_name.trim_end_matches(".asc").to_string();
                             pick_file(
                                 ui,
@@ -119,23 +137,27 @@ pub(in crate::gui::editor) fn setup_export_cutting_sheet_callback(
                                     };
                                     let ui_weak = ui.as_weak();
                                     std::thread::spawn(move || {
-                                        let result =
-                                            crate::gui::editor::cut_sheet::write_cutting_sheet_html(
-                                                &design,
-                                                &solved,
-                                                &dest_path,
-                                                &custom_materials,
-                                            );
+                                        let result = write_cutting_sheet_html_with(
+                                            &design,
+                                            &solved,
+                                            &dest_path,
+                                            &custom_materials,
+                                            &details,
+                                        );
                                         let _ =
                                             ui_weak.upgrade_in_event_loop(move |ui| match result {
-                                                Ok(()) => show_toast(
-                                                    &ui,
-                                                    &format!(
-                                                        "Wrote cutting sheet to {}",
-                                                        dest_path.display()
-                                                    ),
-                                                    "success",
-                                                ),
+                                                Ok(()) => {
+                                                    show_toast(
+                                                        &ui,
+                                                        &format!(
+                                                            "Wrote cutting sheet to {}",
+                                                            dest_path.display()
+                                                        ),
+                                                        "success",
+                                                    );
+                                                    // A tutorial step may wait for the sheet.
+                                                    raise(&ui, events::SHEET_EXPORTED);
+                                                }
                                                 Err(message) => show_toast(&ui, &message, "error"),
                                             });
                                     });
@@ -210,11 +232,18 @@ pub(in crate::gui::editor) fn setup_export_diagram_callback(
                                         &design, &solved, &dest_path,
                                     );
                                     let _ = ui_weak.upgrade_in_event_loop(move |ui| match result {
-                                        Ok(()) => show_toast(
-                                            &ui,
-                                            &format!("Wrote diagram to {}", dest_path.display()),
-                                            "success",
-                                        ),
+                                        Ok(()) => {
+                                            show_toast(
+                                                &ui,
+                                                &format!(
+                                                    "Wrote diagram to {}",
+                                                    dest_path.display()
+                                                ),
+                                                "success",
+                                            );
+                                            // A tutorial step may wait for the image.
+                                            raise(&ui, events::DIAGRAM_EXPORTED);
+                                        }
                                         Err(message) => show_toast(&ui, &message, "error"),
                                     });
                                 });
@@ -531,6 +560,14 @@ fn finish_export_schedule(
                         &ui,
                         &format!("Exported edited schedule to {}{note}", dest_path.display()),
                         "success",
+                    );
+                    // A tutorial step may wait for the file to be written.
+                    raise(
+                        &ui,
+                        match format {
+                            ScheduleFormat::Asc => events::ASC_EXPORTED,
+                            ScheduleFormat::Gcs => events::GCS_EXPORTED,
+                        },
                     );
                 }
                 Err(message) => show_toast(&ui, &message, "error"),

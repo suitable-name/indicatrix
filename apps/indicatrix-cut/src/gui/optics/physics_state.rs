@@ -18,18 +18,18 @@ use std::{
 };
 
 use indicatrix::{
-    color::body_color::{Bodycolor, Bodycolors, Illuminant, body_colors, delta_e_2000},
+    color::body_color::{BodyColor, BodyColors, Illuminant, body_colors, delta_e_2000},
     optics::{
         chromophore::{
-            ChromophoreCatalogue, ChromophoreData, GlowStrength, HostData, ResolvedBands,
-            SolveResult, UV365_NM, UV395_NM, UvGlow, colorRecipe, fluorescence_report,
+            ChromophoreCatalogue, ChromophoreData, ColorRecipe, GlowStrength, HostData,
+            ResolvedBands, SolveResult, UV365_NM, UV395_NM, UvGlow, fluorescence_report,
             garnet_optics, resolve, species_element,
         },
         materials::{CrystalSystem, GemMaterial, OpticalCharacter},
     },
 };
 use indicatrix_cut_core::material::{
-    Activecolor, RecipeHistory, built_in_specific_gravity, colorMode,
+    ActiveColor, ColorMode, RecipeHistory, built_in_specific_gravity,
 };
 
 use super::crystal_optics::{crystal_system_to_index, optical_character_to_index};
@@ -49,7 +49,75 @@ pub const REACHABLE_DELTA_E: f64 = 1.0;
 /// D65 delta-E above which the mismatch is shown in the warning color.
 pub const WARN_DELTA_E: f64 = 2.0;
 /// color-change label threshold (spec 3.5).
-pub const color_CHANGE_DELTA_E: f64 = 5.0;
+pub const COLOR_CHANGE_DELTA_E: f64 = 5.0;
+
+/// Whether this build shows the physics-based color editor: the `physical-color` cargo feature.
+///
+/// UI only. The data layer (a material's stored color mode and recipe, its rendering, the
+/// save path) is compiled and active in every build, so a physics material keeps rendering
+/// exactly as before and is saved back unchanged; only the controls that edit a recipe are
+/// hidden when this is `false`. Pushed to Slint once as `PhysicscolorModel.ui_enabled`.
+pub const PHYSICS_COLOR_UI: bool = cfg!(feature = "physical-color");
+
+/// What the Gem Material Editor's color area shows (see [`color_section_view`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorSectionView {
+    /// Feature on, Fantasy mode: the mode toggle and the preset swatches with the free picker.
+    Fantasy,
+    /// Feature on, Physics mode: the mode toggle and the host/element recipe section.
+    Physics,
+    /// Feature off, Fantasy mode: the preset swatches and the free picker, no mode toggle.
+    FantasyOnly,
+    /// Feature off, but the material's color comes from a physics recipe: the same controls as
+    /// [`Self::FantasyOnly`] plus a note. Picking a color switches the material to Fantasy; the
+    /// recipe stays parked in the stored payload.
+    FantasyOverRecipe,
+}
+
+impl ColorSectionView {
+    /// The "Fantasy | Physics" toggle is shown.
+    #[must_use]
+    pub const fn shows_mode_toggle(self) -> bool {
+        matches!(self, Self::Fantasy | Self::Physics)
+    }
+
+    /// The host/element recipe section is shown.
+    #[must_use]
+    pub const fn shows_physics_section(self) -> bool {
+        matches!(self, Self::Physics)
+    }
+
+    /// The preset swatches and the free picker are shown.
+    #[must_use]
+    pub const fn shows_fantasy_section(self) -> bool {
+        !matches!(self, Self::Physics)
+    }
+
+    /// The "color comes from a physics recipe" note is shown. Also the one state in which
+    /// choosing a fixed color must first replace the recipe's color (see
+    /// [`PhysicsState::choose_fixed_color`]).
+    #[must_use]
+    pub const fn shows_recipe_note(self) -> bool {
+        matches!(self, Self::FantasyOverRecipe)
+    }
+}
+
+/// The view of the dialog's color area for a build and a color mode.
+///
+/// `feature_on` is [`PHYSICS_COLOR_UI`]; `mode_is_physics` is whether physics is the active
+/// color mode (when the dialog opens: the stored mode).
+///
+/// With the feature off the dialog always shows the Fantasy controls, even for a stored
+/// physics mode: otherwise nothing would be editable.
+#[must_use]
+pub const fn color_section_view(feature_on: bool, mode_is_physics: bool) -> ColorSectionView {
+    match (feature_on, mode_is_physics) {
+        (true, false) => ColorSectionView::Fantasy,
+        (true, true) => ColorSectionView::Physics,
+        (false, false) => ColorSectionView::FantasyOnly,
+        (false, true) => ColorSectionView::FantasyOverRecipe,
+    }
+}
 
 /// The default reference path for a design whose girdle is `stone_width_mm` (`<= 0`: no design).
 #[must_use]
@@ -186,7 +254,7 @@ pub fn typical_amount(host: &HostData, id: &str) -> f64 {
 /// catalogue: a missing usable range, a full end-member budget, a chromophore whose `requires` /
 /// `excludes` name another chromophore of the host by id, or a centre only a treatment creates.
 #[must_use]
-pub fn impossible_reason(host: &HostData, recipe: &colorRecipe, id: &str) -> Option<String> {
+pub fn impossible_reason(host: &HostData, recipe: &ColorRecipe, id: &str) -> Option<String> {
     let chromos: Vec<&ChromophoreData> = host
         .chromophores
         .iter()
@@ -228,7 +296,7 @@ pub fn impossible_reason(host: &HostData, recipe: &colorRecipe, id: &str) -> Opt
 
 fn chromophore_block(
     host: &HostData,
-    recipe: &colorRecipe,
+    recipe: &ColorRecipe,
     c: &ChromophoreData,
     present: &dyn Fn(&ChromophoreData) -> bool,
 ) -> Option<String> {
@@ -353,8 +421,10 @@ pub fn host_banner(host: &HostData) -> Option<String> {
             offered.len()
         )
     };
+    // The warning icon is drawn by the banner itself (`chromophore_picker.slint`): the UI
+    // font has no glyph for the warning sign.
     Some(format!(
-        "\u{26a0} Strengths uncalibrated \u{2014} approximate. {detail}."
+        "Strengths uncalibrated \u{2014} approximate. {detail}."
     ))
 }
 
@@ -423,7 +493,7 @@ fn generic_prefill(host: &HostData) -> Prefill {
 /// RI/SG/crystal system prefill for `host`; end-member hosts interpolate RI and SG over the
 /// recipe's fractions (`garnet_optics`), so a garnet mix is prefilled rather than locked.
 #[must_use]
-pub fn host_prefill(host: &HostData, recipe: Option<&colorRecipe>) -> Prefill {
+pub fn host_prefill(host: &HostData, recipe: Option<&ColorRecipe>) -> Prefill {
     let builtin = host.materials.iter().find_map(|name| {
         GemMaterial::all_materials()
             .into_iter()
@@ -490,7 +560,7 @@ pub struct SolveSummary {
 #[derive(Debug)]
 pub struct PhysicsState {
     /// Both color payloads and the active one.
-    pub mode: colorMode,
+    pub mode: ColorMode,
     /// The host the recipe (or the next recipe) is for.
     pub host_id: String,
     /// Strength + fractions view (`true`) or absolute amounts.
@@ -512,8 +582,10 @@ pub struct PhysicsState {
     cancel: Option<Arc<AtomicBool>>,
     solving_kind: Option<SolveKind>,
     fantasy_picked: bool,
-    drag_origin: Option<colorRecipe>,
-    baseline: colorMode,
+    drag_origin: Option<ColorRecipe>,
+    baseline: ColorMode,
+    /// The stored color text the dialog opened with (trimmed); see [`Self::mode_json`].
+    opened_json: String,
     pending_prefill: Option<Prefill>,
 }
 
@@ -532,7 +604,7 @@ impl PhysicsState {
         previous_generation: u64,
     ) -> Self {
         let mode =
-            colorMode::from_json(stored_json).unwrap_or_else(|| colorMode::fantasy(fantasy_rgb));
+            ColorMode::from_json(stored_json).unwrap_or_else(|| ColorMode::fantasy(fantasy_rgb));
         let host_id = mode
             .last_recipe
             .as_ref()
@@ -547,6 +619,7 @@ impl PhysicsState {
             .unwrap_or_default();
         Self {
             baseline: mode.clone(),
+            opened_json: stored_json.trim().to_string(),
             mode,
             host_id,
             view_fractions: true,
@@ -568,12 +641,12 @@ impl PhysicsState {
     /// Whether physics is the active mode.
     #[must_use]
     pub const fn is_physics(&self) -> bool {
-        matches!(self.mode.active, Activecolor::Physics)
+        matches!(self.mode.active, ActiveColor::Physics)
     }
 
     /// The recipe, if the material has one.
     #[must_use]
-    pub const fn recipe(&self) -> Option<&colorRecipe> {
+    pub const fn recipe(&self) -> Option<&ColorRecipe> {
         self.mode.last_recipe.as_ref()
     }
 
@@ -586,14 +659,14 @@ impl PhysicsState {
         )
     }
 
-    fn blank_recipe(&self, catalogue: &ChromophoreCatalogue) -> colorRecipe {
-        let mut recipe = colorRecipe::new(self.host_id.clone(), catalogue.data_version);
+    fn blank_recipe(&self, catalogue: &ChromophoreCatalogue) -> ColorRecipe {
+        let mut recipe = ColorRecipe::new(self.host_id.clone(), catalogue.data_version);
         recipe.reference_path_mm = default_reference_path_mm(self.stone_width_mm);
         refresh(&mut recipe, catalogue);
         recipe
     }
 
-    fn recipe_mut(&mut self, catalogue: &ChromophoreCatalogue) -> &mut colorRecipe {
+    fn recipe_mut(&mut self, catalogue: &ChromophoreCatalogue) -> &mut ColorRecipe {
         if self.mode.last_recipe.is_none() {
             let blank = self.blank_recipe(catalogue);
             self.mode.last_recipe = Some(blank);
@@ -633,7 +706,7 @@ impl PhysicsState {
             return None;
         }
         let needs_solve = self.mode.last_recipe.is_none();
-        self.mode.active = Activecolor::Physics;
+        self.mode.active = ActiveColor::Physics;
         if needs_solve {
             let blank = self.blank_recipe(catalogue);
             self.mode.last_recipe = Some(blank);
@@ -647,9 +720,35 @@ impl PhysicsState {
     }
 
     /// The fantasy picker's result: the legacy color fitted to the picked one.
-    pub fn set_fantasy_pick(&mut self, rgb: [f32; 3]) {
+    ///
+    /// A pick is a decision for a fixed color, so Fantasy becomes the active mode (the recipe
+    /// stays parked in the payload). With the physics editor visible the picker only exists in
+    /// Fantasy mode, so there this changes nothing; with it hidden the picker is also offered
+    /// over a stored physics recipe.
+    pub const fn set_fantasy_pick(&mut self, rgb: [f32; 3]) {
         self.mode.fantasy_rgb = rgb;
+        self.mode.active = ActiveColor::Fantasy;
         self.fantasy_picked = true;
+    }
+
+    /// A fixed color was chosen while the physics editor is hidden: the material goes Fantasy.
+    ///
+    /// The color comes from a preset swatch or from a template that carries one. The recipe
+    /// stays parked in the payload, so saving keeps both. `None` is the "Keep" swatch: the
+    /// payload's own fantasy color (seeded from the recipe when it never had one).
+    ///
+    /// Unlike [`Self::set_mode`], an explicit color is never re-seeded from the recipe -- not
+    /// even "Clear", whose all-zero triple the default-color test of
+    /// `ColorMode::switch_to_fantasy` would take for "no color set yet".
+    pub fn choose_fixed_color(&mut self, rgb: Option<[f32; 3]>) {
+        self.cancel_solves();
+        match rgb {
+            Some(rgb) => {
+                self.mode.fantasy_rgb = rgb;
+                self.mode.active = ActiveColor::Fantasy;
+            }
+            None => self.mode.switch_to_fantasy(),
+        }
     }
 
     // ---- host ----
@@ -1049,9 +1148,16 @@ impl PhysicsState {
 
     /// The JSON the Save button hands over: both payloads, `""` for a material that never had a
     /// recipe and is still plain fantasy. Fantasy-active saves keep the recipe.
+    ///
+    /// A dialog still exactly as opened over a stored recipe hands the stored text back
+    /// verbatim: re-serialising it could change the last digit of an amount, and opening and
+    /// saving without a change must not rewrite the material.
     #[must_use]
     pub fn mode_json(&self) -> String {
-        let blank = |r: &colorRecipe| r.entries.is_empty() && r.treatments.is_empty();
+        if self.is_untouched_stored_recipe() {
+            return self.opened_json.clone();
+        }
+        let blank = |r: &ColorRecipe| r.entries.is_empty() && r.treatments.is_empty();
         match (&self.mode.last_recipe, self.is_physics()) {
             // A free fantasy pick lives only in the payload: it must be saved.
             _ if self.fantasy_picked => self.mode.to_json(),
@@ -1059,6 +1165,15 @@ impl PhysicsState {
             (Some(r), false) if self.baseline.last_recipe.is_none() && blank(r) => String::new(),
             _ => self.mode.to_json(),
         }
+    }
+
+    /// The dialog opened over a stored recipe and nothing has changed since (not the mode, the
+    /// recipe or the fantasy color).
+    fn is_untouched_stored_recipe(&self) -> bool {
+        !self.fantasy_picked
+            && !self.opened_json.is_empty()
+            && self.mode.last_recipe.is_some()
+            && self.mode == self.baseline
     }
 
     // ---- view ----
@@ -1113,7 +1228,7 @@ impl PhysicsState {
         view: &mut PhysicsView,
         catalogue: &ChromophoreCatalogue,
         host: &HostData,
-        recipe: &colorRecipe,
+        recipe: &ColorRecipe,
     ) {
         // Rows.
         let units: Vec<(String, f64)> = recipe
@@ -1189,14 +1304,14 @@ impl PhysicsState {
     }
 
     /// The swatches (from the stored bands) and the readout against the picked color.
-    fn fill_colors(&self, view: &mut PhysicsView, recipe: &colorRecipe) {
+    fn fill_colors(&self, view: &mut PhysicsView, recipe: &ColorRecipe) {
         // Swatches from the stored bands.
         let tensor = recipe.resolved_bands.to_tensor();
         let path = f64::from(recipe.reference_path_mm);
         let d65 = body_colors(&tensor, path, Illuminant::D65);
         let a = body_colors(&tensor, path, Illuminant::Planckian(3200.0));
         let delta_cc = delta_e_2000(d65.unpolarised.lab, a.unpolarised.lab);
-        view.color_change_text = if delta_cc > color_CHANGE_DELTA_E {
+        view.color_change_text = if delta_cc > COLOR_CHANGE_DELTA_E {
             format!("color change \u{394}E {delta_cc:.1}")
         } else {
             format!("\u{394}E {delta_cc:.1} between D65 and 3200 K (no color change)")
@@ -1235,7 +1350,7 @@ impl PhysicsState {
 
 /// The fluorescence readout and the two analytic UV glow swatches (fluorescence plan section 5),
 /// from the recipe's emitters (`fluorescence_report`) at its reference path: nothing is traced.
-fn fill_glow(view: &mut PhysicsView, catalogue: &ChromophoreCatalogue, recipe: &colorRecipe) {
+fn fill_glow(view: &mut PhysicsView, catalogue: &ChromophoreCatalogue, recipe: &ColorRecipe) {
     let report = fluorescence_report(catalogue, recipe);
     let path = recipe.reference_path_mm;
     let (glow365, glow395) = (report.glow(UV365_NM, path), report.glow(UV395_NM, path));
@@ -1286,7 +1401,7 @@ fn path_hint(stone_width_mm: f32) -> String {
 /// Re-resolves `recipe` with `catalogue` and stores the budgeted bands: amounts are clamped
 /// to the host's range first, `data_version` is the catalogue's. A failing resolve (an
 /// impossible end-member sum) keeps the previous bands.
-pub fn refresh(recipe: &mut colorRecipe, catalogue: &ChromophoreCatalogue) {
+pub fn refresh(recipe: &mut ColorRecipe, catalogue: &ChromophoreCatalogue) {
     recipe.clamp_amounts(catalogue);
     recipe.data_version = catalogue.data_version;
     if let Ok((tensor, _)) = resolve(recipe, catalogue) {
@@ -1307,8 +1422,8 @@ pub struct ModeSwatches {
     pub beta: Option<[u8; 3]>,
 }
 
-fn mode_swatches(c: &Bodycolors) -> ModeSwatches {
-    let rgb = |b: &Bodycolor| b.srgb;
+fn mode_swatches(c: &BodyColors) -> ModeSwatches {
+    let rgb = |b: &BodyColor| b.srgb;
     ModeSwatches {
         unpol: rgb(&c.unpolarised),
         o: rgb(&c.o_ray),

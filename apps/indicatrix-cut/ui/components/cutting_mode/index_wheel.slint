@@ -1,0 +1,119 @@
+import { Theme } from "../../theme.slint";
+import { CmWheelMark, CmWheelScale } from "../../models/cutting_mode.slint";
+
+// The gear's index wheel with this step's indices marked: the ring of teeth (a long tick every
+// few teeth, numbered), a line from the centre to each marked index and a dot on the ring where
+// it sits, with its number outside. Position 0 is at the top and the numbers run clockwise.
+// A ticked index is green, one still to cut is cyan.
+//
+// The strokes are SVG path commands in a 200 x 200 box (`indicatrix_editor::cutting_mode::dial`);
+// the marks and numbers arrive as fractions of the wheel's square, so the picture scales with
+// whatever room it is given.
+export component CmIndexWheel inherits Rectangle {
+    // What the picture shows, in words, for a screen reader (the caption under the wheel).
+    in property <string> description;
+    in property <string> minor_ticks;
+    in property <string> major_ticks;
+    in property <string> spokes;
+    in property <[CmWheelMark]> marks;
+    in property <[CmWheelScale]> numbers;
+
+    accessible-role: AccessibleRole.image;
+    accessible-label: "Index wheel";
+    accessible-description: root.description;
+
+    // The wheel is a square in the middle of whatever room there is.
+    property <length> side: Math.min(root.width, root.height);
+    property <length> origin_x: (root.width - root.side) / 2;
+    property <length> origin_y: (root.height - root.side) / 2;
+
+    // The ring the teeth sit on (radius 76 in the 200-unit box).
+    Path {
+        x: root.origin_x;
+        y: root.origin_y;
+        width: root.side;
+        height: root.side;
+        fit: fill;
+        viewbox-width: 200;
+        viewbox-height: 200;
+        commands: "M 24 100 A 76 76 0 1 1 176 100 A 76 76 0 1 1 24 100 Z";
+        stroke: Theme.border-medium;
+        stroke-width: 2px;
+        fill: transparent;
+    }
+    Path {
+        x: root.origin_x;
+        y: root.origin_y;
+        width: root.side;
+        height: root.side;
+        fit: fill;
+        viewbox-width: 200;
+        viewbox-height: 200;
+        commands: root.minor_ticks;
+        stroke: Theme.text-muted;
+        stroke-width: 1px;
+        fill: transparent;
+    }
+    Path {
+        x: root.origin_x;
+        y: root.origin_y;
+        width: root.side;
+        height: root.side;
+        fit: fill;
+        viewbox-width: 200;
+        viewbox-height: 200;
+        commands: root.major_ticks;
+        stroke: Theme.text-secondary;
+        stroke-width: 2px;
+        fill: transparent;
+    }
+    Path {
+        x: root.origin_x;
+        y: root.origin_y;
+        width: root.side;
+        height: root.side;
+        fit: fill;
+        viewbox-width: 200;
+        viewbox-height: 200;
+        commands: root.spokes;
+        stroke: Theme.accent-cyan;
+        stroke-width: 1px;
+        opacity: 0.55;
+        fill: transparent;
+    }
+
+    for number in root.numbers: Text {
+        text: number.label;
+        color: Theme.text-muted;
+        font-size: 11px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 32px;
+        height: 16px;
+        x: root.origin_x + number.x * root.side - self.width / 2;
+        y: root.origin_y + number.y * root.side - self.height / 2;
+    }
+
+    for mark in root.marks: Rectangle {
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        background: mark.ticked ? Theme.success : Theme.accent-cyan;
+        border-width: 2px;
+        border-color: Theme.bg-darkest;
+        x: root.origin_x + mark.x * root.side - self.width / 2;
+        y: root.origin_y + mark.y * root.side - self.height / 2;
+    }
+    for mark in root.marks: Text {
+        text: mark.label;
+        color: mark.ticked ? Theme.success : Theme.text-primary;
+        font-size: 13px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 34px;
+        height: 18px;
+        x: root.origin_x + mark.label_x * root.side - self.width / 2;
+        y: root.origin_y + mark.label_y * root.side - self.height / 2;
+    }
+}

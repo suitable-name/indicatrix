@@ -39,7 +39,18 @@ struct GpuTransportParams {
     // `EnvironmentSource::Studio::surface_glare`: scale of the camera path's first-surface
     // specular reflection, 1.0 for no change.
     surface_glare: f32,
-    _pad_surface_glare: u32,
+    // `EnvironmentSource::Studio::head_shadow_deg` as two cosines (`head_shadow_cosines`).
+    head_shadow_outer_cos: f32,
+    head_shadow_inner_cos: f32,
+    // `TentParams::flat`, in the first former pad slot (offset 84).
+    tent_flat: f32,
+    _pad_head_shadow1: u32,
+    _pad_head_shadow2: u32,
+    // `LightingRigParams::tent` (`TentParams`): the light-tent model's per-preset knobs.
+    tent_walls: f32,
+    tent_cards: f32,
+    tent_spark: f32,
+    tent_ground: f32,
 }
 
 struct DispersionParams {

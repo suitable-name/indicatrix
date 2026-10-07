@@ -1,6 +1,7 @@
 //! Parses the preform-edit form and the New Design dialog's own fields into
 //! `indicatrix-cut-core` spec types.
 
+use super::number_expr::eval_number;
 use crate::material::material_name_from_index;
 use indicatrix_cut_core::{FreshDesignSpec, MaterialSelection, PreformSpec};
 
@@ -29,20 +30,11 @@ pub fn parse_preform_form(
     depth: &str,
     cylinder_sides: usize,
 ) -> Result<PreformSpec, String> {
-    let half_width: f64 = half_width
-        .trim()
-        .parse()
-        .map_err(|_| format!("Half-width '{}' is not a number.", half_width.trim()))?;
-    let length_over_width: f64 = length_over_width.trim().parse().map_err(|_| {
-        format!(
-            "Length/width '{}' is not a number.",
-            length_over_width.trim()
-        )
-    })?;
-    let depth: f64 = depth
-        .trim()
-        .parse()
-        .map_err(|_| format!("Depth '{}' is not a number.", depth.trim()))?;
+    let half_width =
+        eval_number(half_width, None).map_err(|error| error.message("Half-width", half_width))?;
+    let length_over_width = eval_number(length_over_width, None)
+        .map_err(|error| error.message("Length/width", length_over_width))?;
+    let depth = eval_number(depth, None).map_err(|error| error.message("Depth", depth))?;
     if !(half_width.is_finite() && length_over_width.is_finite() && depth.is_finite())
         || half_width <= 0.0
         || length_over_width <= 0.0
@@ -104,6 +96,8 @@ pub fn parse_new_design_form(
             specific_gravity_override: None,
             refractive_index_override: None,
             body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
         },
         preform,
     })
@@ -121,6 +115,21 @@ mod tests {
         assert_eq!(preform.half_width, 1.2);
         assert_eq!(preform.length_over_width, 1.5);
         assert_eq!(preform.depth, 0.8);
+    }
+
+    #[test]
+    fn parse_preform_form_takes_arithmetic_in_every_dimension() {
+        let preform = parse_preform_form(0, "2.4 / 2", "1 + 0.5", "(0.4 + 0.4)", 96).unwrap();
+        assert_eq!(preform.half_width, 1.2);
+        assert_eq!(preform.length_over_width, 1.5);
+        assert_eq!(preform.depth, 0.8);
+        let message = parse_preform_form(0, "1", "1 / 0", "1", 96).unwrap_err();
+        assert_eq!(
+            message,
+            "Length/width '1 / 0' cannot be calculated: it divides by zero."
+        );
+        let message = parse_preform_form(0, "wide", "1", "1", 96).unwrap_err();
+        assert_eq!(message, "Half-width 'wide' is not a number.");
     }
 
     #[test]

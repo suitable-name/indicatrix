@@ -21,16 +21,29 @@
 //! own. "Discard" closes the window and switches that feature's viewport ghost
 //! preview off; "Close" just closes. A snapshot comparison offers only Close.
 //!
+//! # The optical figures
+//!
+//! The pop-out window (not the Retarget dialog's pane, which has its own metrics
+//! table) also shows a strip under the images: the table-up brilliance, windowing,
+//! extinction, fire and scintillation of each side in its own material and the
+//! viewport's lighting, the change between them coloured by better or worse, and a few
+//! plain sentences ([`metrics`], with the wording and the noise thresholds in
+//! `indicatrix_editor::metric_deltas`). A "Tilt average" button adds the means over
+//! four axes and 181 tilts on a worker thread of its own, which can be cancelled. The
+//! snapshot dialog shows the same sentence ([`snapshot_summary`]).
+//!
 //! # Module layout
 //!
 //! [`session`] (Slint-free: the two solved sides, the shared pose and its
 //! arithmetic, the status line, the stale-frame book), [`render`] (the solid and
-//! traced workers and their pure render functions), [`origins`] (gathering each
+//! traced workers and their pure render functions), [`metrics`] (the optical figures,
+//! the tilt run's state and the strip's text), [`origins`] (gathering each
 //! origin's sides and the Keep guard), [`host`] (the two surfaces, the live session
 //! and frame delivery), and [`wiring`] (which surface a request opens on, and every
 //! Slint callback). `tests` covers the first two without Slint.
 
 mod host;
+mod metrics;
 mod origins;
 mod overlay;
 mod render;
@@ -51,7 +64,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+pub(in crate::gui::editor) use metrics::snapshot_summary;
+pub(in crate::gui::editor) use origins::VariantSide;
 pub(in crate::gui) use wiring::close_compare_window;
+pub(in crate::gui::editor) use wiring::open_variants_compare;
 
 /// Wires the compare window's three entry points (`MainWindow`'s own
 /// `CompareModel.open_retarget`/`open_optimize`/`open_snapshot`) and the Retarget

@@ -371,6 +371,16 @@ impl EditorState {
         Self::wrapping(EditorSession::from_template(spec, template_index), true)
     }
 
+    /// A brand-new design around an already-built `session` -- the New Design dialog's
+    /// template path, where `indicatrix_editor::templates::create_from_template` has
+    /// remapped the gear, set the stone width and (when the material called for it)
+    /// adapted the facet angles before any history exists. Otherwise identical to
+    /// [`Self::fresh_from_template`]: a real design ([`Self::has_design`]), empty
+    /// `History`, no printed proportions, no pending work.
+    pub(in crate::gui::editor) fn fresh_from_session(session: EditorSession) -> Self {
+        Self::wrapping(session, true)
+    }
+
     /// `session` with every desktop-only field at its "nothing pending" default.
     fn wrapping(session: EditorSession, has_design: bool) -> Self {
         Self {
@@ -389,11 +399,25 @@ impl EditorState {
             pending_retarget: None,
             source_entry_id: None,
             used_placeholder: false,
-            file_extras: DesignFileExtras::default(),
+            // A new design (and the startup placeholder) is named by a fresh UUID from
+            // the start -- see `state::design_identity`.
+            file_extras: DesignFileExtras::default().with_design_uuid_assigned(None),
             last_pushed_scratch: RefCell::new(PushedScratch::default()),
             material_combo_cache: RefCell::new(MaterialComboCache::default()),
             has_design,
         }
+    }
+
+    /// The UUID that names this design in the library database, where its saved
+    /// variants, cutting progress and lighting choice live (`indicatrix_vault`'s
+    /// per-design tables are keyed by it).
+    ///
+    /// Never empty for a state built through the constructors or the open paths. It is
+    /// the design's `[meta].id`, so Save, Save As and autosave write it to the file
+    /// unchanged: a copy of a design keeps its side data. See `state::design_identity`
+    /// for how it is chosen when a design opens.
+    pub(in crate::gui) fn design_uuid(&self) -> &str {
+        &self.file_extras.metadata.id
     }
 
     /// Replaces `self` wholesale with `replacement` -- a brand-new `New`/`Load

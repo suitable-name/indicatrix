@@ -131,6 +131,82 @@ pub fn retarget_angle_deg(tier_angle_deg: f64, n_from: f64, n_to: f64) -> f64 {
     sign * new_theta
 }
 
+/// The flattest slope, in degrees from the horizontal, a retarget leaves on a crown
+/// or pavilion facet.
+///
+/// A shifted angle that would drop below this (or cross the horizontal altogether,
+/// which turns a crown facet into a pavilion facet) is held here instead -- see
+/// [`guard_retargeted_angle_deg`]. A facet that was already flatter than this keeps
+/// its own, flatter angle as the floor.
+pub const MIN_RETARGET_ANGLE_DEG: f64 = 1.0;
+
+/// The steepest slope, in degrees from the horizontal, a retarget proposes.
+///
+/// Half a degree short of vertical, so the facet is never reclassified as a girdle
+/// facet (see `indicatrix::geometry::meet_solver::classify_blocks`).
+pub const MAX_RETARGET_ANGLE_DEG: f64 = 89.5;
+
+/// Angles with a magnitude below this count as horizontal: the table (`+0.0`), the
+/// culet (`-0.0`) and any other flat plane. A retarget never changes them.
+pub const HORIZONTAL_ANGLE_EPS_DEG: f64 = 1e-9;
+
+/// `true` for a flat facet: the table, the culet or any other horizontal plane.
+#[must_use]
+pub const fn is_horizontal_angle_deg(angle_deg: f64) -> bool {
+    angle_deg > -HORIZONTAL_ANGLE_EPS_DEG && angle_deg < HORIZONTAL_ANGLE_EPS_DEG
+}
+
+/// What [`guard_retargeted_angle_deg`] did to a shifted angle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AngleGuard {
+    /// The shifted angle was fine as it was.
+    Within,
+    /// The shift would have made the facet flatter than [`MIN_RETARGET_ANGLE_DEG`]
+    /// (or flipped it to the other side of the girdle); it is held at the minimum.
+    HeldAtMinimum,
+    /// The shift would have made the facet steeper than [`MAX_RETARGET_ANGLE_DEG`];
+    /// it is held at the maximum.
+    HeldAtMaximum,
+}
+
+/// Keeps a shifted angle on the same side of the horizontal as the angle it came from,
+/// and between the flattest and steepest slopes a retarget allows.
+///
+/// `old_deg` is the facet's current signed angle (see the module doc comment's "Angle
+/// convention"); `shifted_deg` is what the shift formula produced. The result has the
+/// sign of `old_deg` (a sign-negative zero counts as negative), a magnitude of at least
+/// `min(MIN_RETARGET_ANGLE_DEG, |old_deg|)` and at most [`MAX_RETARGET_ANGLE_DEG`].
+/// Without the floor a crown facet near the horizontal could be shifted past it and
+/// turn into a pavilion-side plane. A non-finite `shifted_deg` leaves the facet where it is.
+///
+/// Callers must not pass a horizontal `old_deg` ([`is_horizontal_angle_deg`]): those
+/// facets are never shifted at all.
+#[must_use]
+pub const fn guard_retargeted_angle_deg(old_deg: f64, shifted_deg: f64) -> (f64, AngleGuard) {
+    if !shifted_deg.is_finite() {
+        return (old_deg, AngleGuard::Within);
+    }
+    let sign = if old_deg.is_sign_negative() {
+        -1.0
+    } else {
+        1.0
+    };
+    let magnitude = shifted_deg * sign;
+    let old_magnitude = old_deg * sign;
+    let floor = if old_magnitude < MIN_RETARGET_ANGLE_DEG {
+        old_magnitude
+    } else {
+        MIN_RETARGET_ANGLE_DEG
+    };
+    if magnitude < floor {
+        (sign * floor, AngleGuard::HeldAtMinimum)
+    } else if magnitude > MAX_RETARGET_ANGLE_DEG {
+        (sign * MAX_RETARGET_ANGLE_DEG, AngleGuard::HeldAtMaximum)
+    } else {
+        (shifted_deg, AngleGuard::Within)
+    }
+}
+
 /// The crown's own windowing estimate.
 ///
 /// How many degrees of margin remain at a PAVILION facet
@@ -391,6 +467,71 @@ mod tests {
         assert_eq!(
             crown_window_margin_deg(41.0, 34.0, n),
             crown_window_margin_deg(-41.0, 34.0, n)
+        );
+    }
+
+    // --- guard_retargeted_angle_deg / is_horizontal_angle_deg ---
+
+    #[test]
+    fn horizontal_angles_are_the_table_the_culet_and_nothing_else() {
+        assert!(is_horizontal_angle_deg(0.0));
+        assert!(is_horizontal_angle_deg(-0.0));
+        assert!(is_horizontal_angle_deg(1e-12));
+        assert!(!is_horizontal_angle_deg(0.001));
+        assert!(!is_horizontal_angle_deg(-34.5));
+    }
+
+    #[test]
+    fn a_shift_inside_the_limits_is_left_alone() {
+        assert_eq!(
+            guard_retargeted_angle_deg(-41.0, -44.75),
+            (-44.75, AngleGuard::Within)
+        );
+        assert_eq!(
+            guard_retargeted_angle_deg(34.5, 38.1),
+            (38.1, AngleGuard::Within)
+        );
+    }
+
+    #[test]
+    fn a_shift_across_the_horizontal_is_held_at_the_minimum_on_the_original_side() {
+        // A crown facet shifted to a negative angle would become a pavilion plane.
+        let (crown, guard) = guard_retargeted_angle_deg(5.0, -3.0);
+        assert_eq!((crown, guard), (1.0, AngleGuard::HeldAtMinimum));
+        // A pavilion facet shifted to a positive angle would become a crown plane.
+        let (pavilion, guard) = guard_retargeted_angle_deg(-5.0, 3.0);
+        assert_eq!((pavilion, guard), (-1.0, AngleGuard::HeldAtMinimum));
+        // Landing exactly on zero is held too.
+        assert_eq!(
+            guard_retargeted_angle_deg(5.0, 0.0),
+            (1.0, AngleGuard::HeldAtMinimum)
+        );
+    }
+
+    #[test]
+    fn a_facet_already_flatter_than_the_minimum_keeps_its_own_angle_as_the_floor() {
+        let (angle, guard) = guard_retargeted_angle_deg(0.4, -2.0);
+        assert!((angle - 0.4).abs() < 1e-12, "{angle}");
+        assert_eq!(guard, AngleGuard::HeldAtMinimum);
+    }
+
+    #[test]
+    fn a_shift_past_the_steepest_slope_is_held_at_the_maximum() {
+        assert_eq!(
+            guard_retargeted_angle_deg(-80.0, -95.0),
+            (-MAX_RETARGET_ANGLE_DEG, AngleGuard::HeldAtMaximum)
+        );
+        assert_eq!(
+            guard_retargeted_angle_deg(80.0, 120.0),
+            (MAX_RETARGET_ANGLE_DEG, AngleGuard::HeldAtMaximum)
+        );
+    }
+
+    #[test]
+    fn a_non_finite_shift_leaves_the_facet_where_it_is() {
+        assert_eq!(
+            guard_retargeted_angle_deg(-41.0, f64::NAN),
+            (-41.0, AngleGuard::Within)
         );
     }
 }

@@ -1,5 +1,5 @@
 //! A custom material's physics color through the design file: the vault row's typed
-//! `colorMode` becomes the native snapshot's recipe DTO, an older build's edit of the
+//! `ColorMode` becomes the native snapshot's recipe DTO, an older build's edit of the
 //! top-level color is detected on open, and the older build itself still gets a color within
 //! `DeltaE00` 15 of the recipe.
 
@@ -8,31 +8,31 @@ use crate::gui::optics::crystal_optics::{gem_material_from_row, save_gem_materia
 use indicatrix::{
     color::body_color::{Illuminant, body_colors, delta_e_2000},
     optics::{
-        chromophore::{ChromophoreCatalogue, ResolvedBands, colorRecipe, resolve},
+        chromophore::{ChromophoreCatalogue, ColorRecipe, ResolvedBands, resolve},
         materials::GemMaterial,
     },
 };
 use indicatrix_cut_core::{
     Design, FreshDesignSpec, MaterialSelection, PreformSpec,
-    material::colorMode,
-    native::{Snapshotcolor, gem_material_from_custom_snapshot, snapshot_color},
+    material::ColorMode,
+    native::{SnapshotColor, gem_material_from_custom_snapshot, snapshot_color},
 };
 use indicatrix_vault::db::sqlite::Database;
 use std::sync::{Arc, Mutex};
 
 const NAME: &str = "Physics Ruby";
 
-fn ruby_mode() -> colorMode {
+fn ruby_mode() -> ColorMode {
     let cat = ChromophoreCatalogue::global();
-    let mut recipe = colorRecipe::new("corundum", cat.data_version);
+    let mut recipe = ColorRecipe::new("corundum", cat.data_version);
     recipe.set_amount("Cr", 0.3);
     let (tensor, _) = resolve(&recipe, cat).expect("ruby resolves");
     recipe.resolved_bands = ResolvedBands::from_tensor(&tensor);
-    colorMode::physics(recipe, [0.0; 3])
+    ColorMode::physics(recipe, [0.0; 3])
 }
 
 /// A database holding `NAME` with `mode` as the stored color, the way the editor saves it.
-fn db_with(mode: &colorMode) -> Arc<Mutex<Database>> {
+fn db_with(mode: &ColorMode) -> Arc<Mutex<Database>> {
     let db = Database::new(Some(":memory:")).expect("in-memory database");
     let fallback = mode.fallback_rgb();
     let material = GemMaterial::new_custom(NAME, 1.768, 0.018, -0.008, fallback);
@@ -63,7 +63,7 @@ fn design() -> Design {
     })
 }
 
-/// Typed round trip: row -> `colorMode` -> row material renders from the stored bands, and
+/// Typed round trip: row -> `ColorMode` -> row material renders from the stored bands, and
 /// the snapshot saved with a design carries both the recipe and the fallback color.
 #[test]
 fn the_vault_row_and_the_design_snapshot_carry_the_typed_recipe() {
@@ -78,9 +78,9 @@ fn the_vault_row_and_the_design_snapshot_carry_the_typed_recipe() {
         .next()
         .expect("row");
     assert_eq!(
-        colorMode::from_json(row.color_recipe_json.as_deref().unwrap()),
+        ColorMode::from_json(row.color_recipe_json.as_deref().unwrap()),
         Some(mode.clone()),
-        "the stored JSON is the typed colorMode"
+        "the stored JSON is the typed ColorMode"
     );
     assert_eq!(
         row.absorption_rgb,
@@ -97,7 +97,7 @@ fn the_vault_row_and_the_design_snapshot_carry_the_typed_recipe() {
     let snapshot = custom_material_snapshot_for_save(&design(), &db).expect("snapshot");
     assert!(matches!(
         snapshot_color(&snapshot),
-        Snapshotcolor::Physics(_)
+        SnapshotColor::Physics(_)
     ));
     assert_eq!(
         gem_material_from_custom_snapshot(NAME, &snapshot).absorption,
@@ -135,7 +135,7 @@ fn an_edit_by_an_older_build_is_detected_on_open() {
         .with_body_color(Some([0.1, 0.2, 2.5]));
     assert!(matches!(
         snapshot_color(&snapshot),
-        Snapshotcolor::EditedElsewhere(_)
+        SnapshotColor::EditedElsewhere(_)
     ));
 }
 
@@ -147,7 +147,7 @@ fn a_fantasy_save_keeps_the_recipe_in_both_stores() {
     mode.switch_to_fantasy();
     let db = db_with(&mode);
     let row = db.lock().unwrap().get_custom_materials().unwrap().remove(0);
-    let stored = colorMode::from_json(row.color_recipe_json.as_deref().unwrap()).unwrap();
+    let stored = ColorMode::from_json(row.color_recipe_json.as_deref().unwrap()).unwrap();
     assert!(
         stored.last_recipe.is_some(),
         "the recipe survives a fantasy save"
@@ -155,5 +155,5 @@ fn a_fantasy_save_keeps_the_recipe_in_both_stores() {
     assert_eq!(row.absorption_rgb, [0.3, 0.6, 1.2]);
     let snapshot = custom_material_snapshot_for_save(&design(), &db).expect("snapshot");
     assert!(snapshot.color_recipe.is_some(), "and travels in the file");
-    assert_eq!(snapshot_color(&snapshot), Snapshotcolor::Fantasy);
+    assert_eq!(snapshot_color(&snapshot), SnapshotColor::Fantasy);
 }

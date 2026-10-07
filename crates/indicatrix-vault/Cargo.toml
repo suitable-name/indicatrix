@@ -25,7 +25,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 # Tests only: the typed color-recipe round trip (`db::sqlite::tests::materials`) stores a real
-# `colorRecipe`; the storage layer itself still treats `color_recipe_json` as opaque text.
+# `ColorRecipe`; the storage layer itself still treats `color_recipe_json` as opaque text.
 indicatrix = { workspace = true }
 serde_json = { workspace = true }
 

@@ -146,27 +146,27 @@ pub(super) fn refresh_optimize_availability(ui: &crate::MainWindow, state: &Edit
         .as_ref()
         .is_some_and(|(_, started_generation)| *started_generation == current_generation);
     ui.global::<EditorModel>().set_optimize_can_apply(can_apply);
+    // The Optimize tab's own state (the "Vary anchored tiers" default, the ranges table, the
+    // time estimate, the stale flag of the candidate list); it also restates the
+    // availability above with the anchored-tier choice taken into account.
+    crate::gui::editor::optimize_panel::refresh(ui, state);
 }
 
-/// The coordinate-stage evaluation budget a fresh Optimize run
-/// would actually use right now, read from `EditorModel.optimize_budget_text` (an
-/// in-out text field the Optimize tab exposes). Falls back to
-/// [`indicatrix_cut_core::OptimizeConfig::default`]'s own `200` for an empty,
-/// unparseable, or non-positive value, so a field nobody has touched yet (or a
-/// build with no such control at all) behaves as if this budget field did not
-/// exist.
+/// The evaluation budget a fresh Optimize run would use right now, read from
+/// `EditorModel.optimize_budget_text` (an in-out text field the Optimize tab exposes).
+/// The text may be a calculation (`indicatrix_editor::optimize_view::parse_budget`); an
+/// empty, unreadable or zero value falls back to
+/// [`indicatrix_cut_core::OptimizeConfig::default`]'s own `200`, so a field nobody has
+/// touched yet behaves as if this budget field did not exist.
 ///
-/// `callbacks::solve_actions::setup_optimize_callback` reads the SAME property the
-/// same way when it actually launches a run, so the number quoted here can never
-/// disagree with the number a click would use.
-#[must_use]
-pub(in crate::gui::editor) fn configured_optimize_max_evaluations(ui: &crate::MainWindow) -> usize {
-    ui.global::<EditorModel>()
-        .get_optimize_budget_text()
-        .parse::<usize>()
-        .ok()
-        .filter(|&v| v > 0)
-        .unwrap_or(200)
+/// A run reads the SAME property through the same parser when it launches
+/// (`optimize_panel::plan_from_ui`), so the number quoted here can never disagree with
+/// the number a click would use.
+fn configured_optimize_max_evaluations(ui: &crate::MainWindow) -> usize {
+    indicatrix_editor::optimize_view::parse_budget(
+        &ui.global::<EditorModel>().get_optimize_budget_text(),
+    )
+    .unwrap_or(indicatrix_editor::optimize_view::DEFAULT_BUDGET)
 }
 
 /// The no-solve counterpart to [`super::panel::refresh_editor_panel`] -- called
@@ -448,6 +448,9 @@ pub(super) fn push_stale_content(
     push_stale_warnings(ui, state);
     push_stale_preform_and_yield(ui, state, &delta);
     push_stale_proportions_reset(ui);
+    // The overall verdict on screen no longer describes this design: dim it and hold its
+    // Fix buttons until the next solve brings a new one (`gui::editor::verdict`).
+    crate::gui::editor::verdict::mark_stale(ui);
 
     // The design label is cheap and never solve-dependent -- always kept current.
     ui.global::<EditorModel>()

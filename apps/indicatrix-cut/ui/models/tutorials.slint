@@ -1,0 +1,83 @@
+// The tutorial browser (Help > Tutorials..., the palette, the empty state), the welcome
+// dialog a new user sees once, and the empty state's "Start from a library design" hint.
+//
+// The guides themselves are data in `crates/indicatrix-editor/src/guide`; the running
+// guide's panel is `GuideModel` (`models/guide.slint`). Rust (`gui::editor::guide::browser`)
+// owns the list: it fills `rows` when the browser opens or the search text changes, starts a
+// guide when a row's button is clicked, and keeps the finished marks in the settings file.
+
+import { LibraryModel } from "library.slint";
+
+// One tutorial in the browser's list.
+export struct TutorialRowData {
+    // The guide's id, handed back to `start`.
+    id: string,
+    // The tutorial's name.
+    title: string,
+    // One line saying what it teaches.
+    summary: string,
+    // The section heading, shown above the row when `first_in_category` is set.
+    category: string,
+    // Whether this row is the first of its section.
+    first_in_category: bool,
+    // Whether the tutorial has been finished before.
+    done: bool,
+    // "Start", or "Restart" once finished.
+    start_label: string,
+    // Why the tutorial cannot start right now ("" when it can).
+    blocked_reason: string,
+    // How long it is, e.g. "8 steps".
+    step_text: string,
+}
+
+export global TutorialsModel {
+    // Whether the tutorial browser is showing.
+    in-out property <bool> browser_open: false;
+    // The search text; Rust re-lists the tutorials as it changes.
+    in-out property <string> query: "";
+    // The tutorials that match `query`, grouped by section.
+    in property <[TutorialRowData]> rows: [];
+    // "2 of 9 tutorials finished.", shown under the list.
+    in property <string> progress_text: "";
+    // Bumped to move the keyboard focus into the library's search box (`app.slint` watches
+    // it): the empty state's "Start from a library design" card uses it.
+    in-out property <int> library_search_pulse: 0;
+    // Whether the empty state shows the line that explains how to open a library design.
+    in-out property <bool> library_hint_visible: false;
+
+    // Opens the browser with an empty search. Rust fills `rows` (the `opened` callback).
+    callback open_browser();
+    open_browser => {
+        root.query = "";
+        root.browser_open = true;
+        root.opened();
+    }
+    // Closes the browser.
+    callback close_browser();
+    close_browser => { root.browser_open = false; }
+    // Fired once the browser has opened, so Rust fills `rows`.
+    callback opened();
+    // The search text changed; Rust re-lists the tutorials.
+    callback query_changed(string);
+    // Re-list the tutorials now (after "Reset progress").
+    callback refresh();
+    // Start the tutorial with this id.
+    callback start(string);
+
+    // The welcome dialog's three answers (it shows while
+    // `PreferencesModel.first_run_tour_pending` is set). Each one records that the
+    // welcome has been seen.
+    callback tour_start();
+    callback tour_templates();
+    callback tour_dismiss();
+
+    // The empty state's "Start from a library design" card: show the library (open its
+    // panel if a narrow window or the user collapsed it -- only for now, the saved choice
+    // is left alone), put the cursor in its search box and show the hint line.
+    callback show_library();
+    show_library => {
+        LibraryModel.panel_collapsed = false;
+        root.library_hint_visible = true;
+        root.library_search_pulse += 1;
+    }
+}

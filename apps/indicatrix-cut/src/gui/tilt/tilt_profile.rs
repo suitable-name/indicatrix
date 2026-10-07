@@ -53,6 +53,7 @@ use indicatrix::{
     optics::{materials::GemMaterial, raytracer::LightingPreset},
     render_setup::hash_geometry,
 };
+use indicatrix_solid::preview::StoneGeometryBuf;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::sync::{
     Arc, Mutex,
@@ -140,6 +141,77 @@ fn handle_request_tilt_profile_axes(
     completed_key: &Arc<Mutex<Option<AxesCacheKey>>>,
     generation: &Arc<AtomicU64>,
 ) {
+    // The curves describe the FINISHED gem, whatever the Cut slider says: they are printed
+    // on the tilt video, which shows the finished gem (`gui::editor::finished_stone`). Asked
+    // for before the context is locked below -- it takes that lock itself. With the slider
+    // cut back and no current solve in the editor's cache, the stone comes from the solve
+    // worker and the rest of this request runs when it lands (never a solve on this
+    // thread); the request is the same one, so the dedup keys below still apply.
+    let render_ctx_later = Arc::clone(render_ctx);
+    let launched_key = Arc::clone(launched_key);
+    let completed_key = Arc::clone(completed_key);
+    let generation = Arc::clone(generation);
+    crate::gui::editor::finished_stone_then(
+        ui,
+        render_ctx,
+        |_| {},
+        move |ui, finished| match axes_step(finished) {
+            AxesStep::Sweep(finished) => request_axes_for_stone(
+                ui,
+                &render_ctx_later,
+                &launched_key,
+                &completed_key,
+                &generation,
+                finished,
+            ),
+            AxesStep::MarkStale => ui.global::<TiltModel>().set_curves_stale(true),
+            AxesStep::Skip => {}
+        },
+    );
+}
+
+/// What a tilt-curve request does once the finished stone's outcome is known.
+#[derive(Debug, PartialEq)]
+enum AxesStep {
+    /// Dedup against the last launch and sweep this stone (`None`: the render context
+    /// already holds the finished stone).
+    Sweep(Option<StoneGeometryBuf>),
+    /// There is no finished stone to sweep (the design does not solve): the curves on screen
+    /// no longer describe the design, so say so. The viewport's own banner tells the cutter
+    /// why.
+    MarkStale,
+    /// The design changed while its stone was being solved. The newer edit's own viewport
+    /// push has already asked for ITS sweep; launching one for the superseded design would
+    /// bump the sweep generation and make that newer sweep land as "superseded", leaving the
+    /// dialog showing the curves of the design one edit ago as if they were current. Does
+    /// nothing at all, so the generation counter is not touched. The same for a solve the
+    /// worker displaced for a newer request: no stone came back, and the next viewport push
+    /// asks again.
+    Skip,
+}
+
+/// The decision of [`handle_request_tilt_profile_axes`]' continuation, pure so it can be
+/// tested without a window.
+fn axes_step(finished: crate::gui::editor::Finished) -> AxesStep {
+    use crate::gui::editor::Withheld;
+    match finished {
+        Ok(stone) => AxesStep::Sweep(stone),
+        Err(Withheld::Stale | Withheld::Displaced) => AxesStep::Skip,
+        Err(Withheld::Unsolvable(_)) => AxesStep::MarkStale,
+    }
+}
+
+/// [`handle_request_tilt_profile_axes`]' second half: the dedup check and the sweep launch,
+/// for the render context's stone with `finished` (the finished stone, when the Cut slider
+/// has the design cut back) swapped in.
+fn request_axes_for_stone(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    launched_key: &Arc<Mutex<Option<AxesCacheKey>>>,
+    completed_key: &Arc<Mutex<Option<AxesCacheKey>>>,
+    generation: &Arc<AtomicU64>,
+    finished: Option<StoneGeometryBuf>,
+) {
     let (
         planes,
         tools,
@@ -157,13 +229,18 @@ fn handle_request_tilt_profile_axes(
             ctx.active_planes.clone(),
             ctx.active_tools.clone(),
             ctx.material_name.clone(),
-            ctx.material_override.clone(),
+            // Includes the Live Render toolbar's view-only colour, so the curves describe
+            // the stone the cutter is looking at.
+            ctx.tinted_material_override(),
             ctx.custom_materials.clone(),
             ctx.lighting_preset,
             ctx.light_yaw,
             ctx.light_pitch,
         )
     };
+    let (planes, tools) = finished.map_or((planes, tools), |stone| {
+        (Arc::new(stone.planes), Arc::new(stone.tools))
+    });
     // Resolved once, up front -- both to build a key capturing the material's full
     // identity and to hand the same resolved value to the worker thread below
     // rather than re-resolving it there from a name that could resolve to
@@ -270,7 +347,7 @@ struct SweepRequest {
     light_pitch: f32,
     /// The exact [`AxesCacheKey`] this sweep was launched for -- stamped into
     /// [`SweepBookkeeping::completed_key`] once the sweep actually lands, so a
-    /// later staleness check (`handle_request_tilt_profile_axes`'s own
+    /// later staleness check (`request_axes_for_stone`'s own
     /// `stale_now`) compares against what ACTUALLY finished, not merely what was
     /// last launched.
     key: AxesCacheKey,
@@ -284,7 +361,7 @@ struct SweepBookkeeping {
     /// Set to `Some(request.key)` once this sweep's results are actually pushed --
     /// see [`SweepRequest::key`]'s own doc comment.
     completed_key: Arc<Mutex<Option<AxesCacheKey>>>,
-    /// The [`crate::ActivityModel`] id [`handle_request_tilt_profile_axes`]
+    /// The [`crate::ActivityModel`] id [`request_axes_for_stone`]
     /// registered for this sweep via `invoke_start_external` -- finished here
     /// regardless of whether the result is applied or dropped as stale (an
     /// abandoned sweep's own activity must not linger in the status strip
@@ -292,7 +369,7 @@ struct SweepBookkeeping {
     activity_id: i32,
 }
 
-/// The background-thread half of [`handle_request_tilt_profile_axes`]: runs the full
+/// The background-thread half of [`request_axes_for_stone`]: runs the full
 /// four-curve sweep off the UI thread, then pushes the results back via
 /// `upgrade_in_event_loop`, dropping a stale result superseded by a newer request
 /// (see `generation`'s own doc comment on `setup_tilt_profile_callback`). Split out
@@ -405,7 +482,7 @@ pub(in crate::gui) fn setup_tilt_profile_callback(
     // `Some(key)` once a sweep for exactly these inputs has actually LANDED (as
     // opposed to `launched_key`, which flips the instant one merely starts) --
     // see `TiltModel.curves_stale`'s own staleness check in
-    // `handle_request_tilt_profile_axes`.
+    // `request_axes_for_stone`.
     let completed_key: Arc<Mutex<Option<AxesCacheKey>>> = Arc::new(Mutex::new(None));
     // Bumped on every newly-launched computation; a background thread checks its own
     // snapshot against the latest value before applying results, so a stale
@@ -492,8 +569,38 @@ pub fn cached_curve_material_is_stale(
 
 #[cfg(test)]
 mod tests {
-    use super::{AxesCacheKey, cached_curve_material_is_stale, should_recompute_axes};
+    use super::{
+        AxesCacheKey, AxesStep, axes_step, cached_curve_material_is_stale, should_recompute_axes,
+    };
+    use crate::gui::editor::Withheld;
     use indicatrix::optics::{materials::GemMaterial, raytracer::LightingPreset};
+    use indicatrix_solid::preview::StoneGeometryBuf;
+
+    /// F4-6: a finished stone that was solved for a design the editor has since left must not
+    /// launch a sweep -- that would bump the sweep generation and supersede the newer edit's
+    /// own sweep. A design that does not solve marks the curves stale instead of sweeping the
+    /// half-cut stone; a good outcome sweeps as before.
+    #[test]
+    fn a_stale_stone_launches_no_sweep_and_an_unsolvable_one_marks_the_curves_stale() {
+        assert_eq!(axes_step(Err(Withheld::Stale)), AxesStep::Skip);
+        assert_eq!(
+            axes_step(Err(Withheld::Displaced)),
+            AxesStep::Skip,
+            "a displaced solve says nothing about the design: no sweep, no stale curves"
+        );
+        assert_eq!(
+            axes_step(Err(Withheld::Unsolvable(
+                "tier C1 meets nothing".to_string()
+            ))),
+            AxesStep::MarkStale
+        );
+        assert_eq!(axes_step(Ok(None)), AxesStep::Sweep(None));
+        let stone = StoneGeometryBuf::default();
+        assert_eq!(
+            axes_step(Ok(Some(stone.clone()))),
+            AxesStep::Sweep(Some(stone))
+        );
+    }
 
     #[test]
     fn no_cached_material_is_never_stale() {

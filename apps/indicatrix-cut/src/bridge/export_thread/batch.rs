@@ -388,6 +388,7 @@ pub fn render_batch(
                 .studio(scene.exposure, scene.light_yaw, scene.light_pitch)
                 .with_backdrop(scene.backdrop)
                 .with_surface_glare(scene.surface_glare)
+                .with_head_shadow(scene.head_shadow_deg)
         },
         EnvironmentSource::HdrMap,
     );

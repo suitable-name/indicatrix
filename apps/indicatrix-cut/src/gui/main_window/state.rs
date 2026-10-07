@@ -12,10 +12,10 @@ use crate::{
         remote::refresh_remote_ui,
         show_toast,
         solid_preview::{
-            diagram_wiring::{self, DiagramFacetTier, DiagramHoverText, DiagramPick},
+            diagram_wiring::{self, DiagramFacetOwners, DiagramHoverText, DiagramPick},
             preview_state::{
-                DEFAULT_MESH_BOUNDING_RADIUS, FrameGeometry, PickBuffer, SolidLastSolved,
-                SolidPreviewState,
+                DEFAULT_MESH_BOUNDING_RADIUS, FacetOwners, FrameGeometry, PickBuffer,
+                SolidLastSolved, SolidPreviewState,
             },
         },
         solid_sink::SlintSolidSink,
@@ -43,8 +43,8 @@ pub(super) struct SolidView {
     pub(super) last_solved: SolidLastSolved,
     /// The Solid view's facet id -> hover-text table.
     pub(super) hover_text: Arc<Mutex<Vec<String>>>,
-    /// The Solid view's facet id -> owning-tier table.
-    pub(super) facet_tier: Arc<Mutex<Vec<Option<usize>>>>,
+    /// The Solid view's facet id -> owning flat and concave tier tables.
+    pub(super) facet_owners: Arc<Mutex<FacetOwners>>,
     /// The frame on screen's mesh geometry, camera pose and raster size.
     pub(super) geometry: Arc<Mutex<Option<FrameGeometry>>>,
     /// The solid worker's own last-published plane arrangement.
@@ -139,16 +139,16 @@ pub(super) fn create_solid_view(
     // enlarges a panel (`diagram_wiring::setup_diagram_double_click_callback`).
     let diagram_panel_pick: DiagramPick = Arc::new(Mutex::new(None));
     let diagram_hover_text: DiagramHoverText = Arc::new(Mutex::new(None));
-    let diagram_facet_tier: DiagramFacetTier = Arc::new(Mutex::new(None));
+    let diagram_facet_owners: DiagramFacetOwners = Arc::new(Mutex::new(None));
     // The Solid view's own facet id -> hover-text/owning-tier tables, from
-    // every frame's `PreviewFrame::hover_text`/`facet_tier` -- the Solid-mode
-    // counterpart to `diagram_hover_text`/`diagram_facet_tier` above. Not yet
+    // every frame's `PreviewFrame::hover_text`/`facet_owners` -- the Solid-mode
+    // counterpart to `diagram_hover_text`/`diagram_facet_owners` above. Not yet
     // threaded into `editor::setup_editor_callbacks` below (that call site would
     // need two more parameters, and the hover/click handlers that would index
     // these live in `gui::editor::callbacks::tier_actions`) -- see
     // `SlintSolidSink::hover_text`'s doc comment for the full handoff.
     let solid_hover_text: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let solid_facet_tier: Arc<Mutex<Vec<Option<usize>>>> = Arc::new(Mutex::new(Vec::new()));
+    let solid_facet_owners: Arc<Mutex<FacetOwners>> = Arc::new(Mutex::new(FacetOwners::default()));
     // The path tracer's and the solid worker's own last-published plane
     // arrangements (by `Arc` pointer identity) -- see `planes_generations_match`'s
     // doc comment. `trace_active_planes` is also written from the render thread's
@@ -173,9 +173,9 @@ pub(super) fn create_solid_view(
         diagram_tooth_pick: Arc::clone(&diagram_tooth_pick),
         diagram_panel_pick: Arc::clone(&diagram_panel_pick),
         diagram_hover_text: Arc::clone(&diagram_hover_text),
-        diagram_facet_tier: Arc::clone(&diagram_facet_tier),
+        diagram_facet_owners: Arc::clone(&diagram_facet_owners),
         hover_text: Arc::clone(&solid_hover_text),
-        facet_tier: Arc::clone(&solid_facet_tier),
+        facet_owners: Arc::clone(&solid_facet_owners),
         render_ctx: Arc::clone(render_ctx),
         solid_active_planes: Arc::clone(&solid_active_planes),
         trace_active_planes: Arc::clone(&trace_active_planes),
@@ -195,7 +195,7 @@ pub(super) fn create_solid_view(
         &diagram_pick,
         &diagram_tooth_pick,
         &diagram_hover_text,
-        &diagram_facet_tier,
+        &diagram_facet_owners,
         &solid_preview_state,
     );
     // Double-click on a diagram panel: enlarge it, or go back to all three.
@@ -204,7 +204,7 @@ pub(super) fn create_solid_view(
         pick: solid_pick,
         last_solved: solid_last_solved,
         hover_text: solid_hover_text,
-        facet_tier: solid_facet_tier,
+        facet_owners: solid_facet_owners,
         geometry: solid_geometry,
         active_planes: solid_active_planes,
         trace_active_planes,

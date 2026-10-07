@@ -41,6 +41,8 @@ fn gear_symmetry_mirror_and_material_all_round_trip_through_save_and_open() {
             specific_gravity_override: Some(2.65),
             refractive_index_override: Some(1.55),
             body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
         },
         preform: PreformSpec::cylinder(80, 1.4, 1.0, 1.3),
     };

@@ -1,0 +1,183 @@
+import { Button } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+
+// Three small controls for the dense parts of the editor: the tier table's toolbar and rows, the
+// Tier form's facet chips and the Inspector's button rows. All give every user the same things: a
+// hover look, a tooltip, a visible focus ring, Space and Enter to press, and a screen-reader
+// label with the tooltip read after it.
+//
+//   * `CompactButton` -- a small text button (+ Add Tier, Adopt, Pin, Detach). `lit` is the "on"
+//                        look of a toggle (Select, Steps / Mirror); `checkable` tells a screen
+//                        reader it is one.
+//   * `CompactIcon`   -- a 20 px square icon button (move up, duplicate, remove).
+//   * `TipButton`     -- the standard button (Save Tier, Keep Draft, Set, Clear) with a tooltip
+//                        and a screen-reader description. The standard button has no tooltip of
+//                        its own.
+//
+// `hint` is required of every caller: one plain sentence saying what the control does.
+//
+// `reachable` decides whether Tab can stop on the control. The rows of a long table would
+// otherwise put hundreds of stops between the table and the rest of the window, so a row passes
+// `reachable: true` only while it holds the keyboard cursor: Tab from the list then walks the
+// actions of the row the cursor is on. Mouse use, tooltips and screen-reader actions work
+// whatever `reachable` says.
+
+// A small text button.
+export component CompactButton inherits Rectangle {
+    in property <string> text;
+    // One plain sentence: what the button does. Shown as the tooltip.
+    in property <string> hint;
+    in property <color> ink: Theme.accent-cyan;
+    in property <bool> lit: false;
+    in property <bool> checkable: false;
+    in property <bool> enabled: true;
+    in property <bool> reachable: true;
+    in property <length> font_size: 9px;
+    callback clicked();
+
+    height: 20px;
+    border-radius: 3px;
+    opacity: root.enabled ? 1.0 : 0.4;
+    background: root.lit
+        ? Theme.primary
+        : ((compact_touch.has-hover && root.enabled) ? Theme.primary-glow : Theme.bg-card-hover);
+    border-width: compact_focus.has-focus ? 2px : 0px;
+    border-color: Theme.accent-cyan-hover;
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.text;
+    accessible-description: root.hint;
+    accessible-checkable: root.checkable;
+    accessible-checked: root.lit;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    compact_focus := FocusScope {
+        enabled: root.enabled && root.reachable;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    Text {
+        text: root.text;
+        font-size: root.font_size;
+        font-weight: 600;
+        color: root.lit ? Theme.text-on-primary : root.ink;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    compact_touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
+    }
+}
+
+// A 20 px square button that shows only an icon.
+export component CompactIcon inherits Rectangle {
+    in property <image> icon;
+    // What the button does, in a few plain words. Tooltip and screen-reader label.
+    in property <string> hint;
+    in property <color> tint: Theme.text-secondary;
+    in property <color> hover_tint: Theme.accent-cyan;
+    in property <bool> enabled: true;
+    in property <bool> reachable: true;
+    // The icon's size inside the button.
+    in property <length> glyph: 13px;
+    callback clicked();
+
+    width: 20px;
+    height: 20px;
+    border-radius: Theme.radius-sm;
+    opacity: root.enabled ? 1.0 : 0.4;
+    background: (icon_touch.has-hover && root.enabled) ? Theme.overlay-hover : transparent;
+    border-width: icon_focus.has-focus ? 2px : 0px;
+    border-color: Theme.accent-cyan-hover;
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.hint;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    icon_focus := FocusScope {
+        enabled: root.enabled && root.reachable;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    Image {
+        source: root.icon;
+        colorize: icon_touch.has-hover && root.enabled ? root.hover_tint : root.tint;
+        width: root.glyph;
+        height: root.glyph;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        image-fit: contain;
+    }
+
+    icon_touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
+    }
+}
+
+// The standard button with a tooltip. It sizes itself like the standard button does and takes
+// Tab, Space and Enter from it.
+export component TipButton inherits Rectangle {
+    in property <string> text;
+    // One plain sentence: what the button does. Shown as the tooltip and read after the label.
+    in property <string> hint;
+    // What a screen reader says when `text` alone would be ambiguous (two buttons both named
+    // "Rotate"). Empty: the text.
+    in property <string> reader_label;
+    in property <image> icon;
+    in property <bool> enabled: true;
+    // The accent look (Apply Preform while a field has changed since it was applied).
+    in property <bool> primary: false;
+    callback clicked();
+
+    min-width: tip_button.min-width;
+    min-height: tip_button.min-height;
+    preferred-width: tip_button.preferred-width;
+    preferred-height: tip_button.preferred-height;
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    tip_button := Button {
+        width: root.width;
+        height: root.height;
+        text: root.text;
+        icon: root.icon;
+        colorize-icon: true;
+        enabled: root.enabled;
+        primary: root.primary;
+        accessible-label: root.reader_label != "" ? root.reader_label : root.text;
+        accessible-description: root.hint;
+        clicked => { root.clicked(); }
+    }
+}

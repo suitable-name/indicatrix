@@ -50,7 +50,10 @@ pub(in crate::gui::editor) use design_forms::{
 pub(in crate::gui::editor) use gear_remap::{
     setup_gear_apply_callback, setup_gear_remap_cancel_callback, setup_gear_remap_confirm_callback,
 };
-pub(in crate::gui::editor) use history::{setup_redo_callback, setup_undo_callback};
+pub(in crate::gui::editor) use history::{
+    HistoryMove, refresh_after_history_move, refresh_after_renumbering_move, setup_redo_callback,
+    setup_undo_callback,
+};
 pub(in crate::gui::editor) use lifecycle::{setup_load_selected_callback, setup_solve_callback};
 pub(in crate::gui::editor) use material_suggestion::{
     setup_material_suggestion_accept_callback, setup_material_suggestion_dismiss_callback,
@@ -95,4 +98,7 @@ pub(in crate::gui::editor) use viewport_material::setup_viewport_material_linked
 /// the "reconstructed once from an already-authored schedule" case in
 /// `loading::default_preform_for_schedule`, which this constant deliberately does
 /// not touch.
-const FIXED_CYLINDER_PREFORM_SIDES: usize = 96;
+///
+/// `pub(in crate::gui::editor)` (and re-exported by `callbacks` for tests) so the guide's
+/// launch test builds the New Design form's design with THIS figure, not a copy of it.
+pub(in crate::gui::editor) const FIXED_CYLINDER_PREFORM_SIDES: usize = 96;

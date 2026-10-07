@@ -12,6 +12,12 @@ import { EditorModel } from "../models/editor.slint";
 // `GemViewportToolbarActions`'s own doc comment
 // (`gem_viewport/toolbar_actions.slint`) for why this is split out.
 import { GemViewportToolbarActions } from "gem_viewport/toolbar_actions.slint";
+// "Cut: After P2 (3 of 12)" with a "Show finished" button, while this picture is the Edit
+// tab's design cut back by the Cut slider -- see `LiveCutBadge`'s own doc comment.
+import { LiveCutBadge } from "gem_viewport/live_cut_badge.slint";
+import { ModePill } from "pill_button.slint";
+import { HelpButton } from "help_button.slint";
+import { HelpTopics } from "../models/help.slint";
 
 export component GemViewportView inherits Rectangle {
     vertical-stretch: 1;
@@ -24,8 +30,11 @@ export component GemViewportView inherits Rectangle {
     property <length> last_mouse_y;
     property <bool> is_right_drag: false;
     property <bool> is_dragging: false;
+    // The picture is the Edit tab's design, cut back by the Cut slider (which Live Render
+    // follows): say so. A Library row on the viewport is always drawn whole, so no pill then.
+    property <bool> cut_visible: EditorModel.enabled && ViewportModel.shows_editor_design && SolidPreviewModel.tier_cutoff != -1;
 
-    background: #080a0f;
+    background: Theme.viewport-bg;
     border-radius: Theme.radius-md;
     border-width: 1px;
     border-color: Theme.border-subtle;
@@ -273,53 +282,34 @@ export component GemViewportView inherits Rectangle {
         HorizontalLayout {
             spacing: 8px;
 
-            Rectangle {
-                height: 28px;
+            ModePill {
                 width: 84px;
-                background: ViewportModel.live_view_mode == 0 ? Theme.primary : (live_solid_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: ViewportModel.live_view_mode == 0 ? Theme.accent-cyan : Theme.border-subtle;
-
-                Tooltip { text: @markdown("Flat-shaded software render of the solved solid -- fast, and the spectral tracer stays off while this is showing."); }
-
-                live_solid_pill_touch := TouchArea {
-                    clicked => { ViewportModel.live_view_mode = 0; }
-                }
-                Text {
-                    text: "Solid";
-                    font-size: 12px;
-                    font-weight: 600;
-                    color: ViewportModel.live_view_mode == 0 ? Theme.text-on-primary : Theme.text-secondary;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
+                text: "Solid";
+                hint: "Flat-shaded quick picture of the solved stone. It is fast, and the spectral light tracer stays off while this is showing.";
+                selected: ViewportModel.live_view_mode == 0;
+                picked => { ViewportModel.live_view_mode = 0; }
             }
 
-            Rectangle {
-                height: 28px;
+            ModePill {
                 width: 110px;
-                background: ViewportModel.live_view_mode == 1 ? Theme.primary : (live_traced_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: ViewportModel.live_view_mode == 1 ? Theme.accent-cyan : Theme.border-subtle;
-
-                Tooltip { text: @markdown("Physically based spectral path tracer -- turns the GPU/remote tracer on for this design."); }
-
-                live_traced_pill_touch := TouchArea {
-                    clicked => { ViewportModel.live_view_mode = 1; }
-                }
-                Text {
-                    text: "Path-traced";
-                    font-size: 12px;
-                    font-weight: 600;
-                    color: ViewportModel.live_view_mode == 1 ? Theme.text-on-primary : Theme.text-secondary;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
+                text: "Path-traced";
+                hint: "The realistic picture: a spectral path tracer follows light through the stone. Turns the graphics-card or remote tracer on for this design.";
+                selected: ViewportModel.live_view_mode == 1;
+                picked => { ViewportModel.live_view_mode = 1; }
             }
+
+            // Live Render follows the Edit tab's Cut slider; exports never do.
+            if root.cut_visible: LiveCutBadge { }
 
             Rectangle { horizontal-stretch: 1; }
+
+            VerticalLayout {
+                alignment: center;
+                HelpButton {
+                    topic: HelpTopics.live-render;
+                    hint: "Open the manual page on the Live Render viewport";
+                }
+            }
         }
 
         // A layout never shrinks below its children's minimum width; without this
@@ -336,7 +326,10 @@ export component GemViewportView inherits Rectangle {
                 // `GemViewportToolbarActions`'s own doc comment
                 // (`gem_viewport/toolbar_actions.slint`) for why this is split out.
                 // `compact` drops the labels that only decorate an icon or a toggle.
-                GemViewportToolbarActions { compact: root.width < 1000px; }
+                // 1100 px, not 1000: the colour pill added about 80 px to the full-width
+                // row (the least it needs is about 1060 px with a colour readout showing),
+                // so the labels drop earlier.
+                GemViewportToolbarActions { compact: root.width < 1100px; }
             }
         }
 
@@ -352,15 +345,30 @@ export component GemViewportView inherits Rectangle {
             Rectangle {
                 min-width: 0px;
                 clip: true;
-                background: #0f172aee;
+                background: Theme.hud-surface;
                 border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: Theme.border-medium;
+                border-width: hud_focus.has-focus ? 2px : 1px;
+                border-color: hud_focus.has-focus ? Theme.accent-cyan-hover : Theme.border-medium;
 
+                accessible-role: AccessibleRole.button;
+                accessible-label: "Copy the five gemological numbers";
+                accessible-description: "Brilliance " + Math.round(ViewportModel.brilliance_pct) + " percent, scintillation " + Math.round(ViewportModel.scintillation_pct) + " percent, windowing " + Math.round(ViewportModel.windowing_pct) + " percent, extinction " + Math.round(ViewportModel.extinction_pct) + " percent.";
+                accessible-action-default => { ViewportModel.copy_metrics(); }
+
+                hud_focus := FocusScope {
+                    key-pressed(event) => {
+                        if event.text == Key.Space || event.text == Key.Return {
+                            ViewportModel.copy_metrics();
+                            return accept;
+                        }
+                        return reject;
+                    }
+                }
                 hud_touch := TouchArea {
+                    mouse-cursor: pointer;
                     clicked => { ViewportModel.copy_metrics(); }
                 }
-                Tooltip { text: @markdown("Click to copy brilliance, fire, scintillation, windowing and extinction."); }
+                Tooltip { text: @markdown("Click to copy these five numbers. **Brilliance**: the share of light returned to the eye. **Fire**: how much rainbow colour the stone throws. **Scintillation**: sparkle as the light or stone moves. **Windowing**: the share of the face that looks see-through. **Extinction**: the share that looks dead dark. See the glossary."); }
 
                 HorizontalLayout {
                     padding-left: 10px;
@@ -413,52 +421,52 @@ export component GemViewportView inherits Rectangle {
             alignment: center;
 
             Rectangle {
-                background: #1e293bdd;
+                background: Theme.hint-surface;
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
                 border-color: Theme.border-subtle;
                 HorizontalLayout {
                     padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 5px;
-                    Image { source: @image-url("../icons/mouse.svg"); colorize: #cbd5e1; width: 10px; height: 10px; vertical-alignment: center; }
-                    Text { text: "Left Drag: 360° Gem Orbit"; font-size: 10px; font-weight: 600; color: #cbd5e1; vertical-alignment: center; }
+                    Image { source: @image-url("../icons/mouse.svg"); colorize: Theme.hint-text; width: 10px; height: 10px; vertical-alignment: center; }
+                    Text { text: "Left Drag: 360° Gem Orbit"; font-size: 10px; font-weight: 600; color: Theme.hint-text; vertical-alignment: center; }
                 }
             }
 
             Rectangle {
-                background: #1e293bdd;
+                background: Theme.hint-surface;
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
                 border-color: Theme.border-subtle;
                 HorizontalLayout {
                     padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 5px;
-                    Image { source: @image-url("../icons/lightbulb.svg"); colorize: #cbd5e1; width: 10px; height: 10px; vertical-alignment: center; }
-                    Text { text: "Right / Shift+Drag: Move Light"; font-size: 10px; font-weight: 600; color: #cbd5e1; vertical-alignment: center; }
+                    Image { source: @image-url("../icons/lightbulb.svg"); colorize: Theme.hint-text; width: 10px; height: 10px; vertical-alignment: center; }
+                    Text { text: "Right / Shift+Drag: Move Light"; font-size: 10px; font-weight: 600; color: Theme.hint-text; vertical-alignment: center; }
                 }
             }
 
             Rectangle {
-                background: #1e293bdd;
+                background: Theme.hint-surface;
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
                 border-color: Theme.border-subtle;
                 HorizontalLayout {
                     padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 5px;
-                    Image { source: @image-url("../icons/search.svg"); colorize: #cbd5e1; width: 10px; height: 10px; vertical-alignment: center; }
-                    Text { text: "Scroll: Zoom"; font-size: 10px; font-weight: 600; color: #cbd5e1; vertical-alignment: center; }
+                    Image { source: @image-url("../icons/search.svg"); colorize: Theme.hint-text; width: 10px; height: 10px; vertical-alignment: center; }
+                    Text { text: "Scroll: Zoom"; font-size: 10px; font-weight: 600; color: Theme.hint-text; vertical-alignment: center; }
                 }
             }
 
             // The HUD tip, dropped on a narrow viewport so the row keeps the three
             // gesture badges whole.
             if root.width >= 760px: Rectangle {
-                background: #1e293bdd;
+                background: Theme.hint-surface;
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
                 border-color: Theme.border-subtle;
                 HorizontalLayout {
                     padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 5px;
-                    Image { source: @image-url("../icons/clipboard.svg"); colorize: #cbd5e1; width: 10px; height: 10px; vertical-alignment: center; }
-                    Text { text: "Click HUD: Copy Metrics"; font-size: 10px; font-weight: 600; color: #cbd5e1; vertical-alignment: center; }
+                    Image { source: @image-url("../icons/clipboard.svg"); colorize: Theme.hint-text; width: 10px; height: 10px; vertical-alignment: center; }
+                    Text { text: "Click HUD: Copy Metrics"; font-size: 10px; font-weight: 600; color: Theme.hint-text; vertical-alignment: center; }
                 }
             }
         }
@@ -468,7 +476,7 @@ export component GemViewportView inherits Rectangle {
     if SettingsModel.is_open: Rectangle {
         width: 100%;
         height: 100%;
-        background: #00000055;
+        background: Theme.scrim-light;
         z: 150;
 
         TouchArea {

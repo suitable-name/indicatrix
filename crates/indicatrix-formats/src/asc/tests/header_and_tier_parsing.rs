@@ -2,7 +2,10 @@
 //! groups, a bare culet-like tier, wrapped continuation lines, and the
 //! missing-`g`-keyword tolerance.
 
-use super::{super::parse_asc, fixtures::REAL_SAMPLE};
+use super::{
+    super::{parse_asc, parse_asc_with_gear_line},
+    fixtures::REAL_SAMPLE,
+};
 
 #[test]
 fn parses_real_sample_header_fields() {
@@ -104,4 +107,32 @@ fn tolerates_missing_g_keyword_prefix() {
                     a -42.800507 0.53960274 92 n P1 84 76 68 60 52 44 36 28 20 12 4 G Cut to centerpoint.\n";
     let schedule = parse_asc(content).expect("must tolerate a bare gear line");
     assert_eq!(schedule.gear_teeth, 96);
+}
+
+#[test]
+fn the_gear_line_is_the_line_the_reader_kept() {
+    let tiers = "I 1.54\na 0 0.32 n Table\n";
+    // A plain, a glued and a bare gear line, each on line 2.
+    for gear in ["g 96 0.0", "g96 0.0", "96 0.0"] {
+        let text = format!("GemCad 5.0\n{gear}\ny 4 y\n{tiers}");
+        let (schedule, line) = parse_asc_with_gear_line(&text).expect("parses");
+        assert_eq!(schedule.gear_teeth, 96, "{gear}");
+        assert_eq!(line, Some(2), "{gear}");
+    }
+    // The last gear record wins, a comment is not one, and the byte-order mark shifts nothing.
+    let text = "\u{feff}; g 12 0\nGemCad 5.0\ng96 0.0\ny 4 y\ng 80 0\n".to_owned() + tiers;
+    let (schedule, line) = parse_asc_with_gear_line(&text).expect("parses");
+    assert_eq!(schedule.gear_teeth, 80);
+    assert_eq!(line, Some(5));
+    // A word that only starts like a glued gear (`g2a`) is not a gear record: here it follows
+    // a tier and is ignored free text, so the gear line stays where the reader found it.
+    let text = format!("GemCad 5.0\ng 96 0.0\ny 4 y\n{tiers}g2a 24 48\n");
+    let (_, line) = parse_asc_with_gear_line(&text).expect("parses");
+    assert_eq!(line, Some(2));
+}
+
+#[test]
+fn a_text_without_a_gear_line_is_still_refused() {
+    let text = "GemCad 5.0\ny 4 y\nI 1.54\na 0 0.32 n Table\n";
+    assert!(parse_asc_with_gear_line(text).is_err());
 }

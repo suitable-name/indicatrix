@@ -1,6 +1,8 @@
 import { LineEdit } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { ExportModel } from "../../models/export.slint";
+import { GuideModel } from "../../models/guide.slint";
+import { ActionButton } from "../chip_toggle.slint";
 
 // The export directory (chosen once via a native folder picker -- see
 // `ExportModel.export_directory`'s own doc comment -- and just displayed/
@@ -10,12 +12,21 @@ import { ExportModel } from "../../models/export.slint";
 // line budget. See `bridge::export_thread::filename_template`'s module doc
 // comment for the full variable list, sanitising, and collision behaviour.
 // Driven entirely by `ExportModel`, so it needs no properties of its own.
+//
+// In Simple mode the list of `{placeholders}` and the note about `{preset}` are left out; the
+// template field itself and its "Resolves to" line stay, so the file name can still be set.
 export component ExportOutputLocation inherits VerticalLayout {
     spacing: 6px;
     Rectangle {
         height: output_location_lbl.preferred-height;
-        Tooltip { text: @markdown("Folder new exports save to; remembered after the first choice."); }
-        output_location_lbl := Text { text: "Output Location"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+        Tooltip { text: @markdown("The folder new exports are saved in. It is remembered after the first choice."); }
+        output_location_lbl := Text {
+            text: "Output Location";
+            font-size: 11px;
+            font-weight: 600;
+            color: Theme.text-secondary;
+            accessible-role: AccessibleRole.text;
+        }
     }
 
     HorizontalLayout {
@@ -23,11 +34,13 @@ export component ExportOutputLocation inherits VerticalLayout {
         Rectangle {
             horizontal-stretch: 1;
             height: 26px;
-            background: #0f172a;
+            background: Theme.surface-sunken;
             border-radius: Theme.radius-sm;
             border-width: 1px;
-            border-color: #334155;
+            border-color: Theme.border-dialog;
             clip: true;
+            accessible-role: AccessibleRole.text;
+            accessible-label: ExportModel.directory == "" ? "Output folder: chosen on first export" : "Output folder: " + ExportModel.directory;
 
             Text {
                 text: ExportModel.directory == "" ? "Chosen on first export..." : ExportModel.directory;
@@ -41,32 +54,38 @@ export component ExportOutputLocation inherits VerticalLayout {
             }
         }
 
-        Rectangle {
-            width: 70px;
+        ActionButton {
+            width: 80px;
             height: 26px;
-            border-radius: Theme.radius-sm;
-            background: change_dir_touch.has-hover ? #1e293b : #0f172a;
-            border-width: 1px;
-            border-color: #334155;
-
-            change_dir_touch := TouchArea {
-                enabled: !ExportModel.is_exporting;
-                clicked => { ExportModel.change_directory(); }
-            }
-
-            Text { text: "Change..."; font-size: 10px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            text: "Change...";
+            hint: "Pick another folder to save exports in.";
+            font_size: 10px;
+            ink: Theme.text-secondary;
+            enabled: !ExportModel.is_exporting;
+            clicked => { ExportModel.change_directory(); }
         }
     }
 
-    Text { text: "Filename template:"; font-size: 10px; color: Theme.text-muted; }
+    Rectangle {
+        height: template_caption.preferred-height;
+        Tooltip { text: @markdown("The name of each exported file. Words in curly brackets, like {design}, are replaced by the real value."); }
+        template_caption := Text {
+            text: "Filename template:";
+            font-size: 10px;
+            color: Theme.text-muted;
+            accessible-role: AccessibleRole.text;
+        }
+    }
     Rectangle {
         height: 26px;
         horizontal-stretch: 1;
         min-width: 200px;
-        background: #0f172a;
+        background: Theme.surface-sunken;
         border-radius: Theme.radius-sm;
         border-width: 1px;
-        border-color: #334155;
+        border-color: Theme.border-dialog;
+
+        Tooltip { text: @markdown("The name of each exported file. Words in curly brackets, like {design}, are replaced by the real value."); }
 
         LineEdit {
             // Fills the full width/height of the enclosing background/
@@ -86,28 +105,31 @@ export component ExportOutputLocation inherits VerticalLayout {
             // and editable by scrolling, not truncated.
             width: 100%;
             height: 100%;
+            accessible-label: "Filename template";
             text <=> ExportModel.filename_template;
             enabled: !ExportModel.is_exporting;
             edited(text) => { ExportModel.filename_template_changed(text); }
         }
     }
-    Text {
+    if GuideModel.shows_advanced(): Text {
         text: "{design} {designer} {shape} {material} {ri} {width} {height} {spp} {bounces} {colorspace} {preset} {lighting} {yaw} {pitch} {distance} {exposure} {date} {time} {timestamp}";
         font-size: 11px;
         color: Theme.text-muted;
         wrap: word-wrap;
+        accessible-role: AccessibleRole.text;
     }
     // `{preset}` is the only placeholder that exists ONLY with preset
     // fan-out on -- it's the design's own current-view render's `preset`
     // (empty for that render; the fanned-out preset's own name for each
     // additional file -- see `bridge::export_thread`'s module doc
     // comment). Every other placeholder resolves for every export.
-    Text {
+    if GuideModel.shows_advanced(): Text {
         text: "{preset} only fills in when preset fan-out below is selected -- it stays empty for this design's own current-view render.";
         font-size: 11px;
         font-italic: true;
         color: Theme.text-muted;
         wrap: word-wrap;
+        accessible-role: AccessibleRole.text;
     }
 
     // A live "resolves to" preview, rendered against a fixed
@@ -122,6 +144,7 @@ export component ExportOutputLocation inherits VerticalLayout {
         font-weight: 600;
         color: Theme.accent-cyan;
         wrap: word-wrap;
+        accessible-role: AccessibleRole.text;
     }
     if unknown_placeholders != "": Text {
         text: "Unrecognised placeholder(s), kept literal in the filename: " + unknown_placeholders;
@@ -129,5 +152,6 @@ export component ExportOutputLocation inherits VerticalLayout {
         font-weight: 600;
         color: Theme.accent-amber;
         wrap: word-wrap;
+        accessible-role: AccessibleRole.text;
     }
 }

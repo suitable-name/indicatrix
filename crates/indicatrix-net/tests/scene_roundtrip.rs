@@ -46,7 +46,8 @@ fn sample_scene() -> SceneState {
         environment: indicatrix_net::scene::SceneEnvironment::Studio,
         surface_glare: 1.0,
         tools: Vec::new(),
-        fluorescence: Default::default(),
+        fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
+        head_shadow_deg: 16.0,
     }
 }
 
@@ -71,7 +72,7 @@ fn scene_state_with_and_without_tools_round_trips_through_postcard() {
     use indicatrix::geometry::ToolPrimitive;
 
     let convex = sample_scene();
-    assert!(convex.tools.is_empty());
+    assert_eq!(convex.tools, Vec::<ToolPrimitive>::new());
     let convex_bytes = postcard::to_allocvec(&convex).unwrap();
     let decoded: SceneState = postcard::from_bytes(&convex_bytes).unwrap();
     assert_eq!(convex, decoded);
@@ -132,26 +133,70 @@ fn scene_state_with_and_without_fluorescence_round_trips_through_postcard() {
         bytes.len() > plain_bytes.len(),
         "emitters are a length-prefixed trailing Vec, so they only add bytes"
     );
-    // The emitter list is the last thing on the wire.
+    // The emitter list is followed only by `head_shadow_deg` (an f32, four bytes) on the wire.
     let tail = postcard::to_allocvec(&glowing.fluorescence).unwrap();
-    assert_eq!(&bytes[bytes.len() - tail.len()..], tail.as_slice());
+    let emitters_end = bytes.len() - 4;
+    assert_eq!(
+        &bytes[emitters_end - tail.len()..emitters_end],
+        tail.as_slice()
+    );
 }
 
-/// A v19 `SceneState` (no `fluorescence` field) decodes as v20 only by the handshake's
-/// refusal: postcard cannot skip a missing trailing field, so the bytes of the old layout
-/// run out. Pins that the decode fails rather than yielding a scene.
+/// A v20 `SceneState` (no trailing `head_shadow_deg` field) decodes as v21 only by the
+/// handshake's refusal: postcard cannot skip a missing trailing field, so the bytes of the
+/// old layout run out. Pins that the decode fails rather than yielding a scene.
 #[test]
-fn a_v19_scene_byte_layout_does_not_decode_as_v20() {
+fn a_v20_scene_byte_layout_does_not_decode_as_v21() {
     let scene = sample_scene();
-    let v20 = postcard::to_allocvec(&scene).unwrap();
-    // The v19 layout is the v20 one without the trailing (empty) emitter list: one 0 byte.
+    let v21 = postcard::to_allocvec(&scene).unwrap();
+    // The v20 layout is the v21 one without the trailing head-shadow f32 (16.0 = 0, 0, 128, 65).
     assert_eq!(
-        *v20.last().unwrap(),
-        0,
-        "an empty emitter list is one zero byte"
+        v21[v21.len() - 4..],
+        16.0f32.to_le_bytes(),
+        "the head shadow is four trailing bytes"
     );
-    let v19 = &v20[..v20.len() - 1];
+    let v20 = &v21[..v21.len() - 4];
+    assert!(postcard::from_bytes::<SceneState>(v20).is_err());
+    // The v19 layout (also without the empty emitter list's zero byte) fails too.
+    let v19 = &v21[..v21.len() - 5];
     assert!(postcard::from_bytes::<SceneState>(v19).is_err());
+}
+
+/// The wire carries `LightingPreset` as its derived-serde variant index, which is the
+/// DECLARATION order (not the `ALL` / `index()` UI order). New presets are appended; this pins
+/// every variant to its position so a reorder of the declaration is caught here.
+#[test]
+fn lighting_preset_postcard_index_is_the_declaration_order() {
+    use LightingPreset::*;
+    let declared = [
+        Daylight,
+        Incandescent,
+        RingLights,
+        DarkSpotlight,
+        IsoHemisphere,
+        LightTent,
+        DaylightDome,
+        UvLamp365,
+        UvLamp395,
+        DaylightSun,
+        Aset,
+        ShopLights,
+        WindowDaylight,
+        WhiteTray,
+        IlluminantA,
+    ];
+    assert_eq!(declared.len(), LightingPreset::ALL.len());
+    for (position, preset) in declared.into_iter().enumerate() {
+        assert_eq!(
+            postcard::to_allocvec(&preset).unwrap(),
+            vec![u8::try_from(position).unwrap()],
+            "{preset:?} must encode as its declaration position"
+        );
+        assert!(
+            LightingPreset::ALL.contains(&preset),
+            "{preset:?} is in ALL"
+        );
+    }
 }
 
 #[test]
@@ -279,3 +324,13 @@ fn scene_state_round_trip_preserves_absorption_path_scale_both_default_and_scale
 // `SceneState::girdle_frosted` is for `indicatrix-worker::render_cmd`'s on-disk
 // `scene.json` (via `serde_json`, self-describing), not this crate's postcard wire
 // format -- the network path's cross-version protection is `PROTOCOL_VERSION`.
+
+/// v21: the head-shadow radius round-trips through postcard.
+#[test]
+fn scene_state_head_shadow_round_trips_through_postcard() {
+    let mut scene = sample_scene();
+    scene.head_shadow_deg = 22.5;
+    let bytes = postcard::to_allocvec(&scene).unwrap();
+    let decoded: SceneState = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(decoded.head_shadow_deg.to_bits(), 22.5f32.to_bits());
+}

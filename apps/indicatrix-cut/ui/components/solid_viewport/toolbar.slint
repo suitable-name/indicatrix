@@ -5,6 +5,10 @@ import { ViewportModel } from "../../models/viewport.slint";
 import { EditorModel } from "../../models/editor.slint";
 import { TiltModel } from "../../models/tilt.slint";
 import { ManipulateModel } from "../../models/manipulate.slint";
+import { GuideModel } from "../../models/guide.slint";
+import { HelpTopics } from "../../models/help.slint";
+import { HelpButton } from "../help_button.slint";
+import { PillButton, ModePill } from "../pill_button.slint";
 // A running catalogue-wide batch (tilt sweep or preview render) sets
 // `ctx.export_active`, which suspends the live tracer exactly like an explicit
 // pause -- this strip folds that into a banner so a frozen Path-traced/Both
@@ -27,76 +31,92 @@ import { BatchModel } from "../../models/batch.slint";
 // with tighter pills. The pills live in the small row components right below
 // (`CutSlider`, `ModePills`, `ViewPills`, `ToolPills`) so each layout can mount
 // the same pills in a different grouping.
+//
+// Every pill is a `PillButton` or `ModePill` (`components/pill_button.slint`): a tooltip in
+// plain words, Tab to reach it, Space or Enter to press it, a screen-reader label. Simple
+// mode hides the Tilt Curve pill (`GuideModel.shows_advanced()`); the pills most designs need
+// (modes, camera, Preform, Snap, Slice) stay.
 
-// The "Cut" tier-cutoff slider: how far through the cutting instructions to
-// draw, so a cutter can see what the next course actually lands on. The
-// mount sites show it only when there is a solved solid to truncate, and only
-// in the two modes that draw one -- there is nothing to cut back in a
-// path-traced render of the finished stone. `-1` is the whole design.
+// The "Cut" slider: how far through the cutting steps to draw the stone, so a cutter
+// can see the rough after every tier. Position 0 is the rough (the preform alone),
+// position k the stone after the first k steps, and the far right the finished design.
+// The steps are the design's flat and concave tiers (`cut_slider.rs`). The label and
+// the tooltip come from Rust (`SolidPreviewModel.cut_label`), written together with the
+// cutoff, so they always describe what the viewport shows. The mount sites show it in
+// every mode that draws the stone (not the Diagram, which always shows the finished
+// design), and keep it while a cut is active even if the solid is momentarily missing.
+// `SolidPreviewModel.tier_cutoff`: `-1` finished, `-2` rough, `n >= 0` after steps 0..=n.
 component CutSlider inherits Rectangle {
     height: 28px;
     width: cut_layout.preferred-width;
     background: Theme.bg-input;
     border-radius: Theme.radius-sm;
-    border-width: 1px;
-    border-color: SolidPreviewModel.tier_cutoff >= 0 ? Theme.accent-amber : Theme.border-subtle;
+    // The open tutorial step is about this slider: a cyan outline, 2px wide.
+    border-width: GuideModel.highlight_target == "cut_slider" ? 2px : 1px;
+    border-color: GuideModel.highlight_target == "cut_slider" ? Theme.accent-cyan : (SolidPreviewModel.tier_cutoff != -1 ? Theme.accent-amber : Theme.border-subtle);
 
-    Tooltip { text: @markdown("Draw the stone as it stands after this many tiers of the cutting instructions. Drag fully right for the finished design."); }
+    Tooltip { text: @markdown("**\{SolidPreviewModel.cut_label}**. Drag to see the stone after each tier of the cutting steps. All the way left is the rough, all the way right is the finished design. Live Render follows this slider; exports and tilt videos always show the finished stone."); }
 
     cut_layout := HorizontalLayout {
         padding-left: 8px;
         padding-right: 8px;
         spacing: 6px;
 
+        // Two short lines so the whole control stays about 170px wide, which the
+        // toolbar's re-flow thresholds below are tuned to. The tooltip has the full text.
         Text {
-            text: SolidPreviewModel.tier_cutoff < 0
-                ? "Cut: all"
-                : "Cut: " + SolidPreviewModel.tier_cutoff + "/" + EditorModel.tiers.length;
+            width: 78px;
+            text: SolidPreviewModel.cut_label;
             font-size: 10px;
             font-weight: 600;
-            color: SolidPreviewModel.tier_cutoff >= 0 ? Theme.accent-amber : Theme.text-secondary;
+            color: SolidPreviewModel.tier_cutoff != -1 ? Theme.accent-amber : Theme.text-secondary;
             vertical-alignment: center;
+            wrap: word-wrap;
+            overflow: elide;
         }
         cut_slider := Slider {
-            width: 90px;
-            minimum: 1;
-            // One past the last tier is the "all" position, so the
-            // control has a natural home for "no cutoff" at its far
-            // right rather than a separate reset button.
-            maximum: EditorModel.tiers.length;
-            value: SolidPreviewModel.tier_cutoff < 0
-                ? EditorModel.tiers.length
-                : SolidPreviewModel.tier_cutoff;
-            // `changed(value)` is the Slider's own INTERACTION
-            // callback (`SliderBase::set-value`, called only from an
-            // actual drag/keyboard nudge/click), not a plain
-            // property-change handler on the bound `value`
-            // expression above -- a plain `changed value => { ... }`
-            // handler would re-run on EVERY change to that
-            // expression, including one driven by
-            // `EditorModel.tiers.length` moving on an ordinary tier
-            // push/remove/undo, not only an actual drag, firing a
-            // redundant replan on every tier edit (on top of the one
-            // already done through its own `refresh_*` call) and
-            // risking a race with a Rust writer that still holds
-            // `state.borrow_mut()` at the moment the queued
-            // `changed` handler ran -- Slint queues `changed`
-            // handlers and runs them at the next event-loop pass
-            // rather than synchronously inside the setter, so a
-            // Rust callback that pumps the event loop (a blocking
-            // file dialog, most commonly) while still holding the
-            // `EditorState` guard can flush a `changed` handler
-            // mid-borrow. `SolidPreviewModel.tier_cutoff_changed`'s
-            // own Rust handler
-            // (`gui::editor::setup::setup_tier_cutoff_callback`) is
-            // the only one that fires from this, and uses
-            // `try_borrow` (skip on failure) for the same reason.
+            width: 66px;
+            minimum: 0;
+            // The last position is "Finished", this many steps in, so the control has a
+            // natural home for "no cut" at its far right rather than a reset button.
+            maximum: SolidPreviewModel.cut_step_count;
+            step: 1;
+            // Two-way, not a `value:` binding: a std Slider stops following a plain
+            // binding after the first drag, and Rust has to be able to move the handle
+            // (New, Open and Load put it back to Finished).
+            value <=> SolidPreviewModel.cut_position;
+            // `changed(value)` is the Slider's own INTERACTION callback (called only
+            // from an actual drag/keyboard nudge/click), not a plain property-change
+            // handler: a `changed value => { ... }` handler would also run when Rust moves
+            // the handle, firing a redundant replan, and Slint queues `changed` handlers
+            // to the next event-loop pass, so one could flush mid-borrow while a Rust
+            // callback that pumps the event loop (a blocking file dialog) still holds the
+            // `EditorState` guard. `SolidPreviewModel.tier_cutoff_changed`'s Rust handler
+            // (`gui::editor::setup::setup_tier_cutoff_callback`) uses `try_borrow` and
+            // retries for the same reason. The handle snaps to whole steps, and a drag
+            // only raises the callback when the step changes.
             changed(value) => {
-                SolidPreviewModel.tier_cutoff =
-                    value >= EditorModel.tiers.length ? -1 : Math.round(value);
-                SolidPreviewModel.tier_cutoff_changed();
+                let steps = Math.round(value);
+                let cutoff = steps >= SolidPreviewModel.cut_step_count ? -1 : (steps <= 0 ? -2 : steps - 1);
+                SolidPreviewModel.cut_position = steps;
+                if (cutoff != SolidPreviewModel.tier_cutoff) {
+                    SolidPreviewModel.tier_cutoff = cutoff;
+                    SolidPreviewModel.tier_cutoff_changed();
+                }
             }
         }
+    }
+}
+
+// The "?" button at the end of the toolbar's first row: the manual page for the Solid view,
+// or for the Diagram while that mode shows.
+component ToolbarHelp inherits VerticalLayout {
+    alignment: center;
+    HelpButton {
+        topic: SolidPreviewModel.view_mode == 3 ? HelpTopics.diagram-view : HelpTopics.solid-view;
+        hint: SolidPreviewModel.view_mode == 3
+            ? "Open the manual page on the Diagram view"
+            : "Open the manual page on the Solid view";
     }
 }
 
@@ -106,96 +126,37 @@ component ModePills inherits HorizontalLayout {
     in property <bool> tight: false;
     spacing: root.tight ? 4px : 8px;
 
-    Rectangle {
-        height: 28px;
+    ModePill {
         width: root.tight ? 56px : 84px;
-        background: SolidPreviewModel.view_mode == 0 ? Theme.primary : (solid_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: SolidPreviewModel.view_mode == 0 ? Theme.accent-cyan : Theme.border-subtle;
-
-        Tooltip { text: @markdown("Flat-shaded software render of the solved solid -- independent of the spectral path tracer."); }
-
-        solid_pill_touch := TouchArea {
-            clicked => { SolidPreviewModel.view_mode = 0; }
-        }
-        Text {
-            text: "Solid";
-            font-size: 12px;
-            font-weight: 600;
-            color: SolidPreviewModel.view_mode == 0 ? Theme.text-on-primary : Theme.text-secondary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+        text: "Solid";
+        hint: "Flat-shaded picture of the solved stone. Quick, and independent of the light tracer.";
+        selected: SolidPreviewModel.view_mode == 0;
+        highlighted: GuideModel.highlight_target == "view_modes";
+        picked => { SolidPreviewModel.view_mode = 0; }
     }
-
-    Rectangle {
-        height: 28px;
+    ModePill {
         width: root.tight ? 92px : 110px;
-        background: SolidPreviewModel.view_mode == 1 ? Theme.primary : (traced_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: SolidPreviewModel.view_mode == 1 ? Theme.accent-cyan : Theme.border-subtle;
-
-        Tooltip { text: @markdown("The same spectral path-traced image shown in the Live Render tab."); }
-
-        traced_pill_touch := TouchArea {
-            clicked => { SolidPreviewModel.view_mode = 1; }
-        }
-        Text {
-            text: "Path-traced";
-            font-size: 12px;
-            font-weight: 600;
-            color: SolidPreviewModel.view_mode == 1 ? Theme.text-on-primary : Theme.text-secondary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+        text: "Path-traced";
+        hint: "The realistic light-traced picture, the same one the Live Render tab shows.";
+        selected: SolidPreviewModel.view_mode == 1;
+        highlighted: GuideModel.highlight_target == "view_modes";
+        picked => { SolidPreviewModel.view_mode = 1; }
     }
-
-    Rectangle {
-        height: 28px;
+    ModePill {
         width: root.tight ? 52px : 84px;
-        background: SolidPreviewModel.view_mode == 2 ? Theme.primary : (both_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: SolidPreviewModel.view_mode == 2 ? Theme.accent-cyan : Theme.border-subtle;
-
-        Tooltip { text: @markdown("The path-traced image with the solid's own facet edges overlaid."); }
-
-        both_pill_touch := TouchArea {
-            clicked => { SolidPreviewModel.view_mode = 2; }
-        }
-        Text {
-            text: "Both";
-            font-size: 12px;
-            font-weight: 600;
-            color: SolidPreviewModel.view_mode == 2 ? Theme.text-on-primary : Theme.text-secondary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+        text: "Both";
+        hint: "The light-traced picture with the solid's own facet edges drawn on top.";
+        selected: SolidPreviewModel.view_mode == 2;
+        highlighted: GuideModel.highlight_target == "view_modes";
+        picked => { SolidPreviewModel.view_mode = 2; }
     }
-
-    Rectangle {
-        height: 28px;
+    ModePill {
         width: root.tight ? 72px : 96px;
-        background: SolidPreviewModel.view_mode == 3 ? Theme.primary : (diagram_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: SolidPreviewModel.view_mode == 3 ? Theme.accent-cyan : Theme.border-subtle;
-
-        Tooltip { text: @markdown("A GemCAD-style crown/pavilion/profile 2D faceting diagram with the index wheel -- fixed, not tied to the orbit camera."); }
-
-        diagram_pill_touch := TouchArea {
-            clicked => { SolidPreviewModel.view_mode = 3; }
-        }
-        Text {
-            text: "Diagram";
-            font-size: 12px;
-            font-weight: 600;
-            color: SolidPreviewModel.view_mode == 3 ? Theme.text-on-primary : Theme.text-secondary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+        text: "Diagram";
+        hint: "A flat faceting diagram -- crown, pavilion and side profile -- with the index wheel. It does not turn with the camera.";
+        selected: SolidPreviewModel.view_mode == 3;
+        highlighted: GuideModel.highlight_target == "view_modes";
+        picked => { SolidPreviewModel.view_mode = 3; }
     }
 }
 
@@ -207,41 +168,17 @@ component ViewPills inherits HorizontalLayout {
 
     // Front / Top -- canonical poses for the shared orbit camera (the same
     // `ViewportModel.set_view` the Live Render viewport's buttons call).
-    Rectangle {
-        height: 28px;
+    PillButton {
         width: root.tight ? 50px : 56px;
-        background: front_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: Theme.border-subtle;
-        Tooltip { text: @markdown("Look at the stone from the front: girdle edge-on, index 0 towards you."); }
-        front_pill_touch := TouchArea { clicked => { ViewportModel.set_view(0); } }
-        Text {
-            text: "Front";
-            font-size: 12px;
-            font-weight: 600;
-            color: Theme.text-secondary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+        text: "Front";
+        hint: "Look at the stone from the front: girdle edge-on, index 0 towards you.";
+        clicked => { ViewportModel.set_view(0); }
     }
-    Rectangle {
-        height: 28px;
+    PillButton {
         width: root.tight ? 38px : 48px;
-        background: top_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: Theme.border-subtle;
-        Tooltip { text: @markdown("Look straight down onto the table."); }
-        top_pill_touch := TouchArea { clicked => { ViewportModel.set_view(1); } }
-        Text {
-            text: "Top";
-            font-size: 12px;
-            font-weight: 600;
-            color: Theme.text-secondary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+        text: "Top";
+        hint: "Look straight down onto the table.";
+        clicked => { ViewportModel.set_view(1); }
     }
 
     // #118: Bottom/Left/Right -- a one-click pavilion view, the commonest
@@ -249,105 +186,45 @@ component ViewPills inherits HorizontalLayout {
     // a free-drag orbit. Same `ViewportModel.set_view` as Front/Top above, new kinds
     // (`render::camera_lighting::setup_set_view_callback`'s own doc
     // comment has the full kind -> pose mapping).
-    Rectangle {
-        height: 28px;
+    PillButton {
         width: root.tight ? 56px : 66px;
-        background: bottom_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: Theme.border-subtle;
-        Tooltip { text: @markdown("Look straight up at the culet/pavilion tip."); }
-        bottom_pill_touch := TouchArea { clicked => { ViewportModel.set_view(2); } }
-        Text {
-            text: "Bottom";
-            font-size: 12px;
-            font-weight: 600;
-            color: Theme.text-secondary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+        text: "Bottom";
+        hint: "Look straight up at the culet and the pavilion.";
+        clicked => { ViewportModel.set_view(2); }
     }
-    Rectangle {
-        height: 28px;
+    PillButton {
         width: root.tight ? 44px : 52px;
-        background: left_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: Theme.border-subtle;
-        Tooltip { text: @markdown("Look at the stone's left side."); }
-        left_pill_touch := TouchArea { clicked => { ViewportModel.set_view(3); } }
-        Text {
-            text: "Left";
-            font-size: 12px;
-            font-weight: 600;
-            color: Theme.text-secondary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+        text: "Left";
+        hint: "Look at the stone's left side.";
+        clicked => { ViewportModel.set_view(3); }
     }
-    Rectangle {
-        height: 28px;
+    PillButton {
         width: root.tight ? 48px : 58px;
-        background: right_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: Theme.border-subtle;
-        Tooltip { text: @markdown("Look at the stone's right side."); }
-        right_pill_touch := TouchArea { clicked => { ViewportModel.set_view(4); } }
-        Text {
-            text: "Right";
-            font-size: 12px;
-            font-weight: 600;
-            color: Theme.text-secondary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+        text: "Right";
+        hint: "Look at the stone's right side.";
+        clicked => { ViewportModel.set_view(4); }
     }
     // #118: recovers a usable framing after a free-drag orbit ends up
     // pointed at empty space or edge-on to every facet -- unlike
     // Front/Top/Bottom/Left/Right, Fit (`set_view` kind `5`) leaves the
     // CURRENT orbit angle alone and only recomputes distance from the
     // live mesh's own bounding radius.
-    Rectangle {
-        height: 28px;
+    PillButton {
         width: root.tight ? 34px : 44px;
-        background: fit_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: Theme.border-subtle;
-        Tooltip { text: @markdown("Keep the current angle, but recompute distance to frame the whole stone."); }
-        fit_pill_touch := TouchArea { clicked => { ViewportModel.set_view(5); } }
-        Text {
-            text: "Fit";
-            font-size: 12px;
-            font-weight: 600;
-            color: Theme.text-secondary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+        text: "Fit";
+        hint: "Keep the current angle, but change the distance so the whole stone fits the view.";
+        clicked => { ViewportModel.set_view(5); }
     }
     // #118: `ViewportModel.reset_camera` -- the same canonical pose/light
     // reset `gem_viewport.slint`'s own Reset button already calls for the
     // Live Render tab; `render::camera_lighting::setup_camera_and_lighting_
     // callbacks`'s `on_reset_camera` also re-requests a redraw at the new
     // pose so both viewports show it, not just the one that triggered it.
-    Rectangle {
-        height: 28px;
+    PillButton {
         width: root.tight ? 48px : 56px;
-        background: reset_camera_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: Theme.border-subtle;
-        Tooltip { text: @markdown("Reset the camera angle, distance and light to their defaults."); }
-        reset_camera_pill_touch := TouchArea { clicked => { ViewportModel.reset_camera(); } }
-        Text {
-            text: "Reset";
-            font-size: 12px;
-            font-weight: 600;
-            color: Theme.text-secondary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+        text: "Reset";
+        hint: "Put the camera angle, distance and light back to their defaults.";
+        clicked => { ViewportModel.reset_camera(); }
     }
 }
 
@@ -368,128 +245,75 @@ component ToolPills inherits HorizontalLayout {
     // the catalogue list, which overwrites the design being edited).
     // Same open/close + stale-cache-check sequence as
     // `GemViewportView`'s own button, shared via
-    // `TiltModel.toggle_dialog()`.
-    Rectangle {
-        height: 28px;
+    // `TiltModel.toggle_dialog()`. An advanced tool: hidden in Simple mode, locked with the
+    // other advanced actions while a guide runs.
+    if GuideModel.shows_advanced(): PillButton {
         width: root.tight ? 76px : 82px;
-        background: TiltModel.dialog_open ? Theme.primary : (tilt_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: TiltModel.dialog_open ? Theme.accent-cyan : Theme.border-subtle;
-        Tooltip { text: @markdown("Open the tilt-performance chart: brilliance, windowing and extinction versus tilt."); }
-        tilt_pill_touch := TouchArea { clicked => { TiltModel.toggle_dialog(); } }
-        Text {
-            text: "Tilt Curve";
-            font-size: 12px;
-            font-weight: 600;
-            color: TiltModel.dialog_open ? Theme.text-on-primary : Theme.text-secondary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+        text: "Tilt Curve";
+        hint: GuideModel.allows_advanced()
+            ? "Open the tilt-performance chart: brilliance, windowing and extinction as the stone tilts. See the glossary."
+            : GuideModel.locked_hint;
+        enabled: GuideModel.allows_advanced();
+        lit: TiltModel.dialog_open;
+        checkable: true;
+        clicked => { TiltModel.toggle_dialog(); }
     }
 
     // #122: toggles the rough's own bounding (preform) planes on/off in
     // the Solid view -- shown only there, since Path-traced/Both/Diagram
     // either don't draw the preform at all (the path tracer) or handle
     // it separately (Diagram's own facet labels).
-    if SolidPreviewModel.view_mode == 0: Rectangle {
-        height: 28px;
+    if SolidPreviewModel.view_mode == 0: PillButton {
         width: root.tight ? 68px : 96px;
-        background: SolidPreviewModel.show_preform_planes ? Theme.primary : (preform_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: SolidPreviewModel.show_preform_planes ? Theme.accent-cyan : Theme.border-subtle;
-        Tooltip { text: @markdown("Show or hide the rough's own bounding (preform) planes."); }
-        preform_pill_touch := TouchArea {
-            clicked => { SolidPreviewModel.show_preform_planes = !SolidPreviewModel.show_preform_planes; }
-        }
-        Text {
-            text: "Preform";
-            font-size: 12px;
-            font-weight: 600;
-            color: SolidPreviewModel.show_preform_planes ? Theme.text-on-primary : Theme.text-secondary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+        text: "Preform";
+        hint: "Show or hide the rough's own bounding planes (the preform) in the Solid view. See the glossary.";
+        lit: SolidPreviewModel.show_preform_planes;
+        checkable: true;
+        clicked => { SolidPreviewModel.show_preform_planes = !SolidPreviewModel.show_preform_planes; }
     }
 
     // Snapping for the angle and depth drag handles on the selected facet
-    // (`ManipulateModel`): lit while snapping is on. Shown in the three modes
-    // that draw the handles (Solid, Path-traced, Both), not in Diagram.
-    if SolidPreviewModel.view_mode != 3: Rectangle {
-        height: 28px;
+    // (`ManipulateModel`): lit while snapping is on. Shown in every mode that draws the
+    // handles: Solid, Path-traced, Both and the Diagram view.
+    PillButton {
         width: root.tight ? 46px : 64px;
-        background: !ManipulateModel.snap_off ? Theme.primary : (snap_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: !ManipulateModel.snap_off ? Theme.accent-cyan : Theme.border-subtle;
-        Tooltip { text: @markdown("Snapping for the angle and depth handles on the selected facet: coarse by default (0.1 degree, 0.01 mast), fine while you hold Shift, none when this is off. The index handle always moves in whole teeth."); }
-        snap_pill_touch := TouchArea {
-            clicked => {
-                ManipulateModel.snap_off = !ManipulateModel.snap_off;
-                ManipulateModel.snap_toggled();
-            }
-        }
-        Text {
-            text: "Snap";
-            font-size: 12px;
-            font-weight: 600;
-            color: !ManipulateModel.snap_off ? Theme.text-on-primary : Theme.text-secondary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
+        text: "Snap";
+        hint: "Snapping for the angle and depth handles on the selected facet: coarse by default (0.1 degree, 0.01 mast), fine while you hold Shift, none when this is off. The index handle always moves in whole teeth.";
+        lit: !ManipulateModel.snap_off;
+        highlighted: GuideModel.highlight_target == "snap_pill";
+        checkable: true;
+        clicked => {
+            ManipulateModel.snap_off = !ManipulateModel.snap_off;
+            ManipulateModel.snap_toggled();
         }
     }
 
     // Slice: cut a new facet with the mouse (`ManipulateModel`, shortcut S). Lit
     // while the tool is on; shown in the three modes that draw the stone.
-    if SolidPreviewModel.view_mode != 3: Rectangle {
-        height: 28px;
+    if SolidPreviewModel.view_mode != 3: PillButton {
         width: root.tight ? 46px : 64px;
-        background: ManipulateModel.slice_mode ? Theme.primary : (slice_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: ManipulateModel.slice_mode ? Theme.accent-cyan : Theme.border-subtle;
-        Tooltip { text: @markdown("Cut a new facet with the mouse (shortcut S): drag a line across the stone and the part to the right of your drag is cut away. Nothing is kept until you press Keep."); }
-        slice_pill_touch := TouchArea {
-            clicked => {
-                ManipulateModel.slice_mode = !ManipulateModel.slice_mode;
-                ManipulateModel.slice_toggled();
-            }
-        }
-        Text {
-            text: "Slice";
-            font-size: 12px;
-            font-weight: 600;
-            color: ManipulateModel.slice_mode ? Theme.text-on-primary : Theme.text-secondary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
+        text: "Slice";
+        hint: "Cut a new facet with the mouse (shortcut S): drag a line across the stone and the part to the right of your drag is cut away. Nothing is kept until you press Keep.";
+        lit: ManipulateModel.slice_mode;
+        highlighted: GuideModel.highlight_target == "slice_pill";
+        checkable: true;
+        clicked => {
+            ManipulateModel.slice_mode = !ManipulateModel.slice_mode;
+            ManipulateModel.slice_toggled();
         }
     }
 
     // #29: Diagram mode's own zoom/pan reset -- shown only in Diagram mode,
     // where Front/Top (the shared orbit camera's poses) don't apply.
-    if SolidPreviewModel.view_mode == 3: Rectangle {
-        height: 28px;
+    if SolidPreviewModel.view_mode == 3: PillButton {
         width: 76px;
-        background: reset_diagram_view_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: Theme.border-subtle;
-        Tooltip { text: @markdown("Reset the diagram's zoom and pan."); }
-        reset_diagram_view_touch := TouchArea {
-            clicked => {
-                root.diagram_zoom = 1.0;
-                root.diagram_pan_x = 0px;
-                root.diagram_pan_y = 0px;
-            }
-        }
-        Text {
-            text: "Reset View";
-            font-size: 11px;
-            font-weight: 600;
-            color: Theme.text-secondary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
+        text: "Reset View";
+        font_size: 11px;
+        hint: "Put the diagram's zoom and pan back to normal.";
+        clicked => {
+            root.diagram_zoom = 1.0;
+            root.diagram_pan_x = 0px;
+            root.diagram_pan_y = 0px;
         }
     }
 
@@ -503,75 +327,44 @@ component ToolPills inherits HorizontalLayout {
     // their own label anyway. See `ui/models/solid_preview.slint`'s
     // `diagram_enlarged_panel` doc comment for the Rust-side handoff
     // this still needs (this pass owns only the Slint side).
-    if SolidPreviewModel.view_mode == 3: Rectangle {
-        height: 28px;
+    if SolidPreviewModel.view_mode == 3: PillButton {
         width: root.tight ? 52px : 58px;
-        background: SolidPreviewModel.diagram_enlarged_panel == 0 ? Theme.primary : (enlarge_crown_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: SolidPreviewModel.diagram_enlarged_panel == 0 ? Theme.accent-cyan : Theme.border-subtle;
-        Tooltip { text: @markdown("Enlarge the Crown panel to fill the view (or double-click a panel). Click again, double-click or press Escape to go back to all three."); }
-        enlarge_crown_touch := TouchArea {
-            clicked => { SolidPreviewModel.diagram_enlarged_panel = SolidPreviewModel.diagram_enlarged_panel == 0 ? -1 : 0; }
-        }
-        Text {
-            text: "Crown";
-            font-size: 11px;
-            font-weight: 600;
-            color: SolidPreviewModel.diagram_enlarged_panel == 0 ? Theme.text-on-primary : Theme.text-secondary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+        text: "Crown";
+        font_size: 11px;
+        hint: "Enlarge the Crown panel to fill the view (or double-click a panel). Click again, double-click or press Escape to go back to all three.";
+        lit: SolidPreviewModel.diagram_enlarged_panel == 0;
+        checkable: true;
+        clicked => { SolidPreviewModel.diagram_enlarged_panel = SolidPreviewModel.diagram_enlarged_panel == 0 ? -1 : 0; }
     }
-    if SolidPreviewModel.view_mode == 3: Rectangle {
-        height: 28px;
+    if SolidPreviewModel.view_mode == 3: PillButton {
         width: root.tight ? 60px : 68px;
-        background: SolidPreviewModel.diagram_enlarged_panel == 1 ? Theme.primary : (enlarge_pavilion_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: SolidPreviewModel.diagram_enlarged_panel == 1 ? Theme.accent-cyan : Theme.border-subtle;
-        Tooltip { text: @markdown("Enlarge the Pavilion panel to fill the view (or double-click a panel). Click again, double-click or press Escape to go back to all three."); }
-        enlarge_pavilion_touch := TouchArea {
-            clicked => { SolidPreviewModel.diagram_enlarged_panel = SolidPreviewModel.diagram_enlarged_panel == 1 ? -1 : 1; }
-        }
-        Text {
-            text: "Pavilion";
-            font-size: 11px;
-            font-weight: 600;
-            color: SolidPreviewModel.diagram_enlarged_panel == 1 ? Theme.text-on-primary : Theme.text-secondary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+        text: "Pavilion";
+        font_size: 11px;
+        hint: "Enlarge the Pavilion panel to fill the view (or double-click a panel). Click again, double-click or press Escape to go back to all three.";
+        lit: SolidPreviewModel.diagram_enlarged_panel == 1;
+        checkable: true;
+        clicked => { SolidPreviewModel.diagram_enlarged_panel = SolidPreviewModel.diagram_enlarged_panel == 1 ? -1 : 1; }
     }
-    if SolidPreviewModel.view_mode == 3: Rectangle {
-        height: 28px;
+    if SolidPreviewModel.view_mode == 3: PillButton {
         width: root.tight ? 54px : 62px;
-        background: SolidPreviewModel.diagram_enlarged_panel == 2 ? Theme.primary : (enlarge_profile_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: SolidPreviewModel.diagram_enlarged_panel == 2 ? Theme.accent-cyan : Theme.border-subtle;
-        Tooltip { text: @markdown("Enlarge the Profile panel to fill the view (or double-click a panel). Click again, double-click or press Escape to go back to all three."); }
-        enlarge_profile_touch := TouchArea {
-            clicked => { SolidPreviewModel.diagram_enlarged_panel = SolidPreviewModel.diagram_enlarged_panel == 2 ? -1 : 2; }
-        }
-        Text {
-            text: "Profile";
-            font-size: 11px;
-            font-weight: 600;
-            color: SolidPreviewModel.diagram_enlarged_panel == 2 ? Theme.text-on-primary : Theme.text-secondary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+        text: "Profile";
+        font_size: 11px;
+        hint: "Enlarge the Profile panel to fill the view (or double-click a panel). Click again, double-click or press Escape to go back to all three.";
+        lit: SolidPreviewModel.diagram_enlarged_panel == 2;
+        checkable: true;
+        clicked => { SolidPreviewModel.diagram_enlarged_panel = SolidPreviewModel.diagram_enlarged_panel == 2 ? -1 : 2; }
     }
 }
 
 // The toolbar re-flows by its own width (it is explicitly x/y/width-positioned
 // at 100% of the viewport, so reading `root.width` here is not a binding loop):
 //   wide   (>= 1400px)  one row: Cut, modes, views, tools.
-//   medium (940-1400)   two rows: [Cut, modes, tools] and [views].
-//   low    (600-940)    three rows: [Cut, modes], [views], [tools].
-//   narrow (< 600)      four rows of tighter pills: Cut, modes, views, tools.
-// The widths are the pills' own sums (about 1350px / 940px / 590px / 380px).
+//   medium (980-1400)   two rows: [Cut, modes, tools] and [views].
+//   low    (620-980)    three rows: [Cut, modes], [views], [tools].
+//   narrow (< 620)      four rows of tighter pills: Cut, modes, views, tools.
+// The widths are the pills' own sums (about 1380px / 980px / 610px / 380px); the "?" help
+// button at the end of the first row is 28 px of each (the medium and narrow limits were
+// 940 and 600 before it was added).
 // `top_height` is the rows' total height, for the hint strip that sits under
 // them (`ManipulateHintBar.toolbar_height`).
 export component SolidViewportToolbar inherits VerticalLayout {
@@ -591,11 +384,15 @@ export component SolidViewportToolbar inherits VerticalLayout {
     in-out property <length> diagram_pan_y: 0px;
 
     property <bool> wide: root.width >= 1400px;
-    property <bool> narrow: root.width < 600px;
-    property <bool> medium: !root.wide && root.width >= 940px;
+    property <bool> narrow: root.width < 620px;
+    property <bool> medium: !root.wide && root.width >= 980px;
     property <bool> low: !root.wide && !root.medium && !root.narrow;
-    // Only with a solved solid to truncate, and only in the two modes that draw one.
-    property <bool> has_cut: (SolidPreviewModel.view_mode == 0 || SolidPreviewModel.view_mode == 2) && SolidPreviewModel.has_solid && EditorModel.tiers.length > 1;
+    // With a design to cut, in every mode that draws the stone: the Solid and Both
+    // views show it, and the path tracer follows the cut too, so Path-traced keeps the
+    // slider rather than hiding a cut it still obeys. Not the Diagram, which always shows
+    // the finished design. Kept while a cut is active even if the solid is momentarily
+    // missing, so the cut can always be undone.
+    property <bool> has_cut: SolidPreviewModel.view_mode != 3 && SolidPreviewModel.cut_step_count > 0 && (SolidPreviewModel.has_solid || SolidPreviewModel.view_mode == 1 || SolidPreviewModel.tier_cutoff != -1);
     // The pill rows' height (28px rows, 6px between rows), for the hint strip
     // that goes under them.
     out property <length> top_height: root.wide ? 28px : (root.medium ? 62px : (root.low ? 96px : (root.has_cut ? 130px : 96px)));
@@ -626,6 +423,7 @@ export component SolidViewportToolbar inherits VerticalLayout {
         }
         // Filler: keeps the pills at their own width.
         Rectangle { horizontal-stretch: 1; }
+        ToolbarHelp { }
     }
 
     if root.medium: VerticalLayout {
@@ -640,6 +438,7 @@ export component SolidViewportToolbar inherits VerticalLayout {
                 diagram_pan_y <=> root.diagram_pan_y;
             }
             Rectangle { horizontal-stretch: 1; }
+            ToolbarHelp { }
         }
         HorizontalLayout {
             spacing: 8px;
@@ -655,6 +454,7 @@ export component SolidViewportToolbar inherits VerticalLayout {
             if root.has_cut: CutSlider { }
             ModePills { }
             Rectangle { horizontal-stretch: 1; }
+            ToolbarHelp { }
         }
         HorizontalLayout {
             spacing: 8px;
@@ -678,11 +478,14 @@ export component SolidViewportToolbar inherits VerticalLayout {
             spacing: 8px;
             CutSlider { }
             Rectangle { horizontal-stretch: 1; }
+            ToolbarHelp { }
         }
         HorizontalLayout {
             spacing: 8px;
             ModePills { tight: true; }
             Rectangle { horizontal-stretch: 1; }
+            // Without a cut slider on this row the help button sits here instead.
+            if !root.has_cut: ToolbarHelp { }
         }
         HorizontalLayout {
             spacing: 8px;
@@ -707,6 +510,9 @@ export component SolidViewportToolbar inherits VerticalLayout {
         border-radius: Theme.radius-sm;
         border-width: 1px;
         border-color: Theme.border-subtle;
+
+        accessible-role: AccessibleRole.text;
+        accessible-label: root.status_text;
 
         Text {
             text: root.status_text;

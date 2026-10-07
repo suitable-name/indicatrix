@@ -1,11 +1,14 @@
 import { Theme } from "../../theme.slint";
 import { LineEdit } from "std-widgets.slint";
+import { TipBox, FieldCaption } from "../tip_box.slint";
 
 // A labelled text field. `min-width: 0px` overrides the fluent `LineEdit`'s 160px
 // minimum so three of them fit side by side in a narrow card. `committed` fires on
 // Enter and when the field loses focus, so a field's owner can react once per edit.
 export component RoughField inherits VerticalLayout {
     in property <string> label;
+    // One plain sentence: what the number means. The tooltip of the caption and the field.
+    in property <string> hint;
     in property <string> placeholder;
     in property <bool> editable: true;
     in-out property <string> value;
@@ -18,27 +21,28 @@ export component RoughField inherits VerticalLayout {
     horizontal-stretch: 1;
     spacing: 2px;
 
-    Text {
-        text: root.label;
-        font-size: 10px;
-        color: Theme.text-muted;
-    }
-    LineEdit {
-        min-width: 0px;
-        text <=> root.value;
-        placeholder-text: root.placeholder;
-        enabled: root.editable;
-        edited(t) => { root.dirty = true; }
-        accepted => {
-            if root.dirty {
-                root.dirty = false;
-                root.committed();
+    FieldCaption { text: root.label; hint: root.hint; font_size: 10px; }
+    TipBox {
+        hint: root.hint;
+        LineEdit {
+            min-width: 0px;
+            text <=> root.value;
+            placeholder-text: root.placeholder;
+            enabled: root.editable;
+            accessible-label: root.label;
+            accessible-description: root.hint;
+            edited(t) => { root.dirty = true; }
+            accepted => {
+                if root.dirty {
+                    root.dirty = false;
+                    root.committed();
+                }
             }
-        }
-        changed has-focus => {
-            if !self.has-focus && root.dirty {
-                root.dirty = false;
-                root.committed();
+            changed has-focus => {
+                if !self.has-focus && root.dirty {
+                    root.dirty = false;
+                    root.committed();
+                }
             }
         }
     }
@@ -77,6 +81,8 @@ export component ElidedText inherits Rectangle {
 export component RoughRadio inherits Rectangle {
     in property <bool> selected;
     in property <string> label;
+    // One plain sentence: what choosing this does. Shown as the tooltip and read after the label.
+    in property <string> hint;
     in property <bool> editable: true;
     callback picked();
 
@@ -86,8 +92,9 @@ export component RoughRadio inherits Rectangle {
     border-width: radio_focus.has-focus ? 1px : 0px;
     border-color: Theme.accent-cyan;
 
-    accessible-role: radio-button;
+    accessible-role: AccessibleRole.radio-button;
     accessible-label: root.label;
+    accessible-description: root.hint;
     accessible-checkable: true;
     accessible-checked: root.selected;
     accessible-enabled: root.editable;
@@ -96,6 +103,8 @@ export component RoughRadio inherits Rectangle {
             root.picked();
         }
     }
+
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
 
     radio_focus := FocusScope {
         enabled: root.editable;
@@ -153,6 +162,9 @@ export component RoughRadio inherits Rectangle {
 // takes keyboard focus (Tab) and Space or Enter presses it.
 export component RoughPill inherits Rectangle {
     in property <string> text;
+    // One plain sentence: what the pill does, or why it cannot be pressed right now. Shown as
+    // the tooltip and read after the label.
+    in property <string> hint;
     in property <bool> active;
     in property <bool> enabled: true;
     callback clicked();
@@ -166,14 +178,17 @@ export component RoughPill inherits Rectangle {
     background: !root.enabled ? Theme.surface-disabled
         : (ta.has-hover ? Theme.surface-control-hover : Theme.surface-control);
 
-    accessible-role: button;
+    accessible-role: AccessibleRole.button;
     accessible-label: root.text;
+    accessible-description: root.hint;
     accessible-enabled: root.enabled;
     accessible-action-default => {
         if root.enabled {
             root.clicked();
         }
     }
+
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
 
     pill_focus := FocusScope {
         enabled: root.enabled;

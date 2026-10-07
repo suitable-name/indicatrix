@@ -12,6 +12,7 @@
 //! snapshots), and [`settings_file`] (`SettingsFile`, the full on-disk document).
 
 mod app_settings;
+mod head_shadow;
 mod import_preview;
 mod lighting_preset;
 mod local_compute;
@@ -25,9 +26,11 @@ mod tests_batch_lanes;
 mod tests_payload_encoding;
 #[cfg(test)]
 mod tests_remote;
+mod ui_preferences;
 mod worker;
 
 pub use app_settings::clamp_remote_batch_lanes;
+pub use head_shadow::{clamp_head_shadow_deg, head_shadow_deg_from_slider};
 pub use import_preview::ImportPreviewChoice;
 pub use lighting_preset::LightingPreset;
 pub use local_compute::LocalComputeTarget;
@@ -35,6 +38,9 @@ pub use remote_endpoint::{ExportTransfer, LiveTransfer, RemoteEndpoint};
 pub use settings_file::SettingsFile;
 pub use surface_glare::{
     clamp_surface_glare, percent_from_surface_glare, surface_glare_from_percent,
+};
+pub use ui_preferences::{
+    UI_SCALE_CHOICES, UiMode, normalize_ui_scale_percent, ui_scale_factor_text,
 };
 pub use worker::{LiveComputeTarget, LocalPreviewScale, PreviewScale, WorkerSettings};
 // Re-exported for path compatibility only -- each is named only from #[cfg(test)]
@@ -44,8 +50,8 @@ pub use worker::{LiveComputeTarget, LocalPreviewScale, PreviewScale, WorkerSetti
     reason = "used only via model:: from #[cfg(test)] code"
 )]
 pub use app_settings::{
-    AppSettings, Backdrop, DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SPP, DEFAULT_RENDER_HEIGHT,
-    DEFAULT_RENDER_WIDTH, DEFAULT_TARGET_SAMPLES,
+    AppSettings, Backdrop, DEFAULT_LIGHTING_RIG, DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SPP,
+    DEFAULT_RENDER_HEIGHT, DEFAULT_RENDER_WIDTH, DEFAULT_TARGET_SAMPLES,
 };
 #[allow(
     unused_imports,
@@ -75,6 +81,7 @@ mod tests {
         let mut file = SettingsFile {
             settings: AppSettings::default(),
             presets: vec![],
+            rig_profiles: Vec::new(),
         };
         file.ensure_built_in_presets();
         let after_first = file.presets.clone();
@@ -103,6 +110,7 @@ mod tests {
                 env_map_path: None,
                 export_usable: false,
             }],
+            rig_profiles: Vec::new(),
         };
         file.ensure_built_in_presets();
         assert!(file.presets.iter().any(|p| p.name == "My Custom Look"));

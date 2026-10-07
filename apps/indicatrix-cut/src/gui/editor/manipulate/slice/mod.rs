@@ -48,12 +48,16 @@ use crate::{
             view::{ReplanSource, submit_preview_replan, submit_preview_replan_chained},
         },
         show_toast,
-        solid_preview::preview_state::FrameGeometry,
+        solid_preview::{cut_slider::current_steps, preview_state::FrameGeometry},
+        tutorial_events::raise,
     },
 };
 use glam::Vec3;
 use indicatrix::geometry::meet_solver::SolvedTier;
-use indicatrix_editor::manipulate::{SliceSide, text};
+use indicatrix_editor::{
+    guide::viewing_events as events,
+    manipulate::{SliceSide, text},
+};
 use provisional::{ProvisionalSlice, rebuild_indices, set_angle, set_mast, turn};
 use slint::ComponentHandle as _;
 use std::{
@@ -63,8 +67,9 @@ use std::{
 
 pub(super) use keep::keep;
 pub(super) use provisional::{
-    DiscardReason, LandedAction, SliceLine, SliceState, Snapshot, cut_hides_tier, landed_action,
-    plan_slice, replan_chain, session_outlives, surviving_facets, with_provisional_tier,
+    DiscardReason, LandedAction, SliceLine, SliceState, Snapshot, cut_hides_tier, cut_moved,
+    expected_plane_count, landed_action, plan_slice, replan_chain, session_outlives,
+    surviving_facets, tier_step, with_provisional_tier,
 };
 #[cfg(test)]
 pub(super) use provisional::{keep_allowed, wheel_turn};
@@ -138,7 +143,11 @@ pub(super) fn provisional_hint_text() -> Option<String> {
 pub(super) fn resting_hint(ui: &MainWindow) {
     let model = ui.global::<ManipulateModel>();
     let cutoff = ui.global::<SolidPreviewModel>().get_tier_cutoff();
-    let hidden_by_cut = with_provisional_ref(|p| cut_hides_tier(cutoff, p.tier_index));
+    // The slider counts cutting steps, which (once concave tiers exist) are not stored
+    // tier indices: compare it with the step the provisional tier is cut at.
+    let hidden_by_cut = with_provisional_ref(|p| {
+        tier_step(&p.design, p.tier_index).is_some_and(|step| cut_hides_tier(cutoff, step))
+    });
     let hint = hidden_by_cut
         .filter(|&hidden| hidden)
         .map(|_| CUT_SLIDER_HINT.to_string())
@@ -202,8 +211,19 @@ pub(super) fn sync_outline(ui: &MainWindow, ctx: &Shared) {
         if !std::mem::take(&mut p.masts_new) {
             return None;
         }
+        let touched_before = provisional::keep_allowed(p.surviving);
         let map = p.facet_map()?;
-        let ids = map.facets_of_tier(p.tier_index).to_vec();
+        // The map numbers the finished provisional stone. A frame cut back by the Cut
+        // slider numbers fewer facets (and hides this tier, the last one), so its ids
+        // are not the map's: outline nothing rather than the wrong facets.
+        let aligned = geometry
+            .as_ref()
+            .is_none_or(|g| handles::ids_aligned(map.facet_count(), g.facet_centroids.len()));
+        let ids = if aligned {
+            map.facets_of_tier(p.tier_index).to_vec()
+        } else {
+            Vec::new()
+        };
         // Which of the tier's planes touch the stone in the frame on screen.
         if let Some(geometry) = &geometry {
             p.surviving = surviving_facets(&ids, &geometry.facet_centroids, map.facet_count());
@@ -212,14 +232,20 @@ pub(super) fn sync_outline(ui: &MainWindow, ctx: &Shared) {
         if changed {
             p.outline.clone_from(&ids);
         }
-        Some((changed, ids))
+        // Keep is allowed once a facet of the new tier touches the stone.
+        let starts_cutting = !touched_before && provisional::keep_allowed(p.surviving);
+        Some((changed, ids, starts_cutting))
     })
     .flatten();
-    let Some((changed, ids)) = outcome else {
+    let Some((changed, ids, starts_cutting)) = outcome else {
         return;
     };
     if changed {
         resubmit_facet_overlay(&ctx.preview_state, move |overlay| overlay.provisional = ids);
+    }
+    if starts_cutting {
+        // A tutorial step may wait for the new facet to reach the stone.
+        raise(ui, events::SLICE_CUTS_STONE);
     }
     let hover_active = SESSION.with(|cell| cell.borrow().hover_hint_active);
     if !ui.global::<ManipulateModel>().get_dragging() && !hover_active {
@@ -272,6 +298,12 @@ pub(super) fn restore_tier(ui: &MainWindow, ctx: &Shared, snapshot: Snapshot) {
 /// them with `dirty = {provisional tier}` (a subgraph re-solve that fits the preview
 /// budget on a large design); the first replan after a session begins (or a Flip) is a
 /// full solve -- see [`replan_chain`].
+///
+/// The replan draws the stone at the Cut slider's current cut. When the slider has moved
+/// since the last provisional replan, the planes the preview still holds for the slice are
+/// the old cut's: they are dropped here, so a redraw before the new frame lands shows the
+/// committed stone at the new cut instead of a stale one ([`note_planes`] then takes the
+/// new frame's planes).
 pub(super) fn resubmit(ui: &MainWindow, ctx: &Shared) {
     let Some((design, last_solved, dirty)) = with_provisional(|p| {
         p.awaiting = true;
@@ -281,6 +313,12 @@ pub(super) fn resubmit(ui: &MainWindow, ctx: &Shared) {
     }) else {
         return;
     };
+    let cut_steps = current_steps(ui, &design);
+    let moved =
+        with_provisional(|p| cut_moved(std::mem::replace(&mut p.cut_steps, cut_steps), cut_steps));
+    if moved == Some(true) {
+        ctx.preview_state.set_planes_override(None);
+    }
     submit_preview_replan_chained(
         ui,
         &ctx.render_ctx,
@@ -426,10 +464,19 @@ pub(super) fn clear_awaiting() {
 /// that match the provisional design one to one are taken -- the rare provisional-
 /// generation frame that carries committed planes (a redraw racing the first
 /// provisional replan) is ignored.
+///
+/// "Match" means the plane count of the provisional design at the Cut slider's cut of the
+/// latest provisional replan ([`expected_plane_count`]): a cut-back stone has fewer planes
+/// than the finished one, and comparing with the finished count rejected every frame drawn
+/// while the slider was cut back, which left the planes of the previous cut on screen.
 pub(super) fn note_planes(planes: &[(Vec3, f32)]) {
     let accepted = with_provisional(|p| {
-        let map = p.facet_map()?;
-        (map.facet_count() == planes.len()).then(|| planes.to_vec())
+        let masts = p
+            .masts
+            .as_deref()
+            .filter(|masts| masts.len() == p.design.tiers.len())?;
+        (expected_plane_count(&p.design, masts, p.cut_steps) == planes.len())
+            .then(|| planes.to_vec())
     })
     .flatten();
     let Some(planes) = accepted else {
@@ -444,6 +491,8 @@ pub(super) fn note_planes(planes: &[(Vec3, f32)]) {
 pub(super) fn toggled(ui: &MainWindow, ctx: &Shared) {
     if ui.global::<ManipulateModel>().get_slice_mode() {
         SESSION.with(|cell| cell.borrow_mut().hover_hint_active = false);
+        // A tutorial step may wait for Slice mode to be switched on.
+        raise(ui, events::SLICE_STARTED);
     } else {
         cancel_gesture(ui);
         discard(ui, ctx, DiscardReason::User);
@@ -510,18 +559,22 @@ pub(super) fn end(ui: &MainWindow, ctx: &Shared, x: f32, y: f32) {
     // A second line replaces the first, against the same committed stone.
     let corners = with_provisional_ref(|p| Arc::clone(&p.base_corners))
         .unwrap_or_else(|| Arc::clone(&geometry.corner_points));
-    install(ui, ctx, line, SliceSide::Right, corners);
+    if install(ui, ctx, line, SliceSide::Right, corners) {
+        // A tutorial step may wait for a line to become a provisional tier.
+        raise(ui, events::SLICE_DRAWN);
+    }
 }
 
 /// Builds the session for `line` cutting away `side`, renders it and words the hint.
-/// A degenerate line leaves everything as it was and says why.
+/// A degenerate line leaves everything as it was and says why. Returns whether the session
+/// was built.
 fn install(
     ui: &MainWindow,
     ctx: &Shared,
     line: SliceLine,
     side: SliceSide,
     corners: Arc<Vec<Vec3>>,
-) {
+) -> bool {
     let model = ui.global::<ManipulateModel>();
     let symmetric = model.get_slice_symmetric();
     let built = ctx.state.try_borrow().ok().and_then(|st| {
@@ -538,7 +591,7 @@ fn install(
     });
     let Some((design, tier_index, snapped, base_generation, label)) = built else {
         set_hint(ui, TOO_SHORT_HINT);
-        return;
+        return false;
     };
     SESSION.with(|cell| {
         let mut session = cell.borrow_mut();
@@ -559,6 +612,7 @@ fn install(
     model.set_provisional_active(true);
     resubmit(ui, ctx);
     resting_hint(ui);
+    true
 }
 
 /// `ManipulateModel.slice_flip`: the same line, the other side cut away.
@@ -571,7 +625,10 @@ pub(super) fn flip(ui: &MainWindow, ctx: &Shared) {
     else {
         return;
     };
-    install(ui, ctx, line, side, corners);
+    if install(ui, ctx, line, side, corners) {
+        // A tutorial step may wait for the cut to be flipped to the other side.
+        raise(ui, events::SLICE_FLIPPED);
+    }
 }
 
 /// `ManipulateModel.slice_symmetric_toggled`: `slice_symmetric` holds its new value.

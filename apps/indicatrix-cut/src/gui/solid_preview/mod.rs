@@ -22,12 +22,19 @@
 //! generic over Slint rather than depending on `MainWindow` directly. It (plus
 //! [`diagram_wiring`], the Slint callback wiring) stays in this app: it owns
 //! threads and Slint types, neither of which the shared crate may depend on.
+//!
+//! [`cut_slider`] is the Cut slider's logic -- where it stands, its label, and the
+//! truncated geometry every full redraw path draws for it.
 
 pub use indicatrix_solid::{diagram2d, edges_layer, facet_map, live_update, mesh_cache, raster};
 
 pub mod preview_state;
 
 pub mod diagram_wiring;
+
+pub mod facet_selection;
+
+pub mod cut_slider;
 
 /// Converts a finished [`raster::SolidRasterizer`] frame into a `Send`-safe pixel
 /// buffer for [`preview_state::PreviewSink::apply`] to hand to the UI thread.

@@ -16,4 +16,7 @@ mod concave_tests;
 mod tests;
 
 pub use concave::{ConcaveResolveError, FlatAndTools, ToolPlacements};
-pub use schedule::{meet_name_is_asc_safe, strip_generated_concave_footnotes};
+pub use schedule::{
+    CONCAVE_FOOTNOTE_MARKER, concave_facet_footnote, concave_tool_footnote, meet_name_is_asc_safe,
+    strip_generated_concave_footnotes,
+};

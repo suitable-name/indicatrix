@@ -22,7 +22,7 @@
 
 use super::{
     camera::{FacetFinish, HitRecord, Ray},
-    environment::EnvironmentSource,
+    environment::{EnvironmentSource, environment_supports_nee},
     intersect::build_plane_soa,
 };
 use crate::{
@@ -143,7 +143,7 @@ pub fn trace_spectral_ray(
         primary_hit_out,
         true,
         true,
-        matches!(environment, EnvironmentSource::HdrMap(_)),
+        environment_supports_nee(environment),
         None,
     )
 }
@@ -230,7 +230,7 @@ pub fn trace_spectral_ray_with_finish_soa(
         primary_hit_out,
         true,
         true,
-        matches!(environment, EnvironmentSource::HdrMap(_)),
+        environment_supports_nee(environment),
         None,
     )
 }
@@ -319,7 +319,7 @@ pub fn trace_spectral_ray_with_finish_soa_geom(
         primary_hit_out,
         true,
         true,
-        matches!(environment, EnvironmentSource::HdrMap(_)),
+        environment_supports_nee(environment),
         None,
     )
 }
@@ -360,7 +360,7 @@ pub fn trace_spectral_ray_with_finish_instrumented(
         None,
         true,
         true,
-        matches!(environment, EnvironmentSource::HdrMap(_)),
+        environment_supports_nee(environment),
         Some(&mut termination),
     );
     (radiance, termination.0, termination.1)

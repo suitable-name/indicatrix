@@ -4,6 +4,7 @@
 //! Including the shorthand index-entry notations (colon-separated arithmetic sequences
 //! and the orbit "xN" fold-count suffix).
 
+use super::number_expr::{NameValues, eval_number};
 use indicatrix::geometry::meet_solver::MeetConstraint;
 use indicatrix_cut_core::{ConstraintTier, TierTarget};
 
@@ -16,12 +17,24 @@ use indicatrix_cut_core::{ConstraintTier, TierTarget};
 /// # Errors
 ///
 /// A message when `angle` is not a finite number, or its magnitude exceeds 90
-/// degrees.
+/// degrees. The text may be arithmetic over constants (`41 + 0.5`); see
+/// [`eval_number`].
 pub fn parse_angle_only(angle: &str) -> Result<f64, String> {
-    let angle_deg: f64 = angle
-        .trim()
-        .parse()
-        .map_err(|_| format!("Angle '{}' is not a number.", angle.trim()))?;
+    parse_angle_only_with_names(angle, None)
+}
+
+/// [`parse_angle_only`], where the text may also name tiers through `names` (`P1 - 2`
+/// with the angle magnitude of the tier called `P1`).
+///
+/// # Errors
+///
+/// As [`parse_angle_only`]; a name `names` does not know is reported as "there is no
+/// tier called 'X'".
+pub fn parse_angle_only_with_names(
+    angle: &str,
+    names: Option<NameValues<'_>>,
+) -> Result<f64, String> {
+    let angle_deg = eval_number(angle, names).map_err(|error| error.message("Angle", angle))?;
     if !angle_deg.is_finite() {
         return Err("Angle must be a finite number.".to_string());
     }
@@ -110,6 +123,19 @@ fn expand_orbit_shorthand(base: f64, fold_count: u32, gear_teeth_abs_f64: f64) -
         .collect()
 }
 
+/// Folds an index onto the ring `0..gear_teeth_abs_f64`, so the gear's own tooth count
+/// (96 on a 96-tooth gear) and `0` name the same position.
+///
+/// A gear of zero teeth (nonsensical, but not this function's business to reject)
+/// leaves the value as it is.
+fn wheel_position(value: f64, gear_teeth_abs_f64: f64) -> f64 {
+    if gear_teeth_abs_f64 > 0.0 {
+        value.rem_euclid(gear_teeth_abs_f64)
+    } else {
+        value
+    }
+}
+
 /// A magnitude beyond 90 degrees is never a real facet. Every angle in this app
 /// is measured from the girdle plane or is the girdle itself (`0.0`), so nothing
 /// legitimately authored ever exceeds a right angle either side. Left unchecked,
@@ -118,9 +144,12 @@ fn expand_orbit_shorthand(base: f64, fold_count: u32, gear_teeth_abs_f64: f64) -
 /// with no hint the angle was the mistake.
 fn reject_angle_over_90(angle_deg: f64) -> Result<(), String> {
     if angle_deg.abs() > 90.0 {
+        // The message reads the magnitude (`-91` and `91` both read `91.00`): the side of the
+        // girdle is the block's, not a sign.
         return Err(format!(
-            "Angle {angle_deg:.2}\u{b0} exceeds 90\u{b0} -- angles are measured from the girdle \
-             plane, so no crown or pavilion facet can be steeper than that."
+            "Angle {:.2}\u{b0} exceeds 90\u{b0} -- angles are measured from the girdle \
+             plane, so no crown or pavilion facet can be steeper than that.",
+            angle_deg.abs()
         ));
     }
     Ok(())
@@ -179,13 +208,20 @@ pub struct TierFormFields<'a> {
 /// number, a `start:step:stop` arithmetic sequence, or a `base xN` orbit shorthand
 /// (see [`parse_colon_sequence`] and [`expand_orbit_shorthand`]
 /// for each form's own rules). Every produced value is checked for finiteness, for
-/// being inside the design's own gear, and for not repeating.
+/// being on the design's own gear (`0` up to and including `gear_teeth_abs`), and for
+/// not repeating.
+///
+/// The index wheel is a ring: `gear_teeth_abs` (96 on a 96-tooth gear) is the same
+/// position as `0`. A typed `96` is therefore valid, and is kept exactly as typed (never
+/// rewritten to `0`, so a `.asc` file that carries `96` round-trips), while the duplicate
+/// check compares ring positions, so `0, 96` is reported as a repeat.
 ///
 /// # Errors
 ///
 /// A message naming the offending token, ready to show the cutter. A value produced
 /// by a shorthand names the shorthand it came from as well as the value itself, so
-/// a range or duplicate error is traceable back to what was actually typed.
+/// a range or duplicate error is traceable back to what was actually typed. A value
+/// off the gear reports the valid range ("Indices run from 0 to 96 on this gear.").
 ///
 /// `pub(super)` (rather than private to this module) so
 /// `callbacks::tier_actions::setup_generate_step_series_callback` can parse its own
@@ -200,12 +236,16 @@ pub fn parse_index_list(indices: &str, gear_teeth_abs: u32) -> Result<Vec<f64>, 
             if !value.is_finite() {
                 return Err(format!("Index '{label}' must be a finite number."));
             }
-            if value < 0.0 || value >= gear_teeth_abs_f64 {
+            if value < 0.0 || value > gear_teeth_abs_f64 {
                 return Err(format!(
-                    "Index '{label}' is outside this design's {gear_teeth_abs}-tooth gear."
+                    "Index '{label}' is off the gear. \
+                     Indices run from 0 to {gear_teeth_abs} on this gear."
                 ));
             }
-            if parsed_indices.contains(&value) {
+            let position = wheel_position(value, gear_teeth_abs_f64);
+            if parsed_indices.iter().any(|&earlier| {
+                (wheel_position(earlier, gear_teeth_abs_f64) - position).abs() < 1e-9
+            }) {
                 return Err(format!("Index '{label}' is listed more than once."));
             }
             parsed_indices.push(value);
@@ -304,10 +344,11 @@ pub fn parse_index_list(indices: &str, gear_teeth_abs: u32) -> Result<Vec<f64>, 
 /// validation below as a hand-typed index. Each parsed value is then validated
 /// against `gear_teeth_abs` (the design's own index-wheel tooth count, from
 /// [`indicatrix_cut_core::design::tier::ScheduleMeta::gear_teeth_abs`]): it must be
-/// finite, within `0.0..gear_teeth_abs as f64` (an index the gear physically has no
-/// tooth for is never silently accepted), and not a repeat of an earlier value in the
+/// finite, within `0.0..=gear_teeth_abs as f64` (an index the gear physically has no
+/// tooth for is never silently accepted; the closing value is the same position as `0`
+/// on the ring and is kept as typed), and not a repeat of an earlier value in the
 /// same list (a duplicate names the same facet occurrence twice, which is never a
-/// meaningful tier). The first entry that fails any of these is reported by its own
+/// meaningful tier; `0` and `gear_teeth_abs` count as the same position). The first entry that fails any of these is reported by its own
 /// text, matching every other field's own "name the offending value" convention here.
 /// A non-integral value (from either a hand-typed fraction or a fold count that does
 /// not evenly divide the gear) is still ACCEPTED here -- warning about it without
@@ -343,14 +384,7 @@ pub fn parse_tier_form(form: TierFormFields<'_>) -> Result<ConstraintTier, Strin
         original_notes,
         other_tier_names,
     } = form;
-    let angle_deg: f64 = angle
-        .trim()
-        .parse()
-        .map_err(|_| format!("Angle '{}' is not a number.", angle.trim()))?;
-    if !angle_deg.is_finite() {
-        return Err("Angle must be a finite number.".to_string());
-    }
-    reject_angle_over_90(angle_deg)?;
+    let angle_deg = parse_angle_only(angle)?;
 
     let name = name.trim();
     // Reject a name (or, for a `/`-joined multi-name tier, any ONE of its names)
@@ -385,12 +419,8 @@ pub fn parse_tier_form(form: TierFormFields<'_>) -> Result<ConstraintTier, Strin
             MeetConstraint::MeetNamed(names)
         }
         2 => {
-            let value: f64 = constraint_text.trim().parse().map_err(|_| {
-                format!(
-                    "Scale reference '{}' is not a number.",
-                    constraint_text.trim()
-                )
-            })?;
+            let value = eval_number(constraint_text, None)
+                .map_err(|error| error.message("Scale reference", constraint_text))?;
             if !value.is_finite() {
                 return Err("Scale reference must be a finite number.".to_string());
             }
@@ -416,6 +446,43 @@ pub fn parse_tier_form(form: TierFormFields<'_>) -> Result<ConstraintTier, Strin
         original_notes,
         detached: Vec::new(),
     })
+}
+
+/// [`parse_tier_form`] for a form whose angle field may hold a RELATION: text starting
+/// with `=` (`=C1-4`, `= (P1 + P3) / 2`) drives the tier's angle from other tiers
+/// instead of fixing it.
+///
+/// Returns the tier and the relation text exactly as typed after the `=` (trimmed;
+/// the caller turns it into a relation with `EditorSession::set_tier_relation`, which
+/// reads the tier names against the design). The tier carries `placeholder_angle_deg`
+/// -- the tier's current angle when editing, any valid angle for a new tier -- because
+/// the relation, not this form, decides the real angle once it is applied. An angle
+/// field that does not start with `=` behaves exactly as [`parse_tier_form`] and
+/// returns no relation text.
+///
+/// # Errors
+///
+/// As [`parse_tier_form`]; an angle field that is only `=` is an "Angle ..." error.
+pub fn parse_tier_form_with_relation(
+    form: TierFormFields<'_>,
+    placeholder_angle_deg: f64,
+) -> Result<(ConstraintTier, Option<String>), String> {
+    let Some(relation) = form.angle.trim().strip_prefix('=') else {
+        return parse_tier_form(form).map(|tier| (tier, None));
+    };
+    let relation = relation.trim().to_owned();
+    if relation.is_empty() {
+        return Err(
+            "Angle relation is empty -- type a calculation after '=', for example =C1-4."
+                .to_string(),
+        );
+    }
+    let placeholder = placeholder_angle_deg.to_string();
+    let tier = parse_tier_form(TierFormFields {
+        angle: &placeholder,
+        ..form
+    })?;
+    Ok((tier, Some(relation)))
 }
 
 /// Parses the tier form's Meets combo into a [`TierTarget`] when `constraint_kind` names
@@ -465,9 +532,7 @@ pub fn parse_tier_target(
         _ => return Ok(None),
     };
     let text = constraint_text.trim();
-    let value: f64 = text
-        .parse()
-        .map_err(|_| format!("{label} '{text}' is not a number."))?;
+    let value = eval_number(text, None).map_err(|error| error.message(label, text))?;
     if !value.is_finite() {
         return Err(format!("{label} must be a finite number."));
     }
@@ -573,5 +638,7 @@ pub fn non_integral_index_warning(indices: &[f64]) -> Option<String> {
     ))
 }
 
+#[cfg(test)]
+mod arithmetic_tests;
 #[cfg(test)]
 mod tests;

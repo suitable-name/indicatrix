@@ -67,6 +67,12 @@ export struct PreviewThumbnails {
 export struct AngleItem {
     order_idx: int,
     facet: string,
+    // The label a person reads for this facet: the standard code (`P1`, `G1`, `C1`, `T`)
+    // where the catalogue kept the old 123/ABC labels (`gui::library::detail::shared::
+    // standard_codes`), else the same text as `facet`. `facet` stays the catalogue's own
+    // label (it feeds the plane reconstruction); a row whose `code` differs from it shows
+    // "was <facet>" beside the code.
+    code: string,
     angle: string,
     index_val: string,
     notes: string,
@@ -212,10 +218,15 @@ export struct EditorTierItem {
     // classify_blocks` applied to the whole design's tiers, so the unsigned-zero
     // "inherits the previous tier's side" rule is honored the same way the solver
     // itself honors it. Populated identically by `tier_items`/`tier_items_stale` (a
-    // pure function of `angle_deg` and file order, no solve needed) -- shown as a
-    // one-letter badge in the tier table so a row's silent side-inheritance never
-    // has to be guessed from the angle's sign alone.
+    // pure function of `angle_deg` and file order, no solve needed) -- the tier table's
+    // code column is derived from it, and the zero-angle flip reads it.
     block: string,
+    // The tier's code in cutting order (`P1`, `G1`, `C1`, `T`, `Culet`, a concave tier's
+    // `P4`; `indicatrix_cut_core::Design::tier_codes`), the same label the cutting sheet
+    // prints. The tier table's code column shows it, so a row's side is read from its
+    // letter and its place in the cutting order from its number. "" for a row built by
+    // hand, which falls back to the block's one letter.
+    code: string,
     // This tier's margin over the design's effective critical angle, and the
     // `optics_hints::Risk` band that falls out of it. Meaningful for a pavilion
     // tier's angle specifically (a crown/girdle tier, or no material resolved, gets
@@ -296,6 +307,11 @@ export struct EditorTierItem {
     // displacement, `D/W` and motion, joined with two spaces), "" for a flat row.
     // Shown as the tool badge's tooltip. A plain string so this struct stays `Send`.
     tool_line: string,
+    // The relation that drives this tier's angle, as a cutter reads it ("C1 - 4"), or
+    // "" when the angle is free. Non-empty marks a driven tier: the angle cell shows a
+    // link icon and refuses inline edits, the inspector's Tier form shows the relation
+    // in its Angle field (prefixed "=") and offers "Remove relation".
+    relation_text: string,
 }
 
 // The concave tier form's fields, as typed -- passed whole to
@@ -352,6 +368,18 @@ export struct OptimizeResultRow {
     // computed alongside the figure in `gui::editor::view::after_with_delta`
     // rather than derived from the numbers here.
     direction: int,
+}
+
+// The Optimize tab's face-up colour of the starting stone and of the picked candidate, as the
+// screen shows that light. `lighting` names the preset the run used ("under Incandescent
+// (3200K)"). `has` is false when the run measured no tone or no candidate is picked.
+export struct OptimizeToneSwatches {
+    has: bool,
+    before: color,
+    after: color,
+    before_text: string,
+    after_text: string,
+    lighting: string,
 }
 
 // One tier Deep Solve's externally-verified repair actually disagreed with the

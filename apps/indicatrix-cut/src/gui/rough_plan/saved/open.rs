@@ -24,6 +24,7 @@ use crate::{
         editing,
         format::to_i32,
         host::Host,
+        mesh_task,
         run::{ResultsSource, ShownLayouts, guard_unsaved_results, show_layouts},
     },
 };
@@ -87,12 +88,14 @@ pub(super) const PLAN_RUNNING_MESSAGE: &str =
     "Wait for the running plan to finish, or cancel it, first.";
 
 /// Starts an open or import: refuses while a plan runs (the results would be replaced
-/// under it) and returns the sequence number the answer must still match.
+/// under it) and returns the sequence number the answer must still match. A mesh that is
+/// still being read or scaled in the background is dropped: the plan brings its own rough.
 pub(super) fn begin_open(host: &Host) -> Option<u64> {
     if host.window.global::<RoughPlanModel>().get_running() {
         show_error(host, PLAN_RUNNING_MESSAGE);
         return None;
     }
+    mesh_task::cancel(host);
     let mut session = host.session.borrow_mut();
     session.saved.open_seq += 1;
     Some(session.saved.open_seq)

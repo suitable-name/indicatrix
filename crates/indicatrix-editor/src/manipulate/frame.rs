@@ -93,6 +93,33 @@ impl FacetFrame {
         }
     }
 
+    /// [`Self::from_tier`] for a design whose index wheel has a gear reference angle.
+    ///
+    /// The facet map puts a facet at the azimuth `2 pi (index + reference) / teeth`
+    /// (`StandardGemCuts::index_to_azimuth`, with the reference angle narrowed to `f32`
+    /// first), so a frame built from the plain index would sit on a different facet than the
+    /// one drawn whenever the reference is not zero. `gear_reference_angle` is that
+    /// narrowed value (`design.meta.gear_reference_angle as f32`, or a `DiagramLayout`'s
+    /// own). For a whole tooth the sum is exact in `f64`, so the narrowing to `f32` inside
+    /// [`Self::from_tier`] rounds exactly as the facet map's `f32` addition does and the
+    /// normal stays bit-identical. A tier with no index-wheel positions ignores it, as
+    /// the facet map does.
+    #[must_use]
+    pub fn from_tier_with_reference(
+        tier: &ConstraintTier,
+        index_on_gear: f64,
+        gear_reference_angle: f32,
+        gear_teeth: u32,
+        centroid: Vec3,
+    ) -> Self {
+        Self::from_tier(
+            tier,
+            index_on_gear + f64::from(gear_reference_angle),
+            gear_teeth,
+            centroid,
+        )
+    }
+
     /// Whether the tier has no index-wheel positions (its index handle turns nothing).
     #[must_use]
     pub const fn is_indexless(&self) -> bool {

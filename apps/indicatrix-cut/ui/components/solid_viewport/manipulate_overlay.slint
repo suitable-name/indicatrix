@@ -5,6 +5,9 @@ import { ManipulateModel } from "../../models/manipulate.slint";
 // (index) with the handle's letter beside it. The hovered/dragged handle (`active`)
 // is drawn larger and brighter. Purely presentational -- no TouchArea, so every
 // pointer event still reaches `SolidViewportView`'s `drag_area` underneath.
+//
+// Everything scales with `ManipulateModel.handle_scale` (1.0 normally, 1.6 with the
+// "Larger handles" preference); the Rust hit test multiplies its radius by the same factor.
 component HandleMarker inherits Rectangle {
     in property <length> tip_x;
     in property <length> tip_y;
@@ -14,7 +17,7 @@ component HandleMarker inherits Rectangle {
     in property <int> shape: 0;
     in property <bool> active: false;
 
-    property <length> marker_size: root.active ? 18px : 14px;
+    property <length> marker_size: (root.active ? 18px : 14px) * ManipulateModel.handle_scale;
     property <color> fill: root.active ? root.marker_color.brighter(0.5) : root.marker_color;
 
     // Centred on the tip.
@@ -23,8 +26,8 @@ component HandleMarker inherits Rectangle {
     width: root.marker_size;
     height: root.marker_size;
     background: root.shape == 2 ? transparent : root.fill;
-    border-radius: root.shape == 0 ? root.marker_size / 2 : 2px;
-    border-width: root.shape == 2 ? 0px : 1.5px;
+    border-radius: root.shape == 0 ? root.marker_size / 2 : 2px * ManipulateModel.handle_scale;
+    border-width: root.shape == 2 ? 0px : 1.5px * ManipulateModel.handle_scale;
     border-color: Theme.bg-darkest;
 
     // The diamond: a closed four-point path through the middle of each side of the
@@ -41,7 +44,7 @@ component HandleMarker inherits Rectangle {
         viewbox-height: self.height / 1px;
         fill: root.fill;
         stroke: Theme.bg-darkest;
-        stroke-width: 1.5px;
+        stroke-width: 1.5px * ManipulateModel.handle_scale;
         MoveTo {
             x: root.width / 2px;
             y: 0;
@@ -61,11 +64,12 @@ component HandleMarker inherits Rectangle {
         Close { }
     }
 
+    // The letter grows at half the marker's rate, so it stays readable without crowding.
     Text {
         text: root.letter;
         x: root.width + 3px;
-        y: -10px;
-        font-size: 11px;
+        y: -10px * ManipulateModel.handle_scale;
+        font-size: 11px * (1.0 + (ManipulateModel.handle_scale - 1.0) * 0.5);
         font-weight: 700;
         color: root.fill;
     }
@@ -83,7 +87,7 @@ export component SliceLineOverlay inherits Rectangle {
     width: 100%;
     height: 100%;
 
-    property <color> line_color: #4ade80;
+    property <color> line_color: Theme.success;
     property <float> x0: ManipulateModel.line_x0 / 1px;
     property <float> y0: ManipulateModel.line_y0 / 1px;
     property <float> x1: ManipulateModel.line_x1 / 1px;
@@ -176,8 +180,9 @@ export component SliceLineOverlay inherits Rectangle {
 // The three drag handles of the selected facet, drawn above the viewport's images:
 // a line from the facet's anchor to each tip, a marker at each tip (A = angle, D =
 // depth, I = index) and a small dot on the anchor. Positions come from
-// `ManipulateModel` in logical viewport coordinates; the overlay itself never
-// handles pointer input.
+// `ManipulateModel` in logical viewport coordinates (UNZOOMED ones in the Diagram view,
+// which `zoom`/`pan_x`/`pan_y` map to the screen); the overlay itself never handles
+// pointer input.
 export component ManipulateOverlay inherits Rectangle {
     // Explicit geometry, like `SolidViewportToolbar`: an overlay positioned by default
     // would propagate its constraints to the viewport (see `app.slint`'s "Sizing notes").
@@ -186,13 +191,31 @@ export component ManipulateOverlay inherits Rectangle {
     width: 100%;
     height: 100%;
 
+    // The Diagram view's zoom and pan (`SolidViewportView.diagram_zoom`/`diagram_pan_*`);
+    // `1.0` and `0px` everywhere else. `ManipulateModel` holds the UNZOOMED positions
+    // there, so the screen position of a point is `position * zoom + pan`. The markers
+    // keep their size: only their positions are mapped.
+    in property <float> zoom: 1.0;
+    in property <length> pan_x: 0px;
+    in property <length> pan_y: 0px;
+
     property <color> angle_color: Theme.accent-cyan;
     property <color> depth_color: Theme.primary;
     property <color> index_color: Theme.accent-amber;
 
+    // The anchor and the three tips on screen.
+    property <length> anchor_sx: ManipulateModel.anchor_x * root.zoom + root.pan_x;
+    property <length> anchor_sy: ManipulateModel.anchor_y * root.zoom + root.pan_y;
+    property <length> angle_sx: ManipulateModel.angle_tip_x * root.zoom + root.pan_x;
+    property <length> angle_sy: ManipulateModel.angle_tip_y * root.zoom + root.pan_y;
+    property <length> depth_sx: ManipulateModel.depth_tip_x * root.zoom + root.pan_x;
+    property <length> depth_sy: ManipulateModel.depth_tip_y * root.zoom + root.pan_y;
+    property <length> index_sx: ManipulateModel.index_tip_x * root.zoom + root.pan_x;
+    property <length> index_sy: ManipulateModel.index_tip_y * root.zoom + root.pan_y;
+
     // One stroke per handle. The viewbox equals the element's size so path
     // coordinates are plain logical pixels.
-    Path {
+    if ManipulateModel.angle_visible: Path {
         x: 0px;
         y: 0px;
         width: parent.width;
@@ -202,17 +225,17 @@ export component ManipulateOverlay inherits Rectangle {
         viewbox-width: self.width / 1px;
         viewbox-height: self.height / 1px;
         stroke: root.angle_color;
-        stroke-width: 2px;
+        stroke-width: 2px * ManipulateModel.handle_scale;
         MoveTo {
-            x: ManipulateModel.anchor_x / 1px;
-            y: ManipulateModel.anchor_y / 1px;
+            x: root.anchor_sx / 1px;
+            y: root.anchor_sy / 1px;
         }
         LineTo {
-            x: ManipulateModel.angle_tip_x / 1px;
-            y: ManipulateModel.angle_tip_y / 1px;
+            x: root.angle_sx / 1px;
+            y: root.angle_sy / 1px;
         }
     }
-    Path {
+    if ManipulateModel.depth_visible: Path {
         x: 0px;
         y: 0px;
         width: parent.width;
@@ -222,14 +245,14 @@ export component ManipulateOverlay inherits Rectangle {
         viewbox-width: self.width / 1px;
         viewbox-height: self.height / 1px;
         stroke: root.depth_color;
-        stroke-width: 2px;
+        stroke-width: 2px * ManipulateModel.handle_scale;
         MoveTo {
-            x: ManipulateModel.anchor_x / 1px;
-            y: ManipulateModel.anchor_y / 1px;
+            x: root.anchor_sx / 1px;
+            y: root.anchor_sy / 1px;
         }
         LineTo {
-            x: ManipulateModel.depth_tip_x / 1px;
-            y: ManipulateModel.depth_tip_y / 1px;
+            x: root.depth_sx / 1px;
+            y: root.depth_sy / 1px;
         }
     }
     if ManipulateModel.index_visible: Path {
@@ -242,48 +265,48 @@ export component ManipulateOverlay inherits Rectangle {
         viewbox-width: self.width / 1px;
         viewbox-height: self.height / 1px;
         stroke: root.index_color;
-        stroke-width: 2px;
+        stroke-width: 2px * ManipulateModel.handle_scale;
         MoveTo {
-            x: ManipulateModel.anchor_x / 1px;
-            y: ManipulateModel.anchor_y / 1px;
+            x: root.anchor_sx / 1px;
+            y: root.anchor_sy / 1px;
         }
         LineTo {
-            x: ManipulateModel.index_tip_x / 1px;
-            y: ManipulateModel.index_tip_y / 1px;
+            x: root.index_sx / 1px;
+            y: root.index_sy / 1px;
         }
     }
 
     // The anchor: the facet centroid the handles grow from.
     Rectangle {
-        x: ManipulateModel.anchor_x - 3px;
-        y: ManipulateModel.anchor_y - 3px;
-        width: 6px;
-        height: 6px;
-        border-radius: 3px;
+        x: root.anchor_sx - self.width / 2;
+        y: root.anchor_sy - self.height / 2;
+        width: 6px * ManipulateModel.handle_scale;
+        height: 6px * ManipulateModel.handle_scale;
+        border-radius: self.width / 2;
         background: Theme.text-primary;
         border-width: 1px;
         border-color: Theme.bg-darkest;
     }
 
-    HandleMarker {
-        tip_x: ManipulateModel.angle_tip_x;
-        tip_y: ManipulateModel.angle_tip_y;
+    if ManipulateModel.angle_visible: HandleMarker {
+        tip_x: root.angle_sx;
+        tip_y: root.angle_sy;
         marker_color: root.angle_color;
         letter: "A";
         shape: 0;
         active: ManipulateModel.hovered_handle == 0;
     }
-    HandleMarker {
-        tip_x: ManipulateModel.depth_tip_x;
-        tip_y: ManipulateModel.depth_tip_y;
+    if ManipulateModel.depth_visible: HandleMarker {
+        tip_x: root.depth_sx;
+        tip_y: root.depth_sy;
         marker_color: root.depth_color;
         letter: "D";
         shape: 1;
         active: ManipulateModel.hovered_handle == 1;
     }
     if ManipulateModel.index_visible: HandleMarker {
-        tip_x: ManipulateModel.index_tip_x;
-        tip_y: ManipulateModel.index_tip_y;
+        tip_x: root.index_sx;
+        tip_y: root.index_sy;
         marker_color: root.index_color;
         letter: "I";
         shape: 2;

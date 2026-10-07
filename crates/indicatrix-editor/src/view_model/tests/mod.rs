@@ -7,6 +7,7 @@ mod inline;
 mod material;
 mod rows;
 mod status;
+mod worker_warnings;
 
 use super::yield_report::{girdle_and_ratio_texts_from_solved, proportions_texts_from_solved};
 use crate::EditorSession;

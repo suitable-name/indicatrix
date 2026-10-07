@@ -32,13 +32,16 @@ export component ResultCard inherits Rectangle {
     border-color: card_focus.has-focus ? Theme.accent-cyan
         : (root.is_selected ? Theme.border-accent : Theme.border-subtle);
 
-    accessible-role: list-item;
+    accessible-role: AccessibleRole.list-item;
     accessible-label: "Result " + root.result.rank + ": " + root.result.total_ct + ", yield "
         + root.result.yield_pct + ", "
         + (root.result.stone_count == 1 ? "1 stone" : root.result.stone_count + " stones");
+    accessible-description: "Show this layout in the 3D view.";
     accessible-item-selectable: true;
     accessible-item-selected: root.is_selected;
     accessible-action-default => { RoughPlanModel.select_result(root.rank_index); }
+
+    Tooltip { text: @markdown("Show this layout in the 3D view. Tick the box to keep it for saving."); }
 
     card_focus := FocusScope {
         key-pressed(event) => {
@@ -69,11 +72,13 @@ export component ResultCard inherits Rectangle {
                 width: 22px;
                 height: 22px;
 
-                accessible-role: checkbox;
+                accessible-role: AccessibleRole.checkbox;
                 accessible-label: "Keep result " + root.result.rank + " for saving";
                 accessible-checkable: true;
                 accessible-checked: root.result.keep;
                 accessible-action-default => { RoughPlanModel.toggle_keep(root.rank_index); }
+
+                Tooltip { text: @markdown("Keep this layout for saving. Save selected saves every layout whose box is ticked."); }
 
                 keep_focus := FocusScope {
                     key-pressed(event) => {
@@ -144,13 +149,14 @@ export component ResultCard inherits Rectangle {
             // Cut plan disclosure toggle
             Rectangle {
                 width: 66px;
-                height: 18px;
+                height: 20px;
                 border-radius: Theme.radius-sm;
-                border-width: cp_focus.has-focus ? 1px : 0px;
-                border-color: Theme.accent-cyan;
+                border-width: cp_focus.has-focus ? 2px : 0px;
+                border-color: Theme.accent-cyan-hover;
 
-                accessible-role: button;
+                accessible-role: AccessibleRole.button;
                 accessible-label: "Cut plan";
+                accessible-description: "Show or hide the written cutting steps of this layout.";
                 accessible-expandable: true;
                 accessible-expanded: root.is_expanded;
                 accessible-action-default => { root.toggle_cut_plan(); }
@@ -184,6 +190,8 @@ export component ResultCard inherits Rectangle {
                         vertical-alignment: center;
                     }
                 }
+
+                Tooltip { text: @markdown("Show or hide the written cutting steps of this layout: which cuts to make, in which order."); }
 
                 // Overlay: a sibling of the layout, not a layout child
                 cp_touch := TouchArea {
@@ -220,6 +228,9 @@ export component ResultCard inherits Rectangle {
                 alignment: center;
                 RoughPill {
                     text: "Result in library";
+                    hint: RoughPlanModel.links_enabled
+                        ? "Show the designs of this layout in the library list."
+                        : "Switch to the local library first: the results link to designs there.";
                     enabled: RoughPlanModel.links_enabled;
                     clicked => { RoughPlanModel.show_result_in_library(root.rank_index); }
                 }

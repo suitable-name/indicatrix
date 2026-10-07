@@ -1,6 +1,15 @@
 /// One tier's hand-recorded facet/angle/index/notes row -- see
 /// [`angle::AngleSetting`].
 pub mod angle;
+/// Which steps of a design are marked done -- see [`cut_progress::CutProgressMark`].
+pub mod cut_progress;
+/// The design UUID that keys per-design side data -- see
+/// [`design_key::catalogue_design_uuid`].
+pub mod design_key;
+/// A design's own lighting choice -- see [`design_lighting::DesignLighting`].
+pub mod design_lighting;
+/// Saved variants of a design -- see [`design_variant::VariantSummary`].
+pub mod design_variant;
 /// A design's full detail row and the child records it carries -- see
 /// [`detail::FacetingDiagramDetail`].
 pub mod detail;
@@ -33,6 +42,8 @@ pub mod mirror;
 pub mod performance;
 /// Cached preview-render state -- see [`preview::PreviewImages`].
 pub mod preview;
+/// The desktop render queue's jobs -- see [`render_job::RenderJob`].
+pub mod render_job;
 /// Saved rough plans -- see [`saved_rough_plan::SavedRoughPlan`].
 pub mod saved_rough_plan;
 /// Cached finished-solid extents for the Rough Planner -- see

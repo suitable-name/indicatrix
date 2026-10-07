@@ -17,6 +17,7 @@ use crate::{
     settings::{ExportTransfer, LightingPreset as SavedLightingPreset, SettingsPersister},
 };
 use indicatrix::color::ColorSpace;
+use indicatrix_solid::preview::StoneGeometryBuf;
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::{
     cell::RefCell,
@@ -49,6 +50,7 @@ pub(in crate::gui) fn setup_render_export_callbacks(
     setup_populate_export_fanout_presets_callback(ui, settings_store);
     setup_toggle_export_preset_selected_callback(ui);
     setup_export_output_location_callbacks(ui, settings_store);
+    super::advanced::setup_advanced_in_use_callback(ui);
 
     // The queue currently running, if any -- plain UI-thread-only state (both
     // callbacks below only ever run on the Slint event loop), so `Rc<RefCell<_>>>` is
@@ -100,17 +102,12 @@ pub(in crate::gui) fn setup_render_export_callbacks(
             };
 
             // ---- Export directory, prompted ONCE ---------------------------------------
-            // A native FOLDER picker (not Save-As -- the template below owns the
-            // filename now), shown only when no directory has been chosen yet. Once
-            // chosen, it's persisted immediately so every future export -- in this
-            // session and every one after -- never prompts again.
-            //
-            // The picker itself runs off the UI thread via `gui::pickers::pick`;
-            // everything that runs after it (preset fan-out, queue assembly, spawn)
+            // The folder comes from [`resolve_export_dir_then`] (a native FOLDER picker,
+            // shown only when no directory has been chosen yet and persisted at once).
+            // Everything that runs after it (preset fan-out, queue assembly, spawn)
             // lives in [`finish_start_export`], its own continuation, bundled via
             // [`StartExportContext`] purely to keep both functions under clippy's
             // argument-count lint.
-            let configured = settings_store_start.snapshot().settings.export_directory;
             let context = StartExportContext {
                 render_ctx: render_ctx_start.clone(),
                 settings_store: settings_store_start.clone(),
@@ -120,32 +117,17 @@ pub(in crate::gui) fn setup_render_export_callbacks(
                 color_space,
                 remote,
             };
-            if configured.is_empty() {
-                crate::gui::pickers::pick(
-                    &ui,
-                    crate::gui::pickers::PickerRequest {
-                        kind: crate::gui::pickers::PickerKind::PickFolder,
-                        title: Some("Choose an export folder".to_string()),
-                        filters: Vec::new(),
-                        default_file_name: None,
-                        starting_dir: None,
-                    },
-                    move |ui, dir| {
-                        let Some(dir) = dir else {
-                            ui.global::<ExportModel>().set_has_error(false);
-                            ui.global::<ExportModel>()
-                                .set_status_message("Export cancelled.".into());
-                            return;
-                        };
-                        context.settings_store.update(|s| {
-                            s.settings.export_directory = dir.to_string_lossy().into_owned();
-                        });
+            resolve_export_dir_then(
+                &ui,
+                &settings_store_start,
+                "Export cancelled.",
+                move |ui, dir| {
+                    // A cancelled picker already wrote its message.
+                    if let Some(dir) = dir {
                         finish_start_export(ui, dir, context);
-                    },
-                );
-            } else {
-                finish_start_export(&ui, PathBuf::from(configured), context);
-            }
+                    }
+                },
+            );
         },
     );
 
@@ -161,6 +143,51 @@ pub(in crate::gui) fn setup_render_export_callbacks(
             }
         }
     });
+}
+
+/// The export folder: the configured one, or a native FOLDER picker (not Save-As, the
+/// filename template owns the name) when none is set. A picked folder is persisted at once,
+/// so no later export in this session or the next prompts again.
+///
+/// `on_done` gets `Some(folder)`, or `None` after the person closed the picker; in that case
+/// `cancel_message` has already been written to the export dialog's status line, so the
+/// immediate export says "Export cancelled." and the render queue "Nothing was added.".
+/// The picker runs off the UI thread via `gui::pickers::pick`, so `on_done` may run later.
+pub(in crate::gui) fn resolve_export_dir_then(
+    ui: &MainWindow,
+    settings_store: &Arc<SettingsPersister>,
+    cancel_message: &'static str,
+    on_done: impl FnOnce(&MainWindow, Option<PathBuf>) + 'static,
+) {
+    let configured = settings_store.snapshot().settings.export_directory;
+    if !configured.is_empty() {
+        on_done(ui, Some(PathBuf::from(configured)));
+        return;
+    }
+    let settings_store = Arc::clone(settings_store);
+    crate::gui::pickers::pick(
+        ui,
+        crate::gui::pickers::PickerRequest {
+            kind: crate::gui::pickers::PickerKind::PickFolder,
+            title: Some("Choose an export folder".to_string()),
+            filters: Vec::new(),
+            default_file_name: None,
+            starting_dir: None,
+        },
+        move |ui, dir| {
+            let Some(dir) = dir else {
+                ui.global::<ExportModel>().set_has_error(false);
+                ui.global::<ExportModel>()
+                    .set_status_message(cancel_message.into());
+                on_done(ui, None);
+                return;
+            };
+            settings_store.update(|s| {
+                s.settings.export_directory = dir.to_string_lossy().into_owned();
+            });
+            on_done(ui, Some(dir));
+        },
+    );
 }
 
 /// Everything [`finish_start_export`] needs beyond `ui`/the resolved export
@@ -187,33 +214,46 @@ struct StartExportContext {
 /// already configured (synchronously) or just picked (from `gui::pickers::pick`'s
 /// own continuation, off the UI thread for the dialog itself).
 fn finish_start_export(ui: &MainWindow, export_dir: PathBuf, context: StartExportContext) {
-    let StartExportContext {
-        render_ctx,
-        settings_store,
-        export_queue,
-        mesh_bounding_radius,
-        params,
-        color_space,
-        remote,
-    } = context;
+    // An export always renders the FINISHED gem: the viewport follows the Cut slider, but a
+    // file that leaves the program must not be a half-cut stone, so the editor's whole
+    // design is swapped in whenever the slider has it cut back (see
+    // `gui::editor::finished_stone`). With the slider cut back and no current solve in the
+    // editor's cache, that stone is solved on the editor's solve worker and the export
+    // starts when it lands: a solve never runs on the UI thread.
+    let render_ctx = Arc::clone(&context.render_ctx);
+    crate::gui::editor::finished_stone_then(
+        ui,
+        &render_ctx,
+        |ui| {
+            ui.global::<ExportModel>().set_has_error(false);
+            ui.global::<ExportModel>()
+                .set_status_message("Preparing the finished stone...".into());
+        },
+        move |ui, finished| match finished {
+            Ok(finished) => continue_start_export(ui, export_dir, context, finished.as_ref()),
+            // The design does not solve, or changed while its stone was prepared: the render
+            // context holds the half-cut stone, which must never be exported in its place.
+            Err(withheld) => refuse_export(ui, &withheld),
+        },
+    );
+}
 
-    let template = settings_store.snapshot().settings.export_filename_template;
+/// Tells the export dialog why no export was started: the finished stone could not be
+/// delivered ([`crate::gui::editor::Withheld`]).
+fn refuse_export(ui: &MainWindow, withheld: &crate::gui::editor::Withheld) {
+    ui.global::<ExportModel>().set_has_error(true);
+    ui.global::<ExportModel>()
+        .set_status_message(withheld.export_message().into());
+}
 
-    // The export's OWN (already-validated) bounce cap, not whatever the live
-    // viewport is set to -- see `apply_export_bounce_cap`'s own doc comment.
-    // `capture` refuses (see its own doc comment) rather than exporting the wrong
-    // stone when the design's material does not resolve -- abort the whole export
-    // before any job is queued or `export_active_count` is bumped.
-    let base_scene = match SceneSnapshot::capture(&render_ctx) {
-        Ok(scene) => apply_export_bounce_cap(scene, params.max_bounces),
-        Err(reason) => {
-            ui.global::<ExportModel>().set_has_error(true);
-            ui.global::<ExportModel>().set_status_message(reason.into());
-            return;
-        }
-    };
-
-    // ---- Preset fan-out ---------------------------------------------------------
+/// The export queue's jobs: the base scene first, then one per preset of the dialog's fan-out
+/// list that is checked.
+pub(in crate::gui) fn fan_out_jobs(
+    ui: &MainWindow,
+    settings_store: &SettingsPersister,
+    base_scene: &SceneSnapshot,
+    mesh_bounding_radius: &Mutex<f64>,
+) -> VecDeque<ExportJob> {
     // Only presets BOTH marked `export_usable` (the settings dialog's checkbox)
     // AND checked in this dialog's own fan-out list -- see
     // `GemViewportView.export_fanout_presets`'s own doc comment for why that's a
@@ -252,39 +292,27 @@ fn finish_start_export(ui: &MainWindow, export_dir: PathBuf, context: StartExpor
             preset_label: preset.name.clone(),
         });
     }
-    let total = jobs.len();
+    jobs
+}
 
+/// The design, designer, shape and RI the filename template names: the DESIGN BEING
+/// EXPORTED, not whatever catalogue row the library panel happens to have open right now.
+///
+/// `LibraryModel.current_detail` is a browsing mirror only the catalogue detail-load paths
+/// ever write (grep `set_current_detail`: `library::detail::{local_load,remote_load,shared}`,
+/// never the editor), so editing design A in the Edit tab and then clicking catalogue row B
+/// in the library panel used to export A's image named after B. The detail is trusted only
+/// when `RenderContext::planes_owner` confirms this export's planes actually came from that
+/// exact catalogue row; the editor, the built-in placeholder cut, or a stale/mismatched
+/// catalogue selection have no honest name to give beyond a generic placeholder (see
+/// `PlanesOwner` for the owners this deliberately does not attempt to name).
+pub(in crate::gui) fn design_naming(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<crate::bridge::render_thread::RenderContext>>,
+) -> (String, String, String, String) {
     let detail = ui.global::<LibraryModel>().get_current_detail();
-
-    // Pause live-viewport tracing for the duration of the WHOLE queue -- see
-    // `RenderContext::export_active`'s own doc comment. Read the local CPU/GPU
-    // choice and `planes_owner` from the SAME short lock, so every job in this
-    // queue traces with the setting in force at the instant the export started
-    // (see the pre-fan-out version of this comment for why re-reading it mid-run
-    // would be wrong).
-    let (local_compute, planes_owner) = {
-        // A COUNT, not a bool -- see
-        // `RenderContext::export_active_count`'s doc comment.
-        let mut guard = crate::bridge::render_thread::RenderContext::lock(&render_ctx);
-        guard.export_active_count += 1;
-        (guard.local_compute_target, guard.planes_owner)
-    };
-
-    // The filename template's design/designer/shape/RI fields must name the
-    // DESIGN BEING EXPORTED (`base_scene`'s own `active_planes`/material,
-    // captured above), not whatever catalogue row the library panel happens to
-    // have open right now -- `LibraryModel.current_detail` is a browsing mirror
-    // only the catalogue detail-load paths ever write (grep `set_current_detail`:
-    // `library::detail::{local_load,remote_load,shared}`, never the editor), so
-    // editing design A in the Edit tab and then clicking catalogue row B in the
-    // library panel used to export A's image named after B. Trusted only when
-    // `RenderContext::planes_owner` confirms this export's planes actually came
-    // from that exact catalogue row; the editor, the built-in placeholder cut, or
-    // a stale/mismatched catalogue selection have no honest name to give beyond a
-    // generic placeholder -- see `PlanesOwner`'s own doc comment for the other
-    // owners this deliberately does not attempt to name (the editor's own design
-    // carries no title/designer/shape/RI fields of its own to read here).
-    let (design, designer, shape, ri) = match planes_owner {
+    let planes_owner = crate::bridge::render_thread::RenderContext::lock(render_ctx).planes_owner;
+    match planes_owner {
         PlanesOwner::Catalogue { entry_id } if i64::from(detail.id) == entry_id => (
             detail.title.to_string(),
             detail.designer.to_string(),
@@ -297,7 +325,66 @@ fn finish_start_export(ui: &MainWindow, export_dir: PathBuf, context: StartExpor
             String::new(),
             String::new(),
         ),
+    }
+}
+
+/// [`finish_start_export`]'s second half, once the finished stone (`None` when the render
+/// context already holds it) is known: captures the scene, fans the presets out and starts
+/// the queue.
+fn continue_start_export(
+    ui: &MainWindow,
+    export_dir: PathBuf,
+    context: StartExportContext,
+    finished: Option<&StoneGeometryBuf>,
+) {
+    // A second click while the finished stone was being solved: the first is already running.
+    if ui.global::<ExportModel>().get_is_exporting() {
+        return;
+    }
+    let StartExportContext {
+        render_ctx,
+        settings_store,
+        export_queue,
+        mesh_bounding_radius,
+        params,
+        color_space,
+        remote,
+    } = context;
+
+    let template = settings_store.snapshot().settings.export_filename_template;
+
+    // The export's OWN (already-validated) bounce cap, not whatever the live
+    // viewport is set to -- see `apply_export_bounce_cap`'s own doc comment.
+    // `capture` refuses (see its own doc comment) rather than exporting the wrong
+    // stone when the design's material does not resolve -- abort the whole export
+    // before any job is queued or `export_active_count` is bumped. `finished` is the stone an
+    // export always renders (see `finish_start_export`).
+    let base_scene = match SceneSnapshot::capture_finished(&render_ctx, finished) {
+        Ok(scene) => apply_export_bounce_cap(scene, params.max_bounces),
+        Err(reason) => {
+            ui.global::<ExportModel>().set_has_error(true);
+            ui.global::<ExportModel>().set_status_message(reason.into());
+            return;
+        }
     };
+
+    let jobs = fan_out_jobs(ui, &settings_store, &base_scene, &mesh_bounding_radius);
+    let total = jobs.len();
+
+    // Pause live-viewport tracing for the duration of the WHOLE queue -- see
+    // `RenderContext::export_active`'s own doc comment. Read the local CPU/GPU
+    // choice from the SAME short lock, so every job in this queue traces with the
+    // setting in force at the instant the export started (see the pre-fan-out
+    // version of this comment for why re-reading it mid-run would be wrong).
+    let local_compute = {
+        // A COUNT, not a bool -- see
+        // `RenderContext::export_active_count`'s doc comment.
+        let mut guard = crate::bridge::render_thread::RenderContext::lock(&render_ctx);
+        guard.export_active_count += 1;
+        guard.local_compute_target
+    };
+
+    let (design, designer, shape, ri) = design_naming(ui, &render_ctx);
 
     let queue = Arc::new(Mutex::new(ExportQueue {
         jobs,

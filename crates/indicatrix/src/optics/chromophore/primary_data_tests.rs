@@ -235,17 +235,17 @@ pub(super) fn sigma_lab(
 
 /// The corundum Cr recipe of `ppma_cm` ppma*cm of Cr over a 10 mm path (wt% Cr2O3 through the
 /// catalogue's number density).
-pub(super) fn cr_recipe(ppma_cm: f64) -> colorRecipe {
+pub(super) fn cr_recipe(ppma_cm: f64) -> ColorRecipe {
     let n_wt = cat()
         .host("corundum")
         .expect("corundum")
         .n_site_for_unit("wt_pct_oxide:Cr2O3");
-    let mut r = colorRecipe::new("corundum", cat().data_version);
+    let mut r = ColorRecipe::new("corundum", cat().data_version);
     assert!(r.set_amount("Cr", ppma_cm * PPMA_CM3 / n_wt));
     r
 }
 
-pub(super) fn tensor(r: &colorRecipe) -> AbsorptionTensor {
+pub(super) fn tensor(r: &ColorRecipe) -> AbsorptionTensor {
     resolve(r, cat()).expect("resolves").0
 }
 
@@ -548,7 +548,7 @@ fn v_corundum_color_change_matches_the_gia_derived_range() {
         t.col("sigma_V3_E_par_c_cm2"),
     );
     for d in [110.0, 340.0] {
-        let mut r = colorRecipe::new("corundum", cat().data_version);
+        let mut r = ColorRecipe::new("corundum", cat().data_version);
         // 1 ppma of all atoms = 2.5 ppm of Al sites; V is entered in ppm of Al sites.
         assert!(r.set_amount("V", d * 2.5));
         let tens = tensor(&r);
@@ -578,7 +578,7 @@ fn v_corundum_color_change_matches_the_gia_derived_range() {
             "unpolarised {d}: {cc_mix:.1}"
         );
     }
-    let mut r = colorRecipe::new("corundum", cat().data_version);
+    let mut r = ColorRecipe::new("corundum", cat().data_version);
     assert!(r.set_amount("V", 340.0 * 2.5));
     let tens = tensor(&r);
     let cc_e = delta_e_2000(
@@ -606,7 +606,7 @@ fn pair_peak(fe: f64, ti: f64, mg: f64) -> f64 {
         .filter(|b| b.pol.get("o").copied().unwrap_or(0.0) > 0.0)
         .max_by(|a, b| a.peak_coeff.partial_cmp(&b.peak_coeff).expect("finite"))
         .expect("o band");
-    let mut r = colorRecipe::new("corundum", cat().data_version);
+    let mut r = ColorRecipe::new("corundum", cat().data_version);
     r.set_amount("Fe", fe);
     r.set_amount("Ti", ti);
     if mg > 0.0 {
@@ -748,7 +748,7 @@ fn ray_axes_are_stored_by_axis_length() {
 /// alpha column) and is violet-blue under A, blue-grey under D65: never yellow or green.
 #[test]
 fn alexandrite_rays_have_the_right_colors_by_axis_length() {
-    let mut r = colorRecipe::new("chrysoberyl", cat().data_version);
+    let mut r = ColorRecipe::new("chrysoberyl", cat().data_version);
     r.set_amount("Cr", 0.32);
     r.set_amount("Fe", 0.15);
     let t = tensor(&r);
@@ -810,7 +810,7 @@ fn alexandrite_recipe_reproduces_the_caltech_ray_colors() {
         )
         .lab
     };
-    let mut r = colorRecipe::new("chrysoberyl", cat().data_version);
+    let mut r = ColorRecipe::new("chrysoberyl", cat().data_version);
     r.set_amount("Cr", 1.046);
     let t = tensor(&r);
     for (ray, c) in [('b', cb), ('e', cg)] {
@@ -829,7 +829,7 @@ fn alexandrite_recipe_reproduces_the_caltech_ray_colors() {
 #[test]
 fn tanzanite_rays_have_the_right_colors_by_axis_length() {
     let mk = |heated: bool| {
-        let mut r = colorRecipe::new("tanzanite", cat().data_version);
+        let mut r = ColorRecipe::new("tanzanite", cat().data_version);
         r.set_amount("V", 7670.0);
         if heated {
             r.treatments.push("air_anneal_550".to_string());
@@ -874,7 +874,7 @@ fn tanzanite_rays_have_the_right_colors_by_axis_length() {
 /// 450 nm 3.9 against 2.2 / 2.1 cm^-1 for alpha / gamma).
 #[test]
 fn peridot_rays_are_yellow_green_and_beta_absorbs_most() {
-    let mut r = colorRecipe::new("peridot", cat().data_version);
+    let mut r = ColorRecipe::new("peridot", cat().data_version);
     r.set_amount("fayalite", 0.10);
     let t = tensor(&r);
     let lab = |ray| ray_lab(&t, ray, 5.0, Illuminant::D65);
@@ -924,7 +924,7 @@ fn shape_residual(
         sxx += w * x * x;
         sxy += w * x * y;
     }
-    let scale = (sw * sxy - sx * sy) / (sw * sxx - sx * sx);
+    let scale = (sw * sxy - sx * sy) / (sw * sxx - sx.powi(2));
     let offset = (sy - scale * sx) / sw;
     let (mut res, mut spread) = (0.0, 0.0);
     for &(x, y, w) in &pts {
@@ -940,15 +940,33 @@ fn caltech_alpha(t: &Table, col: usize, path_cm: f64) -> impl Fn(f64) -> f64 + '
     move |l| std::f64::consts::LN_10 * t.at(col, l) / path_cm
 }
 
+/// The recipe's alpha (cm^-1 per unit) of one chromophore and polarisation, as a function of nm.
+fn eval(host: &str, id: &str, pol: &str) -> impl Fn(f64) -> f64 + use<> {
+    let (host, id, pol) = (host.to_string(), id.to_string(), pol.to_string());
+    move |l: f64| data_alpha(&host, &id, &pol, l, 1.0)
+}
+
+/// Prints each `(name, residual, limit)` row and asserts the residual is within its limit.
+fn assert_residuals_within_limits(checks: Vec<(&str, f64, f64)>) {
+    for (name, rel, limit) in checks {
+        eprintln!(
+            "shape {name}: residual {:.1} % of the weighted spread",
+            100.0 * rel
+        );
+        assert!(
+            rel <= limit,
+            "{name}: {:.1} % > {:.0} %",
+            100.0 * rel,
+            100.0 * limit
+        );
+    }
+}
+
 /// Shape of the refitted hosts against the Caltech raw spectra: the color-weighted residual
 /// after a free scale and flat offset (the pedestal), as a share of the target's weighted
 /// spread. The scale is not asserted (no composition); the shapes are.
 #[test]
 fn recipe_shapes_follow_the_caltech_spectra() {
-    let eval = |host: &str, id: &str, pol: &str| {
-        let (host, id, pol) = (host.to_string(), id.to_string(), pol.to_string());
-        move |l: f64| data_alpha(&host, &id, &pol, l, 1.0)
-    };
     // Chrysoberyl beta (raw ch874.a) and gamma (5 nm digest of ch874.b).
     let raw = table("caltech_chrysoberyl_grr874_beta_ch874a_0p717mm");
     let digest = table("caltech_chrysoberyl_grr874_5nm");
@@ -1046,19 +1064,12 @@ fn recipe_shapes_follow_the_caltech_spectra() {
             0.15,
         ),
     ];
-    for (name, rel, limit) in checks {
-        eprintln!(
-            "shape {name}: residual {:.1} % of the weighted spread",
-            100.0 * rel
-        );
-        assert!(
-            rel <= limit,
-            "{name}: {:.1} % > {:.0} %",
-            100.0 * rel,
-            100.0 * limit
-        );
-    }
-    // Zoisite GRR 1265 (405-780 nm only; no data below).
+    assert_residuals_within_limits(checks);
+}
+
+/// Zoisite GRR 1265 (405-780 nm only; no data below): the tanzanite shapes.
+#[test]
+fn tanzanite_shapes_follow_the_caltech_zoisite_spectra() {
     let z = table("caltech_zoisite_grr1265_5nm");
     let id = "V3+ (natural unheated, trichroic)";
     for (name, pol, col, limit) in [
@@ -1075,7 +1086,11 @@ fn recipe_shapes_follow_the_caltech_spectra() {
         eprintln!("shape {name}: residual {:.1} %", 100.0 * rel);
         assert!(rel <= limit, "{name}: {:.1} %", 100.0 * rel);
     }
-    // The GIA Cr3+ sigma itself through the same metric (scale ~ 1 per wt%).
+}
+
+/// The GIA Cr3+ sigma itself through the same metric (scale ~ 1 per wt%).
+#[test]
+fn the_gia_cr3plus_sigma_fits_the_recipe_with_unit_scale() {
     let g = table("gia_cr3plus_sample1110_sigma");
     let n_wt = cat()
         .host("corundum")

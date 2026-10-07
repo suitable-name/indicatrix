@@ -307,6 +307,7 @@ fn scene_state_from_snapshot(snapshot: &SceneSnapshot, width: u32, height: u32) 
         // The material's emitters, so the worker traces the same glow as the local tracer;
         // empty for a non-fluorescent material.
         fluorescence: snapshot.fluorescence.as_ref().clone(),
+        head_shadow_deg: snapshot.head_shadow_deg,
     }
 }
 

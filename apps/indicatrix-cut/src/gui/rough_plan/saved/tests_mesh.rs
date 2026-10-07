@@ -10,6 +10,7 @@ use crate::gui::rough_plan::obj_import::{C_SHAPE_OBJ, CUBE_OBJ, parse_obj_mesh};
 use glam::DVec3;
 use indicatrix_cut_core::rough_plan::{
     MAX_MESH_TRIANGLES, RoughBase, RoughCut, RoughModel, import_hull, import_mesh,
+    shape::hull::{add_inclusion_points, remove_inclusion},
 };
 
 /// The base of the OBJ text `obj`, imported as a mesh without a note.
@@ -149,6 +150,103 @@ fn saved_plan_bytes_unchanged_for_convex() {
     let convex_mesh = RoughModel::new(mesh_base(CUBE_OBJ), Vec::new());
     assert_eq!(write(&convex_mesh, &[]), text);
     assert_same_rough(&convex_mesh, &hull_model);
+
+    // A mesh rough without inclusions is still the version 2 plan it always was: the whole
+    // mesh under `rough.mesh` and no `inclusions` key.
+    let c_text = write(&c_shape(), &[]);
+    assert!(c_text.contains("version = 2\n"), "{c_text}");
+    assert!(!c_text.contains("inclusions"), "{c_text}");
+    // An inclusion added and removed again leaves the very same rough, so the same bytes.
+    let (inner, inner_triangles) = inner_cube(2.0, 6.0);
+    let with = add_inclusion_points(&c_shape().base, &inner, &inner_triangles, 0.3)
+        .expect("the inclusion fits the arm");
+    let back = remove_inclusion(&with, 0).expect("removes");
+    assert_eq!(write(&RoughModel::new(back, Vec::new()), &[]), c_text);
+}
+
+/// The cube `[lo, hi]` on every axis as points and triangles: an inclusion for the 20 mm
+/// fixtures.
+fn inner_cube(lo: f64, hi: f64) -> (Vec<DVec3>, Vec<[u32; 3]>) {
+    let (mut points, triangles) = parse_obj_mesh(CUBE_OBJ).expect("parses");
+    for p in &mut points {
+        *p = *p * ((hi - lo) / 20.0) + DVec3::splat(lo);
+    }
+    (points, triangles)
+}
+
+/// `base` with the cubes of `spans` (each `(lo, hi)`) as inclusions with a 0.3 mm margin.
+fn with_inclusions(base: RoughBase, spans: &[(f64, f64)]) -> RoughModel {
+    let mut base = base;
+    for &(lo, hi) in spans {
+        let (points, triangles) = inner_cube(lo, hi);
+        base = add_inclusion_points(&base, &points, &triangles, 0.3).expect("the inclusion fits");
+    }
+    RoughModel::new(base, Vec::new())
+}
+
+#[test]
+fn a_plan_with_inclusions_roundtrips_with_version_3() {
+    let cube = import_hull(&parse_obj_mesh(CUBE_OBJ).expect("parses").0).expect("hull");
+    for base in [mesh_base(C_SHAPE_OBJ), cube] {
+        let model = with_inclusions(base, &[(2.0, 6.0), (8.0, 9.0)]);
+        let layouts = vec![sample_layout_in(&model)];
+        let text = write(&model, &layouts);
+        assert_eq!(payload_version_of(&text), Some(3), "{text}");
+        assert!(text.contains("version = 3"), "{text}");
+        assert!(text.contains("[rough.mesh]"), "{text}");
+        assert!(text.contains("[[rough.inclusions]]"), "{text}");
+        let loaded: LoadedPlan = parse_and_validate_plan(&text).expect("the plan loads");
+        assert_eq!(loaded.version, 3);
+        assert_eq!(loaded.layouts, layouts);
+        assert_same_rough(&loaded.model, &model);
+        let (a, b) = (
+            model.mesh().expect("mesh"),
+            loaded.model.mesh().expect("mesh"),
+        );
+        assert_eq!(a.inclusion_count(), 2);
+        assert_eq!(b.inclusion_count(), 2);
+        assert_eq!(a.inclusion_shells(), b.inclusion_shells());
+        // The weight of the plan is the gross volume, before and after.
+        let (ma, mb) = (
+            model.measure().expect("m"),
+            loaded.model.measure().expect("m"),
+        );
+        assert!((ma.volume_mm3 - mb.volume_mm3).abs() <= 1e-9 * ma.volume_mm3);
+        assert!((ma.inclusion_mm3 - mb.inclusion_mm3).abs() <= 1e-9 * ma.volume_mm3);
+        // And it is a fixed point: writing it again gives the same text.
+        assert_eq!(write(&loaded.model, &layouts), text);
+    }
+}
+
+#[test]
+fn inclusions_need_version_3_and_a_mesh_and_must_fit() {
+    let model = with_inclusions(mesh_base(C_SHAPE_OBJ), &[(2.0, 6.0)]);
+    let text = write(&model, &[]);
+    let downgraded = text.replace("version = 3", "version = 2");
+    let error = expect_error(&downgraded);
+    assert!(error.contains("rough.inclusions"), "{error}");
+
+    let mut doc: SavedPlanDto = toml::from_str(&text).expect("parses");
+    // Moved out of the rough: not in the material any more.
+    let mut outside = doc.rough.inclusions[0].clone();
+    for v in &mut outside.vertices {
+        v[0] += 100.0;
+    }
+    doc.rough.inclusions = vec![outside];
+    let error = expect_error(&toml::to_string_pretty(&doc).expect("writes"));
+    assert!(error.contains("rough.inclusions"), "{error}");
+
+    // Inclusions without the mesh they lie in.
+    let mut doc: SavedPlanDto = toml::from_str(&text).expect("parses");
+    doc.rough.mesh = None;
+    doc.rough.hull = vec![
+        [0.0, 0.0, 0.0],
+        [20.0, 0.0, 0.0],
+        [0.0, 20.0, 0.0],
+        [0.0, 0.0, 20.0],
+    ];
+    let error = expect_error(&toml::to_string_pretty(&doc).expect("writes"));
+    assert!(error.contains("rough.inclusions"), "{error}");
 }
 
 #[test]
@@ -164,9 +262,10 @@ fn a_bad_or_oversized_mesh_is_refused() {
     let error = expect_error(&toml::to_string_pretty(&doc).expect("writes"));
     assert!(error.contains("rough.mesh"), "{error}");
 
-    // An open surface: a triangle missing.
+    // An open surface: half the triangles missing. One missing triangle is a small hole
+    // the mesh repair fills, so it would reload; a hole this large is never filled.
     let mut open = mesh.clone();
-    open.triangles.pop();
+    open.triangles.truncate(open.triangles.len() / 2);
     doc.rough.mesh = Some(open);
     let error = expect_error(&toml::to_string_pretty(&doc).expect("writes"));
     assert!(error.contains("rough.mesh"), "{error}");

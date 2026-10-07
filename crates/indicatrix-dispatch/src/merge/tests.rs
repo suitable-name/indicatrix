@@ -169,3 +169,56 @@ fn parking_past_the_budget_is_refused_and_releases_once_the_frontier_catches_up(
     assert_eq!(merger.add(4, 1, chunk(1.0)), Ok(4));
     assert_eq!(budget.used.load(Ordering::SeqCst), 24);
 }
+
+/// Dropping a merger that still has parked chunks (a cancelled run) returns their
+/// charge to the shared budget.
+#[test]
+fn dropping_a_merger_releases_its_parked_bytes() {
+    let budget = FakeBudget::new(1000);
+    let merger = Merger::new(2, 0).with_parked_budget(Arc::clone(&budget) as Arc<dyn ParkedBudget>);
+    assert_eq!(merger.add(2, 1, chunk(1.0)), Ok(1));
+    assert_eq!(merger.add(4, 1, chunk(1.0)), Ok(2));
+    assert_eq!(budget.used.load(Ordering::SeqCst), 48);
+    drop(merger);
+    assert_eq!(budget.used.load(Ordering::SeqCst), 0);
+}
+
+/// `into_parts` releases the parked charge, and the drop that follows (inside it) must
+/// not release it again; a second merger's charge stays untouched.
+#[test]
+fn into_parts_then_drop_does_not_double_release() {
+    let budget = FakeBudget::new(1000);
+    let shared = Arc::clone(&budget) as Arc<dyn ParkedBudget>;
+    let other = Merger::new(2, 0).with_parked_budget(Arc::clone(&shared));
+    assert_eq!(other.add(2, 1, chunk(1.0)), Ok(1));
+    let merger = Merger::new(2, 0).with_parked_budget(shared);
+    assert_eq!(merger.add(2, 1, chunk(1.0)), Ok(1));
+    assert_eq!(budget.used.load(Ordering::SeqCst), 48);
+    let (_, count) = merger.into_parts();
+    assert_eq!(count, 1);
+    assert_eq!(budget.used.load(Ordering::SeqCst), 24);
+    drop(other);
+    assert_eq!(budget.used.load(Ordering::SeqCst), 0);
+}
+
+/// A chunk that folded already released its charge; dropping afterwards releases only
+/// what is still parked.
+#[test]
+fn folding_then_drop_does_not_double_release() {
+    let budget = FakeBudget::new(1000);
+    let shared = Arc::clone(&budget) as Arc<dyn ParkedBudget>;
+    let other = Merger::new(2, 0).with_parked_budget(Arc::clone(&shared));
+    assert_eq!(other.add(2, 1, chunk(1.0)), Ok(1));
+    let merger = Merger::new(2, 0).with_parked_budget(shared);
+    assert_eq!(merger.add(2, 1, chunk(1.0)), Ok(1));
+    assert_eq!(merger.add(0, 2, chunk(1.0)), Ok(3));
+    assert_eq!(
+        budget.used.load(Ordering::SeqCst),
+        24,
+        "only `other` is parked"
+    );
+    drop(merger);
+    assert_eq!(budget.used.load(Ordering::SeqCst), 24);
+    drop(other);
+    assert_eq!(budget.used.load(Ordering::SeqCst), 0);
+}

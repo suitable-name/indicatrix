@@ -12,12 +12,13 @@
 
 use indicatrix_cut::gui::solid_preview::mesh_cache::fnv1a_64;
 use indicatrix_cut_core::{
-    Design, ManufacturabilityWarning,
-    design::ConcaveTier,
+    Design, Edit, ManufacturabilityWarning,
+    design::{CONCAVE_FOOTNOTE_MARKER, ConcaveTier, TierRef},
     native::{DesignExtras, design_from_str, design_to_string},
 };
 use indicatrix_editor::{
     EditorSession,
+    cutting_mode::build_plan,
     loading::{concave_tier_form_fields, parse_concave_tier_form},
     tier_save::concave_tier_save_edit,
     view_model::solid_status::design_to_gpu_geometry,
@@ -29,9 +30,15 @@ use indicatrix_solid::preview::{CameraPose, PreviewPipeline, RedrawRequest, Ston
 const PICK_PIN: Option<u64> = None;
 
 /// The fixture's flat half in a fresh session, and its concave tiers on their own.
+///
+/// The fixture hands every concave tier a stable id (`Design::concave_tier_ids`, one per
+/// tier, in step with the list). Taking the tiers out must take their ids with them: left
+/// behind, the two ids would trail every id the session mints for the tiers authored next,
+/// and the design would hold four ids for two tiers, which no edit can produce.
 fn flat_session_and_concave_tiers() -> (EditorSession, Vec<ConcaveTier>) {
     let mut flat = Design::concave_fixture();
     let concave = std::mem::take(&mut flat.concave_tiers);
+    flat.concave_tier_ids.clear();
     let mut session = EditorSession::fresh();
     session.design = flat;
     (session, concave)
@@ -167,6 +174,80 @@ fn the_native_file_round_trips_concave_tiers_and_their_cutting_sheet_text() {
     }
 }
 
+/// Cutting mode keeps a concave step's marks under `c<id>`, so each concave tier must keep
+/// its id through everything a cutter does to a design: a flat tier added after the concave
+/// ones, the concave tiers reordered or one removed, and a save followed by a reopen.
+#[test]
+fn concave_tier_ids_and_cutting_mode_keys_survive_edits_and_a_reopen() {
+    // Each concave step's name and the vault key its marks live under.
+    fn concave_keys(design: &Design) -> std::collections::BTreeMap<String, String> {
+        let solved = design.solve().expect("the flat tiers solve");
+        let plan = build_plan(design, &solved, &[]).expect("a design with tiers has a plan");
+        plan.steps
+            .iter()
+            .filter(|step| matches!(step.tier, TierRef::Concave(_)))
+            .map(|step| (step.name.clone(), step.key.clone()))
+            .collect()
+    }
+    fn reopened(design: &Design) -> Design {
+        let text = design_to_string(design, None, &DesignExtras::default())
+            .expect("the design writes as a native file");
+        design_from_str(&text)
+            .expect("the native file reads back")
+            .design
+    }
+
+    let mut session = authored_session();
+    let original = concave_keys(&session.design);
+    assert_eq!(original.len(), 2, "Groove and Dimple are both steps");
+    assert_eq!(
+        session.design.concave_tier_ids.len(),
+        session.design.concave_tiers.len(),
+        "one id per concave tier after authoring"
+    );
+
+    // A flat tier added after the concave ones takes a later id; it must not disturb theirs.
+    let mut late = session.design.tiers[3].clone();
+    late.name = "Late crown".to_owned();
+    late.indices = vec![1.0, 5.0, 9.0, 13.0];
+    let at = session.design.tiers.len();
+    session
+        .apply(Edit::AddTier {
+            index: at,
+            tier: late,
+        })
+        .expect("the flat tier is added");
+    assert_eq!(concave_keys(&session.design), original);
+    assert_eq!(concave_keys(&reopened(&session.design)), original);
+
+    // Reordering the concave tiers moves each id with its tier, before and after a reopen.
+    session
+        .apply(Edit::MoveConcaveTier { from: 0, to: 1 })
+        .expect("the concave tiers swap");
+    assert_eq!(session.design.concave_tiers[0].name, "Dimple");
+    assert_eq!(concave_keys(&session.design), original);
+    let after_reopen = reopened(&session.design);
+    assert_eq!(
+        after_reopen.concave_tiers, session.design.concave_tiers,
+        "a reopen keeps every concave tier, in order"
+    );
+    assert_eq!(
+        after_reopen.concave_tier_ids,
+        session.design.concave_tier_ids
+    );
+    assert_eq!(concave_keys(&after_reopen), original);
+
+    // Removing one tier leaves the other's key alone; the removed one comes back with its own.
+    session
+        .apply(Edit::RemoveConcaveTier { index: 0 })
+        .expect("the first concave tier is removed");
+    let remaining = concave_keys(&reopened(&session.design));
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining.get("Groove"), original.get("Groove"));
+    session.undo().expect("undo replays").expect("one step");
+    assert_eq!(concave_keys(&reopened(&session.design)), original);
+}
+
 #[test]
 fn the_solid_pick_buffer_is_the_same_before_and_after_the_native_file_and_shows_the_tools() {
     let session = authored_session();
@@ -241,10 +322,24 @@ fn a_file_export_warns_and_keeps_the_concave_tiers_as_footnotes() {
             "{} survives as a footnote",
             tier.name
         );
-        assert!(footnotes.contains(&tier.second_line_fields().join("  ")));
+        assert!(footnotes.contains(&tier.second_line_fields_ascii().join("  ")));
     }
+    // Every generated line is plain ASCII and tagged, so a load can tell it from the
+    // user's own notes.
+    assert!(
+        schedule
+            .footnotes
+            .iter()
+            .all(|line| line.is_ascii() && line.ends_with(CONCAVE_FOOTNOTE_MARKER)),
+        "{:?}",
+        schedule.footnotes
+    );
     // A planar design has nothing to warn about and writes the plain schedule.
     let mut flat = design;
     flat.concave_tiers.clear();
-    assert!(flat.export_warnings().is_empty());
+    assert_eq!(
+        flat.export_warnings().len(),
+        0,
+        "a planar design has no export warnings"
+    );
 }

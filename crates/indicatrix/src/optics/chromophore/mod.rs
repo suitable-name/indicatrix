@@ -15,11 +15,12 @@ pub use fluorescence::{
     EmitterReport, FluorescenceReport, GlowStrength, UV365_NM, UV395_NM, UvGlow,
     fluorescence_report, resolve_fluorescence, uv_glow,
 };
-pub use recipe::{RecipeEntry, ResolveError, ResolveWarning, ResolvedBands, colorRecipe};
+pub use recipe::{ColorRecipe, RecipeEntry, ResolveError, ResolveWarning, ResolvedBands};
 pub use resolve::resolve;
 pub use solver::{
-    Cancelled, FantasySolution, MAX_EVALS, SolveRequest, SolveResult, TreatmentPolicy,
-    solve_fantasy, solve_fantasy_lab, solve_physics, solve_physics_with,
+    BodyColorSolution, BodyColorTarget, Cancelled, FantasySolution, MAX_EVALS, SolveRequest,
+    SolveResult, TreatmentPolicy, solve_body_color, solve_fantasy, solve_fantasy_lab,
+    solve_physics, solve_physics_with,
 };
 
 #[cfg(test)]
@@ -43,7 +44,7 @@ mod tests {
     fn catalogue_loads_and_versions() {
         let cat = ChromophoreCatalogue::global();
         assert_eq!(cat.data_version, 4);
-        assert!(!cat.hosts.is_empty());
+        assert_ne!(cat.hosts.len(), 0, "the catalogue lists hosts");
         assert!(cat.host("corundum").is_some());
         assert!(cat.host("beryl").is_some());
         assert!(cat.host("chrysoberyl").is_some());
@@ -87,12 +88,12 @@ mod tests {
     #[test]
     fn corundum_cr_resolves_and_produces_red() {
         let cat = ChromophoreCatalogue::global();
-        let mut recipe = colorRecipe::new("corundum", cat.data_version);
+        let mut recipe = ColorRecipe::new("corundum", cat.data_version);
         recipe.set_amount("Cr", 0.3); // 0.3 wt% Cr2O3 ruby
         let (tensor, _) = resolve(&recipe, cat).expect("resolves cleanly");
         assert!(tensor.o_ray.len() <= 8);
         assert!(tensor.e_ray.len() <= 8);
-        assert!(!tensor.o_ray.is_empty());
+        assert_ne!(tensor.o_ray.len(), 0, "the ordinary ray has bands");
 
         let colors = body_colors(&tensor, 5.0, Illuminant::D65);
         // Ruby should have positive a* (redness)
@@ -106,7 +107,7 @@ mod tests {
     #[test]
     fn blue_sapphire_recipe_resolves_with_pleochroism() {
         let cat = ChromophoreCatalogue::global();
-        let mut recipe = colorRecipe::new("corundum", cat.data_version);
+        let mut recipe = ColorRecipe::new("corundum", cat.data_version);
         recipe.set_amount("Fe", 1000.0); // 1000 ppm
         recipe.set_amount("Ti", 100.0); // 100 ppm
         let (tensor, _) = resolve(&recipe, cat).expect("resolves cleanly");
@@ -124,7 +125,7 @@ mod tests {
     #[test]
     fn solver_physics_ruby_roundtrip() {
         let cat = ChromophoreCatalogue::global();
-        let mut initial_recipe = colorRecipe::new("corundum", cat.data_version);
+        let mut initial_recipe = ColorRecipe::new("corundum", cat.data_version);
         initial_recipe.set_amount("Cr", 0.3);
         let (tensor, _) = resolve(&initial_recipe, cat).expect("resolves cleanly");
         let target_col = body_colors(&tensor, 5.0, Illuminant::D65);

@@ -1,18 +1,131 @@
 import { ComboBox, LineEdit, ScrollView, Slider } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { RetargetRowItem } from "../types.slint";
-import { RetargetModel } from "../models/retarget.slint";
+import { RetargetModel, RetargetCandidateItem } from "../models/retarget.slint";
 import { CompareModel } from "../models/compare.slint";
+import { GuideModel } from "../models/guide.slint";
+import { HelpTopics } from "../models/help.slint";
 import { StaleBadge } from "stale_badge.slint";
 import { CompareView } from "compare_view.slint";
+import { HelpButton } from "help_button.slint";
+import { IconButton } from "icon_button.slint";
+import { ActionButton } from "chip_toggle.slint";
+import { SegmentPill } from "pill_button.slint";
+import { ToggleRow } from "toggle_switch.slint";
+import { TipBox, FieldCaption } from "tip_box.slint";
+import { AdvancedNote } from "advanced_note.slint";
 
 export { RetargetRowItem }
 
+// One option a finished Optimize search found. A click picks it, and so do Space and the arrow
+// keys while the list has the keyboard (`ringed` draws that cursor).
+component CandidateRow inherits Rectangle {
+    in property <RetargetCandidateItem> item;
+    in property <bool> selected: false;
+    in property <bool> ringed: false;
+    in property <bool> active: true;
+    callback clicked();
+
+    height: 48px;
+    border-radius: Theme.radius-sm;
+    background: root.selected || cand_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken;
+    border-width: root.ringed ? 2px : 1px;
+    border-color: root.ringed ? Theme.accent-cyan-hover : (root.selected ? Theme.accent-cyan : Theme.border-dialog);
+
+    accessible-role: AccessibleRole.list-item;
+    accessible-label: "" + root.item.rank + ". " + root.item.label + ", score " + root.item.score + ", " + root.item.verdict;
+    accessible-description: "Windowing " + root.item.windowing + ", brilliance " + root.item.brilliance + ", extinction " + root.item.extinction + ", yield loss " + root.item.yield_loss;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.clicked(); }
+
+    Tooltip { text: @markdown("Windowing is light leaking straight out of the pavilion, brilliance is light returned to the eye as the stone is tilted, extinction is light trapped or lost, yield loss is the share of the rough the finished stone gives up. The score combines the first three under your objective: lower is better."); }
+
+    cand_touch := TouchArea {
+        enabled: root.active;
+        mouse-cursor: root.active ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
+    }
+
+    VerticalLayout {
+        padding: 6px;
+        spacing: 4px;
+
+        HorizontalLayout {
+            spacing: 6px;
+            Text { text: "" + root.item.rank + ". " + root.item.label; font-size: 11px; font-weight: 700; color: Theme.text-primary; horizontal-stretch: 1; vertical-alignment: center; overflow: elide; }
+            Text { text: "Score " + root.item.score; font-size: 11px; color: Theme.text-secondary; vertical-alignment: center; }
+            Text { text: root.item.verdict; font-size: 11px; font-weight: 700; color: Theme.success; vertical-alignment: center; }
+        }
+
+        HorizontalLayout {
+            spacing: 6px;
+            Text { text: "Windowing " + root.item.windowing; font-size: 10px; color: Theme.text-secondary; horizontal-stretch: 1; overflow: elide; }
+            Text { text: "Brilliance " + root.item.brilliance; font-size: 10px; color: Theme.text-secondary; horizontal-stretch: 1; overflow: elide; }
+            Text { text: "Extinction " + root.item.extinction; font-size: 10px; color: Theme.text-secondary; horizontal-stretch: 1; overflow: elide; }
+            Text { text: "Yield loss " + root.item.yield_loss; font-size: 10px; color: Theme.text-secondary; horizontal-stretch: 1; overflow: elide; }
+        }
+    }
+}
+
+// A small column heading of the proposal table, with the plain-language tooltip.
+component ColumnHeading inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <TextHorizontalAlignment> align: TextHorizontalAlignment.right;
+
+    height: head.preferred-height;
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
+    head := Text {
+        text: root.text;
+        font-size: 10px;
+        font-weight: 700;
+        color: Theme.text-muted;
+        width: 100%;
+        horizontal-alignment: root.align;
+        overflow: elide;
+    }
+}
+
+// "Retarget for material": reviews a proposal before it is applied as ONE undoable edit.
+// Shift moves every crown and pavilion angle by a formula; Optimize searches for better ones
+// inside a range. The same modal shell carries the "Compare to Snapshot" panel.
+//
+// Simple and Advanced (`GuideModel.shows_advanced()`): the Simple interface keeps the target
+// material, the Shift/Optimize switch, Search, the options, the table, the verdict and Apply. It
+// hides Crown Handling and the Optimize objective, range and effort. They keep their values and
+// the search uses them; a line says so when one is off its default
+// (`RetargetModel.advanced_in_use`).
+//
+// Keyboard: Tab walks the controls, Escape closes (Cancel stops a running search instead), Return
+// applies when the proposal is ready. The option list is one Tab stop; Up and Down pick the
+// previous or next option, Space picks the first.
 export component RetargetDialog inherits Rectangle {
     callback close();
     close => { RetargetModel.is_open = false; RetargetModel.close(); }
 
-    property <bool> can_apply: RetargetModel.rows.length > 0 && RetargetModel.anchored_tier_errors.length == 0 && RetargetModel.solve_error == "" && !RetargetModel.is_busy;
+    // A proposal exists and nothing is busy.
+    property <bool> has_proposal: RetargetModel.rows.length > 0 && RetargetModel.anchored_tier_errors.length == 0 && RetargetModel.solve_error == "" && !RetargetModel.is_busy;
+    // `validity_state` (see `RetargetModel`): 1 = still checking, 3 = not valid. Compare
+    // waits for the check (its candidate needs the checked facet heights) but still
+    // works on an invalid change, so the cutter can see what goes wrong; Apply needs a
+    // finished check that did not fail. In Optimize mode there is nothing to compare or
+    // apply until the cutter has picked one of the options a search found: the table lists
+    // only the Shift angles the search starts from.
+    property <bool> can_compare: root.has_proposal && RetargetModel.validity_state != 1 && (RetargetModel.mode_index == 0 || RetargetModel.selected_candidate >= 0);
+    // Read by `global_dialogs.slint`'s Return handler, so Return applies exactly when the
+    // Apply button is enabled and never reaches `RetargetModel.apply()` while it is dimmed.
+    out property <bool> can_apply: root.can_compare && RetargetModel.validity_state != 3;
+    // Why Apply is not available yet, in plain words (the tooltip of the dimmed button).
+    property <string> apply_hint: root.can_apply
+        ? "Apply the new angles, the adjusted facet heights and the new material as one edit you can undo, then solve the design again."
+        : (RetargetModel.is_busy ? "Wait for the search to finish, or cancel it."
+        : (RetargetModel.validity_state == 1 ? "Wait: the change is still being checked."
+        : (RetargetModel.validity_state == 3 ? "The change is not valid, so it cannot be applied. The reasons are listed above."
+        : (RetargetModel.mode_index == 1 ? "Search, then pick one of the options first."
+        : "There is no change to apply."))));
+    // A hidden (Simple mode) setting is off its default.
+    property <bool> advanced_note_visible: !GuideModel.shows_advanced() && RetargetModel.advanced_in_use(RetargetModel.crown_fraction, RetargetModel.scale_crown_by_ratio, RetargetModel.objective_index, RetargetModel.range_index, RetargetModel.effort_index, RetargetModel.crown_follows_pavilion, RetargetModel.keep_look, RetargetModel.girdle_allowance);
 
     // This same modal shell is reused for the "Compare to Snapshot" panel
     // (`compare_panel` below) -- there is no `app.slint` export to wire up a
@@ -34,16 +147,18 @@ export component RetargetDialog inherits Rectangle {
 
     // This component stays instantiated the whole time (`visible: RetargetModel.
     // is_open`, never wrapped in an `if`), so `init => { self.focus(); }` alone
-    // (the idiom `new_design_dialog.slint`/`material_editor_dialog.slint` use)
     // would only ever fire once, the first time the dialog is ever opened. Mirrors
     // `RetargetModel.is_open` into a local property instead and watches THAT with
     // `changed`, so this re-focuses every time the dialog reopens -- `self.…`,
     // not `root.…`, in the handler, matching this codebase's own
     // `changed`-handler trap (a global's own property can't be watched directly).
-    // Escape closes (unless a search is running, matching the header X/backdrop's
+    //
+    // The card is a child of this scope, so Escape and Return reach it from whichever control
+    // holds the keyboard. Escape closes (unless a search is running, matching the header X/backdrop's
     // own busy guard); Return applies when the proposal is ready. Every other key
     // is swallowed (`accept`) so it cannot bubble to `global_shortcuts` and fire a
-    // shortcut on the design underneath.
+    // shortcut on the design underneath -- except the keys a control inside has not used
+    // (Tab keeps walking: it is handled before it reaches the scope).
     key_scope := FocusScope {
         property <bool> open_mirror: RetargetModel.is_open || RetargetModel.compare_open;
         changed open_mirror => {
@@ -64,513 +179,101 @@ export component RetargetDialog inherits Rectangle {
                     RetargetModel.apply();
                 }
                 return accept;
+            } else if event.text == Key.Tab || event.text == Key.Backtab {
+                // Tab keeps walking the controls.
+                return reject;
             }
             accept
         }
-    }
 
-    // Sized from `root`, never from its content, so the wide Retarget card (proposal
-    // column plus the embedded comparison pane) cannot raise the window's minimum
-    // size. The Snapshot panel keeps its narrow single-column card.
-    Rectangle {
-        width: RetargetModel.compare_open ? 560px : min(root.width - 48px, 1280px);
-        height: RetargetModel.compare_open ? min(680px, root.height - 40px) : min(root.height - 48px, 820px);
-        background: Theme.surface-dialog;
-        border-radius: Theme.radius-md;
-        border-width: 1px;
-        border-color: Theme.border-dialog;
-        drop-shadow-blur: 24px;
-        drop-shadow-color: Theme.modal-shadow;
-        clip: true;
+        // Sized from `root`, never from its content, so the wide Retarget card (proposal
+        // column plus the embedded comparison pane) cannot raise the window's minimum
+        // size. The Snapshot panel keeps its narrow single-column card.
+        Rectangle {
+            width: RetargetModel.compare_open ? 560px : min(root.width - 48px, 1280px);
+            height: RetargetModel.compare_open ? min(680px, root.height - 40px) : min(root.height - 48px, 820px);
+            background: Theme.surface-dialog;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border-dialog;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: Theme.modal-shadow;
+            clip: true;
 
-        TouchArea {} // Isolate clicks inside the modal.
+            TouchArea {} // Isolate clicks inside the modal.
 
-        if RetargetModel.compare_open: VerticalLayout {
-            padding: 16px;
-            spacing: 12px;
+            if RetargetModel.compare_open: VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
 
-            // "Compare to Snapshot" -- reuses this same dialog shell (see
-            // `visible`'s own doc comment above) rather than a second dialog
-            // component, and this table's row shape rather than a new struct:
-            // `compare_rows` is a `[RetargetRowItem]` like `rows` above, with
-            // `block` blank, `margin` repurposed to the signed mast delta, and
-            // `risk_label`/`risk_color` repurposed as a plain Same/Changed/Added/
-            // Removed status badge instead of a windowing risk (see
-            // `callbacks::retarget_actions::diff_rows_from_deltas`'s own doc
-            // comment for exactly why each field means what it does here).
-            HorizontalLayout {
-                alignment: space-between;
+                // "Compare to Snapshot" -- reuses this same dialog shell rather than a second
+                // dialog component, and this table's row shape rather than a new struct:
+                // `compare_rows` is a `[RetargetRowItem]` like `rows` above, with
+                // `block` blank, `margin` repurposed to the signed mast delta, and
+                // `risk_label`/`risk_color` repurposed as a plain Same/Changed/Added/
+                // Removed status badge instead of a windowing risk (see
+                // `callbacks::retarget_actions::diff_rows_from_deltas`'s own doc
+                // comment for exactly why each field means what it does here).
                 HorizontalLayout {
-                    spacing: 8px;
-                    Image { source: @image-url("../icons/gem.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; vertical-alignment: center; }
-                    Text { text: "Compare to Snapshot"; font-size: 14px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
-                }
-                Rectangle {
-                    width: 24px;
-                    height: 24px;
-                    border-radius: Theme.radius-sm;
-                    background: compare_close_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
-                    compare_close_touch := TouchArea {
-                        clicked => { RetargetModel.compare_close(); }
+                    alignment: space-between;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Image { source: @image-url("../icons/gem.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; vertical-alignment: center; }
+                        Text { text: "Compare to Snapshot"; font-size: 14px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
                     }
-                    Image { source: @image-url("../icons/close.svg"); colorize: Theme.text-muted; width: 12px; height: 12px; horizontal-alignment: center; vertical-alignment: center; }
-                }
-            }
-
-            Rectangle { height: 1px; background: Theme.surface-raised; }
-
-            Text {
-                text: RetargetModel.compare_label;
-                font-size: 11px;
-                color: Theme.text-secondary;
-                wrap: word-wrap;
-            }
-
-            HorizontalLayout {
-                padding-right: 10px;
-                spacing: 6px;
-                Text { text: "Tier"; font-size: 10px; font-weight: 700; color: Theme.text-muted; horizontal-stretch: 1; }
-                Text { text: "Before"; font-size: 10px; font-weight: 700; color: Theme.text-muted; width: 60px; horizontal-alignment: right; }
-                Text { text: "After"; font-size: 10px; font-weight: 700; color: Theme.text-muted; width: 60px; horizontal-alignment: right; }
-                Text { text: "Mast \u{394}"; font-size: 10px; font-weight: 700; color: Theme.text-muted; width: 60px; horizontal-alignment: right; }
-                Text { text: "Status"; font-size: 10px; font-weight: 700; color: Theme.text-muted; width: 64px; horizontal-alignment: right; }
-            }
-
-            ScrollView {
-                vertical-stretch: 1;
-                VerticalLayout {
-                    spacing: 2px;
-                    for row in RetargetModel.compare_rows: Rectangle {
-                        height: 24px;
-                        border-radius: Theme.radius-sm;
-                        background: Theme.surface-sunken;
-
-                        Tooltip { text: @markdown("Tier #\{row.tier_index} \"\{row.name}\""); }
-
-                        HorizontalLayout {
-                            padding-left: 6px;
-                            padding-right: 10px;
-                            spacing: 6px;
-                            Text { text: row.name; font-size: 11px; color: Theme.text-primary; horizontal-stretch: 1; vertical-alignment: center; overflow: elide; }
-                            Text { text: row.old_angle; font-size: 11px; color: Theme.text-secondary; width: 60px; horizontal-alignment: right; vertical-alignment: center; }
-                            Text { text: row.new_angle; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; width: 60px; horizontal-alignment: right; vertical-alignment: center; }
-                            Text { text: row.margin; font-size: 11px; color: Theme.text-secondary; width: 60px; horizontal-alignment: right; vertical-alignment: center; }
-                            Text { text: row.risk_label; font-size: 11px; font-weight: 700; color: row.risk_color; width: 64px; horizontal-alignment: right; vertical-alignment: center; }
-                        }
-                    }
-                }
-            }
-
-            Rectangle { height: 1px; background: Theme.surface-raised; }
-
-            HorizontalLayout {
-                spacing: 8px;
-
-                // The same snapshot-vs-current comparison, but as rendered stones
-                // in the visual compare window (`gui::editor::compare`) -- view only.
-                Rectangle {
-                    horizontal-stretch: 1;
-                    height: 32px;
-                    border-radius: Theme.radius-sm;
-                    background: compare_visual_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
-                    border-width: 1px;
-                    border-color: Theme.border-dialog;
-                    compare_visual_touch := TouchArea {
-                        clicked => { CompareModel.open_snapshot(); }
-                    }
-                    Text { text: "Compare visually…"; font-size: 12px; font-weight: 700; color: Theme.text-primary; horizontal-alignment: center; vertical-alignment: center; }
-                }
-
-                Rectangle {
-                    horizontal-stretch: 1;
-                    height: 32px;
-                    border-radius: Theme.radius-sm;
-                    background: compare_done_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
-                    border-width: 1px;
-                    border-color: Theme.border-dialog;
-                    compare_done_touch := TouchArea {
-                        clicked => { RetargetModel.compare_close(); }
-                    }
-                    Text { text: "Close"; font-size: 12px; font-weight: 700; color: Theme.text-primary; horizontal-alignment: center; vertical-alignment: center; }
-                }
-            }
-        }
-
-        // Two columns: the proposal controls and table on the left, the live
-        // before/after comparison (`CompareView`, driven by the main window's own
-        // `CompareModel` instance) on the right. The main viewport is paused while
-        // this dialog is open, so the comparison pane is the one place the change
-        // is visible.
-        if !RetargetModel.compare_open: HorizontalLayout {
-            padding: 16px;
-            spacing: 16px;
-
-        VerticalLayout {
-            horizontal-stretch: 0;
-            preferred-width: 480px;
-            min-width: 380px;
-            spacing: 12px;
-
-            // 1. Header
-            HorizontalLayout {
-                alignment: space-between;
-                HorizontalLayout {
-                    spacing: 8px;
-                    // Uses the gem icon, not a save icon, since Retarget previews a
-                    // material swap that is applied only via the footer's own
-                    // explicit "Apply" button below.
-                    Image { source: @image-url("../icons/gem.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; vertical-alignment: center; }
-                    Text { text: "Retarget for Material"; font-size: 14px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
-                }
-                Rectangle {
-                    width: 24px;
-                    height: 24px;
-                    border-radius: Theme.radius-sm;
-                    background: close_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
-                    close_touch := TouchArea {
-                        clicked => { if (!RetargetModel.is_busy) { root.close(); } }
-                    }
-                    Image { source: @image-url("../icons/close.svg"); colorize: Theme.text-muted; width: 12px; height: 12px; horizontal-alignment: center; vertical-alignment: center; }
-                }
-            }
-
-            Rectangle { height: 1px; background: Theme.surface-raised; }
-
-            // Scrollable body between the fixed header above and the fixed footer
-            // below: the sections need about 555px, so on a short window the
-            // footer's Cancel / Apply would otherwise be clipped.
-            ScrollView {
-                vertical-stretch: 1;
-                content-width: self.visible-width;
-
-                VerticalLayout {
-                    spacing: 12px;
-                    padding-right: 12px;
-
-            // 2. Target material picker -- owned by this dialog (see
-            // `RetargetModel.target_material_index`'s own doc comment), not the
-            // design settings panel's combo.
-            VerticalLayout {
-                spacing: 6px;
-                Rectangle {
-                    height: target_picker_lbl.preferred-height;
-                    Tooltip { text: @markdown("The material this proposal retargets TO. Starts at the design's own current material when the dialog opens; pick another to preview retargeting onto it."); }
-                    target_picker_lbl := Text { text: "Target Material"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                }
-                HorizontalLayout {
-                    spacing: 6px;
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        height: 30px;
-                        background: Theme.surface-raised;
-                        border-radius: Theme.radius-sm;
-                        border-width: 1px;
-                        border-color: Theme.border-dialog;
-                        ComboBox {
-                            width: 100%;
-                            height: 100%;
-                            model: RetargetModel.material_options;
-                            current-index <=> RetargetModel.target_material_index;
-                            enabled: !RetargetModel.is_busy;
-                            selected(val) => { RetargetModel.proposal_changed(); }
-                        }
-                    }
-                    Rectangle {
-                        width: 96px;
-                        height: 30px;
-                        background: Theme.surface-raised;
-                        border-radius: Theme.radius-sm;
-                        border-width: 1px;
-                        border-color: Theme.border-dialog;
-                        LineEdit {
-                            width: 100%;
-                            height: 100%;
-                            text <=> RetargetModel.target_ri_override_text;
-                            placeholder-text: "Custom n_D";
-                            enabled: !RetargetModel.is_busy;
-                            edited => { RetargetModel.proposal_changed(); }
-                        }
-                    }
-                }
-            }
-
-            // 3. Target material readout -- the RESOLVED result of the picker above.
-            // The name shown is derived from the picker's own `MaterialSelection`
-            // (Rust side, `retarget_actions::target_display_name`), not the resolved
-            // `GemMaterial`, so "(none)"/a typed custom RI never show as "Diamond".
-            // An RI override that fails to parse is surfaced below as its own error
-            // line rather than silently falling back to the design's OLD material
-            // with no sign anything was typed wrong.
-            Rectangle {
-                height: target_row.preferred-height + 12px;
-                border-radius: Theme.radius-sm;
-                background: Theme.surface-sunken;
-                border-width: 1px;
-                border-color: Theme.border-dialog;
-
-                Tooltip { text: @markdown("The material the picker above resolves to -- what this proposal actually retargets TO."); }
-
-                target_row := HorizontalLayout {
-                    padding: 8px;
-                    spacing: 14px;
-                    Text { text: "Target:"; font-size: 11px; color: Theme.text-muted; vertical-alignment: center; }
-                    Text { text: RetargetModel.target_material_name; font-size: 12px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; horizontal-stretch: 1; }
-                    Text { text: "n_D " + RetargetModel.target_material_ri; font-size: 11px; color: Theme.text-secondary; vertical-alignment: center; }
-                    Text { text: "critical " + RetargetModel.target_critical_angle; font-size: 11px; color: Theme.text-secondary; vertical-alignment: center; }
-                }
-            }
-
-            if RetargetModel.target_material_error != "": Text {
-                text: "\u{26a0} " + RetargetModel.target_material_error + " Showing the last valid target; nothing below reflects this text.";
-                font-size: 10px;
-                font-weight: 600;
-                color: Theme.accent-ruby;
-                wrap: word-wrap;
-            }
-
-            // 4. Mode selector
-            VerticalLayout {
-                spacing: 6px;
-                Rectangle {
-                    height: mode_lbl.preferred-height;
-                    Tooltip { text: @markdown("Shift keeps every pavilion tier's own margin over the critical angle fixed -- deterministic, always available. Optimize seeds from that same shift, then searches free (non-anchored) tiers for the target material's own best score."); }
-                    mode_lbl := Text { text: "Mode"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                }
-
-                HorizontalLayout {
-                    spacing: 4px;
-
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        height: 28px;
-                        border-radius: Theme.radius-sm;
-                        background: RetargetModel.mode_index == 0 ? Theme.accent-cyan : (shift_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken);
-                        border-width: 1px;
-                        border-color: RetargetModel.mode_index == 0 ? Theme.accent-cyan : Theme.border-dialog;
-
-                        shift_touch := TouchArea {
-                            enabled: !RetargetModel.is_busy;
-                            clicked => { RetargetModel.mode_index = 0; RetargetModel.proposal_changed(); }
-                        }
-
-                        Text { text: "Shift"; font-size: 11px; font-weight: 600; color: RetargetModel.mode_index == 0 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        height: 28px;
-                        border-radius: Theme.radius-sm;
-                        background: RetargetModel.mode_index == 1 ? Theme.accent-cyan : (optimize_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken);
-                        border-width: 1px;
-                        border-color: RetargetModel.mode_index == 1 ? Theme.accent-cyan : Theme.border-dialog;
-
-                        optimize_touch := TouchArea {
-                            enabled: !RetargetModel.is_busy;
-                            clicked => { RetargetModel.mode_index = 1; RetargetModel.proposal_changed(); }
-                        }
-
-                        Text { text: "Optimize"; font-size: 11px; font-weight: 600; color: RetargetModel.mode_index == 1 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-                }
-            }
-
-            // The comparison for this proposal lives in the right-hand pane; this
-            // row only pops it out into its own window.
-            Rectangle {
-                height: 22px;
-
-                HorizontalLayout {
-                    spacing: 6px;
-                    Text { text: "Comparison"; font-size: 11px; color: Theme.text-secondary; vertical-alignment: center; }
-
-                    Rectangle { horizontal-stretch: 1; }
-
-                    // Moves the pane's comparison into its own window
-                    // (`gui::editor::compare`) -- its "Keep after" runs this
-                    // dialog's own `apply()`.
-                    Rectangle {
-                        width: 84px;
-                        height: 22px;
-                        border-radius: Theme.radius-sm;
-                        opacity: root.can_apply ? 1.0 : 0.45;
-                        background: compare_touch.has-hover && root.can_apply ? Theme.surface-control-hover : Theme.surface-control;
-                        border-width: 1px;
-                        border-color: Theme.border-dialog;
-
-                        Tooltip { text: @markdown("Pop the comparison out into its own window: the current design and the retargeted one side by side, under a split slider, or as a difference overlay, turning together."); }
-
-                        compare_touch := TouchArea {
-                            enabled: root.can_apply;
-                            clicked => { CompareModel.open_retarget(); }
-                        }
-
-                        Text { text: "Compare…"; font-size: 11px; font-weight: 600; color: Theme.text-primary; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-                }
-            }
-
-            // 5. Crown handling
-            VerticalLayout {
-                spacing: 6px;
-                Rectangle {
-                    height: crown_lbl.preferred-height;
-                    Tooltip { text: @markdown("How crown tiers follow the pavilion's critical-angle move. Default (0%) leaves the crown untouched, matching common faceting practice."); }
-                    crown_lbl := Text { text: "Crown Handling"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                }
-
-                HorizontalLayout {
-                    spacing: 8px;
-                    Text { text: "Fraction of shift:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-                    // A std-widgets `Slider` gets keyboard/drag/click support for
-                    // free, and `step` lands on round 5% increments without the
-                    // pixel-hunting a hand-rolled mouse-x/width drag bar would need.
-                    crown_slider := Slider {
-                        horizontal-stretch: 1;
-                        minimum: 0.0;
-                        maximum: 1.0;
-                        step: 0.05;
-                        value <=> RetargetModel.crown_fraction;
-                        enabled: !RetargetModel.is_busy && !RetargetModel.scale_crown_by_ratio;
-                        changed(val) => { RetargetModel.proposal_changed(); }
-                    }
-                    Rectangle {
-                        width: 40px;
-                        height: 22px;
-                        y: (parent.height - self.height) / 2;
-                        border-radius: Theme.radius-sm;
-                        background: Theme.surface-sunken;
-                        border-width: 1px;
-                        border-color: Theme.border-dialog;
-                        crown_pct_edit := LineEdit {
-                            width: 100%;
-                            height: 100%;
-                            enabled: !RetargetModel.is_busy && !RetargetModel.scale_crown_by_ratio;
-                            horizontal-alignment: center;
-                            // Bare digits, no "%" -- `to-float()` below needs the
-                            // whole string to be a number. Reflects the slider/model
-                            // whenever this field isn't the one being typed into --
-                            // `accepted` is the only path that writes the model, so
-                            // there is no binding fight while a cutter is mid-edit.
-                            text: Math.round(RetargetModel.crown_fraction * 100);
-                            accepted => {
-                                RetargetModel.crown_fraction = max(0.0, min(1.0, self.text.to-float() / 100));
-                                RetargetModel.proposal_changed();
-                            }
-                        }
-                    }
-                    Text { text: "%"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; vertical-alignment: center; }
-                }
-
-                Rectangle {
-                    height: 22px;
-                    Tooltip { text: @markdown("Instead of a fraction of the pavilion's shift, scale every crown tier's own raw angle by the ratio of the two materials' critical angles."); }
-
                     HorizontalLayout {
                         spacing: 6px;
-                        Rectangle {
-                            width: 14px;
-                            height: 14px;
-                            y: (parent.height - self.height) / 2;
-                            border-radius: 3px;
-                            background: RetargetModel.scale_crown_by_ratio ? Theme.accent-cyan : transparent;
-                            border-width: 1px;
-                            border-color: RetargetModel.scale_crown_by_ratio ? Theme.accent-cyan : Theme.border-control;
-
-                            if RetargetModel.scale_crown_by_ratio: Image {
-                                source: @image-url("../icons/check.svg");
-                                colorize: Theme.text-on-accent;
-                                width: 9px;
-                                height: 9px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-
-                            ratio_touch := TouchArea {
-                                enabled: !RetargetModel.is_busy;
-                                clicked => {
-                                    RetargetModel.scale_crown_by_ratio = !RetargetModel.scale_crown_by_ratio;
-                                    RetargetModel.proposal_changed();
-                                }
-                            }
+                        VerticalLayout {
+                            alignment: center;
+                            HelpButton { topic: HelpTopics.compare; hint: "Open the manual page on comparing a design with its snapshot"; }
                         }
-                        Text { text: "Scale crown by ratio instead"; font-size: 11px; color: Theme.text-secondary; vertical-alignment: center; }
+                        IconButton {
+                            icon: @image-url("../icons/close.svg");
+                            hint: "Close the snapshot comparison";
+                            tint: Theme.text-muted;
+                            hover_fill: Theme.surface-control-hover;
+                            clicked => { RetargetModel.compare_close(); }
+                        }
                     }
                 }
-            }
 
-            Rectangle { height: 1px; background: Theme.surface-raised; }
+                Rectangle { height: 1px; background: Theme.surface-raised; }
 
-            // 6. Errors: shown instead of the table whenever the current mode/crown
-            // combination cannot produce a valid proposal.
-            if RetargetModel.solve_error != "": Text {
-                text: "Design does not solve: " + RetargetModel.solve_error;
-                font-size: 11px;
-                font-weight: 600;
-                color: Theme.danger;
-                wrap: word-wrap;
-            }
-            if RetargetModel.anchored_tier_errors.length > 0: VerticalLayout {
-                spacing: 4px;
                 Text {
-                    text: "Adopt these tiers' meet constraint before optimizing (Edit tab -> tier list -> Adopt Meet):";
-                    font-size: 11px;
-                    font-weight: 600;
-                    color: Theme.accent-amber;
-                    wrap: word-wrap;
-                }
-                for line in RetargetModel.anchored_tier_errors: Text {
-                    text: "• " + line;
+                    text: RetargetModel.compare_label;
                     font-size: 11px;
                     color: Theme.text-secondary;
-                }
-            }
-
-            // 7. The proposal table -- one row per pavilion/crown tier.
-            if RetargetModel.solve_error == "" && RetargetModel.anchored_tier_errors.length == 0: VerticalLayout {
-                vertical-stretch: 1;
-                spacing: 4px;
-
-                // Shown when this proposal was computed against a design generation
-                // that has since moved on (`RetargetModel.stale`, `gui::editor::stale`'s
-                // own doc comment) -- "Recompute" rebuilds against the live
-                // design/current controls, exactly what changing any control here
-                // already does.
-                if RetargetModel.stale && !RetargetModel.is_busy: StaleBadge {
-                    recompute => { RetargetModel.proposal_changed(); }
+                    wrap: word-wrap;
                 }
 
                 HorizontalLayout {
                     padding-right: 10px;
                     spacing: 6px;
-                    Text { text: "Block"; font-size: 10px; font-weight: 700; color: Theme.text-muted; width: 56px; }
-                    Text { text: "Tier"; font-size: 10px; font-weight: 700; color: Theme.text-muted; horizontal-stretch: 1; }
-                    Text { text: "Old"; font-size: 10px; font-weight: 700; color: Theme.text-muted; width: 60px; horizontal-alignment: right; }
-                    Text { text: "New"; font-size: 10px; font-weight: 700; color: Theme.text-muted; width: 60px; horizontal-alignment: right; }
-                    Text { text: "Margin"; font-size: 10px; font-weight: 700; color: Theme.text-muted; width: 60px; horizontal-alignment: right; }
-                    Text { text: "Risk"; font-size: 10px; font-weight: 700; color: Theme.text-muted; width: 64px; horizontal-alignment: right; }
+                    ColumnHeading { horizontal-stretch: 1; text: "Tier"; align: TextHorizontalAlignment.left; hint: "The facet, named as on the cutting diagram."; }
+                    ColumnHeading { width: 60px; text: "Before"; hint: "The facet's angle when the snapshot was taken."; }
+                    ColumnHeading { width: 60px; text: "After"; hint: "The facet's angle in the design now."; }
+                    ColumnHeading { width: 60px; text: "Mast \u{394}"; hint: "How much the mast reading changed. The mast is the distance of this facet from the stone's centre; it sets the depth."; }
+                    ColumnHeading { width: 64px; text: "Status"; hint: "Same, Changed, Added or Removed since the snapshot."; }
                 }
 
                 ScrollView {
                     vertical-stretch: 1;
-                    // A real height floor/preference (not just stretch): this table now
-                    // sits inside the dialog body's own ScrollView, which owns the
-                    // overflow on a short window.
-                    min-height: 96px;
-                    preferred-height: 240px;
                     VerticalLayout {
                         spacing: 2px;
-                        for row in RetargetModel.rows: Rectangle {
+                        for row in RetargetModel.compare_rows: Rectangle {
                             height: 24px;
                             border-radius: Theme.radius-sm;
                             background: Theme.surface-sunken;
 
-                            Tooltip { text: @markdown("Tier #\{row.tier_index} \"\{row.name}\" (\{row.block})"); }
+                            accessible-role: AccessibleRole.list-item;
+                            accessible-label: row.name + ": " + row.old_angle + " before, " + row.new_angle + " after, mast change " + row.margin + ", " + row.risk_label;
+
+                            Tooltip { text: @markdown("Tier #\{row.tier_index} \"\{row.name}\""); }
 
                             HorizontalLayout {
                                 padding-left: 6px;
                                 padding-right: 10px;
                                 spacing: 6px;
-                                Text { text: row.block; font-size: 10px; color: Theme.text-muted; width: 56px; vertical-alignment: center; }
                                 Text { text: row.name; font-size: 11px; color: Theme.text-primary; horizontal-stretch: 1; vertical-alignment: center; overflow: elide; }
                                 Text { text: row.old_angle; font-size: 11px; color: Theme.text-secondary; width: 60px; horizontal-alignment: right; vertical-alignment: center; }
                                 Text { text: row.new_angle; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; width: 60px; horizontal-alignment: right; vertical-alignment: center; }
@@ -580,90 +283,768 @@ export component RetargetDialog inherits Rectangle {
                         }
                     }
                 }
-            }
 
-            // 8. Notes
-            if RetargetModel.notes.length > 0: VerticalLayout {
-                spacing: 2px;
-                for line in RetargetModel.notes: Text {
-                    text: line;
-                    font-size: 10px;
-                    font-italic: true;
-                    color: Theme.text-muted;
-                    wrap: word-wrap;
+                Rectangle { height: 1px; background: Theme.surface-raised; }
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                    // The same snapshot-vs-current comparison, but as rendered stones
+                    // in the visual compare window (`gui::editor::compare`) -- view only.
+                    ActionButton {
+                        horizontal-stretch: 1;
+                        height: 32px;
+                        text: "Compare visually…";
+                        hint: "Open the snapshot and the design as two rendered stones, side by side. This only looks; nothing changes.";
+                        fill: Theme.surface-control;
+                        hover_fill: Theme.surface-control-hover;
+                        font_size: 12px;
+                        weight: 700;
+                        clicked => { CompareModel.open_snapshot(); }
+                    }
+
+                    ActionButton {
+                        horizontal-stretch: 1;
+                        height: 32px;
+                        text: "Close";
+                        hint: "Close the snapshot comparison.";
+                        fill: Theme.surface-control;
+                        hover_fill: Theme.surface-control-hover;
+                        font_size: 12px;
+                        weight: 700;
+                        clicked => { RetargetModel.compare_close(); }
+                    }
                 }
             }
 
-            if RetargetModel.is_busy: Text {
-                text: RetargetModel.optimize_max_evaluations > 0
-                    ? "Optimizing... " + RetargetModel.optimize_evaluations + " / " + RetargetModel.optimize_max_evaluations + " evaluations"
-                    : "Optimizing...";
-                font-size: 11px;
-                font-weight: 600;
-                color: Theme.accent-cyan;
-            }
-                } // end scrolling body layout
-            } // end body ScrollView
+            // Two columns: the proposal controls and table on the left, the live
+            // before/after comparison (`CompareView`, driven by the main window's own
+            // `CompareModel` instance) on the right. The main viewport is paused while
+            // this dialog is open, so the comparison pane is the one place the change
+            // is visible.
+            if !RetargetModel.compare_open: HorizontalLayout {
+                padding: 16px;
+                spacing: 16px;
 
-            Rectangle { height: 1px; background: Theme.surface-raised; }
+                VerticalLayout {
+                    horizontal-stretch: 0;
+                    preferred-width: 480px;
+                    min-width: 380px;
+                    spacing: 12px;
 
-            // 9. Footer
-            HorizontalLayout {
-                spacing: 8px;
-
-                Rectangle {
-                    width: 90px;
-                    height: 32px;
-                    border-radius: Theme.radius-sm;
-                    background: cancel_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken;
-                    border-width: 1px;
-                    border-color: Theme.border-dialog;
-
-                    // While busy this cancels the running Optimize search instead of
-                    // closing the dialog -- see `RetargetModel.cancel_optimize`'s own
-                    // doc comment. Always enabled (unlike the header's X and the
-                    // backdrop click, which stay disabled while busy): this is the
-                    // one control that can actually stop a running search.
-                    cancel_touch := TouchArea {
-                        clicked => {
-                            if (RetargetModel.is_busy) {
-                                RetargetModel.cancel_optimize();
-                            } else {
-                                root.close();
+                    // 1. Header
+                    HorizontalLayout {
+                        alignment: space-between;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            // Uses the gem icon, not a save icon, since Retarget previews a
+                            // material swap that is applied only via the footer's own
+                            // explicit "Apply" button below.
+                            Image { source: @image-url("../icons/gem.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; vertical-alignment: center; }
+                            Text { text: "Retarget for Material"; font-size: 14px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            VerticalLayout {
+                                alignment: center;
+                                HelpButton { topic: HelpTopics.retarget; hint: "Open the manual page on retargeting a design for another material"; }
+                            }
+                            IconButton {
+                                icon: @image-url("../icons/close.svg");
+                                hint: "Close without changing the design";
+                                tint: Theme.text-muted;
+                                hover_fill: Theme.surface-control-hover;
+                                enabled: !RetargetModel.is_busy;
+                                clicked => { root.close(); }
                             }
                         }
                     }
 
-                    Text { text: "Cancel"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                }
+                    Rectangle { height: 1px; background: Theme.surface-raised; }
 
-                Rectangle {
-                    horizontal-stretch: 1;
-                    height: 32px;
-                    border-radius: Theme.radius-sm;
-                    opacity: root.can_apply ? 1.0 : 0.45;
-                    background: apply_touch.has-hover && root.can_apply ? Theme.accent-cyan-hover : Theme.accent-cyan;
+                    // Scrollable body between the fixed header above and the fixed footer
+                    // below: the sections need about 555px, so on a short window the
+                    // footer's Cancel / Apply would otherwise be clipped.
+                    ScrollView {
+                        vertical-stretch: 1;
+                        content-width: self.visible-width;
 
-                    Tooltip { text: @markdown("Pushes one undoable edit retargeting every listed tier, then re-solves the design."); }
+                        VerticalLayout {
+                            spacing: 12px;
+                            padding-right: 12px;
 
-                    apply_touch := TouchArea {
-                        enabled: root.can_apply;
-                        clicked => { RetargetModel.apply(); }
+                            // 2. Target material picker -- owned by this dialog (see
+                            // `RetargetModel.target_material_index`'s own doc comment), not the
+                            // design settings panel's combo.
+                            VerticalLayout {
+                                spacing: 4px;
+                                FieldCaption {
+                                    text: "Target Material";
+                                    hint: "The material this proposal retargets TO. Starts at the design's own current material when the dialog opens; pick another to preview retargeting onto it.";
+                                }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    TipBox {
+                                        horizontal-stretch: 1;
+                                        hint: "Pick the material the stone is to be cut in.";
+                                        ComboBox {
+                                            model: RetargetModel.material_options;
+                                            current-index <=> RetargetModel.target_material_index;
+                                            enabled: !RetargetModel.is_busy;
+                                            accessible-label: "Target material";
+                                            selected(val) => { RetargetModel.proposal_changed(); }
+                                        }
+                                    }
+                                    TipBox {
+                                        width: 96px;
+                                        hint: "Or type a refractive index of your own, for example 1.54. It is the number n_D measured for yellow light. Leave empty to use the material.";
+                                        LineEdit {
+                                            text <=> RetargetModel.target_ri_override_text;
+                                            placeholder-text: "Custom n_D";
+                                            enabled: !RetargetModel.is_busy;
+                                            accessible-label: "Custom refractive index n_D";
+                                            edited => { RetargetModel.proposal_changed(); }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 3. Target material readout -- the RESOLVED result of the picker above.
+                            // The name shown is derived from the picker's own `MaterialSelection`
+                            // (Rust side, `retarget_actions::target_display_name`), not the resolved
+                            // `GemMaterial`, so "(none)"/a typed custom RI never show as "Diamond".
+                            // An RI override that fails to parse is surfaced below as its own error
+                            // line rather than silently falling back to the design's OLD material
+                            // with no sign anything was typed wrong.
+                            Rectangle {
+                                height: target_row.preferred-height + 12px;
+                                border-radius: Theme.radius-sm;
+                                background: Theme.surface-sunken;
+                                border-width: 1px;
+                                border-color: Theme.border-dialog;
+
+                                accessible-role: AccessibleRole.groupbox;
+                                accessible-label: "Target: " + RetargetModel.target_material_name + ", n_D " + RetargetModel.target_material_ri + ", critical angle " + RetargetModel.target_critical_angle;
+
+                                Tooltip { text: @markdown("The material the picker above resolves to: what this proposal actually retargets TO. The critical angle is the steepest angle at which light still stays inside the stone."); }
+
+                                target_row := HorizontalLayout {
+                                    padding: 8px;
+                                    spacing: 14px;
+                                    Text { text: "Target:"; font-size: 11px; color: Theme.text-muted; vertical-alignment: center; }
+                                    Text { text: RetargetModel.target_material_name; font-size: 12px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; horizontal-stretch: 1; }
+                                    Text { text: "n_D " + RetargetModel.target_material_ri; font-size: 11px; color: Theme.text-secondary; vertical-alignment: center; }
+                                    Text { text: "critical " + RetargetModel.target_critical_angle; font-size: 11px; color: Theme.text-secondary; vertical-alignment: center; }
+                                }
+                            }
+
+                            if RetargetModel.target_material_error != "": HorizontalLayout {
+                                spacing: 6px;
+                                Image {
+                                    source: @image-url("../icons/warning.svg");
+                                    colorize: Theme.accent-ruby;
+                                    width: 12px;
+                                    height: 12px;
+                                    y: 1px;
+                                }
+                                Text {
+                                    text: RetargetModel.target_material_error + " Showing the last valid target; nothing below reflects this text.";
+                                    font-size: 10px;
+                                    font-weight: 600;
+                                    color: Theme.accent-ruby;
+                                    wrap: word-wrap;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+
+                            // 4. Mode selector
+                            VerticalLayout {
+                                spacing: 4px;
+                                FieldCaption {
+                                    text: "Mode";
+                                    hint: "Shift moves every crown and pavilion angle by a formula: deterministic, always available, but it can leave a stone that is not valid. Optimize starts from the Shift result and searches every crown and pavilion angle inside a range you pick for the best score in the target material. The girdle, the table and the culet stay, and every option it offers is valid.";
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 4px;
+
+                                    SegmentPill {
+                                        text: "Shift";
+                                        hint: "Move every crown and pavilion angle by a formula. It is quick and always available, but the result may not be a valid stone.";
+                                        selected: RetargetModel.mode_index == 0;
+                                        enabled: !RetargetModel.is_busy;
+                                        picked => { RetargetModel.mode_index = 0; RetargetModel.proposal_changed(); }
+                                    }
+
+                                    SegmentPill {
+                                        text: "Optimize";
+                                        hint: "Search for the best crown and pavilion angles in the new material. It takes longer, and every option it offers is valid.";
+                                        selected: RetargetModel.mode_index == 1;
+                                        enabled: !RetargetModel.is_busy;
+                                        picked => { RetargetModel.mode_index = 1; RetargetModel.proposal_changed(); }
+                                    }
+                                }
+                            }
+
+                            // 4b. Optimize mode: the three settings (Advanced mode only), the Search
+                            // button, its progress, what it found and the options to pick from.
+                            // Picking one fills the table, the verdict and the comparison below;
+                            // Apply commits that one.
+                            if RetargetModel.mode_index == 1: VerticalLayout {
+                                spacing: 8px;
+
+                                if GuideModel.shows_advanced(): VerticalLayout {
+                                    spacing: 4px;
+                                    FieldCaption {
+                                        text: "Objective";
+                                        hint: "What the search favours when it scores a stone. Balanced weighs windowing, extinction and brilliance equally; the others lean one way.";
+                                    }
+                                    TipBox {
+                                        hint: "Pick what the search should favour.";
+                                        ComboBox {
+                                            model: RetargetModel.objective_options;
+                                            current-index <=> RetargetModel.objective_index;
+                                            enabled: !RetargetModel.is_busy;
+                                            accessible-label: "Objective";
+                                            selected(val) => { RetargetModel.settings_changed(); }
+                                        }
+                                    }
+                                    Text { text: RetargetModel.objective_description; font-size: 10px; font-italic: true; color: Theme.text-muted; wrap: word-wrap; }
+                                }
+
+                                if GuideModel.shows_advanced(): HorizontalLayout {
+                                    spacing: 8px;
+
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 4px;
+                                        FieldCaption {
+                                            text: "Range";
+                                            hint: "How far each crown and pavilion angle may move from its Shift angle, either side. A wider range finds more but takes longer to be worth it, and the options stay valid either way.";
+                                        }
+                                        TipBox {
+                                            hint: "Pick how far the angles may move.";
+                                            ComboBox {
+                                                model: RetargetModel.range_options;
+                                                current-index <=> RetargetModel.range_index;
+                                                enabled: !RetargetModel.is_busy;
+                                                accessible-label: "Range";
+                                                selected(val) => { RetargetModel.settings_changed(); }
+                                            }
+                                        }
+                                    }
+
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 4px;
+                                        FieldCaption {
+                                            text: "Effort";
+                                            hint: "How many stones the search may score. More steps look harder and take longer; the time estimate below uses the speed measured on this design.";
+                                        }
+                                        TipBox {
+                                            hint: "Pick how hard the search tries.";
+                                            ComboBox {
+                                                model: RetargetModel.effort_options;
+                                                current-index <=> RetargetModel.effort_index;
+                                                enabled: !RetargetModel.is_busy;
+                                                accessible-label: "Effort";
+                                                selected(val) => { RetargetModel.settings_changed(); }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if GuideModel.shows_advanced(): ToggleRow {
+                                    text: "Keep the design's look";
+                                    hint: "Scores every option with a penalty for drifting from the table size and the crown-to-pavilion ratio of the design as it is.";
+                                    checked: RetargetModel.keep_look;
+                                    enabled: !RetargetModel.is_busy;
+                                    label_color: Theme.text-secondary;
+                                    toggled => {
+                                        RetargetModel.keep_look = !RetargetModel.keep_look;
+                                        RetargetModel.settings_changed();
+                                    }
+                                }
+
+                                Text {
+                                    text: "" + RetargetModel.free_tier_count + " angles can vary. " + RetargetModel.estimate_text;
+                                    font-size: 10px;
+                                    color: Theme.text-muted;
+                                    wrap: word-wrap;
+                                }
+
+                                ActionButton {
+                                    height: 32px;
+                                    text: RetargetModel.search_done ? "Search again" : "Search for better angles";
+                                    hint: "Search for better crown and pavilion angles, starting from the Shift result. It runs in the background and can be cancelled. Every option it offers is checked the same way Shift is, so none of them loses the girdle.";
+                                    fill: Theme.accent-cyan;
+                                    hover_fill: Theme.accent-cyan-hover;
+                                    ink: Theme.text-on-accent;
+                                    edge: Theme.accent-cyan;
+                                    font_size: 12px;
+                                    weight: 700;
+                                    enabled: !RetargetModel.is_busy;
+                                    clicked => { RetargetModel.search(); }
+                                }
+
+                                if RetargetModel.is_busy: Text {
+                                    text: RetargetModel.search_progress_text;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    color: Theme.accent-cyan;
+                                    wrap: word-wrap;
+                                }
+
+                                if RetargetModel.search_error != "": HorizontalLayout {
+                                    spacing: 6px;
+                                    Image {
+                                        source: @image-url("../icons/warning.svg");
+                                        colorize: Theme.accent-ruby;
+                                        width: 12px;
+                                        height: 12px;
+                                        y: 1px;
+                                    }
+                                    Text {
+                                        text: RetargetModel.search_error;
+                                        font-size: 10px;
+                                        font-weight: 600;
+                                        color: Theme.accent-ruby;
+                                        wrap: word-wrap;
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+
+                                if RetargetModel.search_summary != "": Text {
+                                    text: RetargetModel.search_summary;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    color: Theme.text-primary;
+                                    wrap: word-wrap;
+                                }
+
+                                for line in RetargetModel.search_notes: Text {
+                                    text: line;
+                                    font-size: 10px;
+                                    font-italic: true;
+                                    color: Theme.text-muted;
+                                    wrap: word-wrap;
+                                }
+
+                                if RetargetModel.candidates.length > 0: VerticalLayout {
+                                    spacing: 4px;
+
+                                    Text { text: "Options (click one to see it)"; font-size: 10px; font-weight: 700; color: Theme.text-muted; }
+
+                                    // The list is one Tab stop; Up and Down pick the previous or next
+                                    // option like a click does, Space picks the first one.
+                                    cand_focus := FocusScope {
+                                        height: cand_list.preferred-height;
+                                        enabled: !RetargetModel.is_busy;
+                                        accessible-role: AccessibleRole.list;
+                                        accessible-label: "Retarget options";
+                                        accessible-description: "Up and Down pick the previous or next option. The picked option fills the table and the comparison.";
+                                        key-pressed(event) => {
+                                            if event.text == Key.DownArrow {
+                                                if RetargetModel.selected_candidate < RetargetModel.candidates.length - 1 {
+                                                    RetargetModel.select_candidate(RetargetModel.selected_candidate + 1);
+                                                }
+                                                return accept;
+                                            } else if event.text == Key.UpArrow {
+                                                if RetargetModel.selected_candidate > 0 {
+                                                    RetargetModel.select_candidate(RetargetModel.selected_candidate - 1);
+                                                }
+                                                return accept;
+                                            } else if event.text == Key.Space {
+                                                if RetargetModel.selected_candidate < 0 {
+                                                    RetargetModel.select_candidate(0);
+                                                }
+                                                return accept;
+                                            }
+                                            reject
+                                        }
+
+                                        cand_list := VerticalLayout {
+                                            spacing: 4px;
+                                            for cand[index] in RetargetModel.candidates: CandidateRow {
+                                                item: cand;
+                                                selected: RetargetModel.selected_candidate == index;
+                                                ringed: cand_focus.has-focus && RetargetModel.selected_candidate == index;
+                                                active: !RetargetModel.is_busy;
+                                                clicked => {
+                                                    cand_focus.focus();
+                                                    RetargetModel.select_candidate(index);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // The comparison for this proposal lives in the right-hand pane; this
+                            // row only pops it out into its own window.
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text { text: "Comparison"; font-size: 11px; color: Theme.text-secondary; vertical-alignment: center; }
+
+                                Rectangle { horizontal-stretch: 1; }
+
+                                // Moves the pane's comparison into its own window
+                                // (`gui::editor::compare`) -- its "Keep after" runs this
+                                // dialog's own `apply()`.
+                                ActionButton {
+                                    width: 96px;
+                                    height: 24px;
+                                    text: "Compare…";
+                                    hint: "Pop the comparison out into its own window: the current design and the retargeted one side by side, under a split slider, or as a difference overlay, turning together. It also works on a change that is not valid, to show what goes wrong. It waits while the change is being checked.";
+                                    fill: Theme.surface-control;
+                                    hover_fill: Theme.surface-control-hover;
+                                    enabled: root.can_compare;
+                                    clicked => { CompareModel.open_retarget(); }
+                                }
+                            }
+
+                            // 5. Crown handling -- Advanced mode only.
+                            if GuideModel.shows_advanced(): VerticalLayout {
+                                spacing: 6px;
+                                FieldCaption {
+                                    text: "Crown Handling";
+                                    hint: "How crown tiers follow the pavilion's move. Default: the crown follows the pavilion's stretch, so the stone keeps its silhouette and table size. Fraction and ratio are the older rules.";
+                                }
+
+                                ToggleRow {
+                                    text: "Crown follows the pavilion (keeps the silhouette)";
+                                    hint: "Scale every crown tier's slope by the same vertical stretch the pavilion gets, so the whole stone is the original stretched up or down: the plan view, the table size and the crown-to-pavilion proportion stay. Switch it off to use a fraction of the shift instead. Scaling by ratio, below, wins over both.";
+                                    checked: RetargetModel.crown_follows_pavilion;
+                                    enabled: !RetargetModel.is_busy;
+                                    label_color: Theme.text-secondary;
+                                    toggled => {
+                                        RetargetModel.crown_follows_pavilion = !RetargetModel.crown_follows_pavilion;
+                                        RetargetModel.proposal_changed();
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text { text: "Fraction of shift:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+                                    // A std-widgets `Slider` gets keyboard/drag/click support for
+                                    // free, and `step` lands on round 5% increments without the
+                                    // pixel-hunting a hand-rolled mouse-x/width drag bar would need.
+                                    TipBox {
+                                        horizontal-stretch: 1;
+                                        hint: "How much of the pavilion's change the crown follows, from 0 to 100 percent.";
+                                        crown_slider := Slider {
+                                            minimum: 0.0;
+                                            maximum: 1.0;
+                                            step: 0.05;
+                                            value <=> RetargetModel.crown_fraction;
+                                            enabled: !RetargetModel.is_busy && !RetargetModel.scale_crown_by_ratio && !RetargetModel.crown_follows_pavilion;
+                                            accessible-label: "Crown fraction of the pavilion shift";
+                                            changed(val) => { RetargetModel.proposal_changed(); }
+                                        }
+                                    }
+                                    TipBox {
+                                        width: 72px;
+                                        hint: "The same fraction as a percentage. Type a number and press Enter.";
+                                        crown_pct_edit := LineEdit {
+                                            enabled: !RetargetModel.is_busy && !RetargetModel.scale_crown_by_ratio && !RetargetModel.crown_follows_pavilion;
+                                            horizontal-alignment: center;
+                                            accessible-label: "Crown fraction in percent";
+                                            // Bare digits, no "%" -- `to-float()` below needs the
+                                            // whole string to be a number. Reflects the slider/model
+                                            // whenever this field isn't the one being typed into --
+                                            // `accepted` is the only path that writes the model, so
+                                            // there is no binding fight while a cutter is mid-edit.
+                                            text: Math.round(RetargetModel.crown_fraction * 100);
+                                            accepted => {
+                                                RetargetModel.crown_fraction = max(0.0, min(1.0, self.text.to-float() / 100));
+                                                RetargetModel.proposal_changed();
+                                            }
+                                        }
+                                    }
+                                    Text { text: "%"; width: 14px; horizontal-alignment: left; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; vertical-alignment: center; }
+                                }
+
+                                ToggleRow {
+                                    text: "Scale crown by ratio instead";
+                                    hint: "Instead of a fraction of the pavilion's shift, scale every crown tier's own raw angle by the ratio of the two materials' critical angles.";
+                                    checked: RetargetModel.scale_crown_by_ratio;
+                                    enabled: !RetargetModel.is_busy;
+                                    label_color: Theme.text-secondary;
+                                    toggled => {
+                                        RetargetModel.scale_crown_by_ratio = !RetargetModel.scale_crown_by_ratio;
+                                        RetargetModel.proposal_changed();
+                                    }
+                                }
+                            }
+
+                            // 5b. Girdle allowance -- Advanced mode only; on by default.
+                            if GuideModel.shows_advanced(): ToggleRow {
+                                text: "Allow a thicker girdle (up to +10 %)";
+                                hint: "When the new angles would pinch the girdle at its corners, thicken the girdle band by 5 % and then 10 % (never thinner) before giving up. Plan view, table and culet size and the crown-to-pavilion ratio are kept exactly; only the total depth grows by the girdle change. The result text says which step was used.";
+                                checked: RetargetModel.girdle_allowance;
+                                enabled: !RetargetModel.is_busy;
+                                label_color: Theme.text-secondary;
+                                toggled => {
+                                    RetargetModel.girdle_allowance = !RetargetModel.girdle_allowance;
+                                    RetargetModel.proposal_changed();
+                                }
+                            }
+
+                            Rectangle { height: 1px; background: Theme.surface-raised; }
+
+                            // 6. Errors: shown instead of the table whenever the current mode/crown
+                            // combination cannot produce a valid proposal.
+                            if RetargetModel.solve_error != "": Text {
+                                text: "Design does not solve: " + RetargetModel.solve_error;
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: Theme.danger;
+                                wrap: word-wrap;
+                            }
+                            // 7. The proposal table -- one row per pavilion/crown tier.
+                            if RetargetModel.solve_error == "" && RetargetModel.anchored_tier_errors.length == 0: VerticalLayout {
+                                vertical-stretch: 1;
+                                spacing: 4px;
+
+                                // Shown when this proposal was computed against a design generation
+                                // that has since moved on (`RetargetModel.stale`, `gui::editor::stale`'s
+                                // own doc comment) -- "Recompute" rebuilds against the live
+                                // design/current controls, exactly what changing any control here
+                                // already does.
+                                if RetargetModel.stale && !RetargetModel.is_busy: StaleBadge {
+                                    recompute => { RetargetModel.proposal_changed(); }
+                                }
+
+                                HorizontalLayout {
+                                    padding-right: 10px;
+                                    spacing: 6px;
+                                    ColumnHeading { width: 56px; text: "Block"; align: TextHorizontalAlignment.left; hint: "The part of the stone the facet belongs to: crown, pavilion, girdle, table or culet."; }
+                                    ColumnHeading { horizontal-stretch: 1; text: "Tier"; align: TextHorizontalAlignment.left; hint: "The facet, named as on the cutting diagram."; }
+                                    ColumnHeading { width: 60px; text: "Old"; hint: "The facet's angle now."; }
+                                    ColumnHeading { width: 60px; text: "New"; hint: "The facet's angle after the retarget."; }
+                                    ColumnHeading {
+                                        width: 80px;
+                                        text: "Margin";
+                                        hint: "Margin: how far the facet stays on the safe side of the target material's critical angle, in degrees. Pavilion rows read the margin for light entering through the table (a negative margin lets light leak out of the back, a window). Crown rows show an estimate of the same margin for light entering through the crown, read against the pavilion of the retargeted design and marked est. The estimate follows one ray through the crown facet and onto the main pavilion facet on the same side of the stone, so treat it as a guide, not a measurement. The table, culet and girdle have no margin.";
+                                    }
+                                    ColumnHeading {
+                                        width: 72px;
+                                        text: "Risk";
+                                        hint: "Risk: Safe is a margin of 2 degrees or more, Marginal is 0 to 2 degrees, Windows is a negative margin. Not changed marks a facet the retarget leaves alone. Follows marks a facet whose angle follows a relation, so it moves with the facets it reads and is never changed on its own. A dash means there is nothing to measure it against.";
+                                    }
+                                }
+
+                                ScrollView {
+                                    vertical-stretch: 1;
+                                    // A real height floor/preference (not just stretch): this table now
+                                    // sits inside the dialog body's own ScrollView, which owns the
+                                    // overflow on a short window.
+                                    min-height: 96px;
+                                    preferred-height: 240px;
+                                    VerticalLayout {
+                                        spacing: 2px;
+                                        for row in RetargetModel.rows: row_box := Rectangle {
+                                            // A tier the retarget lists but leaves alone (the table, the
+                                            // culet) arrives with the risk label "Not changed" and is
+                                            // greyed; a row with nothing to measure arrives with a dash.
+                                            property <bool> unchanged: row.risk_label == "Not changed";
+                                            // "Follows": the angle follows a relation, so the cell reads the
+                                            // relation and no risk.
+                                            property <bool> no_risk: row.risk_label == "Not changed" || row.risk_label == "\u{2014}" || row.risk_label == "Follows";
+                                            height: 24px;
+                                            border-radius: Theme.radius-sm;
+                                            background: Theme.surface-sunken;
+                                            opacity: row_box.unchanged ? 0.6 : 1.0;
+
+                                            accessible-role: AccessibleRole.list-item;
+                                            accessible-label: row.name + " (" + row.block + "): " + row.old_angle + " now, " + row.new_angle + " after, margin " + row.margin + ", " + row.risk_label;
+
+                                            Tooltip { text: @markdown("Tier #\{row.tier_index} \"\{row.name}\" (\{row.block})"); }
+
+                                            HorizontalLayout {
+                                                padding-left: 6px;
+                                                padding-right: 10px;
+                                                spacing: 6px;
+                                                Text { text: row.block; font-size: 10px; color: Theme.text-muted; width: 56px; vertical-alignment: center; }
+                                                Text { text: row.name; font-size: 11px; color: Theme.text-primary; horizontal-stretch: 1; vertical-alignment: center; overflow: elide; }
+                                                Text { text: row.old_angle; font-size: 11px; color: Theme.text-secondary; width: 60px; horizontal-alignment: right; vertical-alignment: center; }
+                                                Text { text: row.new_angle; font-size: 11px; font-weight: 700; color: row_box.unchanged ? Theme.text-secondary : Theme.accent-cyan; width: 60px; horizontal-alignment: right; vertical-alignment: center; }
+                                                Text { text: row.margin; font-size: 11px; color: Theme.text-secondary; width: 80px; horizontal-alignment: right; vertical-alignment: center; overflow: elide; }
+                                                Text { text: row.risk_label; font-size: 11px; font-weight: 700; color: row_box.no_risk ? Theme.text-muted : row.risk_color; width: 72px; horizontal-alignment: right; vertical-alignment: center; overflow: elide; }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 7b. The verdict on the retargeted stone (Shift mode): checked on a worker
+                            // thread after every change, so it says "Checking..." first. Apply needs a
+                            // valid (or uncheckable) result; the reasons say what to change.
+                            if RetargetModel.validity_state != 0: VerticalLayout {
+                                spacing: 4px;
+
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    if RetargetModel.validity_state == 2: Image {
+                                        source: @image-url("../icons/check.svg");
+                                        colorize: Theme.success;
+                                        width: 12px;
+                                        height: 12px;
+                                        y: 1px;
+                                    }
+                                    if RetargetModel.validity_state == 3: Image {
+                                        source: @image-url("../icons/close.svg");
+                                        colorize: Theme.danger;
+                                        width: 12px;
+                                        height: 12px;
+                                        y: 1px;
+                                    }
+                                    if RetargetModel.validity_state == 4: Image {
+                                        source: @image-url("../icons/warning.svg");
+                                        colorize: Theme.accent-amber;
+                                        width: 12px;
+                                        height: 12px;
+                                        y: 1px;
+                                    }
+                                    Text {
+                                        text: RetargetModel.validity_text;
+                                        font-size: 11px;
+                                        font-weight: 700;
+                                        color: RetargetModel.validity_state == 2 ? Theme.success
+                                            : (RetargetModel.validity_state == 3 ? Theme.danger
+                                            : (RetargetModel.validity_state == 4 ? Theme.accent-amber : Theme.accent-cyan));
+                                        wrap: word-wrap;
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+
+                                for line in RetargetModel.validity_details: Text {
+                                    text: line;
+                                    font-size: 10px;
+                                    color: Theme.text-secondary;
+                                    wrap: word-wrap;
+                                }
+
+                                if RetargetModel.strategy_text != "" && RetargetModel.validity_state != 1: Text {
+                                    text: RetargetModel.strategy_text;
+                                    font-size: 10px;
+                                    font-italic: true;
+                                    color: Theme.text-muted;
+                                    wrap: word-wrap;
+                                }
+                            }
+
+                            // 7c. The optical comparison: what the material change does to the stone as it
+                            // is, and what the retarget wins back. Table-up fast estimate, comparable with
+                            // itself, not with a full tilt sweep.
+                            if RetargetModel.metrics_cells.length == 9: VerticalLayout {
+                                spacing: 2px;
+
+                                Rectangle {
+                                    height: metrics_title.preferred-height;
+                                    Tooltip { text: @markdown("Windowing is light leaking straight out of the pavilion, brilliance is light returned to the eye with the table facing up, extinction is light trapped or lost. A fast table-up estimate under the fixed grading-tray lighting (not the viewport preset): use it to compare the three columns with each other, not with a full tilt sweep. See the glossary."); }
+                                    metrics_title := Text { text: "Optical comparison (table up)"; font-size: 10px; font-weight: 700; color: Theme.text-muted; }
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    spacing: 6px;
+                                    Text { text: ""; width: 66px; }
+                                    Text { text: "Current"; font-size: 10px; font-weight: 700; color: Theme.text-muted; horizontal-stretch: 1; horizontal-alignment: right; overflow: elide; }
+                                    Text { text: "Current in " + RetargetModel.target_material_name; font-size: 10px; font-weight: 700; color: Theme.text-muted; horizontal-stretch: 1; horizontal-alignment: right; overflow: elide; }
+                                    Text { text: "Retargeted"; font-size: 10px; font-weight: 700; color: Theme.text-muted; horizontal-stretch: 1; horizontal-alignment: right; overflow: elide; }
+                                }
+
+                                for label[index] in ["Windowing", "Brilliance", "Extinction"]: Rectangle {
+                                    height: 22px;
+                                    border-radius: Theme.radius-sm;
+                                    background: Theme.surface-sunken;
+
+                                    accessible-role: AccessibleRole.list-item;
+                                    accessible-label: label + ": current " + RetargetModel.metrics_cells[index * 3] + ", current in " + RetargetModel.target_material_name + " " + RetargetModel.metrics_cells[index * 3 + 1] + ", retargeted " + RetargetModel.metrics_cells[index * 3 + 2];
+
+                                    HorizontalLayout {
+                                        padding-left: 6px;
+                                        padding-right: 6px;
+                                        spacing: 6px;
+                                        Text { text: label; font-size: 11px; color: Theme.text-secondary; width: 66px; vertical-alignment: center; }
+                                        Text { text: RetargetModel.metrics_cells[index * 3]; font-size: 11px; color: Theme.text-secondary; horizontal-stretch: 1; horizontal-alignment: right; vertical-alignment: center; }
+                                        Text { text: RetargetModel.metrics_cells[index * 3 + 1]; font-size: 11px; color: Theme.text-secondary; horizontal-stretch: 1; horizontal-alignment: right; vertical-alignment: center; }
+                                        Text { text: RetargetModel.metrics_cells[index * 3 + 2]; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; horizontal-stretch: 1; horizontal-alignment: right; vertical-alignment: center; }
+                                    }
+                                }
+                            }
+
+                            // 8. Notes
+                            if RetargetModel.notes.length > 0: VerticalLayout {
+                                spacing: 2px;
+                                for line in RetargetModel.notes: Text {
+                                    text: line;
+                                    font-size: 10px;
+                                    font-italic: true;
+                                    color: Theme.text-muted;
+                                    wrap: word-wrap;
+                                }
+                            }
+
+                            if root.advanced_note_visible: AdvancedNote {}
+
+                        } // end scrolling body layout
+                    } // end body ScrollView
+
+                    Rectangle { height: 1px; background: Theme.surface-raised; }
+
+                    // 9. Footer
+                    HorizontalLayout {
+                        spacing: 8px;
+
+                        // While busy this cancels the running Optimize search instead of
+                        // closing the dialog -- see `RetargetModel.cancel_optimize`'s own
+                        // doc comment. Always enabled (unlike the header's X and the
+                        // backdrop click, which stay disabled while busy): this is the
+                        // one control that can actually stop a running search.
+                        ActionButton {
+                            width: 90px;
+                            height: 32px;
+                            text: "Cancel";
+                            hint: RetargetModel.is_busy ? "Stop the running search. The dialog stays open." : "Close this dialog without changing the design.";
+                            ink: Theme.text-secondary;
+                            clicked => {
+                                if (RetargetModel.is_busy) {
+                                    RetargetModel.cancel_optimize();
+                                } else {
+                                    root.close();
+                                }
+                            }
+                        }
+
+                        ActionButton {
+                            horizontal-stretch: 1;
+                            height: 32px;
+                            text: "Apply";
+                            hint: root.apply_hint;
+                            fill: Theme.accent-cyan;
+                            hover_fill: Theme.accent-cyan-hover;
+                            ink: Theme.text-on-accent;
+                            edge: Theme.accent-cyan;
+                            font_size: 12px;
+                            weight: 700;
+                            enabled: root.can_apply;
+                            clicked => { RetargetModel.apply(); }
+                        }
                     }
+                } // end proposal column
 
-                    Text { text: "Apply"; font-size: 12px; font-weight: 700; color: Theme.text-on-accent; horizontal-alignment: center; vertical-alignment: center; }
+                // The split slider stays a pop-out-window feature; the pane offers side by
+                // side and overlay. Instantiated only while the dialog is open, so it
+                // pushes its image size to the main window's `CompareModel` only then.
+                if RetargetModel.is_open: CompareView {
+                    show_split: false;
+                    horizontal-stretch: 1;
+                    min-width: 320px;
                 }
-            }
-        } // end proposal column
-
-        // The split slider stays a pop-out-window feature; the pane offers side by
-        // side and overlay. Instantiated only while the dialog is open, so it
-        // pushes its image size to the main window's `CompareModel` only then.
-        if RetargetModel.is_open: CompareView {
-            show_split: false;
-            horizontal-stretch: 1;
-            min-width: 320px;
+            } // end two-column layout
         }
-        } // end two-column layout
     }
 }

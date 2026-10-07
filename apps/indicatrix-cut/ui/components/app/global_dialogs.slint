@@ -5,6 +5,8 @@ import { MetadataEditorDialog } from "../metadata_editor_dialog.slint";
 import { PreviewBatchDialog } from "../preview_batch_dialog.slint";
 import { TiltBatchDialog } from "../tilt_batch_dialog.slint";
 import { ShortcutOverlay } from "../shortcut_overlay.slint";
+import { PreferencesDialog } from "../preferences_dialog.slint";
+import { PreferencesModel } from "../../models/preferences.slint";
 import { ConfirmActionDialog } from "../confirm_action_dialog.slint";
 import { AnchorExplainer } from "../anchor_explainer.slint";
 import { MaterialEditorDialog } from "../material_editor_dialog.slint";
@@ -17,6 +19,10 @@ import { RetargetModel } from "../../models/retarget.slint";
 import { LibraryModel } from "../../models/library.slint";
 import { BatchModel } from "../../models/batch.slint";
 import { ShortcutsModel } from "../../models/shortcuts.slint";
+import { CommandPalette } from "../command_palette.slint";
+import { CommandPaletteModel } from "../../models/command_palette.slint";
+import { RenderJobsModel } from "../../models/render_jobs.slint";
+import { RenderJobsPanel } from "../render_jobs/jobs_panel.slint";
 
 // Every modal dialog `app.slint` mounts that is driven ENTIRELY by a global
 // model (no `MainWindow`-local property or callback involved) -- split out to
@@ -73,7 +79,7 @@ export component GlobalDialogsOverlay inherits Rectangle {
                 // (`tier_actions::do_new_design_create`) closes it, so a parse
                 // error keeps the typed values on screen next to its toast.
                 new_design_dialog.do_create();
-            } else if event.text == Key.Tab {
+            } else if event.text == Key.Tab || event.text == Key.Backtab {
                 return reject;
             }
             return accept;
@@ -97,17 +103,19 @@ export component GlobalDialogsOverlay inherits Rectangle {
                     RetargetModel.close();
                 }
             } else if event.text == Key.Return {
-                if RetargetModel.rows.length > 0 && RetargetModel.anchored_tier_errors.length == 0
-                        && RetargetModel.solve_error == "" && !RetargetModel.is_busy {
+                // The Apply button's own condition, so Return never applies while the
+                // button is dimmed (Optimize before an option is picked, a change that is
+                // still being checked or not valid).
+                if !RetargetModel.compare_open && retarget_dialog.can_apply {
                     RetargetModel.apply();
                 }
-            } else if event.text == Key.Tab {
+            } else if event.text == Key.Tab || event.text == Key.Backtab {
                 return reject;
             }
             return accept;
         }
 
-        RetargetDialog {
+        retarget_dialog := RetargetDialog {
             width: 100%;
             height: 100%;
         }
@@ -131,7 +139,7 @@ export component GlobalDialogsOverlay inherits Rectangle {
                 EditorModel.gear_remap_cancel();
             } else if event.text == Key.Return {
                 EditorModel.gear_remap_confirm();
-            } else if event.text == Key.Tab {
+            } else if event.text == Key.Tab || event.text == Key.Backtab {
                 return reject;
             }
             return accept;
@@ -156,7 +164,7 @@ export component GlobalDialogsOverlay inherits Rectangle {
             // property), so that half stays with the dialog's own file.
             if event.text == Key.Escape {
                 LibraryModel.metadata_editor_open = false;
-            } else if event.text == Key.Tab {
+            } else if event.text == Key.Tab || event.text == Key.Backtab {
                 return reject;
             }
             return accept;
@@ -191,7 +199,7 @@ export component GlobalDialogsOverlay inherits Rectangle {
         key-pressed(event) => {
             if event.text == Key.Escape {
                 ShortcutsModel.close();
-            } else if event.text == Key.Tab {
+            } else if event.text == Key.Tab || event.text == Key.Backtab {
                 return reject;
             }
             return accept;
@@ -201,6 +209,63 @@ export component GlobalDialogsOverlay inherits Rectangle {
             width: 100%;
             height: 100%;
         }
+    }
+
+    // The Preferences dialog (Edit > Preferences..., Ctrl+Comma). Same wrapping-
+    // `FocusScope` convention: Escape closes it and every other key is swallowed so a
+    // shortcut cannot fire on the design underneath. Tab is let through so focus moves
+    // between the dialog's own controls.
+    if PreferencesModel.dialog_open: FocusScope {
+        width: 100%;
+        height: 100%;
+        z: 400;
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                PreferencesModel.dialog_open = false;
+            } else if event.text == Key.Tab || event.text == Key.Backtab {
+                return reject;
+            }
+            return accept;
+        }
+
+        PreferencesDialog {
+            width: 100%;
+            height: 100%;
+        }
+    }
+
+    // The Jobs window (File > Render Jobs..., or the header's Jobs chip). Same wrapping-
+    // `FocusScope` convention: Escape closes it, every other key is swallowed so a shortcut
+    // cannot fire on the design underneath, and Tab moves between its buttons.
+    if RenderJobsModel.panel_open: FocusScope {
+        width: 100%;
+        height: 100%;
+        z: 400;
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                RenderJobsModel.panel_open = false;
+            } else if event.text == Key.Tab || event.text == Key.Backtab {
+                return reject;
+            }
+            return accept;
+        }
+
+        RenderJobsPanel {
+            width: 100%;
+            height: 100%;
+        }
+    }
+
+    // The command palette (Edit > Command Palette..., Ctrl+K, Ctrl+Shift+P). It brings its
+    // own `FocusScope` -- the search field needs the keys first, so a wrapper like the ones
+    // above would be wrong -- and sits above the dialogs (z 400) but under the confirm
+    // dialogs (z 500).
+    if CommandPaletteModel.open: CommandPalette {
+        width: 100%;
+        height: 100%;
+        z: 450;
     }
 
     // The gem material editor, opened by the Live Render tab's Material actions and
@@ -216,16 +281,20 @@ export component GlobalDialogsOverlay inherits Rectangle {
 
     // An opened file's custom material carries a physics recipe, but an older build changed its
     // top-level color since: ask whether the recipe or the edited color wins (the edited
-    // color is already in use until the user answers).
-    if PhysicscolorModel.color_conflict_name != "": ConfirmActionDialog {
+    // color is already in use until the user answers). Only in a build with the physics color
+    // editor (`physical-color`): without it Rust never asks, it keeps the recipe and says so
+    // in the open toast.
+    if PhysicscolorModel.ui_enabled && PhysicscolorModel.color_conflict_name != "": ConfirmActionDialog {
         width: 100%;
         height: 100%;
         z: 400;
-        heading: "color changed by an older version";
+        heading: "Color changed by an older version";
         message: "The material \"" + PhysicscolorModel.color_conflict_name
             + "\" has a physical color recipe, but its color was edited in an older version of Indicatrix Cut after the recipe was saved. Keep the physics recipe, or use the edited color?";
         primary_label: "Keep physics recipe";
+        primary_hint: "Keep the physics recipe: the color is worked out from it.";
         secondary_label: "Use edited color";
+        secondary_hint: "Use the color that was edited in the older version, and leave the recipe out.";
         primary => { PhysicscolorModel.color_conflict_resolved(true); }
         secondary => { PhysicscolorModel.color_conflict_resolved(false); }
         cancel => { PhysicscolorModel.color_conflict_resolved(false); }
@@ -251,11 +320,16 @@ export component GlobalDialogsOverlay inherits Rectangle {
             ? "The previous session ended without saving. A recovery file is still on disk:\n" + EditorModel.startup_restore_path
             : EditorModel.startup_restore_path;
         primary_label: EditorModel.startup_restore_is_autosave ? "Recover" : "Reopen";
+        primary_hint: EditorModel.startup_restore_is_autosave
+            ? "Open the recovery file, with the work of the session that ended without saving."
+            : "Open the design you were working on last time.";
         secondary_label: "Not now";
+        secondary_hint: "Do not open it now.";
         // Only a leftover AUTOSAVE is ever safe to delete outright here -- an
         // ordinary recent file is the cutter's own real save, not a recovery
         // snapshot, so it never gets this action.
         tertiary_label: EditorModel.startup_restore_is_autosave ? "Delete" : "";
+        tertiary_hint: "Delete the recovery file for good. The unsaved work in it is lost.";
         primary => { EditorModel.startup_restore_accept(); }
         secondary => { EditorModel.startup_restore_dismiss(); }
         tertiary => { EditorModel.startup_restore_delete(); }
@@ -269,7 +343,9 @@ export component GlobalDialogsOverlay inherits Rectangle {
         heading: "Unsaved Changes";
         message: EditorModel.unsaved_dialog_message;
         primary_label: "Save";
+        primary_hint: "Save the design first, then go on.";
         secondary_label: "Discard";
+        secondary_hint: "Go on without saving. The changes since the last save are lost.";
         primary => { EditorModel.unsaved_dialog_save(); }
         secondary => { EditorModel.unsaved_dialog_discard(); }
         cancel => {
@@ -287,7 +363,9 @@ export component GlobalDialogsOverlay inherits Rectangle {
         heading: "Older Sidecar Out of Sync";
         message: "The paired .asc file was changed outside the editor since this older .indicatrix.toml sidecar was last saved, so its per-tier meet constraints and detached facets can no longer be trusted to line up by position. Apply them anyway, or continue with the .asc alone?";
         primary_label: EditorModel.mismatch_dialog_can_apply ? "Apply Sidecar Anyway" : "";
+        primary_hint: "Apply the sidecar's per-tier settings to the tiers by position, even though they may no longer line up.";
         secondary_label: "Use .asc Only";
+        secondary_hint: "Open the .asc alone, without the sidecar's constraints and detached facets.";
         primary => { EditorModel.mismatch_dialog_apply_anyway(); }
         secondary => { EditorModel.mismatch_dialog_asc_only(); }
         cancel => {
@@ -308,6 +386,7 @@ export component GlobalDialogsOverlay inherits Rectangle {
         heading: EditorModel.write_confirm_heading;
         message: EditorModel.write_confirm_message;
         primary_label: EditorModel.write_confirm_primary_label;
+        primary_hint: "Go ahead, as the question above describes.";
         secondary_label: "";
         show_dont_ask: EditorModel.write_confirm_show_dont_ask;
         dont_ask <=> EditorModel.write_confirm_dont_ask;

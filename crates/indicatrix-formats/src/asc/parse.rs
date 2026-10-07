@@ -51,6 +51,22 @@ use std::{num::ParseFloatError, str::SplitWhitespace};
 /// `\r\n`) is recorded in [`AscSchedule::line_ending`]. This takes text; for raw
 /// file bytes (which may be Windows-1252) use [`super::parse_asc_bytes`].
 pub fn parse_asc(content: &str) -> Result<AscSchedule, AscParseError> {
+    parse_asc_with_gear_line(content).map(|(schedule, _)| schedule)
+}
+
+/// [`parse_asc`], and the 1-based line of the gear record the reader kept.
+///
+/// The line is the last `g` record (a repeated one overrides the earlier), a glued
+/// `g96 0.0` and the bare `96 0.0` quirk included, because the line comes from the reader
+/// itself and not from a second scan that could read the text differently. It is `None`
+/// only for text that has no gear line, which is an error anyway.
+///
+/// # Errors
+///
+/// The same errors as [`parse_asc`].
+pub fn parse_asc_with_gear_line(
+    content: &str,
+) -> Result<(AscSchedule, Option<usize>), AscParseError> {
     let content = content.strip_prefix('\u{feff}').unwrap_or(content);
     if content.trim().is_empty() {
         return Err(AscParseError::EmptyInput);
@@ -62,6 +78,7 @@ pub fn parse_asc(content: &str) -> Result<AscSchedule, AscParseError> {
             ..AscSchedule::default()
         },
         gear_teeth: None,
+        gear_line: None,
         symmetry_order: None,
         refractive_index: None,
         seen_any_tier: false,
@@ -71,7 +88,8 @@ pub fn parse_asc(content: &str) -> Result<AscSchedule, AscParseError> {
     for (i, raw_line) in content.lines().enumerate() {
         state.parse_line(i + 1, raw_line)?;
     }
-    state.finish()
+    let gear_line = state.gear_line;
+    state.finish().map(|schedule| (schedule, gear_line))
 }
 
 /// Everything [`parse_asc`] accumulates while it walks the lines of a file.
@@ -80,6 +98,8 @@ struct ParseState {
     schedule: AscSchedule,
     /// The `g` record's tooth count, once seen.
     gear_teeth: Option<i32>,
+    /// The 1-based line of the gear record that set [`Self::gear_teeth`] (the last one).
+    gear_line: Option<usize>,
     /// The `y` record's symmetry order, once seen.
     symmetry_order: Option<u32>,
     /// The `I` record's refractive index, once seen.
@@ -198,6 +218,7 @@ impl ParseState {
             ));
         }
         self.gear_teeth = Some(teeth_i32);
+        self.gear_line = Some(line_no);
         self.schedule.gear_reference_angle = ref_angle;
         Ok(())
     }
@@ -306,6 +327,7 @@ impl ParseState {
                 && let Ok(teeth_i32) = require_nonzero_gear_teeth(teeth, line_no, bare[0])
             {
                 self.gear_teeth = Some(teeth_i32);
+                self.gear_line = Some(line_no);
                 self.schedule.gear_reference_angle = refang;
             } else {
                 // An unrecognized header-area line: skipped leniently (decades

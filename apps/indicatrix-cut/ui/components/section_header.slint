@@ -19,17 +19,44 @@ import { Theme } from "../theme.slint";
 // `remap_collapsed`), and `toggled` is the only way this ever asks for it to
 // change -- the caller's own `if !collapsed:` around the section's body is
 // what actually hides/shows content (see each caller for that half).
+//
+// The header is a button for the keyboard and a screen reader: Tab reaches it, Space or Enter
+// toggles it, a visible ring shows the focus, and it says whether the section is expanded.
+// The controls in the right-side slot are separate stops of their own.
 export component SectionHeader inherits Rectangle {
     in property <string> title;
     in property <bool> collapsed: false;
+    // One plain sentence: what the section holds. Shown as the tooltip over the title and read
+    // after the title by a screen reader. A caller that passes none gets the generic line.
+    in property <string> hint: "Click to show or hide this section.";
     callback toggled();
 
     height: 24px;
     background: touch.has-hover ? Theme.bg-card-hover : transparent;
     border-radius: Theme.radius-sm;
+    border-width: header_focus.has-focus ? 2px : 0px;
+    border-color: Theme.accent-cyan-hover;
+
+    header_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.toggled();
+                return accept;
+            }
+            return reject;
+        }
+    }
 
     touch := TouchArea {
+        accessible-role: AccessibleRole.button;
+        accessible-label: root.title;
+        accessible-description: root.hint;
+        accessible-expandable: true;
+        accessible-expanded: !root.collapsed;
+        accessible-action-default => { root.toggled(); }
         clicked => { root.toggled(); }
+
+        Tooltip { text: @markdown("\{root.hint}"); }
     }
 
     HorizontalLayout {

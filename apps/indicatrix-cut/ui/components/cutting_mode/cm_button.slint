@@ -1,0 +1,102 @@
+import { Theme } from "../../theme.slint";
+
+// A large button for cutting mode: tall enough to hit from the bench, with the label in big
+// type and an optional icon before or after it. Not a tab stop, on purpose: cutting mode is driven
+// by its keys (`CuttingModeModel.handle_key`) and the screen swallows Tab so that no shortcut can
+// reach the design underneath. These buttons are the pointer's way to the same actions; the key
+// that does the same is named in `hint`, which is also what a screen reader reads after the label.
+//
+// Laid out by hand rather than with a layout: the label and icon are centred as one group from
+// the label's own preferred width, so the button needs no layout to size itself.
+export component CmButton inherits Rectangle {
+    in property <string> text;
+    // One plain sentence: what the button does and which key does the same. Shown as the tooltip.
+    in property <string> hint;
+    // An icon next to the label; leave unset for none.
+    in property <image> icon;
+    // The icon goes after the label instead of before it.
+    in property <bool> icon_after: false;
+    // Turns the icon (a right-pointing chevron turned half a circle points left).
+    in property <angle> icon_rotation: 0deg;
+    // The main action of the row, in the accent colour.
+    in property <bool> primary: false;
+    // A destructive action, in the danger colours.
+    in property <bool> danger: false;
+    in property <bool> enabled: true;
+    in property <length> font_size: 16px;
+
+    callback clicked();
+
+    property <bool> has_icon: root.icon.width > 0;
+    property <length> icon_size: 20px;
+    property <length> icon_gap: 10px;
+    property <length> pad: 20px;
+    property <length> group_width: label.preferred-width + (root.has_icon ? root.icon_size + root.icon_gap : 0px);
+    property <length> group_x: (root.width - root.group_width) / 2;
+    property <color> ink: !root.enabled ? Theme.text-disabled
+        : root.primary ? Theme.text-on-primary
+        : root.danger ? Theme.danger
+        : Theme.text-primary;
+
+    preferred-width: root.group_width + 2 * root.pad;
+    min-width: root.group_width + 2 * root.pad;
+    height: 52px;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: !root.enabled ? Theme.border-subtle
+        : root.primary ? Theme.primary
+        : root.danger ? Theme.danger-border
+        : Theme.border-control;
+    background: !root.enabled ? Theme.surface-disabled
+        : root.primary ? (touch.has-hover ? Theme.primary-hover : Theme.primary)
+        : root.danger ? (touch.has-hover ? Theme.danger-surface-hover : Theme.danger-surface)
+        : (touch.has-hover ? Theme.surface-control-hover : Theme.surface-control);
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.text;
+    accessible-description: root.hint;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
+    }
+
+    if root.has_icon && !root.icon_after: Image {
+        source: root.icon;
+        colorize: root.ink;
+        transform-rotation: root.icon_rotation;
+        x: root.group_x;
+        y: (root.height - self.height) / 2;
+        width: root.icon_size;
+        height: root.icon_size;
+    }
+    label := Text {
+        text: root.text;
+        color: root.ink;
+        font-size: root.font_size;
+        font-weight: 600;
+        vertical-alignment: center;
+        horizontal-alignment: left;
+        x: root.group_x + (root.has_icon && !root.icon_after ? root.icon_size + root.icon_gap : 0px);
+        y: 0px;
+        height: root.height;
+    }
+    if root.has_icon && root.icon_after: Image {
+        source: root.icon;
+        colorize: root.ink;
+        transform-rotation: root.icon_rotation;
+        x: root.group_x + label.preferred-width + root.icon_gap;
+        y: (root.height - self.height) / 2;
+        width: root.icon_size;
+        height: root.icon_size;
+    }
+}

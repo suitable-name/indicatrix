@@ -1,0 +1,100 @@
+import { Theme } from "../theme.slint";
+
+// A labelled on/off switch row for the render settings dialog: the label on the left, the
+// switch on the right. The whole row is the target (it is a wide, easy hit), Tab reaches it
+// and Space or Enter flips it. A screen reader announces it as a checkbox that is checked or
+// not, with `hint` read after the label.
+//
+// It does not own the state: the caller binds `checked` and flips it in `toggled`.
+//
+//     ToggleRow {
+//         text: "Frosted Girdle";
+//         hint: "Render the girdle band ground instead of polished.";
+//         checked: SettingsModel.girdle_frosted;
+//         toggled => { ... }
+//     }
+export component ToggleRow inherits Rectangle {
+    in property <string> text;
+    // One plain sentence: what the switch does. Shown as the tooltip.
+    in property <string> hint;
+    in property <bool> checked: false;
+    in property <bool> enabled: true;
+    // The label's colour; a caller passes a dimmer one while the switch has nothing to act on.
+    in property <color> label_color: Theme.text-muted;
+    callback toggled();
+
+    min-height: 24px;
+    preferred-height: max(24px, row.preferred-height);
+    border-radius: Theme.radius-sm;
+    opacity: root.enabled ? 1.0 : 0.5;
+    border-width: row_focus.has-focus ? 2px : 0px;
+    border-color: Theme.accent-cyan-hover;
+
+    accessible-role: AccessibleRole.checkbox;
+    accessible-label: root.text;
+    accessible-description: root.hint;
+    accessible-checked: root.checked;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.toggled();
+        }
+    }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    row_focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.toggled();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    row := HorizontalLayout {
+        spacing: 10px;
+        padding-left: 2px;
+        padding-right: 2px;
+
+        Text {
+            horizontal-stretch: 1;
+            text: root.text;
+            font-size: 11px;
+            font-weight: 600;
+            color: root.label_color;
+            wrap: word-wrap;
+            vertical-alignment: center;
+        }
+
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 36px;
+                height: 20px;
+                border-radius: 10px;
+                background: root.checked ? Theme.accent-cyan : Theme.border-dialog;
+
+                // The knob is `toggle-knob`, not a literal white: it turns black in high
+                // contrast, where the off track is light grey.
+                Rectangle {
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 8px;
+                    background: Theme.toggle-knob;
+                    x: root.checked ? parent.width - self.width - 2px : 2px;
+                    y: 2px;
+                    animate x { duration: 120ms; }
+                }
+            }
+        }
+    }
+
+    row_touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.toggled(); }
+    }
+}

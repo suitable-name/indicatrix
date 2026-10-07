@@ -38,7 +38,7 @@ than overwriting anything.
 Choose **1080p**, **4K**, or **Custom** (16–8192 pixels per side, entered
 directly).
 
-### color Space
+### Color Space
 
 Choose **sRGB** (the default, and what almost every viewer expects),
 **Display P3**, or **Rec.2020**. The latter two are wider-gamut options and
@@ -110,6 +110,127 @@ in ordinary sRGB regardless of which color space you chose for the final
 file, so do not judge final color from it. A progress bar and percentage
 track completion; **Cancel Export** stops the job early.
 
+### Add to Queue
+
+Next to **Start Export** sits **Add to Queue**. It does not render anything now.
+It saves your settings and a frozen copy of the stone as a render job, to be
+rendered later, one job at a time, from **File → Render Jobs...**. **Start Export**
+works as before and renders at once.
+
+With presets ticked, each picture becomes its own job. Jobs are kept in your
+library and can be paused, resumed and exported as a script. See Chapter 23.
+
+### Which stone is drawn
+
+An export always draws the **finished** gem. The Edit tab's Cut slider (Chapter 13)
+can show the stone part-way through the cutting, and the Live Render view follows it
+(a badge over the picture says so and has a **Show finished** button), but that is only
+for looking. The high-resolution export, the extra preset images, the tilt video, the
+tilt curves and their hover pictures, and every render done by a remote worker for an
+export all draw the whole design, even while the slider is on an earlier step. The live
+picture, including the part a remote worker traces for it, keeps following the slider.
+
+## The stone's color in a render
+
+You can show a stone in another color without making a custom material. In the Live
+Render toolbar, next to **Render Material**, the **Color** button opens a small list:
+**Material default** (the material's own color), nine ready-made colors (the same nine
+as the Edit tab's color box: Clear, Blue, Red, Green, Violet, Yellow, Pink, Teal and
+Amber) and **Custom colour (tone, saturation, hue)...**, which opens the colour editor (Chapter 6, Body Color) so you can choose any colour.
+
+What a pick changes depends on what the view is showing:
+
+- **The design open in the Edit tab, with "Linked to design" on.** The pick is that
+  design's own color. It is the same setting as the Edit tab's color box (Chapter 6):
+  it is one undo step, the design counts as changed, and the Edit tab's box follows.
+  The popup says "Changes this design."
+- **Anything else** (a design you are only looking at in the catalogue, or "Linked to
+  design" turned off). The pick changes this view only. The design and the catalogue
+  are not touched, and the app remembers the choice the next time it starts. Pick
+  **Material default** to clear it. While the view shows the linked open design again,
+  the design's own color is used and the remembered view color waits. The popup says
+  "Changes the view only. The design is not changed."
+
+Whatever color the view shows is the color everything rendered from it uses: the live
+picture, the metrics beside it, the tilt curves, high-resolution exports (including the
+extra preset images), the tilt video, and renders done by remote workers. So an export
+always matches the picture you were looking at.
+
+A few details:
+
+- The button is greyed out for a material that defines its own color (a custom material
+  whose color comes from a physical recipe). Its hover note says so. The color is never
+  replaced.
+- A custom color is matched to the closest color the material model can show, so the
+  result can differ a little from the exact color you picked. The button reads
+  "Matching..." for a moment while that happens.
+- A color is a what-if: the stone keeps its material's refractive index and dispersion,
+  and the colored stone absorbs light evenly in every direction (a material's two-color
+  effect, pleochroism, is not shown while a color is set).
+- The Edit tab's color box lists only the nine ready-made colors. A custom color set
+  from the Live Render toolbar on an open design shows there as **Material default**,
+  and pressing **Apply Material** in Design settings puts the material's own color
+  back. Undo brings the custom color back.
+
+## Lighting that a design remembers
+
+A design can remember the lighting you like for it. The lighting is kept in your
+library on this computer, never in the design file, so copying the file does not
+copy it and saving never changes it.
+
+To save it, set the lighting up the way you want in the live view, then open
+**Settings** and look under the lighting presets for **Lighting for this design**.
+Press **Use this lighting for this design**. This saves the lighting rig, the
+light's position and height, the exposure, the surface glare, the backdrop and, if
+one is loaded, the HDR environment map. It does not save the camera. The button is
+greyed out until a design is open (a new design, a file you opened, or a design you
+loaded from the catalogue), and the line above it says so.
+
+Press the button again at any time to replace what is saved. **Forget for this
+design** removes it and brings your normal lighting back.
+
+When you open a design that has saved lighting in the editor (Open, Open Recent,
+Load Selected or New), the live view uses it and a note says "Using this design's
+saved lighting." When you then open a design that has none, the note says "Back to
+your normal lighting." and the lighting you had before comes back. The saved
+lighting never changes your normal lighting. Browsing a row in the catalogue list
+does not apply it.
+
+**Why browsing does not apply it.** A row you click in the catalogue list is only a
+preview. It is drawn under the lighting you have set, not under that design's saved
+lighting, so you can flip through many designs and compare them under one lighting.
+The saved lighting comes back when you open the design in the Edit tab, because that
+is when you are working on it, and it is keyed by that design's id.
+
+A few details:
+
+- While a design's own lighting is showing, you can still move the light, change
+  the exposure or pick another lighting. Those changes last until you open another
+  design. Press **Use this lighting for this design** to keep them.
+- Applying one of your named lighting presets counts as choosing your normal
+  lighting, so it stays when you open other designs. The design keeps the lighting
+  it saved.
+- If the saved lighting uses a lighting rig this version of the app does not have,
+  the app tells you once and uses your normal lighting. If the saved HDR
+  environment map file has moved or cannot be read, the rest of the lighting is
+  used, the current environment is kept, and the app tells you why.
+- A large HDR map takes a moment to load when the design opens, and when the library
+  is busy (an import is running, say) the saved lighting itself can take a moment to
+  be read. If you load or clear an HDR map yourself in either moment, your choice
+  wins: the saved map does not replace it, and **Use this lighting for this design**
+  saves the map you chose. The rest of the saved lighting is still applied.
+- The saved lighting belongs to the design's id, which Chapter 11 explains. A file
+  that has never been saved gets the same id each time you open it, so it finds its
+  lighting again.
+
+## Custom materials on a remote worker
+
+A remote worker receives the whole material with every request, not just its name. For
+a custom material that includes its **dispersion**: the Sellmeier or Cauchy
+coefficients you typed in the Material Editor (Chapter 6). The worker therefore traces
+the same colour play you see on your own computer, and nothing has to be installed or
+configured on the worker for it.
+
 ## What "preview then handoff" means while you work
 
 While you are dragging the camera or the light, the app is not trying to
@@ -160,4 +281,5 @@ running — see Chapter 10.
 ## Next steps
 
 Continue to Chapter 10 to set up and troubleshoot a remote coordinator, or
-Chapter 11 to understand the app's save formats.
+Chapter 11 to understand the app's save formats. Chapter 23 shows how to
+collect exports as render jobs and render them one after another.

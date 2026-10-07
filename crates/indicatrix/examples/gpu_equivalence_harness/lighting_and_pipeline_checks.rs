@@ -2,7 +2,10 @@
 //! the production frame renderer's chunked-dispatch and wavefront-pipeline
 //! equivalence checks, and material-class kernel specialisation.
 
-use indicatrix::renderer::gpu::{GpuContext, estimator_check};
+use indicatrix::{
+    optics::raytracer::environment::LightingPreset,
+    renderer::gpu::{GpuContext, estimator_check},
+};
 
 use crate::common::report_image_comparison_material;
 
@@ -12,16 +15,31 @@ pub fn run_lighting_model_checks(ctx: &GpuContext) -> bool {
     println!();
     println!("== Lighting models: Tier 3 statistical image comparisons ==");
     let iso_passed = report_image_comparison_material(
-        "Diamond, ISO hemisphere",
+        &format!("Diamond, {}", LightingPreset::IsoHemisphere.label()),
         &estimator_check::run_image_comparison_iso_hemisphere(ctx),
     );
     let light_tent_passed = report_image_comparison_material(
-        "Diamond, Light tent + black cards",
+        &format!("Diamond, {}", LightingPreset::LightTent.label()),
         &estimator_check::run_image_comparison_light_tent(ctx),
     );
     let daylight_dome_passed = report_image_comparison_material(
-        "Diamond, Daylight sky + sun",
+        &format!("Diamond, {}", LightingPreset::DaylightDome.label()),
         &estimator_check::run_image_comparison_daylight_dome(ctx),
+    );
+    let daylight_sun_passed = report_image_comparison_material(
+        &format!("Diamond, {}", LightingPreset::DaylightSun.label()),
+        &estimator_check::run_image_comparison_daylight_sun(ctx),
+    );
+    let daylight_sun_frosted_passed = report_image_comparison_material(
+        &format!(
+            "Diamond, frosted girdle, {} (sun NEE + MIS)",
+            LightingPreset::DaylightSun.label()
+        ),
+        &estimator_check::run_image_comparison_daylight_sun_frosted_girdle(ctx),
+    );
+    let aset_passed = report_image_comparison_material(
+        &format!("Diamond, {}", LightingPreset::Aset.label()),
+        &estimator_check::run_image_comparison_aset(ctx),
     );
     let glare_zero_passed = report_image_comparison_material(
         "Diamond, Daylight D65, surface glare 0.0",
@@ -34,6 +52,9 @@ pub fn run_lighting_model_checks(ctx: &GpuContext) -> bool {
     iso_passed
         && light_tent_passed
         && daylight_dome_passed
+        && daylight_sun_passed
+        && daylight_sun_frosted_passed
+        && aset_passed
         && glare_zero_passed
         && glare_half_passed
 }

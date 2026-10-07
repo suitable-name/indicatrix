@@ -133,6 +133,19 @@ export component RenderSettingsPanel inherits Rectangle {
                 changed => { RenderModel.settings-edited(); }
             }
             ValueRow {
+                label: "Head shadow";
+                value: Math.round(RenderModel.head-shadow-deg) == 0 ? "Off" : Math.round(RenderModel.head-shadow-deg) + "\u{b0}";
+                active: RenderModel.head-shadow-used;
+            }
+            Slider {
+                enabled: RenderModel.head-shadow-used;
+                minimum: 0;
+                maximum: 30;
+                step: 1;
+                value <=> RenderModel.head-shadow-deg;
+                changed => { RenderModel.settings-edited(); }
+            }
+            ValueRow {
                 label: "Light azimuth";
                 value: Math.round(RenderModel.light-yaw-deg) + "\u{b0}";
                 active: RenderModel.light-direction-used;

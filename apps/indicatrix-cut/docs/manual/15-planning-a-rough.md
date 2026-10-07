@@ -72,7 +72,7 @@ name for screen readers. The shortcuts are listed at the end of the chapter.
 ### The starting shape
 
 The **ROUGH** section starts with four choices, **Block**, **Cylinder**,
-**Pebble** and **Mesh (OBJ)**; the first three are described here, the mesh under
+**Pebble** and **Mesh (OBJ/STL/PLY)**; the first three are described here, the mesh under
 "Non-convex roughs".
 
 - **Block** and **Pebble** take **Rough X (mm)**, **Rough Y (mm)** and
@@ -82,8 +82,8 @@ The **ROUGH** section starts with four choices, **Block**, **Cylinder**,
 - **Cylinder** takes **Diameter (mm)** and **Length (mm)**, and an **Axis**
   choice, **X**, **Y** or **Z** (**Y** by default): the direction the cylinder
   runs along.
-- **Mesh (OBJ)** imports a Wavefront `.obj` file as the rough, a closed
-  non-convex mesh included; see "Non-convex roughs" below.
+- **Mesh (OBJ/STL/PLY)** imports a Wavefront `.obj`, an `.stl` or a `.ply` file as
+  the rough, a closed non-convex mesh included; see "Non-convex roughs" below.
 
 Type a number such as `12.0`; a decimal comma also works. Each size must be
 greater than 0 and no more than 2000 mm ("Dimensions must not exceed 2000
@@ -103,8 +103,46 @@ and corner cuts on a round shape.
 ### Non-convex roughs
 
 A scanned or modelled rough that has a notch, a hollow or a re-entrant side can be
-imported with **Mesh (OBJ)**. Pick a Wavefront `.obj` file; its units are read as
-millimetres, and **Fit to weight** rescales the whole mesh like any other rough.
+imported with **Mesh (OBJ/STL/PLY)**. Pick a Wavefront `.obj`, an `.stl` (ASCII or
+binary) or a `.ply` (ASCII or binary) file. The numbers in the file are read in
+the unit you chose in **Mesh file units** (**mm** by default, or **cm**, **m**,
+**inch** or **µm**) and scaled to millimetres, and **Fit to weight** rescales the
+whole mesh like any other rough. Choose the unit before you click the mesh
+choice, since the file is read when you pick it; the choice is kept until you
+close the program. An STL file is a list of separate triangles, which the planner
+joins into one surface; a PLY file's normals, colours and other data are ignored
+(only the positions and the faces are used). Faces with more than three corners
+are split into triangles as in an OBJ file. The format is taken from the file
+itself where it can be (a PLY file starts with `ply`, a binary STL has the size
+its triangle count gives) and otherwise from the extension.
+
+The file is read in the background, so the window stays usable while a large scan
+loads. Under the four rough choices the form says "Reading the mesh file..." (or
+"Scaling the mesh..." for **Fit to weight** on a mesh), and until it is done those
+choices, **Fit to weight** and **Plan** wait. **New** or opening a saved plan
+drops a mesh that is still loading. A file larger than 64 MB is refused before any
+of it is read: "the file is 120.5 MB, and the planner reads mesh files up to 64 MB".
+A file that is cut short names what is missing (for example that it ends inside the
+`face` element of a PLY file, or that a binary STL's header promises more triangles
+than the file holds), and an ASCII STL facet that is not a triangle is refused.
+A failed import shows its reason in the red line and leaves your earlier rough as
+it was. **Fit to weight** does the same when it cannot scale the mesh ("Fit to
+weight failed: ...", or "The model changed while it was being scaled" if you
+edited the rough meanwhile): the model stays as it was and **Plan** stays
+available. The red line clears when you next change the rough, its material or
+the weighed carat, and when you press **Plan**. The other plan-form fields (the
+kerf, the allowance, the skin, the minimum width and the stone count) do not
+clear it.
+
+A mesh whose size is not believable in the chosen unit is refused as well: more
+than 2000 mm across, or less than 1 mm across. The message names the unit that
+would bring the file into range and how large the rough would then be: "The file's
+largest side is 0.034 units; read as metres that is 34 mm. Choose m in the unit box
+next to the mesh choice and import it again." The planner never applies the suggestion
+by itself: choose the unit and import the file again. One mistake cannot be caught:
+a file in centimetres whose rough still comes out between 1 mm and 2000 mm when read
+as millimetres (a 5 cm stone read as 5 mm) is accepted, ten times too small. Check
+the size shown under the form, and let the weight check (below) be the backstop.
 
 If the file is a **closed mesh** (a solid surface with no holes), the planner uses
 the mesh itself, not just its convex outline:
@@ -124,25 +162,64 @@ the mesh itself, not just its convex outline:
 - **Cuts and undo work as for any rough.** The cuts are flat planes over the
   mesh's bounding box, so a cut can run through a notch.
 - **Saved plans keep the mesh** (plan file version 2). Plans of every other rough
-  are saved exactly as before, and older plans still open.
+  are saved exactly as before, and older plans still open. A rough with inclusions
+  (see "Inclusions") is saved as version 3.
 
 A face that names a vertex the file does not have fails the import with a message
 naming the line.
 
 A closed mesh needs every edge to be shared by exactly two triangles that run
-along it in opposite directions, with its faces consistently wound. When the file
-cannot be used as a mesh, the import falls back to the **convex hull of its
-vertices** and says why in a note on the status line:
+along it in opposite directions, with its faces consistently wound. A **hollow
+rough** is written as an outer surface plus one more closed surface for each
+cavity; the planner works out which surface is which from how they nest (a surface
+inside one other is a cavity), so a cavity can be wound either way round and its
+volume is still taken out of the rough.
+
+**Small defects are repaired.** A scan that is almost closed is not thrown away.
+When the mesh is open or its faces are not consistently wound, the import tries
+three repairs, the gentlest first, and says what it did in a note on the status
+line ("The mesh was repaired: ..."):
+
+- **Gaps a hair wide** are closed by joining vertices that are a little further apart
+  than the usual join allows, up to 0.001 % of the rough's size; the note gives
+  how many vertices were joined and the distance.
+- **Faces that run the wrong way** round their neighbours are turned back; the note
+  says how many. A surface that cannot be wound consistently at all (a
+  twisted band) is left as it is.
+- **Small holes** are filled: a hole whose rim is at most 5 % of the diagonal of
+  the rough's bounding box and has at most 64 edges. A flat hole is filled with
+  flat triangles, any other with a fan of triangles about the middle of the hole.
+  The note says how many holes were filled and how wide the widest is. A fill
+  invents a little material, which is why only small holes are filled; a bigger
+  hole stays a hole, and so does a place where two holes meet at one vertex.
+
+A mesh that is already closed and consistently wound is never touched, and a saved
+plan stores the repaired mesh, so reopening it gives no note. A repair that does
+not leave the mesh closed is dropped, and the mesh is then treated as unusable.
+
+When the file cannot be used as a mesh, the import falls back to the **convex hull
+of its vertices** and says why in a note on the status line:
 
 - **No faces**: a file with only `v` lines is a point cloud; its convex hull is the
   rough.
-- **Open mesh** (a hole in the surface), a **non-manifold** edge (more than two
-  faces on one edge), or **inconsistent winding**: the hull is used.
+- **Open mesh** (a hole too big to fill, or a gap wider than the repair joins), a
+  **non-manifold** edge (more than two faces on one edge), or **inconsistent
+  winding** that cannot be repaired: the hull is used.
+- **A mesh that crosses itself**: the hull is used, and the note says where, for
+  example "the mesh crosses itself in 4 places, the first near x 12.30, y 4.05, z
+  7.80 mm". The position is in the file's own coordinates, in millimetres after
+  the unit you chose. A search stops after 16 places, so a heavily tangled scan is
+  reported as "at least 16 places". Surfaces that only touch (two bodies corner to
+  corner, a point resting on a face) are not crossing; surfaces that overlap in
+  one plane are.
 - **A mesh with no volume** (or whose faces have no area): the hull is used; if the
   vertices themselves lie in one plane, the import fails.
-- **More than 50,000 triangles**: the mesh is too heavy for the planner and the hull
-  is used. The limit counts triangles after polygon faces are split (a quad is
-  two triangles). Decimate the scan in a mesh tool first.
+- **More than 200,000 triangles**: the mesh is too heavy for the planner and the hull
+  is used; a smooth scan, whose outline is too fine to stand in for it, is refused
+  instead. The limit counts triangles after polygon faces are split (a quad is
+  two triangles); the faces are counted while the file is read, so a scan of
+  millions of triangles gives up quickly, and a bad face number later in such a
+  file is not checked. Decimate the scan in a mesh tool first.
 
 A mesh that turns out to be convex (a cube, a faceted ball) is simply a convex
 rough, with no note, and plans exactly as the hull would.
@@ -151,12 +228,249 @@ Faces may be triangles or polygons (polygons are split into triangles; a polygon
 name their vertices as `v`, `v/vt`, `v//vn`, `v/vt/vn`, with positive or negative
 indices. Texture coordinates and normals are ignored.
 
-One limitation matters: **a self-intersecting mesh is not detected.** Scans often
-have overlapping shells or a surface that passes through itself. Such a file can
-satisfy the closed-mesh checks yet leave the planner unsure which side of the
-surface is material, so it may plan into air or miss good material. Repair it in
-a mesh tool (remove internal faces, merge shells) before importing, and compare
-the readout volume with what you expect.
+**A smooth scan** is one whose convex outline has more than 400 faces. It is no
+longer refused. The planner keeps the scan itself as the rough and uses a slightly
+larger, simplified outline only to size its grid; every stone is checked against
+the scan, so none leaves real material. After the import the status line says how
+many faces the outline had. If such a scan is open and cannot be repaired, or has
+too many triangles, it is still refused, because nothing safe can stand in for it:
+repair or reduce it in a mesh tool first. The weight and the yield use the scan's
+own volume, not the outline's.
+
+The grid outline of a smooth scan has at most 64 planes; a mesh whose exact outline
+has 400 planes or fewer keeps it exactly. Every candidate stone is still checked
+against the scan itself. A plan on a scan uses every core (one job per slab range of
+the grid), so the time it takes falls with the number of cores.
+
+A scan is planned on a coarser grid than a solid rough (about an eighth of the table
+entries, 11 cells an axis for a cube at 10 stones instead of 16), because every entry
+is checked against the scan. Under **Plan** a rough with a scan shows **Scan plan time
+limit (s)**: 120 seconds by default, 0 for no limit, kept between sessions. When the
+limit is reached the plan stops and shows the best layouts found so far, with the note
+"Stopped at the time limit": the search is partial, and planning again may give
+different layouts. If it stopped before any layout existed, a message says so; raise
+the limit and plan again. Solid and outline roughs ignore the limit. Without the limit
+reached, a scan's plan is the same on any number of cores.
+
+**Self-intersection is detected, not repaired.** Scans often have overlapping
+shells or a surface that passes through itself, and such a file can satisfy the
+closed-mesh checks yet leave the planner unsure which side of the surface is
+material. The import therefore looks for triangles that cross one another (shells
+that cross instead of nesting are the same defect) and, when it finds any, falls
+back to the convex hull with the note described above, so a stone is never planned
+into a notch that does not exist. The check treats two surfaces closer than a
+billionth of the rough's size as touching, and it does not compare triangles that
+share a vertex, so a fold that only shares a corner can slip through. To use the
+scan itself, repair it in a mesh tool (remove internal faces, merge shells) at the
+place the note names, and import it again.
+
+### Inclusions
+
+An inclusion is a flaw inside the rough that you know the place of: a crack, a
+feather, a crystal of another mineral. No stone can be cut through it, but it is
+still stone that you hold and paid for. The planner takes an inclusion as a **closed
+mesh inside the rough**: stones keep clear of it, and the weight and the yield count
+it as material. This works for a rough imported with **Mesh (OBJ/STL/PLY)**, convex
+or not; a block, a cylinder and a pebble have no mesh to put an inclusion in (see
+"Limitations").
+
+**Adding one.** Once a mesh rough is in place, the form shows **Add inclusion...**
+with a **Margin (mm)** field under the mesh choices. Press it and pick the
+inclusion's file (an `.obj`, `.stl` or `.ply`, the same formats as the rough). The
+file is read in the unit chosen in **Mesh file units** and in the same coordinates as
+the rough's own file, so export both from the same scene. The planner moves the
+inclusion exactly as the import moved the rough (the import puts the rough's bounding
+box at the origin) and as **Fit to weight** has scaled it since. The file is read in
+the background ("Reading the inclusion...", "Adding the inclusion..."), and each added
+or removed inclusion is one undo step. The list under the button shows every inclusion
+with its size and volume ("Inclusion 1: 4.6 x 4.6 x 4.6 mm, 97.3 mm³") and a
+**Remove** button. A file with several separate closed surfaces adds them as one
+inclusion. An inclusion has to be a closed mesh of triangles, like a rough, and the
+rough and its inclusions together must stay within 200,000 triangles; a mesh with small
+defects is repaired as in the sections above.
+
+**What is checked.** The planner refuses an inclusion, shows why in the red line and
+changes nothing when:
+
+- it **reaches the surface**: "an inclusion that reaches the surface must be cut away:
+  model it as a notch in the rough's own mesh". An inclusion that breaks through the
+  skin is not an inclusion any more but a notch; cut it out of the rough's own mesh.
+  Merging it into the outer surface is not done for you.
+- it **lies outside the rough's material**: outside the rough, in a hollow of it, or
+  inside another inclusion. The message adds that the inclusion file must use the same
+  coordinates and unit as the rough's file, which is the usual cause.
+- it **crosses another inclusion**, or one lies inside another.
+- it **cannot hold its margin** (below).
+
+An inclusion that wraps a hollow or another inclusion is not detected.
+
+**The margin.** The edge of a real inclusion is uncertain, so stones keep a margin
+from it: **0.3 mm** by default (leave the field empty for the default; it takes 0 to
+10 mm). The margin is applied when you add the inclusion, by moving every face of the
+inclusion outward by that distance; for a convex inclusion with sharp corners this is
+exact, and for a smooth or non-convex one it is approximate (a sharp spike is cut off
+at four margins). The skin and the allowance of the plan form come on top, as for any
+surface. An inclusion that fits as drawn but is closer to the surface than its margin
+is refused ("closer to the surface ... than its margin allows"); lower the margin or
+cut it away as a notch. To change the margin of an inclusion you have added, remove it
+and add it again. A margin of 0 keeps stones off the inclusion exactly as drawn.
+
+**Weight and yield count the inclusion.** The rough you weighed and paid for includes
+the inclusion, so the model's volume is the **gross** volume: the stones' room plus the
+inclusions. The readout says so ("Model 8,000 mm³ · 21.20 ct (Quartz, SG 2.65)
+including 1 inclusion (98 mm³)", the inclusion's volume with its margin), the weight check and
+**Fit to weight** use it, the yield and every fill percentage take it as their
+denominator, and a face, edge or corner cut takes the gross volume of the mesh inside
+it. This is the difference from a **hollow** in the rough's own file, which is air: a
+hollow is taken out of the weight, an inclusion is not.
+
+**Saved plans.** A plan with inclusions is saved as plan file version 3, with the
+rough's own mesh, each inclusion's mesh (the margin is already in it) and the move
+from the rough file's coordinates, so you can still add inclusions from the same
+scene after reopening it. A plan without inclusions is saved exactly as before, and
+older plans still open; an older Indicatrix that meets a version 3 plan says that the
+plan was made by a newer one. If you reopen a plan that has no inclusions, the planner
+has forgotten the rough file's coordinates, and an inclusion file is then read as if
+the rough's bounding box started at the origin.
+
+### Locating inclusions from photos
+
+When you can see an inclusion through the rough but have no 3D model of it, you can
+photograph the rough on a fixed camera rig and let the planner work out where it is.
+A straight line from the camera to the inclusion is wrong, because light from the
+inclusion bends where it leaves the stone. The planner knows the rough's mesh and the
+cameras, follows each of your clicks through the surface (the bending is Snell's law)
+and into the stone, and finds the point all the clicks agree on. This works on a
+**mesh rough** only, because the bending depends on the shape of the surface. Under
+**Add inclusion...** the form shows **Locate inclusion from photos...**, which is
+enabled when the rough has a mesh.
+
+**The rig.** The planner assumes cameras that do not move between photos. The default
+layout has eight views: +X, -X, +Y and -Y, each seen from both ends, which the program
+reads as an upper and a lower camera on each of the four sides ("+X upper", "+X
+lower", and so on). The rig's frame has Z pointing up, and every camera looks at the
+origin, where the stone stands. **Edit rigs...** opens the camera rig window, where you
+give a rig a name and set, for the whole rig:
+
+- the **stone's refractive index**, which starts at the planner's material (for a
+  birefringent stone use the ordinary index, and click the ordinary image in the
+  photos), and
+- the **surrounding index**: 1 for air, or the liquid's index when the stone is
+  photographed in immersion. When it equals the stone's index, light does not bend at
+  the surface at all.
+
+and for each view its name, the camera position and look direction in millimetres, the
+up direction, the **scale** (the focal length in pixels, or for an orthographic
+(telecentric or macro) lens its scale in pixels per millimetre), the principal point
+in pixels (the image centre unless you know better) and the image size in pixels.
+**Fill the 8 views** writes the default layout from the camera distance, the
+elevation, the focal length and the image size; every pose stays editable afterwards,
+so a rig that is not symmetric is entered by hand. Rigs are kept in the program's
+settings file, so they are there next time. A photo must have the size its view says,
+because the focal length and the principal point are in pixels of that size.
+
+**Calibrating the rig with a beam-splitter cube.** Hand-entered values work without
+any calibration. To measure the rig, photograph a beam-splitter cube of known size
+instead of the stone, in every view, and use the **Calibrate** tab:
+
+1. Put the cube where the stone will stand, centred on the rig's origin with its faces
+   along the rig's axes. Use a backlight or a dark field so that its outer edges show
+   as sharp lines (a clear cube against a plain background gives weak outlines). A
+   cube looks the same from 24 orientations, so stick a small opaque dot (paint or
+   tape) on the corner at +X +Y +Z, and keep it visible.
+2. Enter the cube's **datasheet edge length and tolerance** and its glass (N-BK7,
+   1.5168, unless the datasheet says otherwise), and how well you know the focal
+   lengths (in percent).
+3. Load the cube photo of each view. With the **Edge** tool click the two ends of every
+   visible outer edge (any two points along the edge will do), and with the **Dot**
+   tool click the orientation dot once. The dot is a check: if the corner it names
+   lands far from your click, the cube was turned, and the result says so.
+4. **Pass 1** fits the camera poses, the focal lengths and the cube's size to the edge
+   lines. **Pass 2** is optional and measures how good the whole rig is: the coated
+   diagonal of the cube is a known plane inside the glass, and its four edges, seen
+   through the faces, are clicked with the **Diag 1** to **Diag 4** tools (several
+   clicks along each edge, in at least two views that see it through the glass). The
+   program triangulates them through the glass, with the same refraction as for an
+   inclusion, and compares them with the true plane. The remaining distance is the
+   rig's **measured accuracy**.
+
+The result lists the edge misfit per view in pixels, the **fitted edge against the
+datasheet** (so a cube that is outside its tolerance shows: 0.1 mm on a 25.4 mm cube is
+0.4 % in scale) and the diagonal check, and **Save calibrated rig** stores the refined
+poses and focal lengths with the measured accuracy. One caveat belongs next to the
+scale line: the image scale is the focal length times the cube's edge divided by the
+distance, so **the scale check only means something when the camera distances and the
+focal lengths are entered precisely**. With loose values the fit can hide a wrong cube
+size in them. Measure the distances, take the focal lengths from a calibration you
+trust, set "how well you know the focal lengths" small, and then read the ratio.
+Changing a pose later clears the stored calibration, because it described the old
+poses.
+
+**How to photograph the rough.** The inside of the stone has to be visible. Frosted,
+water-worn or sawn surfaces scatter the light and hide it, so polish a small flat
+**window** on each face a camera looks through, or put the stone in a clear cell of
+**liquid** (immersion) and set the surrounding index to the liquid's. Keep the stone
+and the cameras still between the photos, make the photos sharp and the same size as
+the rig says (PNG or JPEG), and save them upright: the orientation tag some cameras
+write is not applied. Photos are read from where they are when you load them; they are
+never copied into the program's files.
+
+**Aligning the mesh to the rig.** The scan's frame is not the rig's, so the planner
+fits one rigid move of the mesh for all the views together:
+
+1. Load a photo into each view slot of the locate window (click a row to show its
+   photo) and pick the rig.
+2. Say which mesh axis points up and which points to the right, and nudge the start
+   with turns and shifts if it is off.
+3. Choose **Outline** above the photo and click around the stone in each photo, in at
+   least two views, and press **Align mesh to rig**.
+
+The alignment uses the outlines only, which do not depend on refraction. It reports the
+remaining misfit per view in pixels and **refuses to go on above 4 pixels**, with a note.
+The outline of the mesh in each photo is its convex outline, so the bays of a non-convex
+rough show up as misfit. If the rough changes afterwards (a new mesh, or **Fit to
+weight**), align again.
+
+**Marking.** Choose **Point** and click the inclusion in every photo where it is
+visible: at least two views, and all eight are better. For a feather or a bundle of silk
+choose **Line** (or **Polygon** for a flat inclusion) and click along it, with the same
+vertices in the same order in every view. **Undo click** takes back the last click, and
+**Clear** removes what the chosen tool marked in the view; the zoom buttons (1x to 8x)
+help with accuracy.
+
+**Reading the result.** **Solve** traces every mark through the surface and gives the
+inclusion's position in the rough's own coordinates, the **uncertainty** (the RMS
+distance of the rays from the point) and a suggested margin, the larger of 0.3 mm and
+twice the uncertainty. Each view has a line with the distance of its ray from the point.
+A mark can be unusable, and the line says why: the ray misses the stone, or it hits the
+surface beyond the critical angle, so no direct image comes out that way.
+
+Inside a stone you also see **reflected copies** of an inclusion, from light that bounced
+off the back faces. With four or more views the planner checks each view against the
+others, and a view that disagrees with them by far more than they disagree among
+themselves is flagged: "this view's mark may be a reflected copy". On the photo, a
+**hollow green marker** shows where the solved point appears in that view, with its
+distance in pixels from your mark; **hollow amber markers** show where its reflected
+copies, after one or two bounces, would appear. If your mark is nearer an amber marker
+than the green one, you most likely clicked a copy.
+
+**Adding it.** The photos give a position, so you set the **radius** of the shell that
+stands for the inclusion, in millimetres, to the size of the blob you saw, and the
+**margin**, which starts at the suggested one. **Accept** adds the point as a small
+closed shell through the same route as **Add inclusion...**, so the same checks apply
+(an inclusion that reaches the surface is refused) and the addition is one undo step.
+A line or polygon can be located but is not yet added as an inclusion: Accept is
+disabled with the note that feathers and silk can be located but not yet added. The
+marks and the rig of each added inclusion are kept for this session, listed under
+"Located this session" with **Re-open**, so you can solve them again after
+recalibrating the rig; they are not part of a saved plan (a plan keeps the inclusion's
+mesh, as before) and are forgotten when the program closes.
+
+**What this is not.** The photos are used for the inclusion's position and size, not
+for rendering: the planner does not draw the stone with the inclusion in it. The accuracy
+is bounded by the scan's accuracy where the rays enter the stone and by the rig's
+calibration, so read the measured accuracy of the rig next to the uncertainty of the
+solution. For a birefringent stone only the ordinary ray is traced.
 
 ### Material and carat: the weight check and Fit to weight
 
@@ -189,7 +503,9 @@ face depth is multiplied by the cube root of the carat ratio (a 10 % heavier
 weight makes the rough 3.2 % larger in each direction), as one undo step.
 Afterwards the field shows the model's carat again and the chip disappears. The
 button is available while the chip shows; a typed weight within a hundredth of
-a percent of the model's only hands the field back to the model.
+a percent of the model's only hands the field back to the model. If the scaled
+rough would be more than 2000 mm across, the red line says "Fit to weight failed:
+Dimensions must not exceed 2000 mm." and the model stays as it was.
 A typed value that is not a positive number switches the check off: the model,
 the view and the volume keep updating regardless. **Plan**, **Fit to weight**
 and saving, however, stop and the red chip shows "Weighed carat must be a number
@@ -249,7 +565,9 @@ the right of the row title deletes the cut. While you type in a cut field, the
 picture and the readout follow the number at once. If a value is not allowed, for
 example a setback longer than its face, the row shows the reason in red under
 the fields and the model shows the same message; **Plan** is greyed out until the
-model is valid.
+model is valid. Text that is not a number gets a message that names the unit the
+field is measured in: "Azimuth must be a number in degrees." for the two angles,
+"Depth must be a number in mm." for the lengths.
 
 ### Clicking in the 3D view
 
@@ -331,8 +649,12 @@ leave.
     the library menu restores one design too. The pills in the planner are greyed
     out while a plan runs. The mark is stored in your library, so, unlike the
     planner's inputs, it survives a restart. Excluding or restoring a design
-    never changes the results on screen: a note tells you to plan again. Like the
-    rest of the planner, it works on the local library only.
+    never changes the results on screen: a note tells you to plan again. The mark
+    is written in the background, so the window never waits for the library, even
+    while an import or a search is using it; a second click that comes before the
+    first is saved gets "The last change to the excluded designs is still being
+    saved. Try again in a moment." Like the rest of the planner, it works on the
+    local library only.
 
   The counts follow the library while the planner is open, so you do not need to
   reopen it. They are worked out when you choose **Library → Plan Rough...**,
@@ -366,6 +688,12 @@ than 0. Kerf, allowance and skin may not exceed 50 mm and the minimum width may 
 exceed 1000 mm; a larger value is refused with a message such as "Kerf must be at
 most 50 mm.". Skin plus allowance must leave something of the rough, and a minimum
 width larger than the rough gives no layouts.
+
+**Plan** also refuses to start when one saw kerf plus the allowance on both sides of
+a stone is more than the rough's smallest side, because no piece could be sawn from
+it. The message names the three figures, for example: "The kerf (0.30 mm) and the
+allowance on both sides of a stone (0.40 mm) need 0.70 mm, more than the rough's
+smallest side (0.50 mm)." Lower the kerf or the allowance, or use a bigger rough.
 
 Press **Plan** (or Ctrl+Enter). **Plan** is greyed out while the model is invalid,
 and a note beside it says so; the red message that explains it is under **ROUGH**
@@ -799,26 +1127,37 @@ planner's own; they are not part of the main window's list in Appendix B.
 
 ## Limitations, and how to read the numbers
 
-- **A design's concave tiers are honoured; the fit uses its outer hull.** The
+- **A design's concave tiers are honoured, and the fit uses its carved outline.** The
   concave (tool-cut) tiers of [Chapter 16](16-concave-tiers.md) only ever remove
-  material from the flat stone, so the planner takes the stone's volume, carat
-  weight and yield from the carved stone, and the 3D view draws the tool cuts.
-  The stone's width, length and height, and the outline the fit places in the
-  rough, are those of the flat facets: a cut never enlarges the outer hull, so a
-  design is not fitted any tighter because it has a dimple. A design whose concave
-  tiers cannot be resolved (an invalid tier, too many placements) is skipped and
-  counted in the result's note; it is never planned as a flat stone. A design whose
-  tools remove the whole stone cannot be measured and is left out like one that
-  does not close. Plans saved before the planner took the carved volume are
-  compared on the measuring-rule version and are not reported as changed for that
-  reason alone. The shape of the rough itself is covered in the section on
-  non-convex roughs. A keep-out zone for an inclusion or crack cannot be modelled;
-  model the largest clean part of the rough you would actually cut from.
+  material from the flat stone. The planner measures a design that has them from the
+  carved stone: its volume, carat weight and yield, its width, length and height, and
+  the outline it places in the rough all come from the convex hull of the stone after
+  the tools have cut it, and the 3D view draws the tool cuts. Because a tool only
+  removes material, this outline is never larger than the flat stone's, so a planned
+  stone always fits. It is smaller only where a tool removes a vertex that sets the
+  outline (the manufacturability check warns about exactly that case); a groove or
+  dimple inside the outline changes nothing. A design without concave tiers is
+  measured as before. A design whose concave tiers cannot be resolved (an invalid
+  tier, too many placements) is skipped and counted in the result's note; it is never
+  planned as a flat stone. A design whose tools remove the whole stone cannot be
+  measured and is left out like one that does not close. The measuring rule changed
+  with this, so the library is measured once more the next time you plan, and a plan
+  saved earlier shows a note that its designs were measured under an earlier rule; it
+  is not reported as changed for that reason alone, and its placements stay valid.
+  The shape of the rough itself is covered in the section on non-convex roughs.
+  An inclusion or crack can be modelled as a closed mesh inside a mesh rough (see
+  "Inclusions"), and stones then keep clear of it. On a block, a cylinder or a
+  pebble it cannot be modelled yet, because those roughs have no mesh to put it in;
+  there, model the largest clean part of the rough you would actually cut from, or
+  import the rough as a mesh. A compact inclusion that you can see through the rough
+  can be located from photos taken on a camera rig (see "Locating inclusions from
+  photos").
 - **A non-convex rough is checked, not optimised, around its notches.** The planner
   verifies every stone against the mesh and drops or shrinks what reaches into air,
   so near a notch a layout can be a little worse than the best possible one. A
-  mesh with more than 50,000 triangles (counted after polygon faces are split) falls back to its convex hull, and a
-  self-intersecting mesh is not detected (see "Non-convex roughs").
+  mesh with more than 200,000 triangles (counted after polygon faces are split) falls back to its convex hull (a smooth scan is refused), as does a
+  mesh that crosses itself (it is detected and the note names the place) or one
+  whose holes are too big to repair (see "Non-convex roughs").
 - **A cylinder and a pebble are approximations, always slightly on the small side.**
   The cylinder is a prism with 64 sides inscribed in the circle, whose volume is
   99.84 % of the true cylinder's (0.16 % less). The pebble is a polyhedron with
@@ -844,15 +1183,19 @@ planner's own; they are not part of the main window's list in Appendix B.
   searches orientations in detail for a shortlist of at least 48, so a design that
   only fits well in an unusual orientation can be missed.
 - **The model is only as good as your measurements.** The planner assumes a
-  flawless rough, stones that come out exactly to their design's proportions,
+  rough that is flawless apart from the inclusions you added, stones that come out
+  exactly to their design's proportions,
   and allowances and kerf exactly as you typed them. Real rough has inclusions,
   cracks and color zoning that decide where you actually cut, and each stone
-  starts as a preform that you shape before faceting. Calipers and a scale give
+  starts as a preform that you shape before faceting. Only the inclusions you add
+  to a mesh rough are known to the planner (see "Inclusions"); colour zoning, and
+  any flaw you did not model, never is. Calipers and a scale give
   you a few percent of error each. Use the weight check to catch a model that is
-  clearly off, treat the weights and yields as an estimate for clean, inclusion-free
-  rough after your kerf and allowance (real yield also depends on inclusions and
-  on how closely you follow the plan; the note under the result cards says the
-  same), use the ranking to compare options and choose where to look first,
+  clearly off, treat the weights and yields as an estimate for a rough that is
+  clean except for the inclusions you added, after your kerf and allowance (real
+  yield also depends on the flaws you did not model and on how closely you follow
+  the plan; the note under the result cards says the same), use the ranking to
+  compare options and choose where to look first,
   and do the final marking-up on the rough itself.
 
 ## Which designs are skipped

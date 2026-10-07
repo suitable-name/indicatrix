@@ -62,13 +62,13 @@ fn reserializing_a_parsed_file_is_byte_identical() {
 #[test]
 fn a_too_new_version_is_refused_before_the_body_is_read() {
     // The body is garbage a v1 reader could not parse; the version error wins.
-    let text = "format = \"indicatrix-design\"\nversion = 3\n[preform]\nshape = 7\n";
+    let text = "format = \"indicatrix-design\"\nversion = 4\n[preform]\nshape = 7\n";
     match parse(text) {
         Err(DesignFileError::UnsupportedVersion {
-            found: 3,
+            found: 4,
             supported,
         }) => {
-            assert_eq!(supported, DESIGN_VERSION_CONCAVE);
+            assert_eq!(supported, DESIGN_VERSION_RELATIONS);
         }
         other => panic!("expected UnsupportedVersion, got {other:?}"),
     }
@@ -220,8 +220,37 @@ fn concave_tier(name: &str) -> ConcaveTierTable {
         diameter_ratio: 0.25,
         tool_angle_deg: Some(60.0),
         motion: "plunge".to_string(),
+        concave_tier_id: None,
         unknown: toml::Table::new(),
     }
+}
+
+#[test]
+fn a_concave_tier_id_round_trips_and_an_absent_one_never_writes_the_key() {
+    let plain = sample().with_concave_tiers(vec![concave_tier("P8")]);
+    let plain_text = to_string(&plain).expect("serializes");
+    assert!(
+        !plain_text.contains("concave_tier_id"),
+        "a record without an id must not grow the key"
+    );
+
+    let mut with_ids = concave_tier("P8");
+    with_ids.concave_tier_id = Some(7);
+    let mut second = concave_tier("C9");
+    second.concave_tier_id = Some(12);
+    let file = sample().with_concave_tiers(vec![with_ids, second]);
+    let text = to_string(&file).expect("serializes");
+    assert!(text.starts_with("format = \"indicatrix-design\"\nversion = 2\n"));
+    assert_eq!(text.matches("concave_tier_id").count(), 2);
+    let parsed = parse(&text).expect("parses own output");
+    assert_eq!(parsed, file);
+    assert_eq!(parsed.concave_tiers[0].concave_tier_id, Some(7));
+    assert_eq!(parsed.concave_tiers[1].concave_tier_id, Some(12));
+    assert!(
+        parsed.concave_tiers[0].unknown.is_empty(),
+        "the id is a typed field, not a parked unknown key"
+    );
+    assert_eq!(to_string(&parsed).expect("serializes"), text);
 }
 
 #[test]
@@ -260,6 +289,71 @@ fn design_file_with_unknown_concave_frame_is_refused() {
     assert!(matches!(
         parse(&missing),
         Err(DesignFileError::UnsupportedConcaveFrame { frame }) if frame.is_empty()
+    ));
+}
+
+/// `sample()` whose second tier follows a relation.
+fn related_sample() -> DesignFile {
+    let mut file = sample();
+    file.tiers[1] = file.tiers[1]
+        .clone()
+        .with_angle_relation(Some("@0 - 2".to_string()));
+    file.version = file.needed_version();
+    file
+}
+
+#[test]
+fn a_tier_relation_makes_the_file_version_3_and_round_trips() {
+    let file = related_sample();
+    assert_eq!(file.version, DESIGN_VERSION_RELATIONS);
+    let text = to_string(&file).expect("serializes");
+    assert!(text.starts_with("format = \"indicatrix-design\"\nversion = 3\n"));
+    assert_eq!(text.matches("angle_relation = \"@0 - 2\"").count(), 1);
+    let parsed = parse(&text).expect("parses own output");
+    assert_eq!(parsed, file);
+    assert_eq!(parsed.tiers[1].angle_relation.as_deref(), Some("@0 - 2"));
+    assert_eq!(parsed.tiers[0].angle_relation, None);
+    assert_eq!(to_string(&parsed).expect("serializes"), text);
+}
+
+#[test]
+fn a_file_without_relations_never_writes_the_key() {
+    let text = to_string(&sample()).expect("serializes");
+    assert!(!text.contains("angle_relation"));
+    assert_eq!(sample().needed_version(), DESIGN_VERSION);
+}
+
+#[test]
+fn relations_and_concave_tiers_share_version_3() {
+    let file = related_sample().with_concave_tiers(vec![concave_tier("P8")]);
+    assert_eq!(file.version, DESIGN_VERSION_RELATIONS);
+    let text = to_string(&file).expect("serializes");
+    assert!(text.starts_with("format = \"indicatrix-design\"\nversion = 3\n"));
+    assert!(text.contains("concave_frame = \"v0\""));
+    assert_eq!(parse(&text).expect("parses own output"), file);
+
+    // Dropping the concave tiers keeps the relations' version; dropping the relations
+    // as well returns to the plain one.
+    let planar = file.with_concave_tiers(Vec::new());
+    assert_eq!(planar.version, DESIGN_VERSION_RELATIONS);
+    assert_eq!(planar.concave_frame, "");
+    let mut bare = planar;
+    bare.tiers[1].angle_relation = None;
+    assert_eq!(bare.needed_version(), DESIGN_VERSION);
+}
+
+#[test]
+fn versions_1_to_3_are_all_accepted_and_4_is_not() {
+    for version in 1..=DESIGN_VERSION_RELATIONS {
+        let text = to_string(&sample()).expect("serializes");
+        let other = text.replacen("version = 1", &format!("version = {version}"), 1);
+        assert!(parse(&other).is_ok(), "version {version}");
+    }
+    let text = to_string(&sample()).expect("serializes");
+    let newer = text.replacen("version = 1", "version = 4", 1);
+    assert!(matches!(
+        parse(&newer),
+        Err(DesignFileError::UnsupportedVersion { found: 4, .. })
     ));
 }
 

@@ -6,10 +6,15 @@ import { GuideModel } from "../models/guide.slint";
 // button on the command bar, next to Save, instead of as separate
 // File menu entries. Mounted with one line in `editor_command_bar.slint`.
 // "Export as Gem Cut Studio (.gcs)..." (`EditorModel.export_gcs()`) is here too,
-// with its "experimental" tooltip, and also on the File menu.
+// with its "experimental" tooltip, and also on the File menu; it is an advanced
+// export, so the Simple interface leaves it out of both.
 //
 // Keeps the existing callback names -- `EditorModel.export_cutting_sheet()`/
 // `export_diagram()`, unchanged from the File menu's own `activated` handlers.
+//
+// Keyboard and screen reader: Tab reaches the button, Space, Enter or Down opens the menu and
+// puts the focus on its first item, Tab walks the items, Space or Enter runs one, Escape closes
+// the menu and brings the focus back to the button.
 export component ExportSplitButton inherits Rectangle {
     // `false` while the worked-example guide locks file actions (see `GuideAllow`).
     in property <bool> enabled: true;
@@ -18,12 +23,61 @@ export component ExportSplitButton inherits Rectangle {
     width: btn_row.preferred-width;
     height: 26px;
 
+    // Closes the menu and returns the focus to the button.
+    function close_menu() {
+        root.menu_open = false;
+        main_focus.focus();
+    }
+    function run_cutting_sheet() {
+        root.close_menu();
+        EditorModel.export_cutting_sheet();
+    }
+    function run_diagram() {
+        root.close_menu();
+        EditorModel.export_diagram();
+    }
+    function run_gcs() {
+        root.close_menu();
+        EditorModel.export_gcs();
+    }
+
     btn_row := HorizontalLayout {
         Rectangle {
             width: main_txt.preferred-width + 16px;
             background: main_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
             border-radius: Theme.radius-sm;
+            // The export tutorials outline this button (a cyan, 2px border).
+            border-width: main_focus.has-focus || GuideModel.highlight_target == "export_menu" ? 2px : 0px;
+            border-color: GuideModel.highlight_target == "export_menu" ? Theme.accent-cyan : Theme.accent-cyan-hover;
             opacity: root.enabled ? 1.0 : 0.4;
+
+            accessible-role: AccessibleRole.button;
+            accessible-label: "Export";
+            accessible-description: GuideModel.shows_advanced()
+                ? "Export the cutting sheet as a page, the diagram as a picture, or the design as a Gem Cut Studio file."
+                : "Export the cutting sheet as a page, or the diagram as a picture.";
+            accessible-expandable: true;
+            accessible-expanded: root.menu_open;
+            accessible-enabled: root.enabled;
+            accessible-action-default => {
+                if root.enabled {
+                    root.menu_open = !root.menu_open;
+                }
+            }
+
+            main_focus := FocusScope {
+                enabled: root.enabled;
+                key-pressed(event) => {
+                    if event.text == Key.Space || event.text == Key.Return || event.text == Key.DownArrow {
+                        root.menu_open = true;
+                        return accept;
+                    } else if event.text == Key.Escape && root.menu_open {
+                        root.menu_open = false;
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
             main_txt := Text {
                 text: "Export...";
                 font-size: 11px;
@@ -34,9 +88,14 @@ export component ExportSplitButton inherits Rectangle {
             }
             main_touch := TouchArea {
                 enabled: root.enabled;
+                mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
                 clicked => { root.menu_open = !root.menu_open; }
             }
-            Tooltip { text: root.enabled ? @markdown("Export the Cutting Sheet (HTML), the Diagram (PNG), or the design as a Gem Cut Studio (.gcs) file.") : @markdown("\{GuideModel.locked_hint}"); }
+            Tooltip { text: root.enabled
+                ? (GuideModel.shows_advanced()
+                    ? @markdown("Export the cutting sheet (a printable page), the diagram (a picture), or the design as a Gem Cut Studio (.gcs) file.")
+                    : @markdown("Export the cutting sheet (a printable page) or the diagram (a picture)."))
+                : @markdown("\{GuideModel.locked_hint}"); }
         }
     }
 
@@ -66,11 +125,34 @@ export component ExportSplitButton inherits Rectangle {
         drop-shadow-blur: 12px;
         drop-shadow-color: Theme.modal-shadow;
         clip: true;
+        accessible-role: AccessibleRole.list;
+        accessible-label: "Export formats";
+
+        // Opening the menu from the keyboard leaves the focus in it.
+        init => { item1_focus.focus(); }
 
         menu_col := VerticalLayout {
             Rectangle {
                 height: 26px;
-                background: item1_touch.has-hover ? Theme.bg-card-hover : transparent;
+                background: (item1_touch.has-hover || item1_focus.has-focus) ? Theme.bg-card-hover : transparent;
+                border-width: item1_focus.has-focus ? 2px : 0px;
+                border-color: Theme.accent-cyan-hover;
+                accessible-role: AccessibleRole.button;
+                accessible-label: "Export Cutting Sheet (HTML)";
+                accessible-description: "A printable page with every facet in cutting order.";
+                accessible-action-default => { root.run_cutting_sheet(); }
+                item1_focus := FocusScope {
+                    key-pressed(event) => {
+                        if event.text == Key.Space || event.text == Key.Return {
+                            root.run_cutting_sheet();
+                            return accept;
+                        } else if event.text == Key.Escape {
+                            root.close_menu();
+                            return accept;
+                        }
+                        return reject;
+                    }
+                }
                 Text {
                     text: "Export Cutting Sheet (HTML)...";
                     font-size: 10px;
@@ -80,15 +162,31 @@ export component ExportSplitButton inherits Rectangle {
                     x: 8px;
                 }
                 item1_touch := TouchArea {
-                    clicked => {
-                        root.menu_open = false;
-                        EditorModel.export_cutting_sheet();
-                    }
+                    clicked => { root.run_cutting_sheet(); }
                 }
+                Tooltip { text: @markdown("A printable page with every facet in cutting order."); }
             }
             Rectangle {
                 height: 26px;
-                background: item2_touch.has-hover ? Theme.bg-card-hover : transparent;
+                background: (item2_touch.has-hover || item2_focus.has-focus) ? Theme.bg-card-hover : transparent;
+                border-width: item2_focus.has-focus ? 2px : 0px;
+                border-color: Theme.accent-cyan-hover;
+                accessible-role: AccessibleRole.button;
+                accessible-label: "Export Diagram (PNG)";
+                accessible-description: "A picture of the design diagram.";
+                accessible-action-default => { root.run_diagram(); }
+                item2_focus := FocusScope {
+                    key-pressed(event) => {
+                        if event.text == Key.Space || event.text == Key.Return {
+                            root.run_diagram();
+                            return accept;
+                        } else if event.text == Key.Escape {
+                            root.close_menu();
+                            return accept;
+                        }
+                        return reject;
+                    }
+                }
                 Text {
                     text: "Export Diagram (PNG)...";
                     font-size: 10px;
@@ -98,15 +196,32 @@ export component ExportSplitButton inherits Rectangle {
                     x: 8px;
                 }
                 item2_touch := TouchArea {
-                    clicked => {
-                        root.menu_open = false;
-                        EditorModel.export_diagram();
+                    clicked => { root.run_diagram(); }
+                }
+                Tooltip { text: @markdown("A picture (PNG) of the design diagram."); }
+            }
+            // Advanced: the Simple interface leaves the Gem Cut Studio export out.
+            if GuideModel.shows_advanced(): Rectangle {
+                height: 26px;
+                background: (item3_touch.has-hover || item3_focus.has-focus) ? Theme.bg-card-hover : transparent;
+                border-width: item3_focus.has-focus ? 2px : 0px;
+                border-color: Theme.accent-cyan-hover;
+                accessible-role: AccessibleRole.button;
+                accessible-label: "Export as Gem Cut Studio (.gcs)";
+                accessible-description: "Experimental. Written from the published Gem Cut Studio 1.1 file description; chiral designs are untested.";
+                accessible-action-default => { root.run_gcs(); }
+                item3_focus := FocusScope {
+                    key-pressed(event) => {
+                        if event.text == Key.Space || event.text == Key.Return {
+                            root.run_gcs();
+                            return accept;
+                        } else if event.text == Key.Escape {
+                            root.close_menu();
+                            return accept;
+                        }
+                        return reject;
                     }
                 }
-            }
-            Rectangle {
-                height: 26px;
-                background: item3_touch.has-hover ? Theme.bg-card-hover : transparent;
                 Text {
                     text: "Export as Gem Cut Studio (.gcs)...";
                     font-size: 10px;
@@ -116,10 +231,7 @@ export component ExportSplitButton inherits Rectangle {
                     x: 8px;
                 }
                 item3_touch := TouchArea {
-                    clicked => {
-                        root.menu_open = false;
-                        EditorModel.export_gcs();
-                    }
+                    clicked => { root.run_gcs(); }
                 }
                 Tooltip { text: @markdown("Experimental: written from the published Gem Cut Studio 1.1 file description; chiral designs are untested."); }
             }

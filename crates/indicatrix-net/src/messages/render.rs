@@ -133,7 +133,8 @@ mod tests {
             environment: crate::scene::SceneEnvironment::Studio,
             surface_glare: 1.0,
             tools: Vec::new(),
-            fluorescence: Default::default(),
+            fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
+            head_shadow_deg: 16.0,
         }
     }
 
@@ -174,6 +175,53 @@ mod tests {
                 let decoded: RenderRequest = read_message(&mut cursor).unwrap();
                 assert_eq!(request, decoded);
             }
+        }
+    }
+
+    /// A custom material's dispersion curve is part of the `GemMaterial` the scene carries, so a
+    /// remote worker traces the colour play the cutter set, not a built-in's. Every model
+    /// (Sellmeier with one or three terms, Cauchy) must survive the wire exactly.
+    #[test]
+    fn render_request_carries_a_custom_materials_dispersion_model() {
+        use indicatrix::optics::{dispersion::DispersionModel, materials::GemMaterial};
+        let models = [
+            DispersionModel::Sellmeier1 { b1: 1.4, c1: 0.012 },
+            DispersionModel::Sellmeier3 {
+                b: [1.0, 0.25, 0.5],
+                c: [0.006, 0.02, 100.0],
+            },
+            DispersionModel::Cauchy {
+                a: 1.72,
+                b: 0.0121,
+                c: 0.000_2,
+            },
+        ];
+        for model in models {
+            let mut state = scene();
+            state.material =
+                GemMaterial::new_custom_with_dispersion("Custom", model, 0.0, [0.0; 3]);
+            assert_ne!(
+                state.material.dispersion,
+                GemMaterial::diamond().dispersion,
+                "the test model must differ from the default scene's"
+            );
+            let request = RenderRequest {
+                request_id: 7,
+                scene: state,
+                first_sample: 0,
+                samples: 4,
+                stream: StreamConfig {
+                    transfer_mode: TransferMode::FinalOnly,
+                    cadence_ms: 1000,
+                    preview: None,
+                },
+                intent: RequestIntent::Batch,
+            };
+            let mut buf = Vec::new();
+            write_message(&mut buf, &request).unwrap();
+            let decoded: RenderRequest = read_message(&mut std::io::Cursor::new(buf)).unwrap();
+            assert_eq!(decoded.scene.material.dispersion, model);
+            assert_eq!(request, decoded);
         }
     }
 

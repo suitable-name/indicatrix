@@ -13,9 +13,10 @@ use super::{
         material_from_dto, rough_from_dto, rough_to_dto, settings_from_dto, settings_to_dto,
     },
     dto::{
-        BASE_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION, DesignShape, HeaderDto, MAX_LAYOUTS,
-        MAX_NAME_CHARS, MAX_PAYLOAD_BYTES, MESH_SCHEMA_VERSION, ROUGH_PLAN_FORMAT, SavedDesignDto,
-        SavedLayoutDto, SavedPlanDto, SummaryDto,
+        BASE_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION, DesignShape, HeaderDto,
+        INCLUSION_SCHEMA_VERSION, MAX_LAYOUTS, MAX_NAME_CHARS, MAX_PAYLOAD_BYTES,
+        MESH_SCHEMA_VERSION, ROUGH_PLAN_FORMAT, SavedDesignDto, SavedLayoutDto, SavedPlanDto,
+        SummaryDto,
     },
 };
 use indicatrix_cut_core::rough_plan::{PlanSettings, RoughLayout, RoughModel};
@@ -197,13 +198,15 @@ pub fn payload_version_of(text: &str) -> Option<u32> {
 
 /// Brings the text of a plan written with schema `version` up to the current schema.
 ///
-/// Version 2 is the current schema and needs nothing. Version 1 differs only by the
-/// optional `rough.mesh` table, which its files do not have, so its text reads as it is. A
-/// later format change adds an arm here that rewrites the older text, so the DTOs only
-/// ever describe the newest schema.
+/// Version 3 is the current schema and needs nothing. Version 2 differs only by the
+/// optional `rough.inclusions` tables, and version 1 also by the optional `rough.mesh` table,
+/// which their files do not have, so their text reads as it is. A later format change adds an
+/// arm here that rewrites the older text, so the DTOs only ever describe the newest schema.
 fn migrate(text: &str, version: u32) -> Result<Cow<'_, str>, String> {
     match version {
-        BASE_SCHEMA_VERSION | CURRENT_SCHEMA_VERSION => Ok(Cow::Borrowed(text)),
+        BASE_SCHEMA_VERSION | MESH_SCHEMA_VERSION | CURRENT_SCHEMA_VERSION => {
+            Ok(Cow::Borrowed(text))
+        }
         older => Err(format!(
             "This build cannot bring a version {older} plan up to version {CURRENT_SCHEMA_VERSION}."
         )),
@@ -287,6 +290,11 @@ fn plan_from_dto(dto: SavedPlanDto, version: u32) -> Result<LoadedPlan, String> 
     if version < MESH_SCHEMA_VERSION && dto.rough.mesh.is_some() {
         return Err(format!(
             "rough.mesh needs plan version {MESH_SCHEMA_VERSION}; this plan declares version {version}."
+        ));
+    }
+    if version < INCLUSION_SCHEMA_VERSION && !dto.rough.inclusions.is_empty() {
+        return Err(format!(
+            "rough.inclusions needs plan version {INCLUSION_SCHEMA_VERSION}; this plan declares version {version}."
         ));
     }
     let model = rough_from_dto(&dto.rough)?;
@@ -470,9 +478,11 @@ pub fn serialize_plan_to_toml(input: &SerializeInput<'_>) -> Result<String, Stri
         input.settings.specific_gravity,
         input.weighed_ct,
     );
-    // Only a plan with a mesh needs the newer schema: every other plan is what it always
-    // was, byte for byte.
-    let version = if rough.mesh.is_some() {
+    // Only a plan with a mesh needs the newer schema, and one with inclusions the newest:
+    // every other plan is what it always was, byte for byte.
+    let version = if !rough.inclusions.is_empty() {
+        INCLUSION_SCHEMA_VERSION
+    } else if rough.mesh.is_some() {
         MESH_SCHEMA_VERSION
     } else {
         BASE_SCHEMA_VERSION

@@ -48,9 +48,23 @@ pub const ALL_GROUPS: &[Group] = &[
     Group::History,
 ];
 
-/// The four tier-authoring steps share one lock set: the tier form and the tier
-/// table's own toolbar (to fix a mistake), plus Undo/Redo.
-const TIER_STEP: &[Group] = &[Group::TierForm, Group::TierTable, Group::History];
+/// The controls a tier-authoring step leaves usable: the tier form, the tier table's own
+/// toolbar (to fix a mistake) and Undo/Redo. Shared with the generated "Build this design"
+/// lesson, so the Simple-mode rule below lives in one place.
+pub(super) const TIER_STEP: &[Group] = &[Group::TierForm, Group::TierTable, Group::History];
+
+/// [`TIER_STEP`] with the Advanced controls, for a step that asks for "Meets: Exact scale
+/// value". The Simple interface leaves that entry out of the Meets list for a new tier, and a
+/// step that unlocks the Advanced group shows the full list (the same way the tier tutorials
+/// unlock it for the entries Simple hides). The Simple | Advanced switch is unlocked too, so
+/// the learner can also switch by hand. The Girdle Facet Preset fills the entry in as well,
+/// but a learner who types the girdle by hand needs the full list too.
+pub(super) const TIER_STEP_EXACT: &[Group] = &[
+    Group::TierForm,
+    Group::TierTable,
+    Group::Advanced,
+    Group::History,
+];
 
 /// One step's content -- mirrored field-for-field into `GuideStepData`.
 #[derive(Debug)]
@@ -103,21 +117,21 @@ pub const STEPS: &[Step] = &[
     },
     Step {
         title: "Add the girdle first",
-        intro: "The girdle gives the crown and the pavilion something to meet, so it goes in first and carries the design's anchor.",
+        intro: "The girdle goes in first. Its half-width sets the size of the whole stone.",
         actions: &[
             "Click + Add Tier.",
-            "Angle (deg): 90.0 \u{2014} or click Girdle Facet Preset, which also sets Meets.",
+            "Angle (deg): 90.0 \u{2014} or click Girdle Facet Preset, which sets Angle 90.0 and Meets Exact scale value 1.0 in one click.",
             "Meets: Exact scale value \u{2014} 1.0",
             "Name: G1",
             "Indices: 0, 12, 24, 36, 48, 60, 72, 84",
             "Click Add Tier.",
         ],
-        check: "the new G1 row reads G in the C/P/G column.",
-        why: "Type exactly 90.0: a 0.0 tier counts as crown and would become a second table. At 90 degrees the scale value 1.0 is the girdle's half-width.",
+        check: "the new G1 row reads G1 in the CODE column.",
+        why: "Type exactly 90.0: a 0.0 tier counts as crown and would become a second table. At 90 degrees the scale value 1.0 is the girdle's half-width, so the girdle is 2.0 wide, flat to flat. The pavilion and the crown get a scale value of their own in the next steps. This step shows the Advanced controls because the Simple interface leaves Exact scale value out of the Meets list, so you can pick it there even if you type the angle by hand.",
         waiting: "tier G1 at 90.0 with the eight indices",
         highlight_target: "inspector_tier",
         completion: "tier_named:G1",
-        allow: TIER_STEP,
+        allow: TIER_STEP_EXACT,
     },
     Step {
         title: "Add the pavilion main facets",
@@ -125,17 +139,17 @@ pub const STEPS: &[Step] = &[
         actions: &[
             "Click + Add Tier.",
             "Angle (deg): -40.0",
-            "Meets: Named facet(s) \u{2014} G1",
+            "Meets: Exact scale value \u{2014} 0.56",
             "Name: P1",
             "Indices: 0, 12, 24, 36, 48, 60, 72, 84",
             "Click Add Tier.",
         ],
-        check: "the P1 row's MARGIN column reads Safe.",
-        why: "-40.0 is a typical starting pavilion angle; refine it later with Solve and Optimize. Meeting G1 closes the pavilion against the girdle.",
+        check: "the P1 row's MARGIN column reads -0.5\u{b0} in red.",
+        why: "-40.0 is a typical starting pavilion angle; refine it later with Solve and Optimize. With no material yet, the design uses its default refractive index, 1.54, whose critical angle is 40.5 degrees, so -40.0 sits just below it and reads red for now. Step 6 picks a real material and fixes that. The solver needs one exact scale value in each of the girdle, the pavilion and the crown. For a facet, the scale value is how far its plane sits from the centre of the blank, so 0.56 puts the culet, the point at the bottom, about 0.73 below the centre. This step shows the Advanced controls because the Simple interface leaves Exact scale value out of the Meets list.",
         waiting: "tier P1 at -40.0 with the eight indices",
         highlight_target: "inspector_tier",
         completion: "tier_named:P1",
-        allow: TIER_STEP,
+        allow: TIER_STEP_EXACT,
     },
     Step {
         title: "Add the crown main facets",
@@ -143,17 +157,17 @@ pub const STEPS: &[Step] = &[
         actions: &[
             "Click + Add Tier.",
             "Angle (deg): 34.5",
-            "Meets: Named facet(s) \u{2014} G1",
+            "Meets: Exact scale value \u{2014} 0.70",
             "Name: C1",
             "Indices: 0, 12, 24, 36, 48, 60, 72, 84",
             "Click Add Tier.",
         ],
-        check: "the C1 row reads C in the C/P/G column.",
-        why: "Like the pavilion mains, the crown mains close against the girdle.",
+        check: "the C1 row reads C1 in the CODE column.",
+        why: "The crown needs an exact scale value of its own. Together with the pavilion's 0.56, 0.70 leaves a thin girdle band, about 0.05 thick, between the crown and the pavilion. This step shows the Advanced controls because the Simple interface leaves Exact scale value out of the Meets list.",
         waiting: "tier C1 at 34.5 with the eight indices",
         highlight_target: "inspector_tier",
         completion: "tier_named:C1",
-        allow: TIER_STEP,
+        allow: TIER_STEP_EXACT,
     },
     Step {
         title: "Add the table",
@@ -161,17 +175,17 @@ pub const STEPS: &[Step] = &[
         actions: &[
             "Click + Add Tier.",
             "Angle (deg): 0.0",
-            "Meets: Unspecified vertex",
+            "Meets: Exact scale value \u{2014} 0.46",
             "Name: T",
             "Indices: leave blank",
             "Click Add Tier.",
         ],
         check: "the tier table lists G1, P1, C1 and T.",
-        why: "Unspecified vertex cuts the table down to where the crown facets meet. Choose Exact scale value instead to state the table size directly.",
+        why: "A flat table faces straight up, so its scale value is its height above the centre of the blank. 0.46 makes the table about 57 percent as wide as the stone. Unspecified vertex does not suit this crown: it has only the eight main facets, so the table would sink to the girdle and cut the whole crown away. This step shows the Advanced controls because the Simple interface leaves Exact scale value out of the Meets list.",
         waiting: "tier T at 0.0 with no indices",
         highlight_target: "inspector_tier",
         completion: "tier_named:T",
-        allow: TIER_STEP,
+        allow: TIER_STEP_EXACT,
     },
     Step {
         title: "Pick a real material",
@@ -180,8 +194,8 @@ pub const STEPS: &[Step] = &[
             "In Design Settings, set Material: Diamond.",
             "Click Apply Material.",
         ],
-        check: "Eff. RI and Crit. update, and P1's MARGIN column still reads Safe.",
-        why: "Diamond's critical angle (about 24.4 degrees) is smaller than the default's, so -40.0 stays comfortably Safe. A lower-RI material could move P1 to Marginal or Windows.",
+        check: "Eff. RI and Crit. update, and P1's MARGIN column turns green and reads +15.6\u{b0}.",
+        why: "Diamond's critical angle (about 24.4 degrees) is much smaller than the default's 40.5 degrees, so -40.0 now sits well above it and reads Safe. A lower-RI material could move P1 to Marginal (amber) or Windows (red).",
         waiting: "Diamond to be applied",
         highlight_target: "design_settings",
         completion: "material:Diamond",
@@ -195,11 +209,16 @@ pub const STEPS: &[Step] = &[
             "Read the status strip at the bottom of the Edit tab.",
         ],
         check: "the status strip reports \"Closed solid\" and the stone's volume.",
-        why: "If auto-solve already finished, this step completes by itself. A \"no anchor\", Degenerate or Unbounded message names the tier to check: look at its angle and its Meets setting.",
+        why: "If auto-solve already finished, this step completes by itself. A \"no anchor\" message names a block that has no exact scale value: fix it here with the tier form, or with the tier table's Add Anchor button. A Degenerate or Unbounded message names the tier to check: look at its angle and its Meets setting.",
         waiting: "a solve that closes",
         highlight_target: "solve_button",
         completion: "solved_closed",
-        allow: &[Group::Solve, Group::History],
+        allow: &[
+            Group::Solve,
+            Group::TierForm,
+            Group::TierTable,
+            Group::History,
+        ],
     },
     Step {
         title: "Check the orbits",

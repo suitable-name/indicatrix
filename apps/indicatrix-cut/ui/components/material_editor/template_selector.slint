@@ -1,6 +1,7 @@
 import { ComboBox, LineEdit } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { PhysicscolorModel } from "../../models/physics_color.slint";
+import { TipBox, FieldCaption } from "../tip_box.slint";
 
 // Base Template Selector (a preset picker that fills in every optics field at
 // once) and the Material Name input -- split out of `material_editor_dialog.slint`
@@ -31,20 +32,18 @@ export component MaterialTemplateSelector inherits HorizontalLayout {
     VerticalLayout {
         horizontal-stretch: 1;
         spacing: 4px;
-        Text { text: "Load Preset Template:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+        FieldCaption {
+            text: "Load Preset Template:";
+            hint: "Fill in every optical value from a well-known gem, then change what you like. Pick Custom to start from the values as they are.";
+        }
 
-        Rectangle {
-            height: 32px;
-            background: Theme.surface-raised;
-            border-radius: Theme.radius-sm;
-            border-width: 1px;
-            border-color: Theme.border-dialog;
+        TipBox {
+            hint: "Pick a gem to start from.";
 
             ComboBox {
-                width: 100%;
-                height: 100%;
                 model: root.base_templates;
                 current-index <=> root.selected_template_idx;
+                accessible-label: "Preset template";
                 selected(val) => {
                     // Crystal system indices: 0 Cubic, 1 Tetragonal,
                     // 2 Hexagonal, 3 Trigonal, 4 Orthorhombic,
@@ -158,6 +157,12 @@ export component MaterialTemplateSelector inherits HorizontalLayout {
                         root.selected_optical_character_idx = 0; // Isotropic
                         root.biaxial_delta_beta_alpha_val = 0.0;
                     }
+                    // Every template but "Custom" brings its own color. With the physics editor
+                    // hidden, that color replaces a physics recipe's color (the recipe stays
+                    // saved); in every other case the index comes back unchanged.
+                    if (val != "Custom") {
+                        root.selected_color_preset = PhysicscolorModel.color_preset_chosen(root.selected_color_preset);
+                    }
                     // In Physics mode a built-in template also preselects its host crystal
                     // (the catalogue maps built-in materials to hosts); a no-op otherwise.
                     PhysicscolorModel.template_selected(val);
@@ -169,20 +174,18 @@ export component MaterialTemplateSelector inherits HorizontalLayout {
     VerticalLayout {
         horizontal-stretch: 1;
         spacing: 4px;
-        Text { text: "Material Name:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+        FieldCaption {
+            text: "Material Name:";
+            hint: "The name this material is saved under. It cannot be empty, and it cannot be the name of a built-in material.";
+        }
 
-        Rectangle {
-            height: 32px;
-            background: Theme.surface-raised;
-            border-radius: Theme.radius-sm;
-            border-width: 1px;
-            border-color: Theme.border-dialog;
+        TipBox {
+            hint: "Type the name to save the material under.";
 
             LineEdit {
-                width: 100%;
-                height: 100%;
                 text <=> root.mat_name;
                 placeholder-text: "Enter gem name...";
+                accessible-label: "Material name";
             }
         }
     }

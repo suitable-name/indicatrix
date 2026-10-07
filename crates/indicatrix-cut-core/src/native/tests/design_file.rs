@@ -12,7 +12,7 @@ use crate::{
     preform::PreformSpec,
 };
 use indicatrix::geometry::stone_metrics::ExternalProportions;
-use indicatrix_formats::native::design::{CONCAVE_FRAME_V0, DESIGN_VERSION_CONCAVE, detect_kind};
+use indicatrix_formats::native::design::{CONCAVE_FRAME_V0, DESIGN_VERSION_RELATIONS, detect_kind};
 
 fn proportions() -> ExternalProportions {
     ExternalProportions {
@@ -79,6 +79,33 @@ fn a_design_round_trips_bit_identically_through_the_file() {
     }
 }
 
+/// Builds from 2026-09-28 wrote the per-design body colour as `body_colour_override`. Such
+/// a design file must still give the design its colour, and saving it again must write the
+/// current key once, not both.
+#[test]
+fn a_design_file_with_the_old_body_colour_spelling_still_applies_it() {
+    let design = rich_design();
+    let current = design_to_string(&design, None, &DesignExtras::default()).expect("serializes");
+    assert_eq!(current.matches("body_color_override").count(), 1);
+    let old = current.replacen("body_color_override", "body_colour_override", 1);
+    assert_ne!(old, current);
+
+    let loaded = design_from_str(&old).expect("an old file opens");
+    assert_eq!(
+        loaded.design.material.body_color_override,
+        Some([0.2, 0.4, 2.8]),
+        "the stone must get its colour"
+    );
+    assert_eq!(loaded.design, design);
+
+    let again =
+        design_to_string(&loaded.design, None, &DesignExtras::default()).expect("serializes");
+    assert_eq!(
+        again, current,
+        "the re-save is the current format, key once"
+    );
+}
+
 #[test]
 fn the_text_is_deterministic_and_stable_under_reload() {
     let design = rich_design();
@@ -132,12 +159,12 @@ fn a_newer_major_version_is_a_typed_error() {
     let text = design_to_string(&design, None, &DesignExtras::default()).expect("serializes");
     let newer = text.replacen(
         "version = 1",
-        &format!("version = {}", DESIGN_VERSION_CONCAVE + 1),
+        &format!("version = {}", DESIGN_VERSION_RELATIONS + 1),
         1,
     );
     match design_from_str(&newer) {
         Err(DesignLoadError::File(DesignFileError::UnsupportedVersion { found, .. })) => {
-            assert_eq!(found, i64::from(DESIGN_VERSION_CONCAVE + 1));
+            assert_eq!(found, i64::from(DESIGN_VERSION_RELATIONS + 1));
         }
         other => panic!("expected UnsupportedVersion, got {other:?}"),
     }
@@ -240,6 +267,37 @@ fn a_paired_design_migrates_to_a_self_contained_file() {
     assert_eq!(loaded.history_entries, history);
 }
 
+/// The sidecar's concave stash and the fingerprint written next to it are both rebuilt from
+/// the design; neither may ride along into the design file as an unknown top-level key (it
+/// would be rewritten on every save and never read).
+#[test]
+fn migrating_a_concave_sidecar_drops_its_stash_and_its_fingerprint() {
+    use crate::native::convert::{CONCAVE_FLAT_FINGERPRINT_KEY, CONCAVE_TIERS_STASH_KEY};
+    let design = concave_design();
+    let saved = save_paired(&design, "x.asc", None, None, None).expect("saves");
+    assert!(saved.native.unknown.contains_key(CONCAVE_TIERS_STASH_KEY));
+    assert!(
+        saved
+            .native
+            .unknown
+            .contains_key(CONCAVE_FLAT_FINGERPRINT_KEY),
+        "the sidecar carries the fingerprint, so the migration has something to drop"
+    );
+    let loaded = load_paired(&saved.asc_text, &saved.native_toml, false).expect("loads");
+
+    let file = migrate_sidecar_to_file(&loaded.design, &saved.native);
+    assert!(!file.unknown.contains_key(CONCAVE_TIERS_STASH_KEY));
+    assert!(!file.unknown.contains_key(CONCAVE_FLAT_FINGERPRINT_KEY));
+    let text = indicatrix_formats::native::design::to_string(&file).expect("serializes");
+    assert!(
+        !text.contains(CONCAVE_FLAT_FINGERPRINT_KEY) && !text.contains(CONCAVE_TIERS_STASH_KEY),
+        "no stash or fingerprint key in the file"
+    );
+    // The concave tiers themselves still come from the design.
+    let reopened = design_from_str(&text).expect("opens");
+    assert_eq!(reopened.design.concave_tiers, design.concave_tiers);
+}
+
 /// Two concave tiers touching every field, one per angle sign, with a cone (which
 /// carries a tool angle) and a sphere (which must not).
 fn concave_design() -> Design {
@@ -298,6 +356,136 @@ fn native_round_trip_with_concave_tiers_preserves_every_field() {
     assert!(!planar.contains("concave"));
 }
 
+/// The cutting-mode marks of a concave step hang on the tier's id, so the ids must
+/// survive a reopen: a flat tier added after the concave ones, then the concave tiers
+/// reordered, must come back with exactly the ids they had.
+#[test]
+fn concave_tier_ids_survive_a_reopen_after_a_flat_tier_and_a_reorder() {
+    let mut design = concave_design();
+    let mut late = design.tiers[0].clone();
+    late.name = "Late crown".to_string();
+    design.tiers.push(late);
+    let late_id = design.allocate_tier_id();
+    design.tier_ids.push(late_id);
+    design.concave_tiers.reverse();
+    design.concave_tier_ids.reverse();
+    assert!(
+        design.concave_tier_ids[0] > design.concave_tier_ids[1],
+        "the reorder moved the later id to the front"
+    );
+
+    let text = design_to_string(&design, None, &DesignExtras::default()).expect("serializes");
+    assert_eq!(text.matches("concave_tier_id = ").count(), 2);
+    let loaded = design_from_str(&text).expect("opens").design;
+    assert_eq!(loaded.concave_tiers, design.concave_tiers);
+    assert_eq!(loaded.concave_tier_ids, design.concave_tier_ids);
+    assert!(loaded.tier_ids_eq(&design));
+
+    // The counter moved past every restored id, so the next new tier cannot repeat one.
+    let mut reopened = loaded;
+    let fresh = reopened.allocate_tier_id();
+    assert!(!reopened.tier_ids.contains(&fresh));
+    assert!(!reopened.concave_tier_ids.contains(&fresh));
+
+    // Saving again writes the same bytes: the ids are stable, not regenerated.
+    let again =
+        design_to_string(&reopened, None, &DesignExtras::default()).expect("serializes again");
+    assert_eq!(again, text);
+}
+
+#[test]
+fn the_paired_sidecar_and_the_autosave_keep_concave_tier_ids() {
+    use crate::native::{SaveExtras, load_native_only, save_native_only_toml};
+    let mut design = concave_design();
+    design.concave_tier_ids.reverse();
+    design.concave_tiers.reverse();
+    let toml =
+        save_native_only_toml(&design, "x.asc", None, &SaveExtras::default()).expect("serializes");
+    let restored = load_native_only(&toml).expect("restores").design;
+    assert_eq!(restored.concave_tier_ids, design.concave_tier_ids);
+
+    let saved = save_paired(&design, "x.asc", None, None, None).expect("saves");
+    let loaded = load_paired(&saved.asc_text, &saved.native_toml, false).expect("loads");
+    assert_eq!(loaded.design.concave_tier_ids, design.concave_tier_ids);
+}
+
+/// A file saved before the key existed still opens; its concave tiers get fresh ids that
+/// no flat tier holds. A repeated id, or one a flat tier owns, is kept by one holder only.
+#[test]
+fn files_without_or_with_clashing_concave_tier_ids_still_open_with_distinct_ids() {
+    let design = concave_design();
+    let text = design_to_string(&design, None, &DesignExtras::default()).expect("serializes");
+
+    let mut stripped = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("concave_tier_id"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    stripped.push('\n');
+    assert!(!stripped.contains("concave_tier_id"));
+    let loaded = design_from_str(&stripped)
+        .expect("an old file opens")
+        .design;
+    assert_eq!(loaded.concave_tiers, design.concave_tiers);
+    assert_eq!(loaded.concave_tier_ids.len(), 2);
+    assert_ne!(loaded.concave_tier_ids[0], loaded.concave_tier_ids[1]);
+    for id in &loaded.concave_tier_ids {
+        assert!(!loaded.tier_ids.contains(id), "a fresh id is not a flat id");
+    }
+
+    let first = design.concave_tier_ids[0].value();
+    let second = design.concave_tier_ids[1].value();
+    let repeated = text.replacen(
+        &format!("concave_tier_id = {second}"),
+        &format!("concave_tier_id = {first}"),
+        1,
+    );
+    let flat_id = design.tier_ids[0].value();
+    let on_a_flat_id = text.replacen(
+        &format!("concave_tier_id = {first}"),
+        &format!("concave_tier_id = {flat_id}"),
+        1,
+    );
+    for clashing in [repeated, on_a_flat_id] {
+        let loaded = design_from_str(&clashing).expect("opens").design;
+        let mut every: Vec<u64> = loaded
+            .tier_ids
+            .iter()
+            .chain(&loaded.concave_tier_ids)
+            .map(|id| id.value())
+            .collect();
+        let count = every.len();
+        every.sort_unstable();
+        every.dedup();
+        assert_eq!(every.len(), count, "every id in the design is distinct");
+        assert!(loaded.tier_ids_eq(&design));
+    }
+}
+
+/// A concave record that cannot be written must leave a marker in its slot, so the
+/// restore names the position instead of the list silently shrinking.
+#[test]
+fn a_concave_record_that_cannot_be_stashed_leaves_a_marker_the_restore_refuses() {
+    use crate::native::convert::{
+        CONCAVE_TIERS_STASH_KEY, concave_tier_tables, stash_entry, unstash_concave_tiers,
+    };
+    let design = concave_design();
+    let good = toml::Value::try_from(concave_tier_tables(&design)[0].clone()).expect("writes");
+    let marker = stash_entry(1, Err::<toml::Value, _>("a made-up failure"));
+    let toml::Value::String(text) = &marker else {
+        panic!("the marker is a text value, not a dropped slot");
+    };
+    assert!(text.contains("concave tier 2") && text.contains("a made-up failure"));
+
+    let mut unknown = toml::Table::new();
+    unknown.insert(
+        CONCAVE_TIERS_STASH_KEY.to_string(),
+        toml::Value::Array(vec![good, marker]),
+    );
+    let (position, _) = unstash_concave_tiers(&unknown).expect_err("the marker is refused");
+    assert_eq!(position, 1);
+}
+
 #[test]
 fn a_concave_tier_with_an_unknown_tool_is_refused_on_open() {
     let text = design_to_string(&concave_design(), None, &DesignExtras::default()).expect("ok");
@@ -323,6 +511,35 @@ fn the_paired_sidecar_and_the_autosave_carry_concave_tiers_too() {
     // A planar sidecar gains no stash key.
     let planar = save_paired(&simple_design(), "x.asc", None, None, None).expect("saves");
     assert!(!planar.native_toml.contains("concave"));
+}
+
+/// The paired `.asc` carries each concave tier as two ASCII footnotes tagged as generated;
+/// the paired load takes exactly those out of the design's footnotes again and leaves alone
+/// a note the user typed in the same shape.
+#[test]
+fn the_paired_asc_footnotes_are_ascii_and_a_users_look_alike_note_survives_the_load() {
+    let mut design = concave_design();
+    design.meta.footnotes = vec![
+        "Notch  12.00  5  by hand".to_string(),
+        "CYL  +45.00 deg  X = 0.100, Y = 0.200, Z = 0.300  D/W = 0.300, plunge".to_string(),
+    ];
+    let saved = save_paired(&design, "x.asc", None, None, None).expect("saves");
+    let footnote_lines: Vec<&str> = saved
+        .asc_text
+        .lines()
+        .filter(|line| line.starts_with("F "))
+        .collect();
+    assert_eq!(footnote_lines.len(), 2 + 2 * design.concave_tiers.len());
+    assert!(footnote_lines.iter().all(|line| line.is_ascii()));
+    assert!(
+        footnote_lines[2..]
+            .iter()
+            .all(|line| line.ends_with(crate::design::CONCAVE_FOOTNOTE_MARKER)),
+        "{footnote_lines:?}"
+    );
+
+    let loaded = load_paired(&saved.asc_text, &saved.native_toml, false).expect("loads");
+    assert_eq!(loaded.design.meta.footnotes, design.meta.footnotes);
 }
 
 /// An older build can edit the flat tiers and re-save the stash verbatim; the stash

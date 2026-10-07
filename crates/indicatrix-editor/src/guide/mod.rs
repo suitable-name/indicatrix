@@ -1,19 +1,82 @@
-//! The worked-example walkthrough: its step content ([`steps`]) and the completion
-//! predicates behind its automatic advance ([`goal_reached`]).
+//! Guided tutorials: the data model of a [`Guide`], its goals and the registry of guides.
+//!
+//! This covers the steps of a guide, the goals that complete a step, the worked example's
+//! static step content ([`steps`]) and the completion predicates behind its automatic
+//! advance ([`goal_reached`]).
+//!
+//! # Modules
+//!
+//! - [`steps`]: the worked example's ten static steps, shared with the web app (which
+//!   indexes [`STEPS`] and pins its wording against it), and the lock [`Group`]s.
+//! - `model`: [`Guide`], [`GuideStep`], [`GuideCategory`], [`StartingState`].
+//! - `goal`: [`Goal`] (what completes a step) and the pure [`goal_met`].
+//! - `catalog`: the built-in guides ([`worked_example_guide`], the welcome tour), the
+//!   [`GuideCatalog`] that also holds guides generated at run time, and the lists of valid
+//!   [`HIGHLIGHT_TARGETS`] and [`EVENTS`].
+//! - `start`: what a [`StartingState`] asks of the editor ([`plan_start`], with the new
+//!   design a lesson is cut from, [`lesson_start_spec`]) and how a UI waits for a design it
+//!   asked for ([`launch_status`]).
+//! - `listing`: the tutorial browser's rows, search and "Done" bookkeeping.
+//! - `build_this_design`: [`build_this_design_guide`], the lesson that rebuilds a library
+//!   design from an empty one (with `build_text`, its wording and number formats, and
+//!   `rebuilt`, the [`Goal::DesignRebuilt`] comparison its last step uses).
 //!
 //! A UI owns navigation (start/next/back/close, the short "Done" moment before an
-//! automatic advance) and every control lock, driven by the current step's
-//! [`steps::Step::allow`] groups. This module owns the content and decides, from
-//! STATE, whether the current step's goal is met -- never from which button was
-//! clicked, so every route to a goal counts (quick add, inline edit, undo/redo,
-//! auto-solve), and a failed validation (which never changes the design) can never
-//! advance.
+//! automatic advance) and every control lock, driven by the current step's allowed
+//! groups. This crate owns the content and decides, from STATE, whether the current
+//! step's goal is met -- never from which button was clicked, so every route to a goal
+//! counts (quick add, inline edit, undo/redo, auto-solve), and a failed validation (which
+//! never changes the design) can never advance.
 
+mod build_text;
+mod build_this_design;
+mod catalog;
+mod goal;
+mod listing;
+mod model;
+mod rebuilt;
+mod start;
 pub mod steps;
+mod tour;
+mod tutorials;
+
+#[cfg(test)]
+mod build_this_design_tests;
+#[cfg(test)]
+mod catalog_tests;
+#[cfg(test)]
+mod goal_tests;
+#[cfg(test)]
+mod rebuilt_tests;
 #[cfg(test)]
 mod tests;
 
+pub use build_this_design::{
+    BUILD_TITLE_PREFIX, BuildGuideError, BuildPlan, COMPARE_STEP_TITLE, LARGE_DESIGN_TIERS,
+    MAX_TIERS_PER_STEP, REBUILD_ANGLE_TOL_DEG, REBUILD_MAST_REL_TOL, ReferenceDesign,
+    SOLVE_STEP_TITLE, START_STEP_TITLE, TierRecipe, build_guide_id, build_this_design_guide,
+    build_this_design_plan, is_build_guide_id, is_compare_step, original_label, reference_design,
+};
+pub use catalog::{
+    EVENTS, GuideCatalog, HIGHLIGHT_TARGETS, WORKED_EXAMPLE_ID, goal_from_completion,
+    static_guides, worked_example_guide,
+};
+pub use goal::{Goal, GoalContext, MeetKind, goal_met};
+pub use listing::{
+    BrowserRow, browser_rows, completed_count, matches_terms, progress_text, query_terms,
+    record_completion, start_label, steps_text,
+};
+pub use model::{
+    BUILD_ID_PREFIX, Guide, GuideCategory, GuideStep, StartingState, is_valid_guide_id,
+};
+pub use rebuilt::{MAST_FLOOR, mast_within};
+pub use start::{
+    EMPTY_START_PREFORM, LIBRARY_GRACE_TICKS, LaunchObservation, LaunchStatus, NEEDS_A_DESIGN,
+    StartPlan, launch_status, lesson_start_spec, plan_start,
+};
 pub use steps::{ALL_GROUPS, EIGHT_FOLD_INDICES, Group, STEPS, Step};
+pub use tour::{WELCOME_TOUR_ID, welcome_tour_guide};
+pub use tutorials::{TIERS_MULTI_SELECTED, solving_events, viewing_events};
 
 use indicatrix_cut_core::Design;
 

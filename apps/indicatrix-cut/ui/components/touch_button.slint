@@ -1,0 +1,78 @@
+import { Theme } from "../theme.slint";
+
+// A transparent button layer for the hand-drawn chips, cards and rows of the status strip, the
+// empty state and the library. Put it as the LAST child of the Rectangle that draws the thing
+// (it needs no size: like any child of a `Rectangle` it fills it), give it a name and read
+// `has_hover` / `has_focus` from the parent to draw the hover fill:
+//
+//     Rectangle {
+//         background: chip.has_hover ? Theme.bg-card-hover : transparent;
+//         Text { text: "Saved: x.indicatrix"; }
+//         chip := TouchButton {
+//             label: "Show the saved file";
+//             hint: "Open the folder that holds the file you saved last.";
+//             clicked => { ... }
+//         }
+//     }
+//
+// It gives the thing what every control of the program has: a pointer cursor, a tooltip, Tab
+// reach with a visible focus ring, Space and Enter to press, and a screen-reader button with its
+// label and description. `hint` is required: one plain sentence saying what it does.
+//
+// A thing that toggles passes `checkable`, and says whether it is on with `checked`. A thing
+// that opens a panel passes `expandable` and says whether the panel is open with `expanded`.
+export component TouchButton inherits Rectangle {
+    // The accessible name: what the thing is called ("Details", "Saved file").
+    in property <string> label;
+    // One plain sentence: what pressing it does. The tooltip, and read after the label.
+    in property <string> hint;
+    in property <bool> enabled: true;
+    in property <bool> checkable: false;
+    in property <bool> checked: false;
+    in property <bool> expandable: false;
+    in property <bool> expanded: false;
+    // The corner radius of the focus ring; a caller draws the same one on its own rectangle.
+    in property <length> ring_radius: Theme.radius-sm;
+    // The focus ring's colour; a caller on a cyan fill passes a dark one.
+    in property <color> ring_color: Theme.accent-cyan-hover;
+    out property <bool> has_hover: layer_touch.has-hover;
+    out property <bool> has_focus: layer_focus.has-focus;
+    callback clicked();
+
+    border-radius: root.ring_radius;
+    border-width: layer_focus.has-focus ? 2px : 0px;
+    border-color: root.ring_color;
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.label;
+    accessible-description: root.hint;
+    accessible-checkable: root.checkable;
+    accessible-checked: root.checked;
+    accessible-expandable: root.expandable;
+    accessible-expanded: root.expanded;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
+
+    layer_focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    layer_touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
+    }
+}

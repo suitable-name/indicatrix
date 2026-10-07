@@ -1,7 +1,10 @@
-import { Button, CheckBox, ComboBox, LineEdit } from "std-widgets.slint";
+import { CheckBox, ComboBox, LineEdit } from "std-widgets.slint";
 import { EditorTierItem } from "../../types.slint";
 import { Theme } from "../../theme.slint";
 import { EditorModel } from "../../models/editor.slint";
+import { WarningLine } from "../warning_line.slint";
+import { FormRow } from "form_row.slint";
+import { TipButton } from "../compact_controls.slint";
 
 // The Inspector's "Tier" tab for a CONCAVE tier -- the tool-cut counterpart of
 // `TierFormTab`. A concave tier is authored as two lines (a facet line and a tool
@@ -16,6 +19,11 @@ import { EditorModel } from "../../models/editor.slint";
 // to put a red border on the offending control, exactly as the flat form does. The
 // error buckets are "name", "angle", "indices", "tool", "theta", "x", "y", "z",
 // "diameter" and "tool_angle".
+//
+// Every field is a `FormRow` like the flat form's, so the labels and inputs line up with
+// it and each input carries a tooltip and a screen-reader label. The form has no Simple
+// and Advanced split: a concave tier is already the expert way to cut a facet, and every
+// field of it is needed.
 //
 // `unlocked` is `GuideModel.allows_concave_tier()` (see `GuideAllow`): every input and
 // button ANDs it into its own `enabled:`.
@@ -67,6 +75,8 @@ export component ConcaveFormTab inherits VerticalLayout {
     }
 
     spacing: 8px;
+    // Packed at the top, as the other inspector tabs: no row takes the spare height.
+    alignment: start;
     Text {
         text: root.loaded_tier_index < 0
             ? "Add Concave Tier"
@@ -74,6 +84,7 @@ export component ConcaveFormTab inherits VerticalLayout {
         font-size: 12px;
         font-weight: 700;
         color: Theme.text-primary;
+        accessible-role: AccessibleRole.text;
     }
     if root.show_dirty_warning: Rectangle {
         background: Theme.bg-input;
@@ -83,27 +94,27 @@ export component ConcaveFormTab inherits VerticalLayout {
         VerticalLayout {
             padding: 6px;
             spacing: 4px;
-            Text {
-                text: "\u{26A0} You have unsaved changes to "
+            WarningLine {
+                text: "You have unsaved changes to "
                     + (root.loaded_tier_index < 0 ? "the new tier draft" : "Tier #" + (root.loaded_tier_index + 1))
                     + ". The table's selection has moved on, but this form still shows your draft.";
-                font-size: 10px;
-                font-weight: 700;
-                color: Theme.accent-amber;
-                wrap: word-wrap;
             }
             HorizontalLayout {
                 spacing: 6px;
-                Button {
+                TipButton {
                     enabled: root.unlocked;
                     text: "Keep Draft";
+                    hint: "Keep your unsaved changes in this form. The table's selection stays where it is.";
                     clicked => { root.keep_draft(); }
                 }
-                Button {
+                TipButton {
                     enabled: root.unlocked;
                     text: root.pending_load_index < 0
                         ? "Discard Draft, Start New"
                         : "Discard Draft, Load #" + (root.pending_load_index + 1);
+                    hint: root.pending_load_index < 0
+                        ? "Throw away your unsaved changes and start a blank new tier."
+                        : "Throw away your unsaved changes and show the tier you selected in the table.";
                     clicked => { root.confirm_discard_and_load(); }
                 }
             }
@@ -117,24 +128,22 @@ export component ConcaveFormTab inherits VerticalLayout {
         VerticalLayout {
             padding: 6px;
             spacing: 4px;
-            Text {
-                text: "\u{26A0} Tier #" + (root.loaded_tier_index + 1)
+            WarningLine {
+                text: "Tier #" + (root.loaded_tier_index + 1)
                     + " changed in the design after you started this draft. Saving writes your draft over that change.";
-                font-size: 10px;
-                font-weight: 700;
-                color: Theme.accent-amber;
-                wrap: word-wrap;
             }
             HorizontalLayout {
                 spacing: 6px;
-                Button {
+                TipButton {
                     enabled: root.unlocked;
                     text: "Reload From Design";
+                    hint: "Drop your unsaved changes and show the tier as the design now has it.";
                     clicked => { root.reload_from_design(); }
                 }
-                Button {
+                TipButton {
                     enabled: root.unlocked;
                     text: "Keep Draft";
+                    hint: "Keep your unsaved changes and hide this notice. Saving writes them over the change in the design.";
                     clicked => { root.dismiss_external_change(); }
                 }
             }
@@ -142,231 +151,157 @@ export component ConcaveFormTab inherits VerticalLayout {
     }
 
     // --- The facet line: what the tier is called and where it sits on the gear.
-    Text { text: "Facet"; font-size: 10px; font-weight: 700; color: Theme.text-secondary; }
-    HorizontalLayout {
-        spacing: 6px;
-        Rectangle {
-            width: 104px;
-            Tooltip { text: @markdown("Facet name. A concave tier may not reuse a flat tier's name, and nothing can meet it by name."); }
-            Text { text: "Name"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-        }
-        Rectangle {
-            horizontal-stretch: 1;
-            border-width: root.field_error == "name" ? 1px : 0px;
-            border-color: Theme.danger;
-            border-radius: Theme.radius-sm;
-            LineEdit {
-                enabled: root.unlocked;
-                text <=> root.c_name;
-                accepted => { root.save_form(); }
-                changed has-focus => { EditorModel.text_focus = self.has-focus; }
-                edited => { root.clear_field_error("name"); }
-            }
+    Text { text: "Facet"; font-size: 10px; font-weight: 700; color: Theme.text-secondary; accessible-role: AccessibleRole.text; }
+    FormRow {
+        label: "Name";
+        tooltip: "Facet name. A concave tier may not reuse a flat tier's name, and nothing can meet it by name. See the glossary.";
+        invalid: root.field_error == "name";
+        LineEdit {
+            enabled: root.unlocked;
+            text <=> root.c_name;
+            accessible-label: "Facet name";
+            accepted => { root.save_form(); }
+            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            edited => { root.clear_field_error("name"); }
         }
     }
-    HorizontalLayout {
-        spacing: 6px;
-        Rectangle {
-            width: 104px;
-            Tooltip { text: @markdown("Angle of the facet the tool leaves behind, in degrees from the girdle plane. Negative is pavilion, positive is crown."); }
-            Text { text: "Angle (deg)"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-        }
-        Rectangle {
-            horizontal-stretch: 1;
-            border-width: (Math.abs(root.c_angle.to-float()) > 90 || root.field_error == "angle") ? 1px : 0px;
-            border-color: Theme.danger;
-            border-radius: Theme.radius-sm;
-            LineEdit {
-                enabled: root.unlocked;
-                text <=> root.c_angle;
-                placeholder-text: "e.g. -42";
-                accepted => { root.save_form(); }
-                changed has-focus => { EditorModel.text_focus = self.has-focus; }
-                edited => { root.clear_field_error("angle"); }
-            }
+    FormRow {
+        label: "Angle (deg)";
+        tooltip: "Angle of the facet the tool leaves behind, in degrees from the girdle plane. Type a minus sign for a facet on the pavilion side and none for the crown side; the tier table shows the plain number under a P or C label. See the glossary.";
+        invalid: Math.abs(root.c_angle.to-float()) > 90 || root.field_error == "angle";
+        LineEdit {
+            enabled: root.unlocked;
+            text <=> root.c_angle;
+            placeholder-text: "e.g. -42";
+            accessible-label: "Angle in degrees";
+            accepted => { root.save_form(); }
+            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            edited => { root.clear_field_error("angle"); }
         }
     }
-    HorizontalLayout {
-        spacing: 6px;
-        Rectangle {
-            width: 104px;
-            Tooltip { text: @markdown("Gear positions the tool is placed at, comma-separated. One tool placement is cut at each."); }
-            Text { text: "Indices"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-        }
-        Rectangle {
-            horizontal-stretch: 1;
-            border-width: root.field_error == "indices" ? 1px : 0px;
-            border-color: Theme.danger;
-            border-radius: Theme.radius-sm;
-            LineEdit {
-                enabled: root.unlocked;
-                text <=> root.c_indices;
-                placeholder-text: "e.g. 0, 24, 48, 72";
-                accepted => { root.save_form(); }
-                changed has-focus => { EditorModel.text_focus = self.has-focus; }
-                edited => { root.clear_field_error("indices"); }
-            }
+    FormRow {
+        label: "Indices";
+        tooltip: "Gear positions the tool is placed at, comma-separated. One tool placement is cut at each. See the glossary.";
+        invalid: root.field_error == "indices";
+        LineEdit {
+            enabled: root.unlocked;
+            text <=> root.c_indices;
+            placeholder-text: "e.g. 0, 24, 48, 72";
+            accessible-label: "Index positions";
+            accepted => { root.save_form(); }
+            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            edited => { root.clear_field_error("indices"); }
         }
     }
-    HorizontalLayout {
-        spacing: 6px;
-        Rectangle {
-            width: 104px;
-            Tooltip { text: @markdown("Free-text cutting instructions, printed on the facet line of the cutting sheet."); }
-            Text { text: "Instructions"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-        }
+    FormRow {
+        label: "Instructions";
+        tooltip: "Free-text cutting instructions, printed on the facet line of the cutting sheet.";
         LineEdit {
             horizontal-stretch: 1;
             enabled: root.unlocked;
             text <=> root.c_instructions;
+            accessible-label: "Cutting instructions";
             accepted => { root.save_form(); }
             changed has-focus => { EditorModel.text_focus = self.has-focus; }
         }
     }
 
     // --- The tool line: which tool, where it sits and how it moves.
-    Text { text: "Tool"; font-size: 10px; font-weight: 700; color: Theme.text-secondary; }
-    HorizontalLayout {
-        spacing: 6px;
-        Rectangle {
-            width: 104px;
-            Tooltip { text: @markdown("The tool's shape: cylinder, cone, circle (a ring), disc or sphere."); }
-            Text { text: "Tool"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-        }
-        Rectangle {
+    Text { text: "Tool"; font-size: 10px; font-weight: 700; color: Theme.text-secondary; accessible-role: AccessibleRole.text; }
+    FormRow {
+        label: "Tool";
+        tooltip: "The tool's shape: cylinder, cone, circle (a ring), disc or sphere.";
+        invalid: root.field_error == "tool";
+        ComboBox {
             horizontal-stretch: 1;
-            border-width: root.field_error == "tool" ? 1px : 0px;
-            border-color: Theme.danger;
-            border-radius: Theme.radius-sm;
-            ComboBox {
-                enabled: root.unlocked;
-                model: [
-                    "Cylinder (CYL)",
-                    "Cone (CON)",
-                    "Circle (CIR)",
-                    "Disc (DSC)",
-                    "Sphere (SPH)",
-                ];
-                current-index <=> root.c_tool;
-                selected => { root.clear_field_error("tool"); root.clear_field_error("tool_angle"); }
-            }
+            enabled: root.unlocked;
+            accessible-label: "Tool shape";
+            model: [
+                "Cylinder (CYL)",
+                "Cone (CON)",
+                "Circle (CIR)",
+                "Disc (DSC)",
+                "Sphere (SPH)",
+            ];
+            current-index <=> root.c_tool;
+            selected => { root.clear_field_error("tool"); root.clear_field_error("tool_angle"); }
         }
     }
-    HorizontalLayout {
-        spacing: 6px;
-        Rectangle {
-            width: 104px;
-            Tooltip { text: @markdown("Azimuth of the tool's axis around the stone, in degrees. Blank is 0."); }
-            Text { text: "Theta (deg)"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-        }
-        Rectangle {
-            horizontal-stretch: 1;
-            border-width: root.field_error == "theta" ? 1px : 0px;
-            border-color: Theme.danger;
-            border-radius: Theme.radius-sm;
-            LineEdit {
-                enabled: root.unlocked;
-                text <=> root.c_theta;
-                placeholder-text: "0";
-                accepted => { root.save_form(); }
-                changed has-focus => { EditorModel.text_focus = self.has-focus; }
-                edited => { root.clear_field_error("theta"); }
-            }
+    FormRow {
+        label: "Theta (deg)";
+        tooltip: "Azimuth of the tool's axis around the stone, in degrees. Blank is 0.";
+        invalid: root.field_error == "theta";
+        LineEdit {
+            enabled: root.unlocked;
+            text <=> root.c_theta;
+            placeholder-text: "0";
+            accessible-label: "Tool azimuth in degrees";
+            accepted => { root.save_form(); }
+            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            edited => { root.clear_field_error("theta"); }
         }
     }
-    HorizontalLayout {
-        spacing: 6px;
-        Rectangle {
-            width: 104px;
-            Tooltip { text: @markdown("Displacement of the tool from its default position, as ratios of the stone width. Blank is 0."); }
-            Text { text: "X / Y / Z"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-        }
-        Rectangle {
+    FormRow {
+        label: "X / Y / Z";
+        tooltip: "Displacement of the tool from its default position, as ratios of the stone width. Blank is 0.";
+        invalid: root.field_error == "x" || root.field_error == "y" || root.field_error == "z";
+        LineEdit {
             horizontal-stretch: 1;
-            border-width: root.field_error == "x" ? 1px : 0px;
-            border-color: Theme.danger;
-            border-radius: Theme.radius-sm;
-            LineEdit {
-                enabled: root.unlocked;
-                text <=> root.c_x;
-                placeholder-text: "X";
-                accepted => { root.save_form(); }
-                changed has-focus => { EditorModel.text_focus = self.has-focus; }
-                edited => { root.clear_field_error("x"); }
-            }
+            enabled: root.unlocked;
+            text <=> root.c_x;
+            placeholder-text: "X";
+            accessible-label: "Tool displacement X";
+            accepted => { root.save_form(); }
+            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            edited => { root.clear_field_error("x"); }
         }
-        Rectangle {
+        LineEdit {
             horizontal-stretch: 1;
-            border-width: root.field_error == "y" ? 1px : 0px;
-            border-color: Theme.danger;
-            border-radius: Theme.radius-sm;
-            LineEdit {
-                enabled: root.unlocked;
-                text <=> root.c_y;
-                placeholder-text: "Y";
-                accepted => { root.save_form(); }
-                changed has-focus => { EditorModel.text_focus = self.has-focus; }
-                edited => { root.clear_field_error("y"); }
-            }
+            enabled: root.unlocked;
+            text <=> root.c_y;
+            placeholder-text: "Y";
+            accessible-label: "Tool displacement Y";
+            accepted => { root.save_form(); }
+            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            edited => { root.clear_field_error("y"); }
         }
-        Rectangle {
+        LineEdit {
             horizontal-stretch: 1;
-            border-width: root.field_error == "z" ? 1px : 0px;
-            border-color: Theme.danger;
-            border-radius: Theme.radius-sm;
-            LineEdit {
-                enabled: root.unlocked;
-                text <=> root.c_z;
-                placeholder-text: "Z";
-                accepted => { root.save_form(); }
-                changed has-focus => { EditorModel.text_focus = self.has-focus; }
-                edited => { root.clear_field_error("z"); }
-            }
+            enabled: root.unlocked;
+            text <=> root.c_z;
+            placeholder-text: "Z";
+            accessible-label: "Tool displacement Z";
+            accepted => { root.save_form(); }
+            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            edited => { root.clear_field_error("z"); }
         }
     }
-    HorizontalLayout {
-        spacing: 6px;
-        Rectangle {
-            width: 104px;
-            Tooltip { text: @markdown("Tool diameter over stone width (D/W). Must be positive."); }
-            Text { text: "D/W"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-        }
-        Rectangle {
-            horizontal-stretch: 1;
-            border-width: root.field_error == "diameter" ? 1px : 0px;
-            border-color: Theme.danger;
-            border-radius: Theme.radius-sm;
-            LineEdit {
-                enabled: root.unlocked;
-                text <=> root.c_diameter;
-                placeholder-text: "e.g. 0.25";
-                accepted => { root.save_form(); }
-                changed has-focus => { EditorModel.text_focus = self.has-focus; }
-                edited => { root.clear_field_error("diameter"); }
-            }
+    FormRow {
+        label: "D/W";
+        tooltip: "Tool diameter over stone width (D/W). Must be positive.";
+        invalid: root.field_error == "diameter";
+        LineEdit {
+            enabled: root.unlocked;
+            text <=> root.c_diameter;
+            placeholder-text: "e.g. 0.25";
+            accessible-label: "Tool diameter over stone width";
+            accepted => { root.save_form(); }
+            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            edited => { root.clear_field_error("diameter"); }
         }
     }
-    HorizontalLayout {
-        spacing: 6px;
-        opacity: root.has_tool_angle ? 1.0 : 0.5;
-        Rectangle {
-            width: 104px;
-            Tooltip { text: @markdown("Included angle of a cone or disc, in degrees. Only those two tools have one; leave it blank for the others."); }
-            Text { text: "Tool angle (deg)"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-        }
-        Rectangle {
-            horizontal-stretch: 1;
-            border-width: root.field_error == "tool_angle" ? 1px : 0px;
-            border-color: Theme.danger;
-            border-radius: Theme.radius-sm;
-            LineEdit {
-                enabled: root.unlocked && root.has_tool_angle;
-                text <=> root.c_tool_angle;
-                placeholder-text: root.has_tool_angle ? "e.g. 60" : "n/a";
-                accepted => { root.save_form(); }
-                changed has-focus => { EditorModel.text_focus = self.has-focus; }
-                edited => { root.clear_field_error("tool_angle"); }
-            }
+    FormRow {
+        label: "Tool angle";
+        tooltip: "Included angle of a cone or disc, in degrees. Only those two tools have one; leave it blank for the others.";
+        invalid: root.field_error == "tool_angle";
+        LineEdit {
+            enabled: root.unlocked && root.has_tool_angle;
+            text <=> root.c_tool_angle;
+            placeholder-text: root.has_tool_angle ? "e.g. 60" : "n/a";
+            accessible-label: "Tool included angle in degrees";
+            accepted => { root.save_form(); }
+            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            edited => { root.clear_field_error("tool_angle"); }
         }
     }
     Rectangle {
@@ -386,6 +321,7 @@ export component ConcaveFormTab inherits VerticalLayout {
         font-weight: 700;
         color: Theme.accent-ruby;
         wrap: word-wrap;
+        accessible-role: AccessibleRole.text;
     }
 
     // --- Read-only: the tool line the cutting sheet prints, and any warning, for a
@@ -394,24 +330,22 @@ export component ConcaveFormTab inherits VerticalLayout {
         property <EditorTierItem> tier_row: EditorModel.tiers[root.loaded_tier_index];
         spacing: 4px;
         Rectangle { height: 1px; background: Theme.border-subtle; }
-        Text { text: "Sheet line"; font-size: 11px; font-weight: 700; color: Theme.text-primary; }
+        Text { text: "Sheet line"; font-size: 11px; font-weight: 700; color: Theme.text-primary; accessible-role: AccessibleRole.text; }
         Text {
             text: tier_row.tool_line;
             font-size: 10px;
             color: Theme.text-secondary;
             wrap: word-wrap;
+            accessible-role: AccessibleRole.text;
         }
         if tier_row.orbit_status != "": Text {
             text: "Orbit: " + tier_row.orbit_status;
             font-size: 10px;
             color: tier_row.orbit_incomplete ? Theme.accent-amber : Theme.accent-emerald;
+            accessible-role: AccessibleRole.text;
         }
-        if tier_row.warning_text != "": Text {
-            text: "\u{26A0} " + tier_row.warning_text;
-            font-size: 10px;
-            font-weight: 700;
-            color: Theme.accent-amber;
-            wrap: word-wrap;
+        if tier_row.warning_text != "": WarningLine {
+            text: tier_row.warning_text;
         }
     }
 }

@@ -1,91 +1,35 @@
 import { Theme } from "../../theme.slint";
 import { SettingsModel } from "../../models/settings.slint";
+import { SegmentPill } from "../pill_button.slint";
+import { SettingLabel } from "setting_label.slint";
 
 // Motion Preview Resolution, off by default. Same segmented-pill idiom as
 // Render Resolution; a discrete choice rather than a slider since there's no
-// meaningful continuum between "half" and "0.47".
+// meaningful continuum between "half" and "0.47". Advanced: Simple mode hides it
+// (`settings_dialog.slint`).
 export component MotionPreviewPicker inherits VerticalLayout {
     spacing: 6px;
-    Text { text: "Motion Preview Resolution"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+    SettingLabel {
+        text: "Motion Preview Resolution";
+        hint: "Motion Preview Resolution: how sharp the picture is while you drag the gem. A lower setting moves more smoothly; the full picture comes back when you stop.";
+    }
 
     HorizontalLayout {
         spacing: 4px;
 
-        // Off (default): always renders at full "Render Resolution" above.
-        Rectangle {
-            horizontal-stretch: 1;
-            height: 28px;
-            border-radius: Theme.radius-sm;
-            background: SettingsModel.local_preview_scale_index == 0 ? Theme.accent-cyan : (mp0_touch.has-hover ? #1e293b : #0f172a);
-            border-width: 1px;
-            border-color: SettingsModel.local_preview_scale_index == 0 ? Theme.accent-cyan : #334155;
-
-            mp0_touch := TouchArea {
-                clicked => {
-                    SettingsModel.local_preview_scale_index = 0;
-                    SettingsModel.local_preview_scale_changed(0);
-                }
-            }
-
-            Text {
-                text: "Off";
-                font-size: 11px;
-                font-weight: 600;
-                color: SettingsModel.local_preview_scale_index == 0 ? #0f172a : Theme.text-secondary;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-        }
-
-        // Half resolution while the camera is moving.
-        Rectangle {
-            horizontal-stretch: 1;
-            height: 28px;
-            border-radius: Theme.radius-sm;
-            background: SettingsModel.local_preview_scale_index == 1 ? Theme.accent-cyan : (mp1_touch.has-hover ? #1e293b : #0f172a);
-            border-width: 1px;
-            border-color: SettingsModel.local_preview_scale_index == 1 ? Theme.accent-cyan : #334155;
-
-            mp1_touch := TouchArea {
-                clicked => {
-                    SettingsModel.local_preview_scale_index = 1;
-                    SettingsModel.local_preview_scale_changed(1);
-                }
-            }
-
-            Text {
-                text: "Half";
-                font-size: 11px;
-                font-weight: 600;
-                color: SettingsModel.local_preview_scale_index == 1 ? #0f172a : Theme.text-secondary;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-        }
-
-        // Quarter resolution while the camera is moving.
-        Rectangle {
-            horizontal-stretch: 1;
-            height: 28px;
-            border-radius: Theme.radius-sm;
-            background: SettingsModel.local_preview_scale_index == 2 ? Theme.accent-cyan : (mp2_touch.has-hover ? #1e293b : #0f172a);
-            border-width: 1px;
-            border-color: SettingsModel.local_preview_scale_index == 2 ? Theme.accent-cyan : #334155;
-
-            mp2_touch := TouchArea {
-                clicked => {
-                    SettingsModel.local_preview_scale_index = 2;
-                    SettingsModel.local_preview_scale_changed(2);
-                }
-            }
-
-            Text {
-                text: "Quarter";
-                font-size: 11px;
-                font-weight: 600;
-                color: SettingsModel.local_preview_scale_index == 2 ? #0f172a : Theme.text-secondary;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+        // 0 Off (default): always renders at full "Render Resolution" above.
+        // 1 Half resolution while the camera is moving. 2 Quarter resolution.
+        for label[idx] in ["Off", "Half", "Quarter"]: SegmentPill {
+            text: label;
+            hint: idx == 0
+                ? "Always trace at the full render resolution, even while you drag."
+                : (idx == 1
+                    ? "Trace at half the resolution while you drag the gem, then at full resolution once you stop."
+                    : "Trace at a quarter of the resolution while you drag the gem, then at full resolution once you stop.");
+            selected: SettingsModel.local_preview_scale_index == idx;
+            picked => {
+                SettingsModel.local_preview_scale_index = idx;
+                SettingsModel.local_preview_scale_changed(idx);
             }
         }
     }

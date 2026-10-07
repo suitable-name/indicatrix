@@ -1,6 +1,12 @@
 //! [`evaluate_gem_optical_metrics`]: the main analytical-ray-fan grid loop
 //! that fires every ray this module's other files classify, and aggregates
 //! their results into one pose's [`GemOpticalMetrics`].
+//!
+//! The same pass can also measure the face-up tone ([`evaluate_gem_optical_metrics_with_tone`]):
+//! every returned ray's Fresnel weight and internal path length go into a fixed histogram
+//! (see the private `tone` module), turned into a CIELAB colour under the environment's
+//! lighting preset at the end. The plain entry points run the identical code with the tone
+//! switched off, so their metrics are bit-for-bit unchanged.
 
 use super::{
     camera::camera_view_basis,
@@ -12,6 +18,7 @@ use super::{
         TemporalPoseContext, cell_temporal_variance, combine_scintillation_pct,
         spatial_scintillation_pct, temporal_scintillation_pct,
     },
+    tone::{FaceUpTone, ToneAccumulator, ToneIlluminant},
     types::GemOpticalMetrics,
 };
 use crate::{
@@ -248,6 +255,65 @@ pub fn evaluate_gem_optical_metrics(
     )
 }
 
+/// [`evaluate_gem_optical_metrics`] plus the [`FaceUpTone`] of the returned light.
+///
+/// Taken at the same pose, from the same grid pass (the metrics are bit-identical to the
+/// plain entry point). The tone is taken under the lighting preset of `environment` (see
+/// [`ToneIlluminant::for_environment`]).
+#[must_use]
+pub fn evaluate_gem_optical_metrics_with_tone(
+    planes: &[GpuFacetPlane],
+    material: &GemMaterial,
+    cam_yaw: f32,
+    cam_pitch: f32,
+    environment: EnvironmentSource<'_>,
+) -> (GemOpticalMetrics, FaceUpTone) {
+    evaluate_gem_optical_metrics_with_tone_geom(
+        StoneGeometry::planes_only(planes),
+        material,
+        cam_yaw,
+        cam_pitch,
+        environment,
+    )
+}
+
+/// [`evaluate_gem_optical_metrics_with_tone`] for a stone with tools.
+#[must_use]
+pub fn evaluate_gem_optical_metrics_with_tone_geom(
+    geom: StoneGeometry<'_>,
+    material: &GemMaterial,
+    cam_yaw: f32,
+    cam_pitch: f32,
+    environment: EnvironmentSource<'_>,
+) -> (GemOpticalMetrics, FaceUpTone) {
+    if geom.planes.is_empty() {
+        return (placeholder_metrics(), FaceUpTone::NONE);
+    }
+    let half_width = FanGeometry::for_planes(geom.planes).half_width();
+    let mut tone = ToneAccumulator::new(half_width);
+    let metrics = evaluate_pose(
+        geom,
+        material,
+        cam_yaw,
+        cam_pitch,
+        environment,
+        Some(&mut tone),
+    );
+    let illuminant = ToneIlluminant::for_environment(environment);
+    (metrics, tone.finish(material, illuminant))
+}
+
+/// Display defaults for "no geometry loaded", not measurements.
+const fn placeholder_metrics() -> GemOpticalMetrics {
+    GemOpticalMetrics {
+        brilliance_pct: 85.0,
+        fire_index: 25.0,
+        scintillation_pct: 75.0,
+        windowing_pct: 5.0,
+        extinction_pct: 5.0,
+    }
+}
+
 /// [`evaluate_gem_optical_metrics`] for a stone with tools.
 ///
 /// Every ray goes through the one stone intersector, so the tools are subtracted from
@@ -266,17 +332,24 @@ pub fn evaluate_gem_optical_metrics_geom(
     cam_pitch: f32,
     environment: EnvironmentSource<'_>,
 ) -> GemOpticalMetrics {
+    evaluate_pose(geom, material, cam_yaw, cam_pitch, environment, None)
+}
+
+/// The one grid pass behind every entry point; `tone`, when present, also collects the
+/// returned rays' Fresnel weights and internal paths (one `if let` per returned ray).
+fn evaluate_pose(
+    geom: StoneGeometry<'_>,
+    material: &GemMaterial,
+    cam_yaw: f32,
+    cam_pitch: f32,
+    environment: EnvironmentSource<'_>,
+    mut tone: Option<&mut ToneAccumulator>,
+) -> GemOpticalMetrics {
     let planes = geom.planes;
     if planes.is_empty() {
         // No facet geometry to trace: fall back to neutral placeholder values rather
-        // than a formula. Display defaults for "no geometry loaded", not measurements.
-        return GemOpticalMetrics {
-            brilliance_pct: 85.0,
-            fire_index: 25.0,
-            scintillation_pct: 75.0,
-            windowing_pct: 5.0,
-            extinction_pct: 5.0,
-        };
+        // than a formula.
+        return placeholder_metrics();
     }
 
     let mut acc = MetricsAccumulators::default();
@@ -321,16 +394,22 @@ pub fn evaluate_gem_optical_metrics_geom(
 
                 acc.total_rays += 1;
                 cell_total += 1;
+                if let Some(t) = tone.as_deref_mut() {
+                    t.count_total();
+                }
 
                 match classification {
                     RayClassification::EntryBlocked => {}
                     RayClassification::Windowed => acc.windowed_rays += 1,
                     RayClassification::Extinct => acc.extinct_rays += 1,
-                    RayClassification::Returned(fire) => {
+                    RayClassification::Returned(ray) => {
                         acc.returned_rays += 1;
                         cell_returned += 1;
+                        if let Some(t) = tone.as_deref_mut() {
+                            t.offer(ray.transmittance, ray.path_len);
+                        }
 
-                        if let Some((angle_deg, weight)) = fire {
+                        if let Some((angle_deg, weight)) = ray.fire {
                             acc.fire_energy_weighted_sum_deg =
                                 f32::mul_add(angle_deg, weight, acc.fire_energy_weighted_sum_deg);
                             if diag_fire_debug {
@@ -413,6 +492,201 @@ mod tests {
             m.windowing_pct.to_bits(),
             m.extinction_pct.to_bits(),
         ]
+    }
+
+    use crate::optics::materials::body_color::BODY_COLOR_PRESETS;
+    use std::f32::consts::FRAC_PI_2;
+
+    fn tone_bits(t: FaceUpTone) -> [u32; 7] {
+        [
+            t.l_star.to_bits(),
+            t.chroma.to_bits(),
+            t.hue_deg.to_bits(),
+            u32::from(t.srgb[0]),
+            u32::from(t.srgb[1]),
+            t.mean_path_units.to_bits(),
+            t.returned_fraction.to_bits(),
+        ]
+    }
+
+    fn blue_quartz() -> GemMaterial {
+        GemMaterial::by_name("Quartz")
+            .expect("Quartz resolves")
+            .with_body_color(BODY_COLOR_PRESETS[1].absorption_rgb)
+    }
+
+    fn table_up_tone(
+        planes: &[GpuFacetPlane],
+        material: &GemMaterial,
+        preset: LightingPreset,
+    ) -> FaceUpTone {
+        evaluate_gem_optical_metrics_with_tone(
+            planes,
+            material,
+            0.0,
+            FRAC_PI_2,
+            preset.studio(1.0, 0.85, 0.95),
+        )
+        .1
+    }
+
+    #[test]
+    fn tone_pass_leaves_every_metric_bit_identical() {
+        let environment = LightingPreset::RingLights.studio(1.0, 0.85, 0.95);
+        let materials = [
+            GemMaterial::diamond(),
+            GemMaterial::sapphire().with_body_color(BODY_COLOR_PRESETS[1].absorption_rgb),
+        ];
+        for planes in [
+            StandardGemCuts::standard_round_brilliant(),
+            StandardGemCuts::emerald_cut(),
+        ] {
+            for material in &materials {
+                for (yaw, pitch) in [(0.0, FRAC_PI_2), (0.6, 0.45)] {
+                    let plain =
+                        evaluate_gem_optical_metrics(&planes, material, yaw, pitch, environment);
+                    let (with, _) = evaluate_gem_optical_metrics_with_tone(
+                        &planes,
+                        material,
+                        yaw,
+                        pitch,
+                        environment,
+                    );
+                    assert_eq!(bits(plain), bits(with));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_colourless_stone_is_neutral_under_every_preset() {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let material = GemMaterial::diamond();
+        for preset in LightingPreset::ALL {
+            // UV lamps are out of scope: no ray returns table-up, so the tone is all zeros.
+            if matches!(
+                preset,
+                LightingPreset::UvLamp365 | LightingPreset::UvLamp395
+            ) {
+                continue;
+            }
+            let environment = preset.studio(1.0, 0.85, 0.95);
+            let (metrics, tone) = evaluate_gem_optical_metrics_with_tone(
+                &planes,
+                &material,
+                0.0,
+                FRAC_PI_2,
+                environment,
+            );
+            assert!(tone.l_star > 99.5, "{preset:?}: {tone:?}");
+            assert!(tone.chroma < 0.5, "{preset:?}: {tone:?}");
+            assert!(tone.srgb.iter().all(|&c| c >= 253), "{preset:?}: {tone:?}");
+            assert!(
+                (tone.returned_fraction - metrics.brilliance_pct / 100.0).abs() < 1e-4,
+                "{preset:?}"
+            );
+            assert!(tone.mean_path_units > 0.0, "{preset:?}");
+        }
+    }
+
+    #[test]
+    fn the_preset_light_changes_a_coloured_stones_tone() {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let material = blue_quartz();
+        let day = table_up_tone(&planes, &material, LightingPreset::Daylight);
+        let lamp = table_up_tone(&planes, &material, LightingPreset::Incandescent);
+        assert!(
+            day.l_star.to_bits() != lamp.l_star.to_bits()
+                || day.chroma.to_bits() != lamp.chroma.to_bits()
+        );
+        assert!(
+            lamp.chroma < day.chroma,
+            "chroma: Incandescent {} vs Daylight {}",
+            lamp.chroma,
+            day.chroma
+        );
+    }
+
+    #[test]
+    fn the_same_preset_gives_the_same_bits_and_the_tent_uses_its_planckian_light() {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let material = blue_quartz();
+        let tent = table_up_tone(&planes, &material, LightingPreset::LightTent);
+        let tent_again = table_up_tone(&planes, &material, LightingPreset::LightTent);
+        let day = table_up_tone(&planes, &material, LightingPreset::Daylight);
+        assert_eq!(tone_bits(tent), tone_bits(tent_again));
+        assert_ne!(tone_bits(tent), tone_bits(day));
+    }
+
+    #[test]
+    fn a_coloured_stone_is_darker_and_more_saturated_than_colourless() {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let tone = table_up_tone(&planes, &blue_quartz(), LightingPreset::Daylight);
+        assert!(tone.l_star < 95.0, "{tone:?}");
+        assert!(tone.chroma > 5.0, "{tone:?}");
+        assert!(tone.srgb[2] > tone.srgb[0], "{tone:?}");
+    }
+
+    #[test]
+    fn a_larger_stone_is_darker() {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let small = table_up_tone(&planes, &blue_quartz(), LightingPreset::Daylight);
+        let big = table_up_tone(
+            &planes,
+            &blue_quartz().with_absorption_path_scale(2.0),
+            LightingPreset::Daylight,
+        );
+        assert!(big.l_star < small.l_star, "{small:?} vs {big:?}");
+        assert_eq!(
+            big.mean_path_units.to_bits(),
+            small.mean_path_units.to_bits()
+        );
+    }
+
+    #[test]
+    fn a_pale_colour_gains_chroma_with_size_then_loses_it() {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let [r, g, b] = BODY_COLOR_PRESETS[1].absorption_rgb;
+        let pale = GemMaterial::by_name("Quartz")
+            .expect("Quartz resolves")
+            .with_body_color([r * 0.1, g * 0.1, b * 0.1]);
+        let tones: Vec<FaceUpTone> = [1.0f32, 4.0, 16.0, 64.0]
+            .iter()
+            .map(|&s| {
+                table_up_tone(
+                    &planes,
+                    &pale.clone().with_absorption_path_scale(s),
+                    LightingPreset::Daylight,
+                )
+            })
+            .collect();
+        assert!(tones[1].chroma > tones[0].chroma, "{tones:?}");
+        assert!(tones[3].chroma < tones[2].chroma, "{tones:?}");
+        for pair in tones.windows(2) {
+            assert!(pair[1].l_star < pair[0].l_star, "{tones:?}");
+        }
+    }
+
+    #[test]
+    fn no_returned_ray_is_black() {
+        let (_, tone) = evaluate_gem_optical_metrics_with_tone(
+            &[],
+            &blue_quartz(),
+            0.0,
+            FRAC_PI_2,
+            LightingPreset::Daylight.studio(1.0, 0.85, 0.95),
+        );
+        assert_eq!(tone, FaceUpTone::NONE);
+    }
+
+    #[test]
+    fn the_tone_is_deterministic() {
+        let planes = StandardGemCuts::emerald_cut();
+        let material = blue_quartz();
+        let a = table_up_tone(&planes, &material, LightingPreset::RingLights);
+        let b = table_up_tone(&planes, &material, LightingPreset::RingLights);
+        assert_eq!(tone_bits(a), tone_bits(b));
+        assert_eq!(a.srgb, b.srgb);
     }
 
     #[test]

@@ -22,12 +22,12 @@ use glam::DVec3;
 
 use super::{
     grid::ShapedGrid,
-    parallel::{balanced_slices, run_lanes},
+    parallel::{balanced_slices, run_lanes, run_lanes_dynamic},
     rows::{ClipRegion, PartialSolver, caliper_extents},
 };
 use crate::rough_plan::{
     CandidateDesign, FitMesh, Grid, PieceTable, PlanProgress, PlanSettings,
-    piece::{ASSIGNMENTS, Norm, stone_value},
+    piece::{ASSIGNMENTS, Norm, min_width_floor, stone_value},
     shape::{BoxState, RoughMesh},
 };
 
@@ -577,6 +577,9 @@ pub fn build_clipped_table(
 /// calling thread; per slice the events follow [`build_clipped_table`]. With one lane, or
 /// a slice that is not the whole grid, it is [`build_clipped_table`] itself. `None` when
 /// cancelled.
+///
+/// Prefer [`build_clipped_table_jobs`]: whole `a0` planes are coarse jobs (the first of
+/// three planes holds half of the work), which wastes lanes when one entry is expensive.
 pub fn build_clipped_table_lanes(
     params: &BuildClipParams<'_>,
     lanes: usize,
@@ -603,6 +606,101 @@ pub fn build_clipped_table_lanes(
                 cached_classes: cached,
             };
             build_clipped_table(&part, report)
+        },
+        on_progress,
+    )?;
+    Some(ClippedTable::concat(grid.cells, parts))
+}
+
+/// Every a-range `(a0, a1)` of `grid` in `range_index(0, ..)` order: the order the serial
+/// build fills them in.
+#[must_use]
+pub fn a_range_jobs(grid: &ShapedGrid) -> Vec<(usize, usize)> {
+    let ga = grid.cells[0];
+    (0..ga)
+        .flat_map(|a0| ((a0 + 1)..=ga).map(move |a1| (a0, a1)))
+        .collect()
+}
+
+/// The entries of the a-range `(a0, a1)` in the full table: `ra * per_a .. (ra + 1) * per_a`.
+#[must_use]
+pub const fn a_range_entry_range(grid: &ShapedGrid, a0: usize, a1: usize) -> Range<usize> {
+    let per_a = grid.range_count(1) * grid.range_count(2);
+    let ra = grid.range_index(0, a0, a1);
+    (ra * per_a)..((ra + 1) * per_a)
+}
+
+/// The block of the table for one a-range.
+///
+/// `params.slice` must be `a0..a0 + 1` (it is only read for the cached-class contract);
+/// `cached_classes`, when given, holds exactly this block's classes (cut with
+/// [`a_range_entry_range`]). Reports `grid_poll_events(per_a)` `Grid` events, each with
+/// that count as its `total`, where `per_a` is the block's entry count; a whole grid built
+/// from its a-range jobs therefore reports `ra_count` times that. `on_progress` is also the
+/// cancellation point; `None` when it cancels.
+pub fn build_clipped_a_range(
+    params: &BuildClipParams<'_>,
+    a_range: (usize, usize),
+    on_progress: &mut dyn FnMut(PlanProgress) -> bool,
+) -> Option<ClippedTable> {
+    let per_a = params.grid.range_count(1) * params.grid.range_count(2);
+    let mut table = ClippedTable {
+        cells: params.grid.cells,
+        values: vec![f64::NEG_INFINITY; per_a],
+        design: vec![0u32; per_a],
+        orient: vec![0u8; per_a],
+        classes: vec![CLASS_EXTERIOR; per_a],
+    };
+    let mut work = PieceWork {
+        params,
+        norms: params.front.iter().map(Norm::of).collect(),
+        solver: PartialSolver::new(),
+        violated: Vec::new(),
+        shortlist: None,
+        polls: grid_poll_events(per_a),
+    };
+    // Entry counting starts at 0 with base 0: the entry is the index into the block and
+    // into the block's cached classes.
+    work.fill_plane(&mut table, on_progress, a_range, (0, 0))?;
+    Some(table)
+}
+
+/// [`build_clipped_table`] of the whole grid (`params.slice` must be `0..cells[0]`) on
+/// `lanes` scoped threads, one a-range per job.
+///
+/// The jobs are handed out in `ra` order to `min(lanes, jobs)` threads and their blocks are
+/// concatenated in that order, so the table is bitwise the serial one for any lane count.
+/// Cached classes are cut per block. Progress events of the lanes arrive at `on_progress` on
+/// the calling thread: [`build_clipped_a_range`]'s `grid_poll_events(per_a)` events per job,
+/// `a_range_jobs(grid).len()` jobs. With one lane, or a slice that is not the whole grid, it
+/// is [`build_clipped_table`] itself. `None` when cancelled.
+pub fn build_clipped_table_jobs(
+    params: &BuildClipParams<'_>,
+    lanes: usize,
+    on_progress: &mut dyn FnMut(PlanProgress) -> bool,
+) -> Option<ClippedTable> {
+    let grid = params.grid;
+    if lanes <= 1 || params.slice != (0..grid.cells[0]) {
+        return build_clipped_table(params, on_progress);
+    }
+    let parts = run_lanes_dynamic(
+        a_range_jobs(grid),
+        lanes,
+        |(a0, a1), report| {
+            let cached = params
+                .cached_classes
+                .map(|classes| &classes[a_range_entry_range(grid, a0, a1)]);
+            let part = BuildClipParams {
+                grid,
+                front: params.front,
+                non_box_planes: params.non_box_planes,
+                size_table: params.size_table,
+                settings: params.settings,
+                mesh: params.mesh,
+                slice: a0..(a0 + 1),
+                cached_classes: cached,
+            };
+            build_clipped_a_range(&part, (a0, a1), report)
         },
         on_progress,
     )?;
@@ -638,7 +736,7 @@ fn solve_partial_piece(
         let norm = &norms[pair.design as usize];
         let extents = caliper_extents(norm, usize::from(pair.orient));
         if let Some((k, _)) = solver.solve_with(region, extents, mesh)
-            && k >= min_width
+            && k >= min_width_floor(min_width)
         {
             let val = norm.f * (k * k * k);
             if val > best.0 {

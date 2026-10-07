@@ -49,8 +49,8 @@ fn ppmw_to(host: &str, ppmw: f64, m: f64, unit: &str) -> f64 {
     n / h.n_site_for_unit(unit)
 }
 
-fn recipe(host: &str, entries: &[(&str, f64)], treatments: &[&str]) -> colorRecipe {
-    let mut r = colorRecipe::new(host, cat().data_version);
+fn recipe(host: &str, entries: &[(&str, f64)], treatments: &[&str]) -> ColorRecipe {
+    let mut r = ColorRecipe::new(host, cat().data_version);
     for (id, a) in entries {
         assert!(r.set_amount(id, *a));
     }
@@ -135,7 +135,7 @@ fn research_ruby_r1_table_is_the_gia_cross_section_but_its_stated_color_is_not()
 fn ruby_r2_composition_gives_the_gia_purplish_red_not_the_stated_orange_red() {
     let r2 = fixture("ruby_r2_synthetic_flux_0p25wt");
     let stated = stated(&r2, "mean_uniax", "D65", 0.5);
-    let mut r = colorRecipe::new("corundum", cat().data_version);
+    let mut r = ColorRecipe::new("corundum", cat().data_version);
     assert!(r.set_amount("Cr", 0.25));
     let t = tensor(&r);
     let g = table("gia_cr3plus_sample1110_sigma");
@@ -254,7 +254,7 @@ fn alexandrite_table_rays_disagree_with_the_caltech_u_over_y_ratio() {
         (tb - 0.65).abs() < 0.02 && (tg - 0.81).abs() < 0.02,
         "{tb:.2} {tg:.2}"
     );
-    let mut r = colorRecipe::new("chrysoberyl", cat().data_version);
+    let mut r = ColorRecipe::new("chrysoberyl", cat().data_version);
     assert!(r.set_amount("Cr", 1.0));
     let t = tensor(&r);
     let at = |ray: char, nm: f64| match ray {

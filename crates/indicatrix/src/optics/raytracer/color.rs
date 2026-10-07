@@ -330,6 +330,7 @@ pub(super) fn illuminant_white_balance(lighting_preset: LightingPreset) -> Vec3 
     static RING_LIGHTS: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
     static DARK_SPOTLIGHT: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
     static LIGHT_TENT: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
+    static ILLUMINANT_A: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
 
     if !lighting_preset.uses_white_balance() {
         return Vec3::ONE;
@@ -339,9 +340,15 @@ pub(super) fn illuminant_white_balance(lighting_preset: LightingPreset) -> Vec3 
         LightingPreset::RingLights => &RING_LIGHTS,
         LightingPreset::DarkSpotlight => &DARK_SPOTLIGHT,
         LightingPreset::LightTent => &LIGHT_TENT,
+        LightingPreset::IlluminantA => &ILLUMINANT_A,
         LightingPreset::Daylight
         | LightingPreset::IsoHemisphere
         | LightingPreset::DaylightDome
+        | LightingPreset::DaylightSun
+        | LightingPreset::Aset
+        | LightingPreset::ShopLights
+        | LightingPreset::WindowDaylight
+        | LightingPreset::WhiteTray
         | LightingPreset::UvLamp365
         | LightingPreset::UvLamp395 => {
             return Vec3::ONE;

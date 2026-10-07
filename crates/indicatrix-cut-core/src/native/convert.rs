@@ -16,10 +16,10 @@
 
 use crate::{
     design::{
-        ConcaveTier, ConcaveTool, ConstraintTier, Design, ScheduleMeta, TierId, TierTarget,
-        ToolMotion,
+        ConcaveTier, ConcaveTool, ConstraintTier, Design, ScheduleMeta, TierId, TierRelation,
+        TierTarget, ToolMotion,
     },
-    material::{MaterialSelection, colorMode},
+    material::{ColorMode, MaterialSelection},
     preform::{PreformShape, PreformSpec},
 };
 use indicatrix::{
@@ -27,9 +27,9 @@ use indicatrix::{
     optics::materials::GemMaterial,
 };
 use indicatrix_formats::native::{
-    ConcaveTierTable, CustomMaterialSnapshot, HistoryTable, MaterialTable, NativeDesignFile,
-    NativeMeetConstraint, NativePreformShape, NativeTierTarget, PreformTable, SourceTable,
-    TierTable, colorRecipeDto, sha256_hex,
+    ColorRecipeDto, ConcaveTierTable, CustomMaterialSnapshot, HistoryTable, MaterialTable,
+    NativeDesignFile, NativeMeetConstraint, NativePreformShape, NativeTierTarget, PreformTable,
+    SourceTable, TierTable, sha256_hex,
 };
 
 pub(super) fn native_meet_constraint_from(constraint: &MeetConstraint) -> NativeMeetConstraint {
@@ -120,6 +120,23 @@ pub(super) fn material_table_from_selection(selection: &MaterialSelection) -> Ma
         selection.refractive_index_override,
     )
     .with_body_color_override(selection.body_color_override.map(body_color_to_table))
+    .with_body_color_bands_override(
+        selection
+            .body_color_bands_override
+            .as_ref()
+            .filter(|b| !b.is_empty())
+            .map(|rows| rows.iter().copied().map(body_color_to_table).collect()),
+        selection
+            .absorption_path_scale_override
+            .map(f32_to_f64_short),
+    )
+}
+
+/// `f32` -> `f64` through the shortest round-trip decimal (see [`body_color_to_table`]).
+fn f32_to_f64_short(v: f32) -> f64 {
+    v.to_string()
+        .parse::<f64>()
+        .unwrap_or_else(|_| f64::from(v))
 }
 
 #[must_use]
@@ -129,6 +146,17 @@ pub(super) fn material_selection_from_table(table: &MaterialTable) -> MaterialSe
         specific_gravity_override: table.specific_gravity_override,
         refractive_index_override: table.refractive_index_override,
         body_color_override: table.body_color_override.map(body_color_from_table),
+        body_color_bands_override: table
+            .body_color_bands_override
+            .as_ref()
+            .filter(|b| !b.is_empty())
+            .map(|rows| rows.iter().copied().map(body_color_from_table).collect()),
+        absorption_path_scale_override: table
+            .body_color_bands_override
+            .as_ref()
+            .filter(|b| !b.is_empty())
+            .and(table.absorption_path_scale_override)
+            .map(|v| v as f32),
     }
 }
 
@@ -261,49 +289,49 @@ pub struct SaveExtras<'a> {
 
 /// How a native snapshot's color reads (spec 6): which payload the file really carries.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Snapshotcolor {
+pub enum SnapshotColor {
     /// No recipe: the top-level `absorption_rgb` is the color (fantasy, or a file written
     /// before physics color existed).
     Fantasy,
     /// A recipe whose fallback color still matches the top-level `absorption_rgb`: it was not
     /// touched since this build (or one like it) wrote it, so the recipe is the color.
-    Physics(colorMode),
+    Physics(ColorMode),
     /// A recipe, but the top-level `absorption_rgb` differs from the fallback the DTO recorded:
     /// an older build edited the color. Treated as fantasy-edited; the caller asks the user
-    /// whether to keep the physics recipe (the [`colorMode`] is that recipe).
-    EditedElsewhere(colorMode),
+    /// whether to keep the physics recipe (the [`ColorMode`] is that recipe).
+    EditedElsewhere(ColorMode),
 }
 
-/// Reads `snapshot`'s color payload: see [`Snapshotcolor`]. An unreadable recipe JSON is
-/// treated as [`Snapshotcolor::Fantasy`] (the fallback color is still there).
+/// Reads `snapshot`'s color payload: see [`SnapshotColor`]. An unreadable recipe JSON is
+/// treated as [`SnapshotColor::Fantasy`] (the fallback color is still there).
 #[must_use]
-pub fn snapshot_color(snapshot: &CustomMaterialSnapshot) -> Snapshotcolor {
+pub fn snapshot_color(snapshot: &CustomMaterialSnapshot) -> SnapshotColor {
     let Some(dto) = &snapshot.color_recipe else {
-        return Snapshotcolor::Fantasy;
+        return SnapshotColor::Fantasy;
     };
-    let Some(mode) = colorMode::from_json(&dto.recipe_json) else {
-        return Snapshotcolor::Fantasy;
+    let Some(mode) = ColorMode::from_json(&dto.recipe_json) else {
+        return SnapshotColor::Fantasy;
     };
     // A fantasy-active material renders from the top-level color; its parked recipe only
     // matters to the vault row, not to a session-local restore.
     if !mode.is_physics() {
-        return Snapshotcolor::Fantasy;
+        return SnapshotColor::Fantasy;
     }
     // Compared as `f32`, the precision `with_body_color` stores them at.
     let recorded = dto.fallback_rgb.map(|v| v as f32);
     let top_level = snapshot.body_color().unwrap_or([0.0; 3]);
     if top_level == recorded {
-        Snapshotcolor::Physics(mode)
+        SnapshotColor::Physics(mode)
     } else {
-        Snapshotcolor::EditedElsewhere(mode)
+        SnapshotColor::EditedElsewhere(mode)
     }
 }
 
 /// The DTO recording `mode` for the native file; `fallback_rgb` is the exact value the caller
-/// writes as the top-level `absorption_rgb` ([`colorMode::fallback_rgb`]).
+/// writes as the top-level `absorption_rgb` ([`ColorMode::fallback_rgb`]).
 #[must_use]
-pub fn color_recipe_dto(mode: &colorMode) -> colorRecipeDto {
-    colorRecipeDto {
+pub fn color_recipe_dto(mode: &ColorMode) -> ColorRecipeDto {
+    ColorRecipeDto {
         recipe_json: mode.to_json(),
         fallback_rgb: mode.fallback_rgb().map(|v| {
             v.to_string()
@@ -331,22 +359,44 @@ pub fn color_recipe_dto(mode: &colorMode) -> colorRecipeDto {
 /// codebase already relies on.
 ///
 /// A physics recipe renders from its stored `resolved_bands`, never a re-resolve. A file
-/// whose top-level color was edited by an older build ([`Snapshotcolor::EditedElsewhere`])
+/// whose top-level color was edited by an older build ([`SnapshotColor::EditedElsewhere`])
 /// restores the *edited* color here; use [`gem_material_from_custom_snapshot_keeping_recipe`]
 /// when the user chose to keep the recipe.
+///
+/// A snapshot that carries a usable [`CustomMaterialSnapshot::dispersion_model`] rebuilds the
+/// material from that curve (`GemMaterial::new_custom_with_dispersion`); without one, or with
+/// one that fails [`indicatrix::optics::dispersion::DispersionModel::validate`], it is the
+/// Cauchy fit `new_custom` builds from `mean_ri` and `dispersion_delta`, as ever.
 #[must_use]
 pub fn gem_material_from_custom_snapshot(
     name: &str,
     snapshot: &CustomMaterialSnapshot,
 ) -> GemMaterial {
-    let mut mat = GemMaterial::new_custom(
-        name,
-        snapshot.mean_ri as f32,
-        snapshot.dispersion_delta as f32,
-        snapshot.birefringence_delta as f32,
-        snapshot.body_color().unwrap_or([0.0, 0.0, 0.0]),
-    );
-    if let Snapshotcolor::Physics(mode) = snapshot_color(snapshot) {
+    let birefringence = snapshot.birefringence_delta as f32;
+    let color = snapshot.body_color().unwrap_or([0.0, 0.0, 0.0]);
+    let mut mat = snapshot
+        .dispersion_model
+        .as_ref()
+        .and_then(super::dispersion_dto::dispersion_model_from_dto)
+        .map_or_else(
+            || {
+                GemMaterial::new_custom(
+                    name,
+                    snapshot.mean_ri as f32,
+                    snapshot.dispersion_delta as f32,
+                    birefringence,
+                    color,
+                )
+            },
+            |model| GemMaterial::new_custom_with_dispersion(name, model, birefringence, color),
+        );
+    // The N-band colour (path-aware L*C*h editor) wins over the three-band triple written
+    // next to it; a live physics recipe still wins over both below.
+    if let Some(rows) = snapshot.absorption_bands() {
+        let scale = mat.absorption_path_scale;
+        mat = mat.with_body_color_bands(&rows, scale);
+    }
+    if let SnapshotColor::Physics(mode) = snapshot_color(snapshot) {
         mat.absorption = mode.resolve_tensor();
     }
     mat
@@ -360,7 +410,7 @@ pub fn gem_material_from_custom_snapshot_keeping_recipe(
     snapshot: &CustomMaterialSnapshot,
 ) -> GemMaterial {
     let mut mat = gem_material_from_custom_snapshot(name, snapshot);
-    if let Snapshotcolor::EditedElsewhere(mode) = snapshot_color(snapshot) {
+    if let SnapshotColor::EditedElsewhere(mode) = snapshot_color(snapshot) {
         mat.absorption = mode.resolve_tensor();
     }
     mat
@@ -406,6 +456,7 @@ pub fn to_native_file(
                     design.tier_id_at(index),
                     design.tier_target(index),
                 )
+                .with_angle_relation(design.tier_relation(index).map(TierRelation::to_canonical))
             })
             .collect(),
     )
@@ -440,6 +491,8 @@ pub(super) fn concave_tier_table_from_tier(tier: &ConcaveTier) -> ConcaveTierTab
         diameter_ratio: tier.diameter_ratio,
         tool_angle_deg: tier.tool_angle_deg,
         motion: tier.motion.word().to_owned(),
+        // The id is the design's, not the tier's: `concave_tier_tables` attaches it.
+        concave_tier_id: None,
         unknown: toml::Table::new(),
     }
 }
@@ -474,13 +527,24 @@ pub(super) fn concave_tier_from_table(table: ConcaveTierTable) -> Result<Concave
     })
 }
 
-/// Every concave tier of `design` as file records, in stored order.
+/// Every concave tier of `design` as file records, in stored order, each carrying its
+/// stable id (the cutting-mode marks of a concave step hang on it, so it must survive a
+/// reopen). A tier the design has no id for yet is written without one and gets a fresh
+/// id on load.
 #[must_use]
 pub(super) fn concave_tier_tables(design: &Design) -> Vec<ConcaveTierTable> {
     design
         .concave_tiers
         .iter()
-        .map(concave_tier_table_from_tier)
+        .enumerate()
+        .map(|(index, tier)| ConcaveTierTable {
+            concave_tier_id: design
+                .concave_tier_ids
+                .get(index)
+                .copied()
+                .map(TierId::value),
+            ..concave_tier_table_from_tier(tier)
+        })
         .collect()
 }
 
@@ -493,6 +557,10 @@ pub(super) const CONCAVE_TIERS_STASH_KEY: &str = "indicatrix_cut_core_concave_ti
 /// do not silently drop them: `.asc` cannot carry them, and an autosave restore
 /// that lost them would be the one data loss a cutter cannot see. Writes nothing
 /// for a planar design, so those sidecars stay byte-identical.
+///
+/// A record that cannot be serialised is never dropped (the list would silently shrink,
+/// the one data loss a cutter cannot see): its slot keeps a text marker instead, which
+/// [`unstash_concave_tiers`] refuses with the record's position.
 pub(super) fn stash_concave_tiers(unknown: &mut toml::Table, design: &Design) {
     if design.concave_tiers.is_empty() {
         return;
@@ -503,12 +571,28 @@ pub(super) fn stash_concave_tiers(unknown: &mut toml::Table, design: &Design) {
     );
     let tables = concave_tier_tables(design)
         .into_iter()
-        .filter_map(|table| toml::Value::try_from(table).ok())
+        .enumerate()
+        .map(|(index, table)| stash_entry(index, toml::Value::try_from(table)))
         .collect();
     unknown.insert(
         CONCAVE_TIERS_STASH_KEY.to_string(),
         toml::Value::Array(tables),
     );
+}
+
+/// The stash slot of concave record `index`: the serialised record, or (when
+/// serialising failed with `error`) a text marker naming the record, so the position
+/// stays occupied and [`unstash_concave_tiers`] reports it instead of skipping it.
+pub(super) fn stash_entry<E: std::fmt::Display>(
+    index: usize,
+    serialised: Result<toml::Value, E>,
+) -> toml::Value {
+    serialised.unwrap_or_else(|error| {
+        toml::Value::String(format!(
+            "concave tier {} could not be written: {error}",
+            index + 1
+        ))
+    })
 }
 
 /// The `unknown`-table key holding [`flat_schedule_fingerprint`], written next to

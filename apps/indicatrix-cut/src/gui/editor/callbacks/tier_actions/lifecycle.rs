@@ -8,7 +8,7 @@ use std::{
 };
 
 use indicatrix_cut_core::History;
-use indicatrix_editor::EditorSession;
+use indicatrix_editor::{EditorSession, guide::solving_events::SOLVE_REQUESTED};
 use indicatrix_vault::db::sqlite::Database;
 use slint::ComponentHandle;
 
@@ -32,6 +32,7 @@ use crate::{
         library::remote::fetch_remote_design_source,
         show_toast,
         solid_preview::preview_state::SolidPreviewState,
+        tutorial_events::raise,
     },
 };
 
@@ -81,6 +82,8 @@ pub(in crate::gui::editor) fn setup_solve_callback(
                 &state,
                 false,
             );
+            // The Solve button was pressed and the solve has landed (the tutorials' event).
+            raise(&ui, SOLVE_REQUESTED);
         });
     });
 }
@@ -119,6 +122,12 @@ struct LoadedDesignOutcome<'a> {
     /// `LoadedDesignOutcome` construction site, including `native_io.rs`'s own, must
     /// supply the correct value for this field rather than rely on a default.
     source_entry_id: Option<i64>,
+    /// The catalogue entry's `url` for a LOCAL load, `None` for a remote one. A catalogue
+    /// design whose attached file has no `[meta].id` is named by the UUID derived from
+    /// this `url`, so reopening the same entry finds its saved variants again (see
+    /// `state::design_identity`). A remote design gets a fresh UUID instead: its `.asc`
+    /// file name says nothing stable about which design it is.
+    catalogue_url: Option<&'a str>,
 }
 
 /// The shared tail of [`setup_load_selected_callback`]'s local and remote branches:
@@ -146,6 +155,7 @@ fn apply_loaded_design(
         printed_proportions,
         label: loaded_label,
         source_entry_id,
+        catalogue_url,
     } = outcome;
     let schedule_ri = loaded.design.meta.refractive_index;
     let mut st = state.borrow_mut();
@@ -163,7 +173,8 @@ fn apply_loaded_design(
         used_placeholder: loaded.used_placeholder,
         // The design file's `[meta]` and attachments (empty for a bare `.asc`), kept so
         // the next Save writes them back unchanged.
-        file_extras: DesignFileExtras::new(loaded.metadata, loaded.attachments),
+        file_extras: DesignFileExtras::new(loaded.metadata, loaded.attachments)
+            .with_design_uuid_assigned(catalogue_url),
         source_entry_id,
         // See `EditorState::fresh`'s matching comment on the coalescing window.
         session: EditorSession::with_history(
@@ -438,6 +449,7 @@ fn do_load_selected(
                                         // source_entry_id`'s own doc comment) -- never
                                         // stored here.
                                         source_entry_id: None,
+                                        catalogue_url: None,
                                     },
                                 );
                             }
@@ -481,6 +493,7 @@ fn do_load_selected(
                     printed_proportions,
                     label: &full.title,
                     source_entry_id: Some(full.entry_id),
+                    catalogue_url: Some(&full.url),
                 },
             );
         }

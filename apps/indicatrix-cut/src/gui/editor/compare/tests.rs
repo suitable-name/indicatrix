@@ -6,13 +6,14 @@ use super::{
         ADDED_TINT, AFTER_OUTLINE, BEFORE_OUTLINE, FACET_EDGE, REMOVED_TINT, difference_overlay,
     },
     render::{
-        TRACED_MAX_EDGE, pixel_size, placeholder_rgba, render_solid_pick, render_solid_rgba,
-        traced_size,
+        TRACED_MAX_EDGE, TRACED_SPP, pixel_size, placeholder_rgba, render_solid_pick,
+        render_solid_rgba, render_traced_rgba, traced_size,
     },
     session::{
-        CompareOrigin, CompareSession, FrameBook, FrameKind, Renderer, SideInput, TracedProgress,
-        clamp_split_fraction, default_pose, fitted_pose, orbit, resolve_side_material, status_text,
-        traced_may_start, zoom,
+        CompareOrigin, CompareSession, FrameBook, FrameKind, MAX_SETTLE_POLLS, Renderer,
+        SLOW_TRACED_SIDE_SECS, SideInput, TracedProgress, clamp_split_fraction, default_pose,
+        fitted_pose, orbit, reduced_spp_note, resolve_metrics_material, resolve_side_material,
+        status_text, traced_may_start, traced_spp_for, traced_waits_for_layout, zoom,
     },
 };
 use crate::gui::{
@@ -21,6 +22,8 @@ use crate::gui::{
 };
 use indicatrix::geometry::meet_solver::MeetConstraint;
 use indicatrix_cut_core::{ConstraintTier, Design, MaterialSelection, PreformSpec, ScheduleMeta};
+use indicatrix_editor::solve_policy::design_to_gpu_planes_from_solved;
+use indicatrix_solid::preview::StoneGeometryBuf;
 use std::f32::consts::FRAC_PI_2;
 
 /// The standard round brilliant, named Diamond so the traced material resolves.
@@ -67,10 +70,12 @@ fn unsolvable_design() -> Design {
 
 fn input(design: Design, label: &str) -> SideInput {
     let material = resolve_side_material(&design, &[]);
+    let metrics_material = resolve_metrics_material(&design, &[]);
     SideInput {
         design,
         label: label.to_string(),
         material,
+        metrics_material,
     }
 }
 
@@ -91,7 +96,7 @@ fn a_session_of_two_solving_designs_keeps_labels_and_can_keep() {
     assert_eq!(session.before.label, "Current design");
     assert_eq!(session.after.label, "Optimize candidate");
     assert!(session.before.is_solved() && session.after.is_solved());
-    assert!(!session.before.planes.is_empty() && !session.after.planes.is_empty());
+    assert!(!session.before.stone.planes.is_empty() && !session.after.stone.planes.is_empty());
     assert_eq!(
         session.before.preform_planes,
         round_brilliant().preform.planes().len()
@@ -119,6 +124,22 @@ fn a_snapshot_session_never_offers_keep() {
 }
 
 #[test]
+fn a_variants_session_never_offers_keep() {
+    let session = CompareSession::build(
+        input(round_brilliant(), "Variant \"Steeper\""),
+        input(round_brilliant_steeper_crown(), "Current design"),
+        CompareOrigin::Variants,
+        START_POSE,
+    );
+    assert_eq!(session.before.label, "Variant \"Steeper\"");
+    assert_eq!(session.after.label, "Current design");
+    assert!(session.before.is_solved() && session.after.is_solved());
+    assert!(!session.can_keep());
+    assert!(!CompareOrigin::Variants.offers_keep());
+    assert!(CompareOrigin::Optimize.offers_keep());
+}
+
+#[test]
 fn a_side_that_does_not_solve_blocks_keep_and_says_so() {
     let session = CompareSession::build(
         input(round_brilliant(), "Current design"),
@@ -128,7 +149,7 @@ fn a_side_that_does_not_solve_blocks_keep_and_says_so() {
     );
     assert!(session.before.is_solved());
     assert!(!session.after.is_solved());
-    assert_eq!(session.after.planes, Vec::<(glam::Vec3, f32)>::new());
+    assert_eq!(session.after.stone, StoneGeometryBuf::default());
     assert!(!session.can_keep());
     let status = status_text(Some(&session), Renderer::Solid, TracedProgress::Done, 48);
     assert!(status.contains("After does not solve"), "{status}");
@@ -245,7 +266,7 @@ fn solid_renders_are_identical_for_identical_inputs_and_see_one_changed_tier() {
     );
     let size = (64, 64);
     let render = |side: &super::session::CompareSide| {
-        render_solid_rgba(&side.planes, side.preform_planes, START_POSE, size)
+        render_solid_rgba(&side.stone, side.preform_planes, START_POSE, size)
     };
     let before = render(&session.before);
     assert_eq!(before.len(), 64 * 64 * 4);
@@ -452,7 +473,7 @@ fn real_solid_renders_give_an_overlay_that_sees_the_change() {
     );
     let size = (96, 96);
     let pick = |side: &super::session::CompareSide| {
-        render_solid_pick(&side.planes, side.preform_planes, START_POSE, size)
+        render_solid_pick(&side.stone, side.preform_planes, START_POSE, size)
     };
     let (before, after) = (pick(&same.before), pick(&same.after));
     assert!(before.iter().any(|&p| p != 0), "the stone covers pixels");
@@ -562,4 +583,275 @@ fn the_start_pose_fits_the_larger_radius_and_keeps_a_wider_view() {
 fn traced_never_starts_while_the_button_is_held() {
     assert!(!traced_may_start(true));
     assert!(traced_may_start(false));
+}
+
+#[test]
+fn a_layout_switch_makes_the_trace_wait_for_the_new_slot_size_but_only_briefly() {
+    // No switch pending: trace right away.
+    assert!(!traced_waits_for_layout(false, 0));
+    // A switch whose size push has not arrived: wait, up to the cap.
+    assert!(traced_waits_for_layout(true, 0));
+    assert!(traced_waits_for_layout(true, MAX_SETTLE_POLLS - 1));
+    // A layout that kept its size never pushes one: trace anyway after the cap.
+    assert!(!traced_waits_for_layout(true, MAX_SETTLE_POLLS));
+}
+
+#[test]
+fn the_selected_renderer_index_maps_to_the_renderer_that_renders() {
+    // Both layout directions re-read this index, so Path traced stays traced.
+    assert_eq!(Renderer::from_index(1), Renderer::Traced);
+    assert_eq!(Renderer::from_index(0), Renderer::Solid);
+}
+
+#[test]
+fn the_metrics_material_is_the_named_one_and_otherwise_follows_the_refractive_index() {
+    // A named material is the very material the tracer would use.
+    let named = round_brilliant();
+    assert_eq!(
+        resolve_metrics_material(&named, &[]),
+        resolve_side_material(&named, &[]).expect("Diamond resolves")
+    );
+    // A design that names no material and sits between two built-ins: the tracer refuses to
+    // pick a species, the figures are still measured -- at the design's own index.
+    let mut nameless = round_brilliant();
+    nameless.material = MaterialSelection::none();
+    nameless.meta.refractive_index = 2.05;
+    assert!(resolve_side_material(&nameless, &[]).is_err());
+    let at_205 = resolve_metrics_material(&nameless, &[]);
+    nameless.meta.refractive_index = 1.50;
+    let at_150 = resolve_metrics_material(&nameless, &[]);
+    assert_ne!(at_205, at_150, "the refractive index decides the material");
+    assert_ne!(
+        at_205,
+        resolve_metrics_material(&named, &[]),
+        "and it is not silently Diamond"
+    );
+}
+
+// ---- concave stones: Compare draws, traces and measures them with their tools ----
+
+/// The concave fixture (8 flat tiers, a cylinder groove and a sphere dimple), and the same
+/// design with its concave tiers cleared.
+fn concave_design() -> Design {
+    Design::concave_fixture()
+}
+
+fn concave_design_cleared() -> Design {
+    let mut design = Design::concave_fixture();
+    design.concave_tiers.clear();
+    design
+}
+
+/// A pose from below the girdle, where the pavilion groove is in view.
+fn below(session: &CompareSession) -> CameraPose {
+    CameraPose {
+        pitch: -0.9,
+        ..session.pose
+    }
+}
+
+#[test]
+fn a_concave_side_keeps_its_tools_and_a_planar_side_keeps_exactly_its_planes() {
+    let session = CompareSession::build(
+        input(concave_design(), "concave"),
+        input(round_brilliant(), "planar"),
+        CompareOrigin::Snapshot,
+        START_POSE,
+    );
+    assert!(session.before.is_solved());
+    assert!(
+        !session.before.stone.tools.is_empty(),
+        "the groove and the dimple are placed"
+    );
+    assert!(!session.before.tools_dropped);
+    // A planar side: no tools, and the planes are bit for bit the planar conversion's.
+    let planar = &session.after;
+    assert!(planar.stone.tools.is_empty() && planar.stone.placements.is_empty());
+    assert!(!planar.tools_dropped);
+    let solved = planar.solved.as_deref().expect("solves");
+    assert_eq!(
+        planar.stone.planes,
+        design_to_gpu_planes_from_solved(&round_brilliant(), solved)
+    );
+}
+
+#[test]
+fn the_concave_stones_solid_render_differs_from_the_same_design_without_its_tiers() {
+    let session = CompareSession::build(
+        input(concave_design(), "concave"),
+        input(concave_design_cleared(), "flat"),
+        CompareOrigin::Snapshot,
+        START_POSE,
+    );
+    // The flat planes are the same on both sides; only the tools differ.
+    assert_eq!(session.before.stone.planes, session.after.stone.planes);
+    assert_eq!(session.after.stone.tools.len(), 0);
+    let size = (96, 96);
+    let differs = [-0.9_f32, -0.5, 0.0].iter().any(|&pitch| {
+        let pose = CameraPose {
+            pitch,
+            ..session.pose
+        };
+        let render = |side: &super::session::CompareSide| {
+            render_solid_rgba(&side.stone, side.preform_planes, pose, size)
+        };
+        render(&session.before) != render(&session.after)
+    });
+    assert!(
+        differs,
+        "the groove or the dimple shows in the solid render"
+    );
+    // The session radius is still the stone's own: finite, positive, and no larger than the
+    // flat stone's (tools only remove material).
+    let carved = session.before.bounding_radius.expect("closes");
+    let flat = session.after.bounding_radius.expect("closes");
+    assert!(carved > 0.0 && carved <= flat + 1e-9, "{carved} vs {flat}");
+}
+
+#[test]
+fn the_traced_render_carries_the_tools() {
+    let session = CompareSession::build(
+        input(concave_design(), "concave"),
+        input(concave_design_cleared(), "flat"),
+        CompareOrigin::Snapshot,
+        START_POSE,
+    );
+    let material = session.before.material.as_ref().expect("Diamond resolves");
+    let pose = below(&session);
+    let size = (32, 32);
+    let with_tools = render_traced_rgba(&session.before.stone, material, pose, size, 4);
+    let without = render_traced_rgba(&session.after.stone, material, pose, size, 4);
+    assert_eq!(with_tools.len(), 32 * 32 * 4);
+    assert_ne!(with_tools, without, "the tracer subtracts the tools");
+    // Same stone, same samples: deterministic.
+    assert_eq!(
+        with_tools,
+        render_traced_rgba(&session.before.stone, material, pose, size, 4)
+    );
+}
+
+#[test]
+fn the_figures_of_a_concave_stone_differ_from_its_flat_twin() {
+    let session = CompareSession::build(
+        input(concave_design(), "concave"),
+        input(concave_design_cleared(), "flat"),
+        CompareOrigin::Snapshot,
+        START_POSE,
+    );
+    let metrics = super::metrics::SessionMetrics::measure(
+        &session,
+        indicatrix::optics::LightingPreset::RingLights,
+    );
+    let strip = metrics.strip();
+    assert_eq!(strip.rows.len(), 5, "both sides are measured");
+    assert!(
+        strip.rows.iter().any(|row| row.before != row.after),
+        "the tools change at least one figure: {:?}",
+        strip.rows
+    );
+}
+
+#[test]
+fn a_side_whose_concave_tiers_could_not_be_placed_says_so() {
+    let mut session = CompareSession::build(
+        input(concave_design(), "a"),
+        input(round_brilliant(), "b"),
+        CompareOrigin::Snapshot,
+        START_POSE,
+    );
+    assert_eq!(
+        status_text(Some(&session), Renderer::Solid, TracedProgress::Done, 48),
+        "Solid",
+        "a placed concave side needs no extra text"
+    );
+    session.before.tools_dropped = true;
+    let status = status_text(Some(&session), Renderer::Solid, TracedProgress::Done, 48);
+    assert!(
+        status
+            .contains("Before: its concave tiers could not be placed, so the flat stone is shown"),
+        "{status}"
+    );
+    assert!(!status.contains("After:"), "{status}");
+}
+
+#[test]
+fn only_a_slow_concave_side_gets_fewer_samples() {
+    // A planar side always traces at full quality, however slow.
+    assert_eq!(traced_spp_for(TRACED_SPP, false, Some(30.0)), TRACED_SPP);
+    // A concave side does until it has been measured slow.
+    assert_eq!(traced_spp_for(TRACED_SPP, true, None), TRACED_SPP);
+    assert_eq!(
+        traced_spp_for(TRACED_SPP, true, Some(SLOW_TRACED_SIDE_SECS)),
+        TRACED_SPP,
+        "exactly at the limit is not over it"
+    );
+    assert_eq!(
+        traced_spp_for(TRACED_SPP, true, Some(SLOW_TRACED_SIDE_SECS + 0.1)),
+        TRACED_SPP / 2
+    );
+    assert_eq!(
+        traced_spp_for(1, true, Some(99.0)),
+        1,
+        "never below one sample"
+    );
+}
+
+#[test]
+fn the_status_names_a_reduced_side_and_is_silent_at_full_quality() {
+    assert_eq!(reduced_spp_note([TRACED_SPP, TRACED_SPP], TRACED_SPP), None);
+    let note = reduced_spp_note([TRACED_SPP, TRACED_SPP / 2], TRACED_SPP).expect("reduced");
+    assert!(note.contains("After") && !note.contains("Before"), "{note}");
+    assert!(note.contains(&format!("{} spp", TRACED_SPP / 2)), "{note}");
+}
+
+// --- the "Compare against" reference picker (Optimize comparison) ---
+
+#[test]
+fn the_reference_index_round_trips_and_defaults_to_the_current_design() {
+    use super::origins::Reference;
+    assert_eq!(Reference::default(), Reference::Current);
+    assert_eq!(
+        Reference::from_index(Reference::Current.index()),
+        Reference::Current
+    );
+    assert_eq!(
+        Reference::from_index(Reference::Original.index()),
+        Reference::Original
+    );
+    assert_eq!(Reference::from_index(7), Reference::Current);
+}
+
+#[test]
+fn the_before_side_is_the_original_when_picked_and_the_live_design_otherwise() {
+    use super::origins::{Reference, pick_before};
+    let current = round_brilliant();
+    let original = round_brilliant_steeper_crown();
+    let held = || Some((original.clone(), "Before retarget to Sapphire".to_string()));
+
+    let (design, label, offer) = pick_before(&current, held(), Reference::Current);
+    assert_eq!(design, current);
+    assert_eq!(label, "Current design");
+    assert_eq!(
+        offer.original_label.as_deref(),
+        Some("Before retarget to Sapphire")
+    );
+
+    let (design, label, offer) = pick_before(&current, held(), Reference::Original);
+    assert_eq!(design, original);
+    assert!(label.starts_with("Original"));
+    assert_eq!(offer.selected, Reference::Original);
+}
+
+#[test]
+fn the_picker_is_hidden_and_falls_back_to_current_when_no_original_is_held() {
+    use super::origins::{Reference, pick_before, reference_options};
+    let current = round_brilliant();
+    let (design, label, offer) = pick_before(&current, None, Reference::Original);
+    assert_eq!(design, current);
+    assert_eq!(label, "Current design");
+    assert!(offer.original_label.is_none());
+    assert_eq!(
+        reference_options(&offer),
+        vec!["Current design".to_string()]
+    );
 }

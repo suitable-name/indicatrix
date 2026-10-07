@@ -113,12 +113,15 @@ fn move_tier_out_of_range_is_rejected_without_mutating_the_design() {
 #[test]
 fn describe_move_tier_names_the_tier_and_direction() {
     let design = four_tier_design();
+    // The tiers carry old-style names (`A` to `D`), so the sentence names them by the
+    // standard codes the tier table shows.
+    let codes = crate::design::compute_tier_labels(&design.tiers);
     assert_eq!(
         Edit::MoveTier { from: 2, to: 0 }.describe(&design),
-        "Move tier C up"
+        format!("Move tier {} up", codes[2].code)
     );
     assert_eq!(
         Edit::MoveTier { from: 0, to: 2 }.describe(&design),
-        "Move tier A down"
+        format!("Move tier {} down", codes[0].code)
     );
 }

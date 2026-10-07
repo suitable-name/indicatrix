@@ -1,0 +1,434 @@
+import { TextEdit, ScrollView, ListView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { EditorModel } from "../models/editor.slint";
+import { RawTextModel, RawTextDiffRow } from "../models/raw_text.slint";
+import { HelpTopics } from "../models/help.slint";
+import { HelpButton } from "help_button.slint";
+import { IconButton } from "icon_button.slint";
+import { TipButton } from "compact_controls.slint";
+import { TipBox } from "tip_box.slint";
+
+// The "Edit as Text" dialog (Edit > Edit as Text..., and the command palette): the open
+// design's cutting instructions as `.asc` text, exactly as Export would write them, in a box
+// you can edit. The text is checked a moment after each edit; the check names the line of a
+// problem and, when the text is fine, lists what applying it would change and what it would
+// lose. Apply turns the text into the design as one undoable change; Revert writes the text
+// again. "Compare with..." shows the text against the saved file or the snapshot, line by line.
+//
+// Mounted by `app.slint` inside an Escape-handling `FocusScope`, like the other modal
+// dialogs. The state lives in `RawTextModel` and is driven by `gui::editor::raw_text`. A click
+// on the backdrop does nothing: edits are not thrown away by a stray click.
+export component RawTextDialog inherits Rectangle {
+    background: Theme.overlay-backdrop;
+
+    // Choosing what to compare with (the footer shows the choices instead of its buttons).
+    property <bool> choosing_source: false;
+    // The text cannot be edited while it is being written or when it could not be written.
+    property <bool> editable: !RawTextModel.busy && RawTextModel.load_error == "";
+    // Why Apply is greyed out, or what it does. The tooltip of the Apply button.
+    property <string> apply_hint: !root.editable
+        ? (RawTextModel.busy ? "Wait a moment: the cut depths are still being worked out." : "The instructions cannot be shown as text, so there is nothing to apply.")
+        : (RawTextModel.can_apply
+            ? "Turn the text into the design. It is one change, and Undo takes it back."
+            : "Nothing to apply yet: change the text so that the check below says it is fine, or fix the problem the check names.");
+
+    TouchArea {} // Swallows clicks on the backdrop.
+
+    Rectangle {
+        width: min(980px, parent.width - 40px);
+        height: min(780px, parent.height - 40px);
+        background: Theme.surface-dialog;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-dialog;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.modal-shadow;
+        clip: true;
+
+        TouchArea {} // Isolates clicks inside the dialog from the backdrop above.
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            // --- Title bar ---
+            HorizontalLayout {
+                spacing: 8px;
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: RawTextModel.compare_open ? "Compare the text" : "Edit as Text";
+                    font-size: 15px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    HelpButton { topic: HelpTopics.edit-as-text; hint: "Open the manual page on editing the cutting instructions as text"; }
+                }
+
+                IconButton {
+                    icon: @image-url("../icons/close.svg");
+                    hint: "Close Edit as Text. If the text has edits that were not applied, you are asked first.";
+                    tint: Theme.text-muted;
+                    clicked => { RawTextModel.request_close(); }
+                }
+            }
+
+            // --- The editing view ---
+            if !RawTextModel.compare_open: Text {
+                text: "These are the cutting instructions as .asc text, the same text Export Edited .asc writes. "
+                    + "Change it and choose Apply to change the design in one step that Undo takes back.";
+                font-size: 11px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+
+            if !RawTextModel.compare_open: Text {
+                text: RawTextModel.omitted;
+                font-size: 11px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+
+            if !RawTextModel.compare_open: Rectangle {
+                vertical-stretch: 3;
+                min-height: 140px;
+
+                TipBox {
+                    width: 100%;
+                    height: 100%;
+                    hint: "The cutting instructions as .asc text. Edit it freely; the check below updates a moment after each change.";
+                    editor := TextEdit {
+                        text <=> RawTextModel.text;
+                        font-family: "Consolas";
+                        font-size: 12px;
+                        wrap: no-wrap;
+                        read-only: !root.editable;
+                        accessible-label: "Cutting instructions as .asc text";
+                        accessible-description: "Edit the text. Apply, below, turns it into the design.";
+                        edited(new_text) => { RawTextModel.text_edited(new_text); }
+                        init => { self.focus(); }
+                    }
+                }
+
+                if RawTextModel.busy: Rectangle {
+                    background: Theme.overlay-backdrop;
+                    border-radius: 4px;
+
+                    Text {
+                        text: "Working out the cut depths...";
+                        font-size: 12px;
+                        color: Theme.text-primary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                if RawTextModel.load_error != "": Rectangle {
+                    background: Theme.danger-surface;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: Theme.danger-border;
+
+                    Text {
+                        x: 12px;
+                        y: 12px;
+                        width: parent.width - 24px;
+                        text: "The instructions cannot be shown as text yet. " + RawTextModel.load_error;
+                        font-size: 12px;
+                        color: Theme.danger;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+
+            // The live check: one sentence, red when the text has a problem.
+            if !RawTextModel.compare_open && RawTextModel.status != "": Rectangle {
+                background: RawTextModel.status_kind == 2 ? Theme.danger-surface
+                    : (RawTextModel.status_kind == 1 ? Theme.surface-info : transparent);
+                border-radius: 4px;
+                border-width: RawTextModel.status_kind == 2 ? 1px : 0px;
+                border-color: Theme.danger-border;
+                height: status_text.preferred-height + 12px;
+
+                accessible-role: AccessibleRole.text;
+                accessible-label: RawTextModel.status;
+
+                status_text := Text {
+                    x: 10px;
+                    y: 6px;
+                    width: parent.width - 20px;
+                    text: RawTextModel.status;
+                    font-size: 12px;
+                    font-weight: RawTextModel.status_kind == 2 ? 700 : 400;
+                    color: RawTextModel.status_kind == 2 ? Theme.danger : Theme.text-primary;
+                    wrap: word-wrap;
+                }
+            }
+
+            // What applying the text would change and what it would lose.
+            if !RawTextModel.compare_open && (RawTextModel.changed_lines.length > 0 || RawTextModel.lost_lines.length > 0): ScrollView {
+                vertical-stretch: 1;
+                min-height: 64px;
+
+                VerticalLayout {
+                    spacing: 6px;
+                    alignment: start;
+
+                    if RawTextModel.changed_lines.length > 0: Text {
+                        text: "Applying this text will change";
+                        font-size: 12px;
+                        font-weight: 700;
+                        color: Theme.accent-cyan;
+                    }
+
+                    for line in RawTextModel.changed_lines: Text {
+                        text: line;
+                        font-size: 12px;
+                        color: Theme.text-secondary;
+                        wrap: word-wrap;
+                    }
+
+                    if RawTextModel.lost_lines.length > 0: HorizontalLayout {
+                        spacing: 6px;
+                        alignment: start;
+
+                        Image {
+                            source: @image-url("../icons/warning.svg");
+                            colorize: Theme.accent-amber;
+                            width: 13px;
+                            height: 13px;
+                            image-fit: contain;
+                        }
+
+                        Text {
+                            text: "It will also lose or ignore";
+                            font-size: 12px;
+                            font-weight: 700;
+                            color: Theme.accent-amber;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    for line in RawTextModel.lost_lines: Text {
+                        text: line;
+                        font-size: 12px;
+                        color: Theme.text-secondary;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+
+            // --- The comparison view ---
+            if RawTextModel.compare_open: Text {
+                text: RawTextModel.compare_title;
+                font-size: 12px;
+                font-weight: 700;
+                color: Theme.text-primary;
+                wrap: word-wrap;
+            }
+
+            if RawTextModel.compare_open: Text {
+                text: RawTextModel.compare_busy ? "Reading the other text..." : RawTextModel.compare_summary;
+                font-size: 11px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+
+            if RawTextModel.compare_open: Rectangle {
+                vertical-stretch: 1;
+                min-height: 140px;
+                background: Theme.bg-input;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                clip: true;
+
+                ListView {
+                    for row in RawTextModel.diff_rows: Rectangle {
+                        height: 18px;
+
+                        accessible-role: AccessibleRole.list-item;
+                        accessible-label: (row.kind == 1 ? "Added: " : (row.kind == 2 ? "Removed: " : "")) + row.text;
+
+                        // The tint behind a changed line. Colour is never the only cue: an
+                        // added line has only a new line number, a removed line only an old one.
+                        Rectangle {
+                            background: row.kind == 1 ? Theme.compare-added
+                                : (row.kind == 2 ? Theme.compare-removed : transparent);
+                            opacity: 0.18;
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            spacing: 8px;
+
+                            Text {
+                                width: 44px;
+                                text: row.old_line;
+                                font-family: "Consolas";
+                                font-size: 11px;
+                                color: Theme.text-muted;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                width: 44px;
+                                text: row.new_line;
+                                font-family: "Consolas";
+                                font-size: 11px;
+                                color: Theme.text-muted;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+
+                            Rectangle {
+                                width: 3px;
+                                background: row.kind == 1 ? Theme.compare-added
+                                    : (row.kind == 2 ? Theme.compare-removed : transparent);
+                            }
+
+                            Text {
+                                horizontal-stretch: 1;
+                                text: row.text;
+                                font-family: "Consolas";
+                                font-size: 12px;
+                                font-italic: row.kind == 3;
+                                color: row.kind == 3 ? Theme.text-muted : Theme.text-primary;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // --- The footer ---
+            // Asking whether to throw away edits that were not applied.
+            if RawTextModel.confirm_discard: HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: "Close without applying? The edits in the box will be lost.";
+                    font-size: 12px;
+                    color: Theme.accent-amber;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
+
+                TipButton {
+                    text: "Keep editing";
+                    hint: "Go back to the text and keep your edits.";
+                    clicked => { RawTextModel.confirm_discard = false; }
+                }
+
+                TipButton {
+                    text: "Discard edits";
+                    hint: "Close Edit as Text and throw away the edits that were not applied. The design stays as it is.";
+                    primary: true;
+                    clicked => {
+                        RawTextModel.confirm_discard = false;
+                        RawTextModel.close();
+                    }
+                }
+            }
+
+            // Choosing what to compare with.
+            if !RawTextModel.confirm_discard && !RawTextModel.compare_open && root.choosing_source: HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: "Compare the text in the box with:";
+                    font-size: 12px;
+                    color: Theme.text-secondary;
+                    vertical-alignment: center;
+                }
+
+                TipButton {
+                    text: "Saved file on disk";
+                    hint: "Show the text in the box against the .indicatrix file last saved to disk, line by line.";
+                    clicked => {
+                        root.choosing_source = false;
+                        RawTextModel.compare(0);
+                    }
+                }
+
+                TipButton {
+                    text: "Snapshot";
+                    hint: EditorModel.has_snapshot
+                        ? "Show the text in the box against the snapshot you took, line by line."
+                        : "There is no snapshot yet. Take one with Snapshot in the command bar.";
+                    enabled: EditorModel.has_snapshot;
+                    clicked => {
+                        root.choosing_source = false;
+                        RawTextModel.compare(1);
+                    }
+                }
+
+                TipButton {
+                    text: "Cancel";
+                    hint: "Do not compare. Go back to the footer.";
+                    clicked => { root.choosing_source = false; }
+                }
+            }
+
+            // The comparison's own footer.
+            if !RawTextModel.confirm_discard && RawTextModel.compare_open: HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+
+                TipButton {
+                    text: "Back to the text";
+                    hint: "Leave the comparison and return to the text you were editing.";
+                    primary: true;
+                    clicked => { RawTextModel.compare_open = false; }
+                }
+            }
+
+            // The editing footer.
+            if !RawTextModel.confirm_discard && !RawTextModel.compare_open && !root.choosing_source: HorizontalLayout {
+                spacing: 8px;
+
+                TipButton {
+                    text: "Compare with...";
+                    hint: root.editable ? "Show the text in the box against the saved file or the snapshot, line by line." : "The text cannot be compared while it is not shown.";
+                    enabled: root.editable;
+                    clicked => { root.choosing_source = true; }
+                }
+
+                TipButton {
+                    text: "Revert";
+                    hint: root.editable && RawTextModel.text_differs
+                        ? "Write the text again from the design, throwing away your edits in the box."
+                        : "Nothing to revert: the text is the same as what the design writes.";
+                    enabled: root.editable && RawTextModel.text_differs;
+                    clicked => { RawTextModel.revert(); }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                TipButton {
+                    text: "Close";
+                    hint: "Close Edit as Text. If the text has edits that were not applied, you are asked first. Escape does the same.";
+                    clicked => { RawTextModel.request_close(); }
+                }
+
+                TipButton {
+                    text: "Apply";
+                    hint: root.apply_hint;
+                    primary: true;
+                    enabled: root.editable && RawTextModel.can_apply;
+                    clicked => { RawTextModel.apply(); }
+                }
+            }
+        }
+    }
+}

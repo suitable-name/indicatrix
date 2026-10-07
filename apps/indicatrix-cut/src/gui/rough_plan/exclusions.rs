@@ -5,19 +5,26 @@
 //! session keeps the list as last read. The window mirrors it in three places: the
 //! "Excluded designs" list under the candidate choice, the Exclude pill on every design
 //! row of the results, and the two design counts (whose query reads the marks itself).
+//!
+//! The database lock is never waited on from the UI thread (it may be held for seconds by an
+//! import or a search): every read and write is a job for the exclusion thread ([`jobs`]),
+//! and the window shows an answer when it arrives ([`apply_answer`]).
 
+mod jobs;
+
+pub(super) use self::jobs::ExclusionWorker;
+use self::jobs::{Answer, Change, Job};
 use super::{
     counts::{is_remote, refresh_counts},
     format::to_i32,
     host::{Host, on_host},
-    saved::{announce, show_error},
+    saved::{announce, show_error, show_status},
 };
 use crate::{RoughPlanModel, RoughPlanStoneGroup};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::{
     collections::{BTreeMap, BTreeSet},
     rc::Rc,
-    sync::PoisonError,
 };
 
 /// Shown when the exclusions are changed while a remote library is active: the marks
@@ -27,24 +34,19 @@ const REMOTE_REFUSAL: &str = "Switch to the local library to change which design
 /// Shown after every excluded design was restored.
 const RESTORED_ALL_MESSAGE: &str = "All designs can be planned again.";
 
+/// Shown when a change is asked for while the one before it is still being saved.
+const SAVING_MESSAGE: &str =
+    "The last change to the excluded designs is still being saved. Try again in a moment.";
+
+/// Shown when the exclusion thread could not be reached.
+const NO_THREAD_MESSAGE: &str = "Could not start a background task for the excluded designs.";
+
 /// Registers the Exclude, Restore and Restore all callbacks on the planner window.
 pub(super) fn setup_callbacks(host: &Rc<Host>) {
     let model = host.window.global::<RoughPlanModel>();
     model.on_toggle_exclude(|entry_id| on_host(|host| toggle(host, entry_id)));
     model.on_restore_excluded(|entry_id| on_host(|host| restore(host, entry_id)));
     model.on_restore_all_excluded(|| on_host(restore_all));
-}
-
-/// The excluded designs with their titles, as the library database has them now. The
-/// database lock is taken and released in here; nothing touches the window meanwhile.
-fn read_excluded(host: &Host) -> Result<BTreeMap<i64, String>, String> {
-    let db = host.db.lock().unwrap_or_else(PoisonError::into_inner);
-    let ids: Vec<i64> = db
-        .planner_excluded_ids()
-        .map_err(|e| format!("{e:#}"))?
-        .into_iter()
-        .collect();
-    db.entry_titles_for(&ids).map_err(|e| format!("{e:#}"))
 }
 
 /// The excluded designs in the order the window lists them: by title without regard to
@@ -62,20 +64,9 @@ fn display_order(excluded: &BTreeMap<i64, String>) -> Vec<(i32, &str)> {
         .collect()
 }
 
-/// Reads the excluded designs from the library and shows them: the list under the
-/// candidate choice, its count and the Exclude pills of the rows on screen. On a database
-/// error the message is shown and the list stays as it was.
-pub(super) fn reload(host: &Rc<Host>) {
-    let excluded = match read_excluded(host) {
-        Ok(excluded) => excluded,
-        Err(message) => {
-            show_error(
-                host,
-                &format!("Could not read the excluded designs: {message}"),
-            );
-            return;
-        }
-    };
+/// Shows `excluded`, the designs the library has marked: the list under the candidate
+/// choice, its count and the Exclude pills of the rows on screen.
+fn show_list(host: &Rc<Host>, excluded: BTreeMap<i64, String>) {
     let (ids, names): (Vec<i32>, Vec<SharedString>) = display_order(&excluded)
         .into_iter()
         .map(|(id, title)| (id, SharedString::from(title)))
@@ -88,15 +79,75 @@ pub(super) fn reload(host: &Rc<Host>) {
     sync_row_flags(host);
 }
 
-/// The exclusions changed, here or in the library window: the list and the row flags are
-/// read again and, unless a plan runs, so are the design counts.
-pub(super) fn changed(host: &Rc<Host>) {
-    reload(host);
+/// Asks the exclusion thread to read the excluded designs from the library; they are shown
+/// when the answer arrives ([`apply_answer`]). On a database error the message is shown then
+/// and the list stays as it was. Never waits for the database.
+pub(super) fn reload(host: &Rc<Host>) {
+    if !host.exclusions.submit(Job::Read) {
+        show_error(host, NO_THREAD_MESSAGE);
+    }
+}
+
+/// Asks for fresh design counts, unless a plan runs (it has its candidate designs already).
+/// The counts read the marks themselves, on their own thread.
+fn recount(host: &Rc<Host>) {
     if host.window.global::<RoughPlanModel>().get_running() {
         return;
     }
     if let Some(main) = host.main.upgrade() {
         refresh_counts(&main, &host.window, &host.db, &host.source, &host.session);
+    }
+}
+
+/// The exclusions changed, here or in the library window: the list and the row flags are
+/// read again and, unless a plan runs, so are the design counts.
+pub(super) fn changed(host: &Rc<Host>) {
+    reload(host);
+    recount(host);
+}
+
+/// The words for the status line and the toast after `change`. An excluded design is
+/// called by the title the library gave it (`listed`, as read after the write); a restored
+/// one is gone from the list, so it is called by the title it had when it was clicked.
+fn change_message(change: &Change, listed: &BTreeMap<i64, String>) -> String {
+    match change {
+        Change::All => RESTORED_ALL_MESSAGE.to_string(),
+        Change::One {
+            id,
+            before,
+            excluded,
+        } => announcement(listed.get(id).unwrap_or(before), *excluded),
+    }
+}
+
+/// Applies what the exclusion thread found: the list as the library holds it after the job
+/// and, for a write, its outcome. Runs on the UI thread, in the order of the jobs.
+///
+/// A failed write shows its error (and the list the library still has); a successful one
+/// asks for fresh counts and says what changed. A list that could not be read shows its
+/// error and leaves the list as it was, unless the write's error is the one to show.
+fn apply_answer(host: &Rc<Host>, answer: Answer) {
+    let Answer { write, listed } = answer;
+    if write.is_some() {
+        host.exclusions.write_answered();
+    }
+    let write_failed = matches!(write, Some(Err(_)));
+    match listed {
+        Ok(list) => show_list(host, list),
+        Err(message) if !write_failed => show_error(
+            host,
+            &format!("Could not read the excluded designs: {message}"),
+        ),
+        Err(_) => {}
+    }
+    match write {
+        None => {}
+        Some(Err(message)) => show_error(host, &message),
+        Some(Ok(change)) => {
+            recount(host);
+            let message = change_message(&change, &host.session.borrow().excluded);
+            announce(host, &message);
+        }
     }
 }
 
@@ -129,33 +180,34 @@ pub(super) fn sync_row_flags(host: &Rc<Host>) {
 
 /// Whether the exclusions may change now. A remote library is refused with a message (the
 /// marks belong to the local library); a running plan is refused quietly (it works on the
-/// designs it started with).
+/// designs it started with); a change that comes while the one before it is still being
+/// saved is refused with a note (it would be worked out from a list that is about to change).
 fn may_change(host: &Rc<Host>) -> bool {
     if is_remote(&host.source) {
         show_error(host, REMOTE_REFUSAL);
         return false;
     }
-    !host.window.global::<RoughPlanModel>().get_running()
-}
-
-/// Writes the mark of every design in `ids` under one database lock, released on return.
-fn write_marks(host: &Host, ids: &[i64], excluded: bool) -> Result<(), String> {
-    let db = host.db.lock().unwrap_or_else(PoisonError::into_inner);
-    ids.iter().try_for_each(|&id| {
-        db.set_planner_excluded(id, excluded)
-            .map_err(|e| format!("Could not change the planner exclusion: {e:#}"))
-    })
-}
-
-/// Writes the mark of every design in `ids`, then shows the result. Returns `false`, with
-/// the error shown and nothing re-read, when the write failed.
-fn apply(host: &Rc<Host>, ids: &[i64], excluded: bool) -> bool {
-    if let Err(message) = write_marks(host, ids, excluded) {
-        show_error(host, &message);
+    if host.window.global::<RoughPlanModel>().get_running() {
         return false;
     }
-    changed(host);
+    if host.exclusions.writes_pending() {
+        show_status(host, SAVING_MESSAGE);
+        return false;
+    }
     true
+}
+
+/// Asks the exclusion thread to mark (`excluded`) or unmark `ids` in the library; the
+/// window shows the outcome when the answer arrives ([`apply_answer`]).
+fn request_write(host: &Rc<Host>, ids: Vec<i64>, excluded: bool, change: Change) {
+    let job = Job::Write {
+        ids,
+        excluded,
+        change,
+    };
+    if !host.exclusions.submit(job) {
+        show_error(host, NO_THREAD_MESSAGE);
+    }
 }
 
 /// The title to call design `id` by: the library's when it is excluded, else the one the
@@ -179,22 +231,19 @@ fn announcement(title: &str, excluded: bool) -> String {
     }
 }
 
-/// Excludes or restores one design and says so.
+/// Excludes or restores one design; the answer says so ([`change_message`]).
 fn set_excluded(host: &Rc<Host>, id: i64, excluded: bool) {
     let before = title_of(host, id);
-    if !apply(host, &[id], excluded) {
-        return;
-    }
-    // An excluded design now carries the title the library gave it; a restored one is
-    // gone from the list, so it is named as it was.
-    let title = host
-        .session
-        .borrow()
-        .excluded
-        .get(&id)
-        .cloned()
-        .unwrap_or(before);
-    announce(host, &announcement(&title, excluded));
+    request_write(
+        host,
+        vec![id],
+        excluded,
+        Change::One {
+            id,
+            before,
+            excluded,
+        },
+    );
 }
 
 /// `RoughPlanModel.toggle_exclude`: excludes design `entry_id`, or restores it when it is
@@ -222,8 +271,8 @@ fn restore_all(host: &Rc<Host>) {
         return;
     }
     let ids: Vec<i64> = host.session.borrow().excluded.keys().copied().collect();
-    if !ids.is_empty() && apply(host, &ids, false) {
-        announce(host, RESTORED_ALL_MESSAGE);
+    if !ids.is_empty() {
+        request_write(host, ids, false, Change::All);
     }
 }
 
@@ -279,6 +328,39 @@ mod tests {
         assert_eq!(
             announcement("True Cube", false),
             "\"True Cube\" can be planned again."
+        );
+    }
+
+    #[test]
+    fn the_words_after_a_write_name_the_design_by_the_title_the_library_gave_it() {
+        let listed = titles(&[(3, "True Cube")]);
+        let exclude = Change::One {
+            id: 3,
+            before: "Design #3".to_string(),
+            excluded: true,
+        };
+        assert_eq!(
+            change_message(&exclude, &listed),
+            "Excluded \"True Cube\" from planning. Plan again to see new layouts."
+        );
+        // A design the list does not hold is called by the title it had when it was clicked.
+        assert_eq!(
+            change_message(&exclude, &BTreeMap::new()),
+            "Excluded \"Design #3\" from planning. Plan again to see new layouts."
+        );
+        // A restored design has left the list.
+        let restore = Change::One {
+            id: 3,
+            before: "True Cube".to_string(),
+            excluded: false,
+        };
+        assert_eq!(
+            change_message(&restore, &BTreeMap::new()),
+            "\"True Cube\" can be planned again."
+        );
+        assert_eq!(
+            change_message(&Change::All, &listed),
+            "All designs can be planned again."
         );
     }
 

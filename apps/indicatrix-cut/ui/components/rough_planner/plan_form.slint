@@ -2,6 +2,7 @@ import { Theme } from "../../theme.slint";
 import { SpinBox, ScrollView } from "std-widgets.slint";
 import { RoughPlanModel } from "../../models/rough_plan.slint";
 import { RoughField, RoughRadio, RoughPill, Chevron, ElidedText } from "fields.slint";
+import { TipBox } from "../tip_box.slint";
 
 // Left column planning section: stones up to K, candidate radios, the excluded designs
 // disclosure, losses disclosure, Plan/Cancel button, and progress bar.
@@ -9,7 +10,7 @@ export component PlanForm inherits VerticalLayout {
     property <bool> busy: RoughPlanModel.running;
     property <float> fraction: Math.max(0.0, Math.min(1.0, RoughPlanModel.progress_fraction));
     // Plan needs a material with a known specific gravity and a valid model.
-    property <bool> can_plan: RoughPlanModel.materials.length > 0 && RoughPlanModel.model_error == "";
+    property <bool> can_plan: RoughPlanModel.materials.length > 0 && RoughPlanModel.model_error == "" && !RoughPlanModel.mesh_busy;
 
     // "Whole library (1,234 designs)": the name of a choice with the grouped count Rust
     // formatted. `count` only decides singular or plural, and the "counting..." state
@@ -23,6 +24,17 @@ export component PlanForm inherits VerticalLayout {
         }
         return name + " (" + count_text + (count == 1 ? " design)" : " designs)");
     }
+
+    // What the Plan button does, or why it is off.
+    property <string> plan_hint: root.busy
+        ? "Stop the plan. The layouts found so far are dropped. Escape does the same."
+        : (root.can_plan
+            ? "Work out how to cut the stones out of the rough, and show the best layouts. Ctrl+Enter does the same."
+            : (RoughPlanModel.materials.length == 0
+                ? "No material with a known specific gravity is available, so the rough cannot be weighed."
+                : (RoughPlanModel.mesh_busy
+                    ? "Plan is off while the mesh is being read or scaled. It is back in a moment."
+                    : "Plan is off until the model is valid: see the red message under ROUGH.")));
 
     function toggle_losses() {
         RoughPlanModel.losses_open = !RoughPlanModel.losses_open;
@@ -62,11 +74,25 @@ export component PlanForm inherits VerticalLayout {
             vertical-alignment: center;
         }
 
-        SpinBox {
-            minimum: 1;
-            maximum: 99;
-            value <=> RoughPlanModel.count;
-            enabled: !root.busy;
+        TipBox {
+            hint: "The most stones to plan out of one rough, from 1 to 99.";
+            SpinBox {
+                minimum: 1;
+                maximum: 99;
+                value <=> RoughPlanModel.count;
+                enabled: !root.busy;
+                accessible-label: "Most stones to plan";
+            }
+        }
+    }
+
+    // Scan plan time limit: only a rough with a mesh (a scan) obeys it, so only then is it shown.
+    if RoughPlanModel.locate_possible: HorizontalLayout {
+        RoughField {
+            label: "Scan plan time limit (s)";
+            hint: "A plan of a scanned rough stops after this many seconds and shows the best layouts found so far. 0 means no limit.";
+            editable: !root.busy;
+            value <=> RoughPlanModel.time_limit_secs;
         }
     }
 
@@ -80,12 +106,14 @@ export component PlanForm inherits VerticalLayout {
         }
         RoughRadio {
             label: root.count_label("Current filter", RoughPlanModel.filter_count_text, RoughPlanModel.filter_count);
+            hint: "Plan with the designs the library list shows now, after its search and filters.";
             selected: RoughPlanModel.use_filter;
             editable: !root.busy;
             picked => { RoughPlanModel.use_filter = true; }
         }
         RoughRadio {
             label: root.count_label("Whole library", RoughPlanModel.library_count_text, RoughPlanModel.library_count);
+            hint: "Plan with every design in the library, whatever the filters say.";
             selected: !RoughPlanModel.use_filter;
             editable: !root.busy;
             picked => { RoughPlanModel.use_filter = false; }
@@ -104,8 +132,9 @@ export component PlanForm inherits VerticalLayout {
             border-width: excluded_focus.has-focus ? 1px : 0px;
             border-color: Theme.accent-cyan;
 
-            accessible-role: button;
+            accessible-role: AccessibleRole.button;
             accessible-label: "Excluded designs (" + RoughPlanModel.excluded_count + "): designs the planner leaves out";
+            accessible-description: "Show or hide the list of excluded designs, each with a Restore button.";
             accessible-expandable: true;
             accessible-expanded: RoughPlanModel.excluded_open && !root.busy;
             accessible-action-default => { root.toggle_excluded(); }
@@ -141,6 +170,8 @@ export component PlanForm inherits VerticalLayout {
                 }
             }
 
+            Tooltip { text: @markdown("Show or hide the designs the planner leaves out of its candidates. Restore takes one back."); }
+
             // Overlay: a sibling of the layout, not a layout child
             excluded_touch := TouchArea {
                 mouse-cursor: pointer;
@@ -172,6 +203,7 @@ export component PlanForm inherits VerticalLayout {
                             alignment: center;
                             RoughPill {
                                 text: "Restore";
+                                hint: RoughPlanModel.running ? "Not while a plan is running." : "Take this design back into the planning.";
                                 enabled: !RoughPlanModel.running;
                                 accessible-label: "Restore " + excluded_name + " to planning";
                                 clicked => { RoughPlanModel.restore_excluded(RoughPlanModel.excluded_ids[index]); }
@@ -186,6 +218,7 @@ export component PlanForm inherits VerticalLayout {
 
                 RoughPill {
                     text: "Restore all";
+                    hint: RoughPlanModel.running ? "Not while a plan is running." : "Take every excluded design back into the planning.";
                     enabled: !RoughPlanModel.running;
                     clicked => { RoughPlanModel.restore_all_excluded(); }
                 }
@@ -203,8 +236,9 @@ export component PlanForm inherits VerticalLayout {
             border-width: losses_focus.has-focus ? 1px : 0px;
             border-color: Theme.accent-cyan;
 
-            accessible-role: button;
+            accessible-role: AccessibleRole.button;
             accessible-label: "Losses: kerf, allowance, skin and minimum stone width";
+            accessible-description: "Show or hide the four numbers that say how much rough is lost.";
             accessible-expandable: true;
             accessible-expanded: RoughPlanModel.losses_open && !root.busy;
             accessible-action-default => { root.toggle_losses(); }
@@ -250,6 +284,8 @@ export component PlanForm inherits VerticalLayout {
                 }
             }
 
+            Tooltip { text: @markdown("Show or hide the four numbers that say how much rough is lost: the saw kerf, the allowance, the rough skin and the smallest stone."); }
+
             // Overlay: a sibling of the layout, not a layout child
             losses_touch := TouchArea {
                 mouse-cursor: pointer;
@@ -266,11 +302,13 @@ export component PlanForm inherits VerticalLayout {
                 spacing: 6px;
                 RoughField {
                     label: "Saw kerf (mm)";
+                    hint: "The width of the saw cut, in millimetres: rough that turns to dust at every saw cut.";
                     editable: !root.busy;
                     value <=> RoughPlanModel.kerf_mm;
                 }
                 RoughField {
                     label: "Allowance / side (mm)";
+                    hint: "Extra rough kept around each stone on every side, in millimetres, for the cutting itself.";
                     editable: !root.busy;
                     value <=> RoughPlanModel.allowance_mm;
                 }
@@ -280,11 +318,13 @@ export component PlanForm inherits VerticalLayout {
                 spacing: 6px;
                 RoughField {
                     label: "Rough skin (mm)";
+                    hint: "The thickness of the rough's outer skin that cannot be used, in millimetres.";
                     editable: !root.busy;
                     value <=> RoughPlanModel.skin_mm;
                 }
                 RoughField {
                     label: "Min stone width (mm)";
+                    hint: "The narrowest stone the planner may place, in millimetres.";
                     editable: !root.busy;
                     value <=> RoughPlanModel.min_width_mm;
                 }
@@ -320,6 +360,10 @@ export component PlanForm inherits VerticalLayout {
             border-width: 1px;
             border-color: Theme.border-dialog;
             clip: true;
+
+            accessible-role: AccessibleRole.progress-indicator;
+            accessible-label: "Planning progress";
+            accessible-value: Math.round(root.fraction * 100) + " percent";
 
             Rectangle {
                 x: 0;
@@ -363,10 +407,13 @@ export component PlanForm inherits VerticalLayout {
         border-width: plan_focus.has-focus ? 2px : (root.busy ? 1px : 0px);
         border-color: plan_focus.has-focus ? Theme.text-primary : Theme.border-dialog;
 
-        accessible-role: button;
+        accessible-role: AccessibleRole.button;
         accessible-label: root.busy ? "Cancel the plan" : "Plan";
+        accessible-description: root.plan_hint;
         accessible-enabled: root.busy || root.can_plan;
         accessible-action-default => { root.plan_or_cancel(); }
+
+        Tooltip { text: @markdown("\{root.plan_hint}"); }
 
         plan_focus := FocusScope {
             key-pressed(event) => {

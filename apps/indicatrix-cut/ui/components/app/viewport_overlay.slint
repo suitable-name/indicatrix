@@ -2,6 +2,7 @@ import { Theme } from "../../theme.slint";
 import { EditorModel } from "../../models/editor.slint";
 import { GuideModel } from "../../models/guide.slint";
 import { EmptyState } from "../empty_state.slint";
+import { TouchButton } from "../touch_button.slint";
 
 // Everything `app.slint` draws over the Edit tab's Solid viewport, in both the wide
 // and the narrow layout -- one component so the two copies cannot drift apart.
@@ -40,6 +41,8 @@ export component EditorViewportOverlay inherits Rectangle {
         drop-shadow-blur: 12px;
         drop-shadow-color: Theme.modal-shadow;
         clip: true;
+        accessible-role: AccessibleRole.groupbox;
+        accessible-label: "New design with no tiers yet";
 
         hint_row := HorizontalLayout {
             padding-left: 12px;
@@ -58,7 +61,7 @@ export component EditorViewportOverlay inherits Rectangle {
                 width: add_txt.preferred-width + 16px;
                 height: 24px;
                 border-radius: Theme.radius-sm;
-                background: add_touch.has-hover ? Theme.primary-hover : Theme.primary;
+                background: add_touch.has_hover ? Theme.primary-hover : Theme.primary;
                 opacity: GuideModel.allows_tier_form() ? 1.0 : 0.4;
                 add_txt := Text {
                     text: "+ Add Tier";
@@ -70,8 +73,12 @@ export component EditorViewportOverlay inherits Rectangle {
                 }
                 // Same Add-mode entry the command bar's and tier table's own
                 // "+ Add Tier" buttons use.
-                add_touch := TouchArea {
+                add_touch := TouchButton {
                     enabled: GuideModel.allows_tier_form();
+                    label: "Add Tier";
+                    hint: GuideModel.allows_tier_form()
+                        ? "Open the Tier tab to write the first tier: the girdle."
+                        : GuideModel.locked_hint;
                     clicked => {
                         EditorModel.selected_tier_index = -1;
                         EditorModel.inspector_tab = 0;

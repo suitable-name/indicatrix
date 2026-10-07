@@ -19,6 +19,8 @@ mod tests_geometry;
 #[cfg(test)]
 mod tests_hull;
 #[cfg(test)]
+mod tests_inclusion;
+#[cfg(test)]
 mod tests_pebble;
 #[cfg(test)]
 mod tests_validation;
@@ -31,7 +33,9 @@ use indicatrix::geometry::stone_metrics::measure_solid_with_vertices;
 pub use base::RoughBase;
 pub use cuts::{BoxFace, RoughCut};
 pub use hull::{HullError, MAX_HULL_PLANES, import_hull, import_mesh};
-pub use mesh::{BoxState, ClippedSurface, MAX_MESH_TRIANGLES, MeshError, RoughMesh, SurfaceCap};
+pub use mesh::{
+    BoxState, ClippedSurface, MAX_MESH_TRIANGLES, MeshError, RayHit, RoughMesh, SurfaceCap,
+};
 pub use sampling::{half_step_cos, pebble_directions, sphere_directions, unit_circle};
 
 /// The modelled rough: a starting base shape plus an ordered sequence of planar cuts.
@@ -46,8 +50,14 @@ pub struct RoughModel {
 /// Physical measurements of the modelled rough solid.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RoughMeasure {
-    /// Total volume of the cut polytope in cubic millimetres.
+    /// Total volume of the cut polytope in cubic millimetres. For a mesh rough with
+    /// inclusions this is the GROSS volume, the rough as it is held (the inclusions
+    /// counted as material); the weight, Fit to weight and the yield read it.
     pub volume_mm3: f64,
+    /// How many inclusions the mesh rough has (0 for every other rough).
+    pub inclusion_count: usize,
+    /// The part of `volume_mm3` that is inclusions, within the cuts, in cubic millimetres.
+    pub inclusion_mm3: f64,
     /// Real bounding box extents `[x, y, z]` of the cut polytope in mm.
     pub extents_mm: [f64; 3],
     /// Total number of halfspace planes bounding the solid.
@@ -240,8 +250,13 @@ fn inset_planes(
 pub struct RoughSolid {
     /// The bounding halfspaces `(n, m)` (`n · p <= m`) in canonical order, in the rough frame.
     pub planes: Vec<(DVec3, f64)>,
-    /// Volume of the polytope in cubic millimetres.
+    /// Volume of the polytope in cubic millimetres; the gross volume of a mesh rough with
+    /// inclusions (see [`RoughMeasure::volume_mm3`]).
     pub volume_mm3: f64,
+    /// How many inclusions the mesh rough has (0 for every other rough).
+    pub inclusion_count: usize,
+    /// The part of `volume_mm3` that is inclusions, in cubic millimetres.
+    pub inclusion_mm3: f64,
     /// Minimum corner of the polytope's bounding box in the rough frame, in mm.
     pub bbox_min: DVec3,
     /// Extents of the polytope's bounding box in mm.
@@ -435,21 +450,37 @@ impl RoughModel {
             max_p = max_p.max(p);
         }
 
-        // A mesh rough's volume is the mesh's, within the cuts; the polytope is the hull.
-        let volume_mm3 = match self.mesh() {
+        // A mesh rough's volume is the mesh's, within the cuts; the polytope is the hull. The
+        // inclusions of a mesh are material you hold, so the volume is the gross one: the
+        // stones' room plus the inclusions (without inclusions, the stones' room alone, to
+        // the bit).
+        let (volume_mm3, inclusion_count, inclusion_mm3) = match self.mesh() {
             Some(mesh) => {
-                let volume = mesh.volume_within(&self.cut_planes()?);
-                if !(volume.is_finite() && volume > 0.0) {
+                let cuts = self.cut_planes()?;
+                let usable = mesh.volume_within(&cuts);
+                let inclusions = if mesh.inclusion_count() == 0 {
+                    0.0
+                } else {
+                    mesh.inclusion_volume_within(&cuts)
+                };
+                let volume = if mesh.inclusion_count() == 0 {
+                    usable
+                } else {
+                    usable + inclusions
+                };
+                if !(volume.is_finite() && volume > 0.0 && usable > 0.0) {
                     return Err(ShapeError::NothingLeft);
                 }
-                volume
+                (volume, mesh.inclusion_count(), inclusions)
             }
-            None => metrics.volume,
+            None => (metrics.volume, 0, 0.0),
         };
 
         Ok(RoughSolid {
             planes,
             volume_mm3,
+            inclusion_count,
+            inclusion_mm3,
             bbox_min: min_p,
             bbox_extents: max_p - min_p,
             vertex_count: trans_verts.len(),
@@ -486,6 +517,8 @@ impl RoughModel {
         let solid = self.solid_of_canonical(canonical)?;
         Ok(RoughMeasure {
             volume_mm3: solid.volume_mm3,
+            inclusion_count: solid.inclusion_count,
+            inclusion_mm3: solid.inclusion_mm3,
             extents_mm: solid.bbox_extents.to_array(),
             plane_count: solid.planes.len(),
             vertex_count: solid.vertex_count,

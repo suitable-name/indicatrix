@@ -15,7 +15,7 @@ use std::{
 use slint::{ComponentHandle, SharedString};
 
 use crate::{
-    EditorModel, MainWindow,
+    EditorModel, MainWindow, RelationModel,
     bridge::render_thread::RenderContext,
     gui::{
         editor::{
@@ -41,6 +41,11 @@ use crate::{
 ///
 /// `pub(super)` since [`super::tier_crud::setup_toggle_detach_callback`] is the one
 /// call site that registers it.
+///
+/// Also registers `RelationModel.generate_step_series_linked`, the Steps panel's Generate
+/// with "Keep linked" ticked: the same form, but every tier after the first follows the
+/// first (`EditorSession::generate_step_series_linked`), so later changes to the first
+/// tier move the whole ladder.
 pub(super) fn setup_generate_step_series_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -48,11 +53,14 @@ pub(super) fn setup_generate_step_series_callback(
     preview_state: &Arc<SolidPreviewState>,
     solid_last_solved: &SolidLastSolved,
 ) {
-    let state = Rc::clone(state);
-    let render_ctx = Arc::clone(render_ctx);
-    let preview_state = Arc::clone(preview_state);
-    let solid_last_solved = Arc::clone(solid_last_solved);
+    let handles = Rc::new(SeriesHandles {
+        state: Rc::clone(state),
+        render_ctx: Arc::clone(render_ctx),
+        preview_state: Arc::clone(preview_state),
+        solid_last_solved: Arc::clone(solid_last_solved),
+    });
     let ui_weak = ui.as_weak();
+    let plain_handles = Rc::clone(&handles);
     ui.global::<EditorModel>().on_generate_step_series(
         move |name_prefix: SharedString,
               start_angle_text: SharedString,
@@ -63,35 +71,128 @@ pub(super) fn setup_generate_step_series_callback(
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            let mut st = state.borrow_mut();
-            match st.generate_step_series(
-                &name_prefix,
-                &start_angle_text,
-                &angle_step_text,
-                count,
-                &indices_text,
-                &anchor_text,
-            ) {
-                Ok(series) => {
-                    let dirty: BTreeSet<usize> =
-                        (series.start_index..series.start_index + series.added).collect();
-                    refresh_editor_panel_stale(&ui, &render_ctx, &st, &dirty);
-                    submit_preview_replan(
-                        &ui,
-                        &render_ctx,
-                        &preview_state,
-                        &solid_last_solved,
-                        &st,
-                        dirty,
-                        false,
-                    );
-                    drop(st);
-                    show_toast(&ui, &format!("Generated {} tier(s).", series.added), "info");
-                }
-                Err(e) => show_toast(&ui, &e, "error"),
-            }
+            generate_series_now(
+                &ui,
+                &plain_handles,
+                &StepSeriesForm {
+                    name_prefix: &name_prefix,
+                    start_angle_text: &start_angle_text,
+                    angle_step_text: &angle_step_text,
+                    count,
+                    indices_text: &indices_text,
+                    anchor_text: &anchor_text,
+                },
+                false,
+            );
         },
     );
+    let ui_weak = ui.as_weak();
+    ui.global::<RelationModel>().on_generate_step_series_linked(
+        move |name_prefix: SharedString,
+              start_angle_text: SharedString,
+              angle_step_text: SharedString,
+              count: i32,
+              indices_text: SharedString,
+              anchor_text: SharedString| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            generate_series_now(
+                &ui,
+                &handles,
+                &StepSeriesForm {
+                    name_prefix: &name_prefix,
+                    start_angle_text: &start_angle_text,
+                    angle_step_text: &angle_step_text,
+                    count,
+                    indices_text: &indices_text,
+                    anchor_text: &anchor_text,
+                },
+                true,
+            );
+        },
+    );
+}
+
+/// The editor handles a Generate action refreshes through.
+struct SeriesHandles {
+    state: Rc<RefCell<EditorState>>,
+    render_ctx: Arc<Mutex<RenderContext>>,
+    preview_state: Arc<SolidPreviewState>,
+    solid_last_solved: SolidLastSolved,
+}
+
+/// The Generate steps form as typed -- see `EditorSession::generate_step_series` for what
+/// each field means.
+struct StepSeriesForm<'a> {
+    name_prefix: &'a str,
+    start_angle_text: &'a str,
+    angle_step_text: &'a str,
+    count: i32,
+    indices_text: &'a str,
+    anchor_text: &'a str,
+}
+
+/// Generates the ladder (`linked`: every tier after the first follows the first), refreshes
+/// the panel and the preview for the added rows and announces it; a refused form is a toast.
+fn generate_series_now(
+    ui: &MainWindow,
+    handles: &SeriesHandles,
+    form: &StepSeriesForm<'_>,
+    linked: bool,
+) {
+    let mut st = handles.state.borrow_mut();
+    let StepSeriesForm {
+        name_prefix,
+        start_angle_text,
+        angle_step_text,
+        count,
+        indices_text,
+        anchor_text,
+    } = *form;
+    let generated = if linked {
+        st.generate_step_series_linked(
+            name_prefix,
+            start_angle_text,
+            angle_step_text,
+            count,
+            indices_text,
+            anchor_text,
+        )
+    } else {
+        st.generate_step_series(
+            name_prefix,
+            start_angle_text,
+            angle_step_text,
+            count,
+            indices_text,
+            anchor_text,
+        )
+    };
+    match generated {
+        Ok(series) => {
+            let dirty: BTreeSet<usize> =
+                (series.start_index..series.start_index + series.added).collect();
+            refresh_editor_panel_stale(ui, &handles.render_ctx, &st, &dirty);
+            submit_preview_replan(
+                ui,
+                &handles.render_ctx,
+                &handles.preview_state,
+                &handles.solid_last_solved,
+                &st,
+                dirty,
+                false,
+            );
+            drop(st);
+            let suffix = if linked { ", linked to the first" } else { "" };
+            show_toast(
+                ui,
+                &format!("Generated {} tier(s){suffix}.", series.added),
+                "info",
+            );
+        }
+        Err(e) => show_toast(ui, &e, "error"),
+    }
 }
 
 /// "Mirror tier to other block": duplicates the tier at `tier_index` to the opposite

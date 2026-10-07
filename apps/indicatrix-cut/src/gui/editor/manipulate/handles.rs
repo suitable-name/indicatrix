@@ -2,10 +2,11 @@
 //! one under the pointer.
 
 use super::{
-    CachedFacetMap, SESSION, Shared, Target, kind_to_int, set_hint, slice, snap_mode, tier_label,
+    CachedFacetMap, SESSION, Shared, Target, diagram, kind_to_int, set_hint, slice, snap_mode,
+    tier_label,
 };
 use crate::{
-    EditorModel, MainWindow, ManipulateModel, SolidPreviewModel,
+    EditorModel, MainWindow, ManipulateModel, PreferencesModel,
     gui::{
         editor::callbacks::{
             map_to_pick_coordinates, pick_margin, pick_pixels_to_logical, selected_facet_id,
@@ -95,6 +96,38 @@ pub(super) fn hit_kind(
         layout.index_tip = ScreenPoint::new(f32::NAN, f32::NAN);
     }
     hit_test(&layout, p, radius)
+}
+
+/// [`hit_kind`] for a tier whose angle follows a relation: it has no angle handle either,
+/// so only the depth and index tips can be grabbed.
+pub(super) fn hit_kind_without_angle(
+    layout: &HandleLayout,
+    indexless: bool,
+    p: ScreenPoint,
+    radius: f32,
+) -> Option<HandleKind> {
+    let mut layout = *layout;
+    layout.angle_tip = ScreenPoint::new(f32::NAN, f32::NAN);
+    hit_kind(&layout, indexless, p, radius)
+}
+
+/// The relation (as a cutter reads it, `P1 - 2`) the angle of committed tier `tier`
+/// follows, if it follows one -- such a tier has no angle handle. `None` for a free angle,
+/// for the provisional slice tier (it is not in the design yet) and while the editor state
+/// is borrowed.
+pub(super) fn driven_relation(ctx: &Shared, tier: usize) -> Option<String> {
+    ctx.state
+        .try_borrow()
+        .ok()
+        .and_then(|st| st.design.relation_text(tier))
+}
+
+/// Whether the handles just landed on a NEW committed selection whose angle follows a
+/// relation -- the moment to say why it has no angle handle (a hidden handle cannot be
+/// hovered to ask). Never for the provisional slice tier and never for a frame that merely
+/// re-places the handles already on screen.
+pub(super) fn driven_hint_due(previous: Option<SelectionKey>, now: SelectionKey) -> bool {
+    !now.1 && previous != Some(now)
 }
 
 /// The solid-preview pick-frame pixel the logical pointer `(x, y)` lands on.
@@ -189,9 +222,13 @@ pub(super) fn target_for(
         |id| centroid_of(centroids, id).is_some(),
     )?;
     let centroid = centroid_of(centroids, facet_id)?;
-    let frame = FacetFrame::from_tier(
+    // The facet map places a facet at `2 pi (index + reference) / teeth`: the frame needs the
+    // design's gear reference angle too, or the handles sit on a different azimuth than the
+    // facet (the Diagram view's `diagram2d::facet_frame` follows the same rule).
+    let frame = FacetFrame::from_tier_with_reference(
         tier_data,
         f64::from(map.index_on_gear(facet_id as usize)),
+        design.meta.gear_reference_angle as f32,
         design.meta.gear_teeth_abs(),
         centroid,
     );
@@ -206,22 +243,29 @@ pub(super) fn target_for(
         layout,
         label: tier_label(tier_data, tier),
         provisional,
+        diagram: None,
     })
 }
 
 /// Works out where the handles go for the current selection and frame, or `None` when
-/// they should be hidden: no selection, Diagram view, no geometry, an unsolved or
-/// misaligned design, a tier with no facet on screen, or a facet behind the camera.
-/// In Slice mode the only handles are the provisional tier's.
+/// they should be hidden: no selection, no geometry, an unsolved or misaligned design, a
+/// tier with no facet on screen, or a facet behind the camera. In the Diagram view they
+/// sit on one of its panels instead (see `diagram::place`). In Slice mode the only
+/// handles are the provisional tier's.
 fn place(ui: &MainWindow, ctx: &Shared) -> Option<Target> {
-    if ui.global::<SolidPreviewModel>().get_view_mode() == 3 {
-        return None;
-    }
     let geometry = ctx
         .geometry
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .clone()?;
+    if diagram::is_diagram_view(ui) {
+        return diagram::place(ui, ctx, &geometry);
+    }
+    // The last frame is still a Diagram one (the view was just switched away from it):
+    // its camera pose is meaningless to the 3D handles, so wait for the next frame.
+    if geometry.diagram.is_some() {
+        return None;
+    }
     if ui.global::<ManipulateModel>().get_slice_mode() {
         return slice::place_provisional(&geometry);
     }
@@ -238,29 +282,126 @@ fn place(ui: &MainWindow, ctx: &Shared) -> Option<Target> {
     )
 }
 
+/// What the handles sit on, for noticing a new selection: the tier's index and whether it
+/// is the provisional slice tier.
+pub(super) type SelectionKey = (usize, bool);
+
+/// The [`SelectionKey`] of `target`.
+const fn selection_key(target: &Target) -> SelectionKey {
+    (target.tier, target.provisional)
+}
+
+/// Whether the handles just landed on a NEW committed selection while "Larger handles" is
+/// on -- the moment to word what the three handles do, because a touch screen or pen has
+/// no hover to show it. Never for the provisional slice tier (its own hint is showing) and
+/// never for a frame that merely re-places the handles already on screen.
+pub(super) fn selection_hint_due(
+    large_handles: bool,
+    previous: Option<SelectionKey>,
+    now: SelectionKey,
+) -> bool {
+    large_handles && !now.1 && previous != Some(now)
+}
+
+/// Whether the hint line is free to take the selection hint: no drag, no Slice tool, and
+/// the pointer is not resting on a handle (whose own hover hint wins).
+fn hint_line_is_free(ui: &MainWindow) -> bool {
+    let model = ui.global::<ManipulateModel>();
+    !model.get_dragging()
+        && !model.get_slice_mode()
+        && SESSION.with(|cell| cell.borrow().hovered.is_none())
+}
+
+/// Shows `hint` (the selection hint: what the handles do, or why the angle has none).
+/// Marked as ours (`hover_hint_active`) so hiding the handles, or the pointer touching and
+/// leaving a handle, clears it again.
+fn show_selection_hint(ui: &MainWindow, hint: &str) {
+    SESSION.with(|cell| cell.borrow_mut().hover_hint_active = true);
+    set_hint(ui, hint);
+}
+
+/// The hint a newly selected facet gets, if any. A tier whose angle follows a relation
+/// says why it has no angle handle, whatever the handle size; any other tier gets the
+/// selection hint only with "Larger handles" on.
+pub(super) fn selection_hint_text(
+    label: &str,
+    driven_by: Option<&str>,
+    large_handles: bool,
+    previous: Option<SelectionKey>,
+    now: SelectionKey,
+) -> Option<String> {
+    if let Some(relation) = driven_by {
+        return driven_hint_due(previous, now)
+            .then(|| text::angle_follows_relation_hint(label, relation));
+    }
+    selection_hint_due(large_handles, previous, now).then(|| text::handle_select_hint(label))
+}
+
 /// Re-places the handles for the frame that just landed, or hides them -- see [`place`].
+/// A newly selected facet also gets the selection hint (see [`selection_hint_text`]).
 pub(super) fn refresh_handles(ui: &MainWindow, ctx: &Shared) {
+    let previous = SESSION.with(|cell| cell.borrow().target.as_ref().map(selection_key));
     match place(ui, ctx) {
-        Some(target) => show(ui, target),
+        Some(target) => {
+            let key = selection_key(&target);
+            let label = target.label.clone();
+            let driven_by = driven_relation(ctx, target.tier);
+            show(ui, target, driven_by.is_none());
+            let large = ui.global::<PreferencesModel>().get_large_handles();
+            let hint = selection_hint_text(&label, driven_by.as_deref(), large, previous, key);
+            if let Some(hint) = hint
+                && hint_line_is_free(ui)
+            {
+                show_selection_hint(ui, &hint);
+            }
+        }
         None => hide(ui),
     }
 }
 
+/// The radius, in pick-frame pixels, within which a press grabs a handle tip:
+/// [`HANDLE_HIT_RADIUS_PX`] at the window's scale factor, times `handle_scale`
+/// (`ManipulateModel.handle_scale`, bigger with the "Larger handles" preference). The
+/// markers are drawn `handle_scale` times larger, so what you see is what you can hit.
+pub(super) const fn hit_radius_px(window_scale: f32, handle_scale: f32) -> f32 {
+    HANDLE_HIT_RADIUS_PX * window_scale * handle_scale
+}
+
 /// Stores `target` in the session and pushes its logical positions to the model.
-fn show(ui: &MainWindow, target: Target) {
+/// `angle_visible` is `false` for a tier whose angle follows a relation: its angle handle
+/// is neither drawn nor grabbable.
+fn show(ui: &MainWindow, target: Target, angle_visible: bool) {
     let scale = ui.window().scale_factor();
     let logical = layout_to_logical(&target.layout, scale, pick_margin(ui));
     let indexless = target.frame.is_indexless();
+    // On a Diagram panel some handles are not offered (foreshortened or edge-on levers).
+    let offered = target.diagram.map(|placed| placed.available);
+    // A handle the panel does not offer has a NaN tip (so no pointer ever hits it); the
+    // model gets the anchor instead, and the visibility flags below keep it undrawn.
+    let finite_tip = |tip: (f32, f32)| {
+        if tip.0.is_finite() && tip.1.is_finite() {
+            tip
+        } else {
+            logical.anchor
+        }
+    };
+    let (angle_tip, depth_tip, index_tip) = (
+        finite_tip(logical.angle_tip),
+        finite_tip(logical.depth_tip),
+        finite_tip(logical.index_tip),
+    );
     let model = ui.global::<ManipulateModel>();
     model.set_anchor_x(logical.anchor.0);
     model.set_anchor_y(logical.anchor.1);
-    model.set_angle_tip_x(logical.angle_tip.0);
-    model.set_angle_tip_y(logical.angle_tip.1);
-    model.set_depth_tip_x(logical.depth_tip.0);
-    model.set_depth_tip_y(logical.depth_tip.1);
-    model.set_index_tip_x(logical.index_tip.0);
-    model.set_index_tip_y(logical.index_tip.1);
-    model.set_index_visible(!indexless);
+    model.set_angle_tip_x(angle_tip.0);
+    model.set_angle_tip_y(angle_tip.1);
+    model.set_depth_tip_x(depth_tip.0);
+    model.set_depth_tip_y(depth_tip.1);
+    model.set_index_tip_x(index_tip.0);
+    model.set_index_tip_y(index_tip.1);
+    model.set_index_visible(!indexless && offered.is_none_or(|a| a.index));
+    model.set_angle_visible(angle_visible && offered.is_none_or(|a| a.angle));
+    model.set_depth_visible(offered.is_none_or(|a| a.depth));
     model.set_handles_visible(true);
     SESSION.with(|cell| cell.borrow_mut().target = Some(target));
 }
@@ -289,8 +430,17 @@ fn hit_kind_at(ui: &MainWindow, x: f32, y: f32) -> Option<HandleKind> {
             .as_ref()
             .map(|t| (t.layout, t.frame.is_indexless()))
     })?;
-    let radius = HANDLE_HIT_RADIUS_PX * ui.window().scale_factor();
-    hit_kind(&layout, indexless, pointer_to_pick(ui, x, y), radius)
+    let model = ui.global::<ManipulateModel>();
+    let radius = diagram::hit_radius(
+        ui,
+        hit_radius_px(ui.window().scale_factor(), model.get_handle_scale()),
+    );
+    let pointer = pointer_to_pick(ui, x, y);
+    if model.get_angle_visible() {
+        hit_kind(&layout, indexless, pointer, radius)
+    } else {
+        hit_kind_without_angle(&layout, indexless, pointer, radius)
+    }
 }
 
 /// `ManipulateModel.handle_hit_test`: the handle under the pointer as an int, `-1` none.
@@ -341,6 +491,8 @@ pub(super) fn hover(ui: &MainWindow, ctx: &Shared, x: f32, y: f32) {
     if ui.global::<ManipulateModel>().get_dragging() {
         return;
     }
+    // In the Diagram view the handles first follow the pointer onto the panel it entered.
+    diagram::follow_pointer(ui, ctx, x, y);
     let kind = hit_kind_at(ui, x, y);
     let changed = SESSION.with(|cell| {
         let mut session = cell.borrow_mut();
@@ -362,5 +514,78 @@ pub(super) fn refresh_hover_hint(ui: &MainWindow, ctx: &Shared) {
     let hovered = SESSION.with(|cell| cell.borrow().hovered);
     if hovered.is_some() {
         apply_hover(ui, ctx, hovered);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The anchor at `(100, 100)` with the three tips a fixed distance away.
+    fn layout() -> HandleLayout {
+        HandleLayout {
+            anchor: ScreenPoint::new(100.0, 100.0),
+            angle_tip: ScreenPoint::new(100.0, 40.0),
+            depth_tip: ScreenPoint::new(160.0, 100.0),
+            index_tip: ScreenPoint::new(40.0, 100.0),
+            angle_dir: (0.0, -1.0),
+            depth_dir: (1.0, 0.0),
+            index_dir: (-1.0, 0.0),
+            pixels_per_degree: 2.0,
+            pixels_per_mast_unit: 100.0,
+            pixels_per_tooth: 10.0,
+        }
+    }
+
+    #[test]
+    fn a_tier_that_follows_a_relation_has_no_angle_handle_to_grab() {
+        let layout = layout();
+        let on_angle_tip = ScreenPoint::new(100.0, 40.0);
+        assert_eq!(
+            hit_kind(&layout, false, on_angle_tip, 12.0),
+            Some(HandleKind::Angle)
+        );
+        assert_eq!(
+            hit_kind_without_angle(&layout, false, on_angle_tip, 12.0),
+            None
+        );
+        // Depth and index stay.
+        assert_eq!(
+            hit_kind_without_angle(&layout, false, ScreenPoint::new(160.0, 100.0), 12.0),
+            Some(HandleKind::Depth)
+        );
+        assert_eq!(
+            hit_kind_without_angle(&layout, false, ScreenPoint::new(40.0, 100.0), 12.0),
+            Some(HandleKind::Index)
+        );
+        // No index positions either: only the depth handle is left.
+        assert_eq!(
+            hit_kind_without_angle(&layout, true, ScreenPoint::new(40.0, 100.0), 12.0),
+            None
+        );
+    }
+
+    #[test]
+    fn the_why_hint_is_due_once_per_new_selection_and_never_for_the_slice_tier() {
+        assert!(driven_hint_due(None, (3, false)));
+        assert!(driven_hint_due(Some((2, false)), (3, false)));
+        assert!(!driven_hint_due(Some((3, false)), (3, false)), "same frame");
+        assert!(!driven_hint_due(None, (3, true)), "the provisional tier");
+    }
+
+    #[test]
+    fn a_driven_tier_says_why_whatever_the_handle_size_and_others_keep_the_old_rule() {
+        let driven = |large, previous| {
+            selection_hint_text("P2", Some("P1 - 2"), large, previous, (1, false))
+        };
+        let expected = text::angle_follows_relation_hint("P2", "P1 - 2");
+        assert_eq!(driven(false, None), Some(expected.clone()));
+        assert_eq!(driven(true, None), Some(expected));
+        assert_eq!(driven(true, Some((1, false))), None, "already announced");
+
+        let free = |large, previous| selection_hint_text("P1", None, large, previous, (0, false));
+        assert_eq!(free(true, None), Some(text::handle_select_hint("P1")));
+        assert_eq!(free(false, None), None, "only with Larger handles");
+        assert_eq!(free(true, Some((0, false))), None);
     }
 }

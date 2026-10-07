@@ -4,9 +4,11 @@ use super::{
     app_settings::AppSettings,
     lighting_preset::{LightingPreset, built_in_presets},
 };
+use indicatrix_cut_core::rough_plan::locate::RigProfile;
 use serde::{Deserialize, Serialize};
 
-/// The full on-disk document: current settings plus the lighting-preset library.
+/// The full on-disk document: current settings plus the lighting-preset library and the
+/// camera rigs of the Rough planner's "Locate inclusion from photos".
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SettingsFile {
@@ -14,6 +16,10 @@ pub struct SettingsFile {
     pub settings: AppSettings,
     /// Lighting presets.
     pub presets: Vec<LightingPreset>,
+    /// The named camera rigs (views, refractive indices, calibration). An additive section:
+    /// a settings file saved before it existed has none and still loads, and a file without
+    /// rigs is written without the section's entries.
+    pub rig_profiles: Vec<RigProfile>,
 }
 
 impl Default for SettingsFile {
@@ -21,6 +27,7 @@ impl Default for SettingsFile {
         Self {
             settings: AppSettings::default(),
             presets: built_in_presets(),
+            rig_profiles: Vec::new(),
         }
     }
 }
@@ -154,6 +161,7 @@ mod tests {
         let mut file = SettingsFile {
             settings: AppSettings::default(),
             presets: Vec::new(),
+            rig_profiles: Vec::new(),
         };
         file.ensure_built_in_presets();
         assert_eq!(file.presets.len(), built_in_presets().len());
@@ -176,6 +184,7 @@ mod tests {
         let mut file = SettingsFile {
             settings: AppSettings::default(),
             presets: vec![stale],
+            rig_profiles: Vec::new(),
         };
         file.ensure_built_in_presets();
 
@@ -187,6 +196,38 @@ mod tests {
             refreshed.export_usable,
             "export_usable must survive the refresh"
         );
+    }
+
+    /// A settings file saved before the rig section existed still loads, with no rigs.
+    #[test]
+    fn a_settings_file_without_rig_profiles_loads_with_none() {
+        let parsed: SettingsFile = toml::from_str("[settings]\nexposure = 1.1\n").expect("parse");
+        assert_eq!(parsed.rig_profiles.len(), 0);
+    }
+
+    /// A rig with an uncalibrated and a calibrated profile survives the TOML round trip, and the
+    /// rest of the document is untouched by the new section.
+    #[test]
+    fn rig_profiles_round_trip_through_toml() {
+        use indicatrix_cut_core::rough_plan::locate::{Projection, RigProfile};
+
+        let views = RigProfile::side_layout(
+            150.0,
+            30.0,
+            Projection::Pinhole { focal_px: 4000.0 },
+            [4000, 3000],
+        );
+        let mut ortho = RigProfile::new("Macro rig", views.clone(), 1.54);
+        ortho.surround_n = 1.33;
+        let mut file = SettingsFile::default();
+        file.settings.exposure = 1.5;
+        file.rig_profiles = vec![RigProfile::new("Bench", views, 1.76), ortho];
+
+        let text = toml::to_string_pretty(&file).expect("serialize");
+        let parsed: SettingsFile = toml::from_str(&text).expect("deserialize");
+        assert_eq!(parsed, file);
+        assert_eq!(parsed.rig_profiles.len(), 2);
+        assert_eq!(parsed.rig_profiles[0].views.len(), 8);
     }
 
     /// A USER preset (`built_in: false`) must never be overwritten by this, even if
@@ -206,6 +247,7 @@ mod tests {
         let mut file = SettingsFile {
             settings: AppSettings::default(),
             presets: vec![user_owned],
+            rig_profiles: Vec::new(),
         };
         file.ensure_built_in_presets();
 

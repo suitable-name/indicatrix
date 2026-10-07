@@ -43,6 +43,22 @@ export struct PhysicsTreatment {
 }
 
 export global PhysicscolorModel {
+    // ---- the physics editor is a cargo feature (`physical-color`) ----
+    // Set once from Rust (`gui::optics::physics_ui::setup_physics_callbacks`): true when this
+    // build shows the physics-based color editor. UI only -- a stored physics recipe is kept
+    // and rendered either way. Every flag below is decided in Rust by
+    // `gui::optics::physics_state::color_section_view` and pushed with the rest of the view.
+    in property <bool> ui_enabled: false;
+    // The "Color Mode: Fantasy | Physics" toggle.
+    in property <bool> show_mode_toggle: false;
+    // The host / element-recipe section (`ChromophorePicker`).
+    in property <bool> show_physics_section: false;
+    // The preset swatches and the free picker.
+    in property <bool> show_fantasy_section: true;
+    // The note that the color comes from a physics recipe (feature off, physics material
+    // that nobody has picked a fixed color for yet).
+    in property <bool> show_recipe_note: false;
+
     // ---- mode ----
     // True while the dialog's color mode is Physics (false: Fantasy).
     in-out property <bool> active: false;
@@ -166,11 +182,19 @@ export global PhysicscolorModel {
     // The fantasy picker's result: fits the three legacy bands on a thread; the preset to select
     // arrives through `fantasy_idx` / `fantasy_serial`.
     callback fantasy_pick(color);
+    // The L*C*h editor's "Apply colour" in this dialog: the solved colour's nearest legacy triple
+    // (red, green, blue absorption) becomes the fantasy colour, like a finished `fantasy_pick`.
+    // The seven-band rows are held by Rust (`gui::optics::dialog_color`) until Save.
+    callback fixed_color_picked(float, float, float);
     callback update_data();
     callback undo();
     callback redo();
     // The template selector picked a built-in material: preselect its host in physics mode.
     callback template_selected(string);
+    // A preset swatch (or a template's color) was chosen; takes the swatch index and returns the
+    // one to select. With the physics editor hidden, this replaces a physics recipe's color with
+    // that fixed color (the recipe stays saved); otherwise it returns the index unchanged.
+    callback color_preset_chosen(int) -> int;
     // Answer to the "an older build edited the color" question: true keeps the physics recipe.
     callback color_conflict_resolved(bool);
     // Pure helpers for the color picker's hex field.

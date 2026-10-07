@@ -1,0 +1,94 @@
+import { Theme } from "../../theme.slint";
+
+// The measurements of a `FormRow`, so anything that has to line up with a row's input (the
+// slider under the Angle field, the facet chips, a note under a field) reads them from one
+// place instead of repeating a guessed number.
+export global FormRowMetrics {
+    // The width of the label cell.
+    out property <length> label_width: 88px;
+    // The gap between the label cell and the input.
+    out property <length> gap: 6px;
+    // The padding between the input's border and the input itself.
+    out property <length> field_inset: 1px;
+    // Where the input starts, measured from the left edge of the row.
+    out property <length> field_start: FormRowMetrics.label_width + FormRowMetrics.gap + FormRowMetrics.field_inset;
+}
+
+// One labelled row of the Inspector's Tier form: a fixed-width label cell on the
+// left, the input on the right, and the row's own error message underneath.
+//
+// Every geometry decision lives in layouts. The input goes in a layout of its
+// own inside the bordered `Rectangle` (the same shape the Meets row always had),
+// so the field is sized by the layout rather than by Slint's default size for an
+// element in a plain `Rectangle`, and nothing draws over the label or above the
+// field. The label cell has an explicit width and elides, so a long label can
+// never be clipped on its left edge.
+//
+// The red border is drawn by the `Rectangle`, and a `LineEdit` paints an opaque
+// background over whatever lies under it, so the inner layout keeps a 1px
+// padding (always, so the field does not jump when the border appears).
+//
+// The tooltip shows over the label and over the input. A screen reader reads the label
+// of the input from the input itself (each caller sets `accessible-label` on its
+// `LineEdit` or `ComboBox`), because a `LineEdit` takes no label from the text beside it.
+//
+// Children of this component become the input (a `LineEdit`, a `ComboBox`, or a
+// `LineEdit` plus a unit label); they share one row, 4px apart.
+export component FormRow inherits VerticalLayout {
+    // The label, one line, elided when the cell is too narrow.
+    in property <string> label;
+    // A short live note under the label (for example "pavilion" beside an
+    // angle). Hidden while empty.
+    in property <string> label_hint;
+    // Hover text for the label cell and the input. No tooltip while empty.
+    in property <string> tooltip;
+    // Draws the red border around the input.
+    in property <bool> invalid: false;
+    // The message for this row, shown directly under the input. Hidden while
+    // empty.
+    in property <string> error;
+    in property <length> label_width: FormRowMetrics.label_width;
+
+    spacing: 2px;
+    HorizontalLayout {
+        spacing: FormRowMetrics.gap;
+        Rectangle {
+            width: root.label_width;
+            if root.tooltip != "": Tooltip { text: @markdown("\{root.tooltip}"); }
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: root.label;
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    overflow: elide;
+                }
+                if root.label_hint != "": Text {
+                    text: root.label_hint;
+                    font-size: 9px;
+                    color: Theme.text-muted;
+                    overflow: elide;
+                }
+            }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            border-width: root.invalid ? 1px : 0px;
+            border-color: Theme.danger;
+            border-radius: Theme.radius-sm;
+            if root.tooltip != "": Tooltip { text: @markdown("\{root.tooltip}"); }
+            HorizontalLayout {
+                padding: FormRowMetrics.field_inset;
+                spacing: 4px;
+                @children
+            }
+        }
+    }
+    if root.error != "": Text {
+        text: root.error;
+        font-size: 9px;
+        color: Theme.danger;
+        wrap: word-wrap;
+        accessible-role: AccessibleRole.text;
+    }
+}

@@ -50,7 +50,23 @@ pub struct CustomMaterialRow {
     /// the same way `crystal_system`/`optical_character` do -- infer or leave blank,
     /// never guess a number.
     pub specific_gravity: Option<f32>,
-    /// Optional serialized `colorRecipe` (as JSON) for physically based chromophore colors.
+    /// Optional serialized `ColorRecipe` (as JSON) for physically based chromophore colors.
     /// `None` for fantasy materials.
     pub color_recipe_json: Option<String>,
+    /// The material's dispersion curve as coefficients (a Sellmeier with one or three terms,
+    /// or a Cauchy fit), as the JSON text the desktop app writes; opaque to this crate, which
+    /// must not depend on `indicatrix`. `None` is the plain path (a row saved before this
+    /// field existed, or one whose author typed a refractive index and an `n_F - n_C` figure):
+    /// the caller builds the Cauchy fit of [`Self::refractive_index`] and [`Self::dispersion`]
+    /// exactly as before. With a model present those two scalars still hold its `n_d` and
+    /// `n_F - n_C`.
+    pub dispersion_model_json: Option<String>,
+    /// The body colour as seven-band absorption rows (`[centre_nm, width_nm,
+    /// amplitude_per_mm]`), as the JSON text the desktop app writes (the path-aware L*C*h
+    /// editor's result); opaque to this crate. `None` is "no bands": a row saved before this
+    /// field existed or one coloured from a preset or the three-band picker -- the caller then
+    /// colours the material from [`Self::absorption_rgb`] as before. With bands present
+    /// `absorption_rgb` still holds the nearest legacy triple, so an older build shows a close
+    /// colour.
+    pub absorption_bands_json: Option<String>,
 }

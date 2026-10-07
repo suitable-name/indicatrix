@@ -9,8 +9,10 @@ members = [
     "crates/indicatrix-cut-core",
     "crates/indicatrix-solid",
     "crates/indicatrix-editor",
+    "crates/indicatrix-render-jobs",
     "apps/indicatrix-cut",
     "apps/indicatrix-worker",
+    "apps/indicatrix-cli",
     "apps/indicatrix-web",
     "crates/indicatrix-web-core",
     "apps/indicatrix-web-compute",
@@ -33,7 +35,7 @@ members = [
 # its Web Worker entry point.
 
 [workspace.package]
-version = "0.6.2"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Suitable-Name"]
@@ -44,13 +46,14 @@ publish = true
 
 [workspace.dependencies]
 anyhow = "1.0.104"
-bytemuck = { version = "1.22", features = ["derive"] }
-# Pinned exactly: glam 0.33.8 reordered DMat3::determinant/inverse ("align with
-# Mat4", glam #828/#836/#837), and crates/indicatrix's SIMD twins
-# (simd/triple_solve.rs, geometry/meet_solver/candidates.rs) are checked bitwise
-# against the glam scalar sequence. Bumping glam means re-deriving those twins and
+bytemuck = { version = "1.25", features = ["derive"] }
+# Pinned exactly: crates/indicatrix's SIMD twins (simd/triple_solve.rs, used by
+# geometry/meet_solver/candidates.rs) follow glam 0.34.1's scalar DMat3 sequence
+# (determinant = x_axis.dot(y_axis.cross(z_axis)); inverse = cofactor columns scaled
+# by 1/determinant, transposed) bit for bit. glam 0.33.8 reordered it ("align with
+# Mat4", #828/#836/#837). Bumping glam means re-deriving those twins and
 # re-verifying every solver golden, not just editing this line.
-glam = "=0.33.7"
+glam = "=0.34.1"
 # `default-features = false` MUST live here, not in the members: a member
 # inheriting a workspace dependency may only ADD features, never remove them,
 # and newer Cargo rejects a member that repeats `default-features = false`
@@ -113,7 +116,7 @@ time = { version = "0.3", default-features = false, features = ["std"] }
 # The native design-file format in `indicatrix_cut_core::native` (TOML on-disk encoding) and
 # `apps/indicatrix-cut`'s settings persistence -- see each crate's own comment on its
 # `toml` dependency for why TOML was chosen there.
-toml = "1.1.4"
+toml = "1.1.6"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # `default-features = false` lives here for the same reason `image`'s does above --
@@ -127,15 +130,17 @@ wgpu = { version = "30.0.1", default-features = false }
 winresource = "0.1.31"
 
 # Workspace members
-indicatrix-vault = { path = "crates/indicatrix-vault", version = "0.6.2" }
-indicatrix = { path = "crates/indicatrix", version = "0.6.2" }
-indicatrix-net = { path = "crates/indicatrix-net", version = "0.6.2" }
-indicatrix-dispatch = { path = "crates/indicatrix-dispatch", version = "0.6.2" }
-indicatrix-formats = { path = "crates/indicatrix-formats", version = "0.6.2" }
-indicatrix-cut-core = { path = "crates/indicatrix-cut-core", version = "0.6.2" }
-indicatrix-solid = { path = "crates/indicatrix-solid", version = "0.6.2" }
-indicatrix-editor = { path = "crates/indicatrix-editor", version = "0.6.2" }
-indicatrix-web-core = { path = "crates/indicatrix-web-core", version = "0.6.2" }
+indicatrix-vault = { path = "crates/indicatrix-vault", version = "0.7.0" }
+indicatrix = { path = "crates/indicatrix", version = "0.7.0" }
+indicatrix-net = { path = "crates/indicatrix-net", version = "0.7.0" }
+indicatrix-dispatch = { path = "crates/indicatrix-dispatch", version = "0.7.0" }
+indicatrix-formats = { path = "crates/indicatrix-formats", version = "0.7.0" }
+indicatrix-cut-core = { path = "crates/indicatrix-cut-core", version = "0.7.0" }
+indicatrix-solid = { path = "crates/indicatrix-solid", version = "0.7.0" }
+indicatrix-editor = { path = "crates/indicatrix-editor", version = "0.7.0" }
+indicatrix-web-core = { path = "crates/indicatrix-web-core", version = "0.7.0" }
+indicatrix-render-jobs = { path = "crates/indicatrix-render-jobs", version = "0.7.0" }
+indicatrix-cut = { path = "apps/indicatrix-cut", version = "0.7.0" }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
@@ -162,6 +167,16 @@ strip = "symbols"
 debug-assertions = true
 overflow-checks = true
 debug = 2
+
+# The desktop app's library (a large Slint-generated UI plus the editor) grew past 4 GiB
+# as an rlib with full debug info (6.1 GB on 2026-10-06), and MSVC's link.exe ignores an
+# archive over 4 GiB ("LNK4003: invalid library format"), so every test and the binary
+# failed to link. Line tables keep file:line backtraces and breakpoints by line.
+[profile.dev.package.indicatrix-cut]
+debug = "line-tables-only"
+
+[profile.test.package.indicatrix-cut]
+debug = "line-tables-only"
 
 # The browser app's dev builds (`trunk serve` / `trunk build`): BOTH the page
 # (`apps/indicatrix-web`) and its Web Worker (`apps/indicatrix-web-compute`), selected by

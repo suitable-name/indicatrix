@@ -10,18 +10,20 @@
 
 use super::{
     convert::{
-        CONCAVE_TIERS_STASH_KEY, SELF_CONTAINED_META_KEY, SaveExtras, concave_tier_tables,
-        external_proportions_from_source, material_selection_from_table,
+        CONCAVE_FLAT_FINGERPRINT_KEY, CONCAVE_TIERS_STASH_KEY, SELF_CONTAINED_META_KEY, SaveExtras,
+        concave_tier_tables, external_proportions_from_source, material_selection_from_table,
         material_table_from_selection, preform_spec_from_table, preform_table_from_spec,
         source_table_from_proportions, tier_table_from_tier,
     },
     load::{
-        MaterialResolution, apply_tier_ids_and_targets, cheater_offsets_from_native,
-        material_resolution_of, raw_tier_ids_from_native, raw_tier_targets_from_native,
-        restore_concave_tiers, tier_from_table_with_full_geometry, tier_notes_from_native,
+        MaterialResolution, apply_tier_ids_and_targets, apply_tier_relations,
+        cheater_offsets_from_native, material_resolution_of, raw_tier_ids_from_native,
+        raw_tier_relations_from_native, raw_tier_targets_from_native, restore_concave_tiers,
+        tier_from_table_with_full_geometry, tier_notes_from_native,
     },
+    unknown_keys::UnknownFileKeys,
 };
-use crate::design::{Design, ScheduleMeta, TierId};
+use crate::design::{Design, ScheduleMeta, TierId, TierRelation};
 use indicatrix::geometry::stone_metrics::ExternalProportions;
 use indicatrix_formats::native::{
     CustomMaterialSnapshot, HistoryTable, NativeDesignFile, SourceTable,
@@ -30,7 +32,7 @@ use indicatrix_formats::native::{
         attachment_blobs,
     },
 };
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 /// The most history entries a design file keeps; the newest are retained.
 pub const DESIGN_HISTORY_LIMIT: usize = 200;
@@ -56,6 +58,16 @@ pub enum DesignLoadError {
         /// What is wrong with it.
         reason: String,
     },
+    /// A tier's `angle_relation` cannot be read or satisfied: the text is not
+    /// canonical, it names a tier the file does not have, tiers read each other in a
+    /// loop, or the result is not a facet angle. Refused rather than repaired, like a
+    /// concave tier.
+    Relation {
+        /// Zero-based position of the tier in the file.
+        index: usize,
+        /// What is wrong with it.
+        reason: String,
+    },
 }
 
 impl fmt::Display for DesignLoadError {
@@ -69,6 +81,13 @@ impl fmt::Display for DesignLoadError {
             ),
             Self::ConcaveTier { index, reason } => {
                 write!(f, "concave tier {} is not usable: {reason}", index + 1)
+            }
+            Self::Relation { index, reason } => {
+                write!(
+                    f,
+                    "the relation for tier {} is not usable: {reason}",
+                    index + 1
+                )
             }
         }
     }
@@ -189,8 +208,16 @@ fn build_file(
                 design.tier_target(index),
             )
             .with_angle_deg(Some(tier.angle_deg))
+            .with_angle_relation(
+                ids_in_step
+                    .then(|| design.tier_relation(index))
+                    .flatten()
+                    .map(TierRelation::to_canonical),
+            )
         })
         .collect();
+    // `DesignFile::new` picks version 3 when a tier has a relation; the concave
+    // list below only ever raises the version to 2 for a file without relations.
     let file = DesignFile::new(
         preform_table_from_spec(&design.preform, design.preform_y_offset),
         material_table_from_selection(&design.material).with_custom(custom.cloned()),
@@ -201,10 +228,41 @@ fn build_file(
     .with_history(HistoryTable::new(bounded_history(history)))
     // Also sets `version = 2` and the frame, and only when the list is non-empty.
     .with_concave_tiers(concave_tier_tables(design));
+    let file = with_unknown_keys(file, design);
     match source {
         Some(source) => file.with_source(source),
         None => file,
     }
+}
+
+/// Writes back the keys the file this design was opened from carried and this build
+/// does not claim (see [`UnknownFileKeys`]). A design that was not opened from a
+/// design file has none, and `file` is returned unchanged.
+fn with_unknown_keys(mut file: DesignFile, design: &Design) -> DesignFile {
+    let Some(extras) = design.file_extras.as_deref() else {
+        return file;
+    };
+    file.unknown.clone_from(&extras.top);
+    file.preform.unknown.clone_from(&extras.preform);
+    file.material.unknown.clone_from(&extras.material);
+    file.schedule.unknown.clone_from(&extras.schedule);
+    if !extras.history.is_empty() {
+        file.history
+            .get_or_insert_with(|| HistoryTable::new(Vec::new()))
+            .unknown
+            .clone_from(&extras.history);
+    }
+    for table in &mut file.tiers {
+        if let Some(keys) = table.tier_id.and_then(|id| extras.tiers.get(&TierId(id))) {
+            table.unknown.clone_from(keys);
+        }
+    }
+    for (table, id) in file.concave_tiers.iter_mut().zip(&design.concave_tier_ids) {
+        if let Some(keys) = extras.concave_tiers.get(id) {
+            table.unknown.clone_from(keys);
+        }
+    }
+    file
 }
 
 /// Builds the self-contained design file for `design`.
@@ -254,13 +312,17 @@ pub fn design_to_string(
 ///
 /// Every tier's id, note, cheater offset and target are read from the tier's own
 /// record. A tier with no id gets a fresh one; ids the file names are kept. The
-/// attachments are decoded and their size and SHA-256 re-checked.
+/// attachments are decoded and their size and SHA-256 re-checked. Tier relations are
+/// restored and applied (a stored angle that drifted from its relation is corrected),
+/// and keys this build does not claim are kept on [`Design::file_extras`] so the next
+/// save writes them back.
 ///
 /// # Errors
 ///
 /// [`DesignLoadError::TierMissingGeometry`] for a tier without `angle_deg`/`indices`;
 /// [`DesignLoadError::File`] wrapping [`DesignFileError::Attachments`] for attachments
-/// that do not verify.
+/// that do not verify; [`DesignLoadError::Relation`] for a relation that cannot be
+/// read or satisfied.
 pub fn design_from_file(file: DesignFile) -> Result<LoadedDesign, DesignLoadError> {
     let DesignFile {
         girdle_diameter_mm,
@@ -274,6 +336,7 @@ pub fn design_from_file(file: DesignFile) -> Result<LoadedDesign, DesignLoadErro
         concave_tiers,
         meta,
         attachments,
+        unknown,
         ..
     } = file;
     let attachments = attachment_blobs(&attachments)
@@ -282,6 +345,16 @@ pub fn design_from_file(file: DesignFile) -> Result<LoadedDesign, DesignLoadErro
     let offsets = cheater_offsets_from_native(&tiers);
     let raw_ids = raw_tier_ids_from_native(&tiers);
     let raw_targets = raw_tier_targets_from_native(&tiers);
+    let raw_relations = raw_tier_relations_from_native(&tiers);
+    // The keys this build does not claim, set aside before the tables are consumed;
+    // the per-tier ones are matched to their tier's id once the ids are assigned.
+    let tier_unknown: Vec<toml::Table> = tiers.iter().map(|t| t.unknown.clone()).collect();
+    let concave_unknown: Vec<toml::Table> =
+        concave_tiers.iter().map(|t| t.unknown.clone()).collect();
+    let history_unknown = history
+        .as_ref()
+        .map(|h| h.unknown.clone())
+        .unwrap_or_default();
     let constraint_tiers = tiers
         .into_iter()
         .enumerate()
@@ -302,8 +375,34 @@ pub fn design_from_file(file: DesignFile) -> Result<LoadedDesign, DesignLoadErro
     design.tier_notes = notes;
     design.cheater_offsets_deg = offsets;
     apply_tier_ids_and_targets(&mut design, raw_ids, raw_targets, true);
+    apply_tier_relations(&mut design, &raw_relations)
+        .map_err(|(index, reason)| DesignLoadError::Relation { index, reason })?;
     restore_concave_tiers(&mut design, concave_tiers)
         .map_err(|(index, reason)| DesignLoadError::ConcaveTier { index, reason })?;
+    let extras = UnknownFileKeys {
+        top: unknown,
+        preform: preform.unknown,
+        material: material.unknown.clone(),
+        schedule: schedule.unknown,
+        history: history_unknown,
+        tiers: design
+            .tier_ids
+            .iter()
+            .copied()
+            .zip(tier_unknown)
+            .filter(|(_, keys)| !keys.is_empty())
+            .collect(),
+        concave_tiers: design
+            .concave_tier_ids
+            .iter()
+            .copied()
+            .zip(concave_unknown)
+            .filter(|(_, keys)| !keys.is_empty())
+            .collect(),
+    };
+    if !extras.is_empty() {
+        design.file_extras = Some(Arc::new(extras));
+    }
 
     let material_resolution = material_resolution_of(design.material.name.as_deref());
     let restorable_custom_material = matches!(material_resolution, MaterialResolution::Unresolved)
@@ -359,9 +458,10 @@ pub fn migrate_sidecar_to_file(design: &Design, sidecar: &NativeDesignFile) -> D
     file.unknown = sidecar.unknown.clone();
     file.unknown.remove(SELF_CONTAINED_META_KEY);
     // The design already supplies its concave tiers (see `build_file`); the
-    // sidecar's stash of the same list must not also be written back as an unknown
-    // key.
+    // sidecar's stash of the same list, and the fingerprint written next to it, must
+    // not also be written back as unknown keys.
     file.unknown.remove(CONCAVE_TIERS_STASH_KEY);
+    file.unknown.remove(CONCAVE_FLAT_FINGERPRINT_KEY);
     file.preform.unknown = sidecar.preform.unknown.clone();
     file.material.unknown = sidecar.material.unknown.clone();
     file

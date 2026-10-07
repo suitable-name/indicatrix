@@ -14,7 +14,10 @@ has no "Edit" sub-tab next to "Live Render," it was built without it.
 
 The command bar is two rows of buttons. Each row ends in empty space rather
 than spreading its buttons out, and a single hint line underneath the two
-rows shows an explanation of whatever button you are currently hovering:
+rows shows an explanation of whatever button you are currently hovering. Tab
+reaches every button and Space or Enter presses it, and a screen reader hears the
+same hint as the button's description. The **?** at the right end of the hint line
+opens this section of the manual:
 
 - **Row 1, left** — New Design..., Load Selected, Undo, Redo.
 - **Row 1, right** — Solve, and the auto-solve delay control next to it —
@@ -24,11 +27,14 @@ rows shows an explanation of whatever button you are currently hovering:
   selected in the list below — the same actions the tier list's own
   per-row buttons and its "+ Add Tier" header button already offer
   (Chapter 4), collected here too since they are easy to miss on first use.
+  The Advanced interface adds **+ Concave** to the group.
 - **Row 2, middle** — Deep Solve, Optimize, and **Retarget...** (an automated
   proposal for adapting a design to a different material — Chapter 6). Deep
   Solve and Optimize grey out when there is nothing for them to do, and
   hovering a greyed-out button shows the specific reason right on the
-  button rather than somewhere else you would have to go looking.
+  button rather than somewhere else you would have to go looking. The
+  Advanced interface (Chapter 17) adds **Snapshot**, **Compare** and **Tilt
+  Curves** here.
 - **Row 2, right** — Export Edited .asc, Save, and Open. The
   File menu's version of the first uses the identical label; both trigger
   the same export. See Chapter 11 for what each of the three actually
@@ -36,7 +42,7 @@ rows shows an explanation of whatever button you are currently hovering:
 
 Undo and Redo say what they are about to do, rather than a bare "Undo"
 and "Redo" — hover either button, or open the Edit menu, and you will see
-something like "Undo: Set P1 angle to -41.0 degrees" or "Redo: Add tier
+something like "Undo: Set P1 angle to 41.0 degrees" or "Redo: Add tier
 C1'". This works for every kind of edit the app makes, including a Retarget
 or an Apply Optimize Result.
 
@@ -112,10 +118,13 @@ mirror and material through the Edit tab's Design Settings panel (Chapter
 6), the preform through the inspector's own Preform tab (Chapter 4) — see
 the worked example in Chapter 7.
 
-A brand-new design starts with zero tiers, and its very first Add Tier
-defaults to angle 0.0 and "Unspecified vertex" — the same as any other
-blank draft, with no round-brilliant or other starter template offered.
-Chapter 7's worked example takes you through building one by hand.
+The dialog is a template gallery: pick one of the everyday shapes (round
+brilliant, oval, cushion, emerald step cut, princess), one of the round variants
+and teaching designs, or **Empty** for a blank draft (Chapter 1, "Starting from
+nothing"). A stone template arrives with its tiers already written; a blank draft
+starts with zero tiers, and its very first Add Tier defaults to angle 0.0 and
+"Unspecified vertex". Chapter 7's worked example takes you through building a
+stone by hand from the blank draft.
 
 ## Reading the tier list
 
@@ -125,8 +134,8 @@ Each row is one tier. The columns are:
 |---|---|
 | **#** | The tier's position in the schedule. |
 | **⚠** | A warning glyph when this tier has its own manufacturability warning (Chapter 5) — hover it to read the warning. Blank otherwise. |
-| **C/P/G** | The block this tier's angle actually classifies into — Crown, Pavilion, or Girdle, regardless of what you meant it to be (see "Anchors and blocks" below). Hover for the full block name. |
-| **ANGLE** | The facet's cutting angle, in degrees off the girdle plane. Negative angles are pavilion facets; zero or positive angles are crown facets, by this app's convention. A single click on this cell selects the row, like clicking anywhere else in it; double-click it (or press F2 on the selected row) to edit the value in place — see Chapter 4. |
+| **CODE** | The tier's label on the cutting sheet (Chapter 11): P1, P2, ... for pavilion tiers, G1, ... for girdle tiers, C1, C2, ... for crown tiers, T for the table and Culet for the culet. The codes are numbered separately for each letter, in the order the tiers are cut, so the numbers do not have to follow the order of the rows; a concave tier carries on the count of its side. The letter is the block this tier's angle actually classifies into — Crown, Pavilion, or Girdle, regardless of what you meant it to be (see "Anchors and blocks" below). Hover for the full block name. |
+| **ANGLE** | The facet's cutting angle, in degrees off the girdle plane, always shown as a plain positive number. Which side of the girdle the facet is on is not in the number: the letter of the CODE column says it (a pavilion facet sits below the girdle, a crown facet above it), and a tier keeps its side when you edit its angle. Only the files keep the older convention of a negative angle for the pavilion (Chapters 4 and 11). A single click on this cell selects the row, like clicking anywhere else in it; double-click it (or press F2 on the selected row) to edit the value in place — see Chapter 4. |
 | **NAME / INDICES** | The facet's name (or "(unnamed)"), and the index position(s) it occupies. These two columns stretch with the width of the dock; every other column stays a fixed width. |
 | **MEETS** | What the tier's constraint actually is: a pin glyph and the stated value for an anchor, "meets `<names>`" for named facets, or a plain "meet" for an unspecified vertex. |
 | **MAST** | The solved depth — filled in only after a successful Solve, shown as `-` or `?` when the design hasn't been (re-)solved since this row last changed. |
@@ -135,9 +144,24 @@ Each row is one tier. The columns are:
 | **ORBIT** | Whether the tier's indices form one clean symmetric family — see "Orbits" below. When it is amber (incomplete), click it to fill in the missing symmetric positions automatically. |
 | **IMPORTED** | Shows an **Adopt** link when there is a better constraint recoverable from the original file — see Chapter 8. |
 
+**In the Simple interface** (Chapter 17) the table shows fewer columns: the
+**MAST**, **SOLVE**, **ORBIT** and **IMPORTED** columns, the **Pin** and
+**Detach / Reattach** buttons, the **Adopt all** button, the Steps / Mirror
+tools and the filter box are hidden. Hiding changes nothing about the design
+or about what Solve does; the columns come back when you switch to Advanced. A
+stale filter text does nothing while the filter box is hidden, so no row is
+dimmed by something you cannot see. When any tier is detached, a line under the
+toolbar reads "Some advanced settings are in use. Switch to Advanced to see
+them." The rest of this section describes the Advanced table.
+
+Every column heading, button and field has a hover tip in plain words, ending
+with "See the glossary." where the Glossary (Appendix A) has an entry for it.
+The table is one Tab stop; its keys are in Chapter 4, "Keyboard navigation in
+the tier list."
+
 To the right of those, per row: a small up/down pair to move the tier
-earlier or later in cutting order (the same as Alt+Up/Alt+Down — Chapter
-4), a **Detach / Reattach** toggle, a duplicate button, and a remove ("×")
+earlier or later in the table, and so in the cutting order of its side of
+the stone (the same as Alt+Up/Alt+Down — Chapter 4), a **Detach / Reattach** toggle, a duplicate button, and a remove ("×")
 button — all covered in Chapter 4. A row needing an anchor (Chapter 5)
 also shows an **Add Anchor** button that jumps the inspector straight to
 that tier with "Exact scale value" already selected, ready for you to type
@@ -243,8 +267,12 @@ Edit tab's inspector has its own **Schedule** tab: a read-only FACET /
 ANGLE / INDEX table built from this design's own current, solved tier
 list, not the catalogue's stored original. It reads "Not solved -- click
 Solve to see this design's own cut order here" until you do. It exists so
-you can eyeball the cutting order without leaving the Edit tab; for a
-copyable file, use Export Edited (above).
+you can eyeball the cutting order without leaving the Edit tab (the pavilion
+and girdle tiers first, then the crown, the table last: Chapter 11); for a
+copyable file, use Export Edited (above). The Simple interface (Chapter 17)
+leaves the Schedule tab out; the palette command **Inspector: Schedule Tab**
+(Chapter 19) then lands on the Tier tab instead. A screen reader announces the table as a list
+and reads each row as facet, angle and index.
 
 ### Pinned vs. free tiers
 
@@ -274,10 +302,11 @@ missing block also grows a row-level **Add Anchor** button (see "Reading
 the tier list" above) that jumps straight to the fix.
 
 A tier's block is not what you intended it to be, it is whatever its angle
-actually classifies as: crown or pavilion by the sign of the angle, and
-**girdle only at exactly 90 (or -90) degrees** — the tolerance is very
+actually classifies as: crown or pavilion by the side the angle is stored on
+(the tier list prints the plain number and names the side in the letter of
+the CODE column), and **girdle only at exactly 90 degrees** — the tolerance is very
 tight, so "about 90" still classifies as crown or pavilion, not girdle.
-Check the tier list's own C/P/G column (above) if a block you expected to
+Check the tier list's own CODE column (above) if a block you expected to
 be anchored still reads as missing one; the tier you added may have
 classified somewhere you did not expect. Chapter 7's worked example shows
 this in practice.

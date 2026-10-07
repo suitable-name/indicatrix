@@ -25,16 +25,12 @@ use indicatrix_vault::{db::sqlite::Database, model::filter::RangeFilter};
 use slint::{ComponentHandle, ModelRc, VecModel};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
     rc::Rc,
     sync::{Arc, Mutex},
 };
 use tracing::debug;
 
-/// The manual chapter "Planning a rough".
-const HELP_CHAPTER_FILE: &str = "15-planning-a-rough.md";
-
-/// Shown in the view's hint line when the manual cannot be opened.
+/// Shown in the view's hint line when the help window cannot be opened.
 const HELP_FALLBACK: &str = "Planning a rough: model the rough (base and cuts) on the left, press Plan, and \
      pick a result to see its cuts in 3D. Tick results to save them; Ctrl+S saves, Ctrl+O lists \
      the saved plans.";
@@ -269,41 +265,23 @@ fn show_all_in_library(host: &Rc<Host>) {
     apply_target(host, target_of_all(host));
 }
 
-/// The manual chapter's file, next to the manual's `README.md`, if the manual is there.
-fn locate_help_chapter() -> Option<PathBuf> {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))?;
-    crate::gui::external_links::user_manual_candidates(&exe_dir)
-        .into_iter()
-        .map(|readme| readme.with_file_name(HELP_CHAPTER_FILE))
-        .find(|chapter| chapter.is_file())
-}
-
-/// Hands `path` to the platform's own opener, like the Help menu does for the manual.
-fn open_with_os_handler(path: &str) {
-    #[cfg(target_os = "linux")]
-    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
-    #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("cmd")
-        .args(["/C", "start", "", path])
-        .spawn();
-    #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(path).spawn();
-}
-
-/// `RoughPlanModel.open_help`: opens the manual chapter "Planning a rough"; a short
-/// help text in the view's hint line if the manual is not installed.
+/// `RoughPlanModel.open_help`: opens the chapter "Planning a rough" in the help window
+/// (`gui::help`), which has the manual built in. If the help window cannot be opened, a
+/// short help text goes to the view's hint line and a toast says why.
 fn open_help(host: &Rc<Host>) {
-    if let Some(chapter) = locate_help_chapter() {
-        open_with_os_handler(&chapter.to_string_lossy());
+    let Some(main) = host.main.upgrade() else {
+        host.window
+            .global::<RoughPlanModel>()
+            .set_view_hint(HELP_FALLBACK.into());
         return;
-    }
-    host.window
-        .global::<RoughPlanModel>()
-        .set_view_hint(HELP_FALLBACK.into());
-    if let Some(main) = host.main.upgrade() {
-        show_toast(&main, "User manual not found", "error");
+    };
+    if let Err(message) =
+        crate::gui::help::open_topic(&main, crate::gui::help::topics::ROUGH_PLANNER)
+    {
+        host.window
+            .global::<RoughPlanModel>()
+            .set_view_hint(HELP_FALLBACK.into());
+        show_toast(&main, &message, "error");
     }
 }
 

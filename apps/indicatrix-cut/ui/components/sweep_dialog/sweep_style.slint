@@ -1,0 +1,20 @@
+// The colours of the Angle Sweep dialog's figures, shared by the pills, the chart lines and
+// the table header so a figure looks the same everywhere.
+import { Theme } from "../../theme.slint";
+
+export global SweepStyle {
+    // The colour of figure `series` (numbered like `indicatrix_editor::sweep::SweepMetric`:
+    // 0 brilliance, 1 windowing, 2 extinction, 3 fire, 4 scintillation, 5 yield, 6..8 the
+    // tilt averages). Brilliance, windowing and extinction match the tilt graph.
+    public pure function series_color(series: int) -> color {
+        return series == 0 ? Theme.accent-cyan
+            : series == 1 ? Theme.accent-amber
+            : series == 2 ? Theme.chart-extinction
+            : series == 3 ? Theme.accent-purple
+            : series == 4 ? Theme.accent-emerald
+            : series == 5 ? Theme.text-primary
+            : series == 6 ? Theme.accent-cyan-hover
+            : series == 7 ? Theme.notice-accent
+            : Theme.accent-ruby;
+    }
+}

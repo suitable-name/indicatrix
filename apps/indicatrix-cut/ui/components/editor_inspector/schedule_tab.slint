@@ -9,48 +9,80 @@ import { EditorModel } from "../../models/editor.slint";
 // Export Edited .asc is the copyable form for now. Purely a view over
 // `EditorModel.cutting_rows`, so this component needs no properties of its
 // own.
+//
+// For a screen reader the list is a list of rows, each row read as one sentence ("P1, angle
+// 42.00, index 96"). The tab is advanced; the Simple interface does not show it (the
+// Inspector hides its pill and body).
 export component ScheduleTab inherits VerticalLayout {
     spacing: 6px;
-    Text { text: "Schedule"; font-size: 12px; font-weight: 700; color: Theme.text-primary; }
+    // Packed at the top, as the other inspector tabs: no row takes the spare height.
+    alignment: start;
+    Rectangle {
+        height: schedule_title.preferred-height;
+        Tooltip { text: @markdown("The order in which the facets are cut, one line per facet, as this design has them now. It is the same list \"Export Edited .asc\" writes."); }
+        schedule_title := Text { text: "Schedule"; font-size: 12px; font-weight: 700; color: Theme.text-primary; accessible-role: AccessibleRole.text; }
+    }
     if EditorModel.cutting_rows.length == 0: Text {
         text: "Not solved -- click Solve to see this design's own cut order here.";
         font-size: 10px;
         color: Theme.text-muted;
         wrap: word-wrap;
+        accessible-role: AccessibleRole.text;
     }
-    if EditorModel.cutting_rows.length > 0: VerticalLayout {
-        spacing: 2px;
-        HorizontalLayout {
-            spacing: 6px;
-            padding-left: 4px;
-            padding-right: 4px;
-            Text { horizontal-stretch: 1; text: "FACET"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
-            Text { width: 48px; text: "ANGLE"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
-            Text { horizontal-stretch: 1; text: "INDEX"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
-        }
-        // One shaded band per tier, the zebra alternating per tier (not per line): a
-        // concave tier's facet line and its tool line (`AngleItem.second_line`) share
-        // their band, so the pair reads as one entry.
-        for row in EditorModel.cutting_rows: Rectangle {
-            background: Math.mod(row.order_idx, 2) == 0 ? Theme.bg-input : Theme.bg-card;
-            border-radius: Theme.radius-sm;
-            VerticalLayout {
+    if EditorModel.cutting_rows.length > 0: Rectangle {
+        accessible-role: AccessibleRole.list;
+        accessible-label: "Cutting schedule";
+        VerticalLayout {
+            spacing: 2px;
+            HorizontalLayout {
+                spacing: 6px;
                 padding-left: 4px;
                 padding-right: 4px;
-                HorizontalLayout {
-                    spacing: 6px;
-                    Text { horizontal-stretch: 1; text: row.facet; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
-                    Text { width: 48px; text: row.angle; font-size: 10px; color: Theme.text-secondary; }
-                    Text { horizontal-stretch: 1; text: row.index_val; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: facet_head.preferred-height;
+                    Tooltip { text: @markdown("The facet's name."); }
+                    facet_head := Text { text: "FACET"; font-size: 9px; font-weight: 700; color: Theme.text-muted; accessible-role: AccessibleRole.text; }
                 }
-                if row.second_line != "": Text {
-                    text: row.second_line;
-                    font-size: 9px;
-                    color: Theme.accent-cyan;
-                    overflow: elide;
+                Rectangle {
+                    width: 48px;
+                    height: angle_head.preferred-height;
+                    Tooltip { text: @markdown("The angle to set on the machine, in degrees."); }
+                    angle_head := Text { text: "ANGLE"; font-size: 9px; font-weight: 700; color: Theme.text-muted; accessible-role: AccessibleRole.text; }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: index_head.preferred-height;
+                    Tooltip { text: @markdown("The index-wheel positions to cut the facet at. See the glossary."); }
+                    index_head := Text { text: "INDEX"; font-size: 9px; font-weight: 700; color: Theme.text-muted; accessible-role: AccessibleRole.text; }
                 }
             }
+            // One shaded band per tier, the zebra alternating per tier (not per line): a
+            // concave tier's facet line and its tool line (`AngleItem.second_line`) share
+            // their band, so the pair reads as one entry.
+            for row in EditorModel.cutting_rows: Rectangle {
+                background: Math.mod(row.order_idx, 2) == 0 ? Theme.bg-input : Theme.bg-card;
+                border-radius: Theme.radius-sm;
+                accessible-role: AccessibleRole.list-item;
+                accessible-label: row.facet + ", angle " + row.angle + ", index " + row.index_val + (row.second_line != "" ? ", " + row.second_line : "");
+                VerticalLayout {
+                    padding-left: 4px;
+                    padding-right: 4px;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text { horizontal-stretch: 1; text: row.facet; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                        Text { width: 48px; text: row.angle; font-size: 10px; color: Theme.text-secondary; }
+                        Text { horizontal-stretch: 1; text: row.index_val; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                    }
+                    if row.second_line != "": Text {
+                        text: row.second_line;
+                        font-size: 9px;
+                        color: Theme.accent-cyan;
+                        overflow: elide;
+                    }
+                }
+            }
+            Text { text: "For a copyable file, use Export Edited .asc."; font-size: 9px; color: Theme.text-muted; wrap: word-wrap; accessible-role: AccessibleRole.text; }
         }
-        Text { text: "For a copyable file, use Export Edited .asc."; font-size: 9px; color: Theme.text-muted; wrap: word-wrap; }
     }
 }

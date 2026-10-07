@@ -86,6 +86,11 @@ export global ExportModel {
     in property <int> preview_samples_done: 0;
     in property <int> preview_samples_total: 0;
 
+    // Whether a setting that Simple mode hides is off its default: color-space index,
+    // transfer index and whether a remote is reachable, in that order
+    // (`gui::render::render_export::advanced`, which holds the rule and its tests).
+    pure callback advanced_in_use(int, int, bool) -> bool;
+
     // width, height, samples-per-pixel, color-space index, compute-target index, max
     // ray bounces (the resolved rung VALUE, not the pill index).
     callback start_export(int, int, int, int, int, int);

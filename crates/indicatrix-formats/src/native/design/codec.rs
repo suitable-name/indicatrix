@@ -7,7 +7,7 @@
 use super::{
     attachment::{AttachmentsError, validate_attachments},
     schema::{
-        CONCAVE_FRAME_V0, DESIGN_FORMAT, DESIGN_VERSION_CONCAVE, DesignFile, MAX_DESIGN_TIERS,
+        CONCAVE_FRAME_V0, DESIGN_FORMAT, DESIGN_VERSION_RELATIONS, DesignFile, MAX_DESIGN_TIERS,
     },
 };
 use crate::asc::AscParseError;
@@ -190,10 +190,10 @@ pub fn check_header(text: &str) -> Result<u32, DesignFileError> {
     }
     match header.version {
         None => Err(DesignFileError::MissingVersion),
-        Some(v) if v > i64::from(DESIGN_VERSION_CONCAVE) => {
+        Some(v) if v > i64::from(DESIGN_VERSION_RELATIONS) => {
             Err(DesignFileError::UnsupportedVersion {
                 found: v,
-                supported: DESIGN_VERSION_CONCAVE,
+                supported: DESIGN_VERSION_RELATIONS,
             })
         }
         Some(v) if v < 1 => Err(DesignFileError::InvalidVersion(v)),

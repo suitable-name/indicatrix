@@ -71,9 +71,17 @@ export component TierAngleCell inherits Rectangle {
     // The tooltip shown while `editable` is false -- the guide's lock hint by default,
     // or a row-specific reason (a concave tier's angle is authored in the inspector).
     in property <string> locked_text: GuideModel.locked_hint;
+    // The relation this tier's angle follows, as a cutter reads it ("C1 - 4"), or ""
+    // for a free angle (`EditorTierItem.relation_text`). A driven cell shows a link icon
+    // and its tooltip names the relation; double-click and F2 do not open the editor
+    // (the angle is set by the tiers it follows) but fire `explain_driven()`.
+    in property <string> relation: "";
     // Fired on a plain click, BEFORE edit mode -- lets the row select itself the
     // same way clicking any other cell does.
     callback select();
+    // Double-click or F2 on a cell whose angle follows a relation: nothing is edited;
+    // the caller says why (`RelationModel.explain_driven_angle`).
+    callback explain_driven();
     callback commit(string);
     // (index, delta_deg)
     callback nudge(int, float);
@@ -99,8 +107,12 @@ export component TierAngleCell inherits Rectangle {
     changed focus_pulse => {
         if root.editable && root.focus_target == root.index && root.focus_pulse != root.seen_pulse {
             root.seen_pulse = root.focus_pulse;
-            root.cancelling = false;
-            root.editing = true;
+            if root.relation != "" {
+                root.explain_driven();
+            } else {
+                root.cancelling = false;
+                root.editing = true;
+            }
         }
     }
 
@@ -114,14 +126,22 @@ export component TierAngleCell inherits Rectangle {
         }
     }
 
-    Tooltip { text: root.editable ? @markdown("Click to select this row, double-click to edit. Scroll while editing, or Ctrl+Scroll any time, to nudge +-0.1deg.") : @markdown("\{root.locked_text}"); }
+    // What the tooltip says for an editable cell (a property, so the degree sign needs no
+    // escape inside `@markdown`).
+    property <string> edit_hint: "Angle from the girdle plane, in degrees. Click to select this row; double-click it or press F2 to edit. While editing, Up and Down change it by 0.1\u{b0} (Shift 1\u{b0}, Ctrl 0.01\u{b0}) and scrolling nudges it; Ctrl+Scroll nudges it any time.";
+
+    Tooltip { text: root.relation != "" ? @markdown("Angle follows: \{root.relation}. See the glossary.") : (root.editable ? @markdown("\{root.edit_hint}") : @markdown("\{root.locked_text}")); }
 
     area := TouchArea {
         clicked => { root.select(); }
         double-clicked => {
             if root.editable {
-                root.cancelling = false;
-                root.editing = true;
+                if root.relation != "" {
+                    root.explain_driven();
+                } else {
+                    root.cancelling = false;
+                    root.editing = true;
+                }
             }
         }
         scroll-event(event) => {
@@ -135,6 +155,17 @@ export component TierAngleCell inherits Rectangle {
 
     if !root.editing: HorizontalLayout {
         spacing: 2px;
+        // A link: this angle follows a relation (the tooltip names it).
+        if root.relation != "": VerticalLayout {
+            alignment: center;
+            Image {
+                source: @image-url("../../icons/link.svg");
+                colorize: Theme.accent-cyan;
+                width: 9px;
+                height: 9px;
+                image-fit: contain;
+            }
+        }
         Text {
             text: root.value;
             font-size: 11px;
@@ -144,8 +175,19 @@ export component TierAngleCell inherits Rectangle {
             vertical-alignment: center;
         }
         // Proposed-angle ghost: only shown when Optimize proposes a change.
+        // The arrow is an icon: the UI font has no arrow symbol.
+        if root.proposed != "": VerticalLayout {
+            alignment: center;
+            Image {
+                source: @image-url("../../icons/arrow-right.svg");
+                colorize: Theme.accent-emerald;
+                width: 8px;
+                height: 8px;
+                image-fit: contain;
+            }
+        }
         if root.proposed != "": Text {
-            text: "\u{2192} " + root.proposed;
+            text: root.proposed;
             font-size: 9px;
             font-weight: 600;
             color: Theme.accent-emerald;
@@ -156,11 +198,36 @@ export component TierAngleCell inherits Rectangle {
         // double-click-to-edit and F2 (the Tooltip only appears after the
         // pointer has lingered). Purely visual, same "no second click target"
         // convention `diagram_list.slint`'s hover-only "..." glyph uses.
-        if root.hovered: Text {
-            text: "\u{270E}";
-            font-size: 9px;
-            color: Theme.text-muted;
-            vertical-alignment: center;
+        if root.hovered && root.relation == "": VerticalLayout {
+            alignment: center;
+            Image {
+                source: @image-url("../../icons/pencil.svg");
+                colorize: Theme.text-muted;
+                width: 9px;
+                height: 9px;
+                image-fit: contain;
+            }
+        }
+    }
+
+    // For a screen reader the cell is a button that reads the angle and opens the editor (the
+    // keyboard route is F2 on the list).
+    if !root.editing: Rectangle {
+        accessible-role: AccessibleRole.button;
+        accessible-label: root.relation != ""
+            ? "Angle " + root.value + " degrees, follows " + root.relation
+            : "Angle " + root.value + " degrees";
+        accessible-description: root.editable ? "Opens the angle editor." : root.locked_text;
+        accessible-enabled: root.editable;
+        accessible-action-default => {
+            if root.editable {
+                if root.relation != "" {
+                    root.explain_driven();
+                } else {
+                    root.cancelling = false;
+                    root.editing = true;
+                }
+            }
         }
     }
 
@@ -169,6 +236,7 @@ export component TierAngleCell inherits Rectangle {
         height: 100%;
         text: root.full_value;
         font-size: 11px;
+        accessible-label: "Angle in degrees";
         init => {
             self.select-all();
             self.focus();

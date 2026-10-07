@@ -1,11 +1,36 @@
-import { SpinBox, Slider, LineEdit, ScrollView } from "std-widgets.slint";
+import { SpinBox, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { ExportModel } from "../models/export.slint";
+import { RenderJobsModel } from "../models/render_jobs.slint";
 import { SettingsModel } from "../models/settings.slint";
+import { GuideModel } from "../models/guide.slint";
+import { HelpTopics } from "../models/help.slint";
+import { HelpButton } from "help_button.slint";
+import { IconButton } from "icon_button.slint";
+import { ActionButton } from "chip_toggle.slint";
+import { SegmentPill } from "pill_button.slint";
+import { AdvancedNote } from "advanced_note.slint";
+import { TipBox } from "tip_box.slint";
 // Split-out sections of this dialog -- see each component's own doc comment.
 import { ExportOutputLocation } from "export_dialog/output_location.slint";
 import { ExportComputeAndBounces } from "export_dialog/compute_and_bounces.slint";
 import { ExportSamplesAndPresets } from "export_dialog/samples_and_presets.slint";
+
+// A section caption with its tooltip.
+component SectionCaption inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+
+    height: caption.preferred-height;
+    Tooltip { text: @markdown("\{root.hint}"); }
+    caption := Text {
+        text: root.text;
+        font-size: 11px;
+        font-weight: 600;
+        color: Theme.text-secondary;
+        accessible-role: AccessibleRole.text;
+    }
+}
 
 // High-resolution render export, independent of the viewport. Follows the
 // same modal-card conventions as `MaterialEditorDialog` (full-viewport backdrop +
@@ -14,6 +39,11 @@ import { ExportSamplesAndPresets } from "export_dialog/samples_and_presets.slint
 // pattern as `MaterialEditorDialog`'s RI/dispersion/birefringence controls for the
 // sample count, whose useful range is too wide for a handful of pills. Reads
 // `ExportModel` directly.
+//
+// Simple mode shows the output place and name, the size and the sample count. The colour
+// space, the compute choice and its transfer, the ray-bounce cap and the preset fan-out are
+// Advanced: a hidden choice keeps its value, and the "advanced settings are in use" note says
+// so when one is off its default.
 export component ExportDialog inherits Rectangle {
     // Compute target: 0 = Local only, 1 = Remote only, 2 = Local + Remote. Defaults to
     // Local + Remote whenever a usable worker exists (`ExportModel.remote_available`),
@@ -56,6 +86,10 @@ export component ExportDialog inherits Rectangle {
     // Index -> rung value, same nested-ternary idiom `effective_width`/`effective_height`
     // above use for their own pill selectors.
     property <int> effective_max_bounces: root.selected_bounce_index == 0 ? 4 : (root.selected_bounce_index == 1 ? 8 : (root.selected_bounce_index == 2 ? 12 : (root.selected_bounce_index == 3 ? 24 : (root.selected_bounce_index == 4 ? 64 : 128))));
+    // Whether a choice the Simple view hides is off its default (the pure rule is
+    // `gui::render::render_export::advanced`).
+    property <bool> advanced_note_visible: !GuideModel.shows_advanced()
+        && ExportModel.advanced_in_use(ExportModel.selected_color_space_index, ExportModel.transfer_index, ExportModel.remote_available);
 
     // `ExportModel` used to carry its own `close()` callback here too, invoked
     // with no Rust `on_close` ever registered for it (dead wiring -- `is_open`
@@ -82,8 +116,7 @@ export component ExportDialog inherits Rectangle {
         clicked => { if (!ExportModel.is_exporting) { root.close(); } }
     }
 
-    // This dialog had no Escape/Enter/focus handling at all --
-    // the last of the five editor dialogs to get it. Mounted with `if ExportModel.
+    // Escape/Enter/focus handling. Mounted with `if ExportModel.
     // is_open: ExportDialog { ... }` (`gem_viewport.slint`), i.e. freshly
     // instantiated every time it opens (unlike `RetargetDialog`, which stays
     // instantiated and toggles `visible`), so the plain `init => { self.focus(); }`
@@ -92,446 +125,431 @@ export component ExportDialog inherits Rectangle {
     // Escape closes (unless an export is running, matching the header X/backdrop's
     // own guard); Return starts the export, same guard. Every other key is
     // swallowed (`accept`) so it cannot bubble to `global_shortcuts` and fire a
-    // shortcut (Ctrl+S, etc.) on the design underneath.
+    // shortcut (Ctrl+S, etc.) on the design underneath. Tab is let through so focus
+    // moves between the dialog's own controls. The card is INSIDE the scope, so a key
+    // pressed while a control has focus still reaches it (a text field keeps its own
+    // Enter).
     key_scope := FocusScope {
         init => { self.focus(); }
         key-pressed(event) => {
+            if event.text == Key.Tab {
+                return reject;
+            }
             if event.text == Key.Escape {
                 if (!ExportModel.is_exporting) {
                     root.close();
                 }
-                return accept;
             } else if event.text == Key.Return {
                 if (!ExportModel.is_exporting) {
                     root.start_export(root.effective_width, root.effective_height, root.effective_samples, ExportModel.selected_color_space_index, root.compute_target, root.effective_max_bounces);
                 }
-                return accept;
             }
-            accept
+            return accept;
         }
-    }
 
-    // Modal Card Container
-    Rectangle {
-        width: 420px;
-        // Content-driven height: without this, `Rectangle`'s default sizing ("expand to
-        // fill the parent" when width/height aren't both set explicitly) makes this card
-        // inherit the full-viewport backdrop's height -- i.e. it stretches to the bottom
-        // of the window instead of sizing to its content. Same idiom, and same reason, as
-        // `settings_dialog.slint` and `import_dialog.slint`. Capped at the backdrop's
-        // height less a 20px margin top and bottom: the body ScrollView below takes
-        // the overflow so the header and Start/Cancel footer stay reachable.
-        height: min(content.preferred-height, root.height - 40px);
-        background: Theme.surface-dialog;
-        border-radius: Theme.radius-md;
-        border-width: 1px;
-        border-color: Theme.border-dialog;
-        drop-shadow-blur: 24px;
-        drop-shadow-color: Theme.modal-shadow;
-        clip: true;
+        // Modal Card Container
+        Rectangle {
+            width: 420px;
+            // Content-driven height: without this, `Rectangle`'s default sizing ("expand to
+            // fill the parent" when width/height aren't both set explicitly) makes this card
+            // inherit the full-viewport backdrop's height -- i.e. it stretches to the bottom
+            // of the window instead of sizing to its content. Same idiom, and same reason, as
+            // `settings_dialog.slint` and `import_dialog.slint`. Capped at the backdrop's
+            // height less a 20px margin top and bottom: the body ScrollView below takes
+            // the overflow so the header and Start/Cancel footer stay reachable.
+            height: min(content.preferred-height, root.height - 40px);
+            background: Theme.surface-dialog;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border-dialog;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: Theme.modal-shadow;
+            clip: true;
 
-        // Isolate clicks inside modal
-        TouchArea {}
+            // Isolate clicks inside modal
+            TouchArea {}
 
-        content := VerticalLayout {
-            padding: 16px;
-            spacing: 14px;
+            content := VerticalLayout {
+                padding: 16px;
+                spacing: 14px;
 
-            // 1. Header Bar
-            HorizontalLayout {
-                alignment: space-between;
-
+                // 1. Header Bar
                 HorizontalLayout {
                     spacing: 8px;
-                    Image { source: @image-url("../icons/save.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; vertical-alignment: center; }
-                    Text {
-                        text: "Export High-Resolution Render";
-                        font-size: 14px;
-                        font-weight: 700;
-                        color: Theme.text-primary;
-                        vertical-alignment: center;
-                    }
-                }
 
-                Rectangle {
-                    width: 24px;
-                    height: 24px;
-                    border-radius: Theme.radius-sm;
-                    background: close_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
-
-                    close_touch := TouchArea {
-                        clicked => { if (!ExportModel.is_exporting) { root.close(); } }
-                    }
-
-                    Image {
-                        source: @image-url("../icons/close.svg");
-                        colorize: Theme.text-muted;
-                        width: 12px;
-                        height: 12px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-
-            Rectangle { height: 1px; background: Theme.surface-raised; }
-
-            // Scrollable body: everything between the fixed header above and the
-            // fixed Start/Cancel footer below. `vertical-stretch: 1` lets it take
-            // whatever room the card's capped `height` leaves, and scrolls the rest
-            // -- the footer buttons can never be clipped, even while an export is
-            // running and the progress section makes the body much taller. Its
-            // `preferred-height` is stated from the inner layout so the card still
-            // sizes to its content when there is room (`content.preferred-height`
-            // above needs a real preferred height from this ScrollView).
-            body := ScrollView {
-                vertical-stretch: 1;
-                content-width: self.visible-width;
-                preferred-height: body_col.preferred-height;
-
-                body_col := VerticalLayout {
-                    spacing: 14px;
-                    padding-right: 12px;
-
-            // 1b. Output Location: the export directory and filename template --
-            // see `ExportOutputLocation`'s own doc comment
-            // (`export_dialog/output_location.slint`) for why this is split out.
-            ExportOutputLocation {}
-
-            Rectangle { height: 1px; background: Theme.surface-raised; }
-
-            // 2. Output Size
-            VerticalLayout {
-                spacing: 6px;
-                Rectangle {
-                    height: output_size_lbl.preferred-height;
-                    Tooltip { text: @markdown("1080p, 4K, or a custom pixel size."); }
-                    output_size_lbl := Text { text: "Output Size"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                }
-
-                HorizontalLayout {
-                    spacing: 4px;
-
-                    Rectangle {
+                    HorizontalLayout {
                         horizontal-stretch: 1;
-                        height: 28px;
-                        border-radius: Theme.radius-sm;
-                        background: ExportModel.selected_size_preset == 0 ? Theme.accent-cyan : (sz0_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken);
-                        border-width: 1px;
-                        border-color: ExportModel.selected_size_preset == 0 ? Theme.accent-cyan : Theme.border-dialog;
-
-                        sz0_touch := TouchArea {
-                            enabled: !ExportModel.is_exporting;
-                            clicked => { ExportModel.selected_size_preset = 0; }
+                        spacing: 8px;
+                        Image { source: @image-url("../icons/save.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; vertical-alignment: center; }
+                        Text {
+                            text: "Export High-Resolution Render";
+                            font-size: 14px;
+                            font-weight: 700;
+                            color: Theme.text-primary;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            accessible-role: AccessibleRole.text;
                         }
-
-                        Text { text: "1080p"; font-size: 11px; font-weight: 600; color: ExportModel.selected_size_preset == 0 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        height: 28px;
-                        border-radius: Theme.radius-sm;
-                        background: ExportModel.selected_size_preset == 1 ? Theme.accent-cyan : (sz1_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken);
-                        border-width: 1px;
-                        border-color: ExportModel.selected_size_preset == 1 ? Theme.accent-cyan : Theme.border-dialog;
-
-                        sz1_touch := TouchArea {
-                            enabled: !ExportModel.is_exporting;
-                            clicked => { ExportModel.selected_size_preset = 1; }
-                        }
-
-                        Text { text: "4K"; font-size: 11px; font-weight: 600; color: ExportModel.selected_size_preset == 1 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        height: 28px;
-                        border-radius: Theme.radius-sm;
-                        background: ExportModel.selected_size_preset == 2 ? Theme.accent-cyan : (sz2_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken);
-                        border-width: 1px;
-                        border-color: ExportModel.selected_size_preset == 2 ? Theme.accent-cyan : Theme.border-dialog;
-
-                        sz2_touch := TouchArea {
-                            enabled: !ExportModel.is_exporting;
-                            clicked => { ExportModel.selected_size_preset = 2; }
-                        }
-
-                        Text { text: "Custom"; font-size: 11px; font-weight: 600; color: ExportModel.selected_size_preset == 2 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-                }
-
-                if ExportModel.selected_size_preset == 2: HorizontalLayout {
-                    spacing: 10px;
-
-                    VerticalLayout {
-                        horizontal-stretch: 1;
-                        spacing: 2px;
-                        Text { text: "Width (px)"; font-size: 10px; color: Theme.text-muted; }
-                        SpinBox { minimum: 16; maximum: 8192; step-size: 8; value <=> ExportModel.custom_width; enabled: !ExportModel.is_exporting; }
                     }
 
                     VerticalLayout {
-                        horizontal-stretch: 1;
-                        spacing: 2px;
-                        Text { text: "Height (px)"; font-size: 10px; color: Theme.text-muted; }
-                        SpinBox { minimum: 16; maximum: 8192; step-size: 8; value <=> ExportModel.custom_height; enabled: !ExportModel.is_exporting; }
+                        alignment: center;
+                        HelpButton {
+                            topic: HelpTopics.export-dialog;
+                            hint: "Open the manual page on exporting a render";
+                        }
+                    }
+                    IconButton {
+                        icon: @image-url("../icons/close.svg");
+                        hint: ExportModel.is_exporting ? "Close is off while an export runs. Use Cancel Export to stop it." : "Close the export dialog";
+                        enabled: !ExportModel.is_exporting;
+                        hover_fill: Theme.surface-control-hover;
+                        clicked => { root.close(); }
                     }
                 }
 
-                Text { text: root.effective_width + " x " + root.effective_height + " px"; font-size: 10px; color: Theme.text-muted; }
-            }
+                Rectangle { height: 1px; background: Theme.surface-raised; }
 
-            // 2b. color Space: sRGB stays the default -- untagged, and the
-            // only choice byte-identical to an export made before this control
-            // existed. Display P3 / Rec.2020 are wider gamuts (particularly red/green,
-            // exactly where gemstone dispersion "fire" lands) tagged with an embedded
-            // ICC profile so they display correctly instead of looking washed-out (an
-            // untagged wide-gamut PNG is read as sRGB by every viewer). `ACEScg` is
-            // deliberately not offered: it is scene-linear with no transfer function,
-            // meant for further compositing in a floating-point/high-bit-depth
-            // pipeline -- quantizing scene-linear light straight to 8-bit PNG would
-            // concentrate almost the whole visible range into a handful of the darkest
-            // code values, severe banding that a transfer curve like sRGB's or
-            // Rec.2020's exists specifically to avoid.
-            VerticalLayout {
-                spacing: 6px;
-                Text { text: "color Space"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                // Scrollable body: everything between the fixed header above and the
+                // fixed Start/Cancel footer below. `vertical-stretch: 1` lets it take
+                // whatever room the card's capped `height` leaves, and scrolls the rest
+                // -- the footer buttons can never be clipped, even while an export is
+                // running and the progress section makes the body much taller. Its
+                // `preferred-height` is stated from the inner layout so the card still
+                // sizes to its content when there is room (`content.preferred-height`
+                // above needs a real preferred height from this ScrollView).
+                body := ScrollView {
+                    vertical-stretch: 1;
+                    content-width: self.visible-width;
+                    preferred-height: body_col.preferred-height;
 
-                HorizontalLayout {
-                    spacing: 4px;
+                    body_col := VerticalLayout {
+                        spacing: 14px;
+                        padding-right: 12px;
 
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        height: 28px;
-                        border-radius: Theme.radius-sm;
-                        background: ExportModel.selected_color_space_index == 0 ? Theme.accent-cyan : (cs0_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken);
-                        border-width: 1px;
-                        border-color: ExportModel.selected_color_space_index == 0 ? Theme.accent-cyan : Theme.border-dialog;
+                        // 1b. Output Location: the export directory and filename template --
+                        // see `ExportOutputLocation`'s own doc comment
+                        // (`export_dialog/output_location.slint`) for why this is split out.
+                        ExportOutputLocation {}
 
-                        cs0_touch := TouchArea {
-                            enabled: !ExportModel.is_exporting;
-                            clicked => { ExportModel.selected_color_space_index = 0; }
+                        Rectangle { height: 1px; background: Theme.surface-raised; }
+
+                        // 2. Output Size
+                        VerticalLayout {
+                            spacing: 6px;
+                            SectionCaption {
+                                text: "Output Size";
+                                hint: "The size of the finished picture in pixels: 1080p, 4K, or a size you type.";
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+
+                                SegmentPill {
+                                    text: "1080p";
+                                    hint: "1920 by 1080 pixels (full HD).";
+                                    selected: ExportModel.selected_size_preset == 0;
+                                    enabled: !ExportModel.is_exporting;
+                                    picked => { ExportModel.selected_size_preset = 0; }
+                                }
+                                SegmentPill {
+                                    text: "4K";
+                                    hint: "3840 by 2160 pixels (ultra HD). Four times the pixels of 1080p, so it takes longer.";
+                                    selected: ExportModel.selected_size_preset == 1;
+                                    enabled: !ExportModel.is_exporting;
+                                    picked => { ExportModel.selected_size_preset = 1; }
+                                }
+                                SegmentPill {
+                                    text: "Custom";
+                                    hint: "Type your own width and height in pixels.";
+                                    selected: ExportModel.selected_size_preset == 2;
+                                    enabled: !ExportModel.is_exporting;
+                                    picked => { ExportModel.selected_size_preset = 2; }
+                                }
+                            }
+
+                            if ExportModel.selected_size_preset == 2: HorizontalLayout {
+                                spacing: 10px;
+
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 2px;
+                                    Text { text: "Width (px)"; font-size: 10px; color: Theme.text-muted; accessible-role: AccessibleRole.text; }
+                                    TipBox {
+                                        hint: "The picture's width in pixels, from 16 to 8192.";
+                                        SpinBox {
+                                            minimum: 16;
+                                            maximum: 8192;
+                                            step-size: 8;
+                                            value <=> ExportModel.custom_width;
+                                            enabled: !ExportModel.is_exporting;
+                                            accessible-label: "Width in pixels";
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 2px;
+                                    Text { text: "Height (px)"; font-size: 10px; color: Theme.text-muted; accessible-role: AccessibleRole.text; }
+                                    TipBox {
+                                        hint: "The picture's height in pixels, from 16 to 8192.";
+                                        SpinBox {
+                                            minimum: 16;
+                                            maximum: 8192;
+                                            step-size: 8;
+                                            value <=> ExportModel.custom_height;
+                                            enabled: !ExportModel.is_exporting;
+                                            accessible-label: "Height in pixels";
+                                        }
+                                    }
+                                }
+                            }
+
+                            Text { text: root.effective_width + " x " + root.effective_height + " px"; font-size: 10px; color: Theme.text-muted; accessible-role: AccessibleRole.text; }
                         }
 
-                        Text { text: "sRGB"; font-size: 11px; font-weight: 600; color: ExportModel.selected_color_space_index == 0 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                    }
+                        // 2b. Color Space: sRGB stays the default -- untagged, and the
+                        // only choice byte-identical to an export made before this control
+                        // existed. Display P3 / Rec.2020 are wider gamuts (particularly red/green,
+                        // exactly where gemstone dispersion "fire" lands) tagged with an embedded
+                        // ICC profile so they display correctly instead of looking washed-out (an
+                        // untagged wide-gamut PNG is read as sRGB by every viewer). `ACEScg` is
+                        // deliberately not offered: it is scene-linear with no transfer function,
+                        // meant for further compositing in a floating-point/high-bit-depth
+                        // pipeline -- quantizing scene-linear light straight to 8-bit PNG would
+                        // concentrate almost the whole visible range into a handful of the darkest
+                        // code values, severe banding that a transfer curve like sRGB's or
+                        // Rec.2020's exists specifically to avoid. Advanced mode only.
+                        if GuideModel.shows_advanced(): VerticalLayout {
+                            spacing: 6px;
+                            SectionCaption {
+                                text: "Color Space";
+                                hint: "Which range of colours the picture file can hold. sRGB suits almost every screen. The wider ones need a screen that can show them.";
+                            }
 
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        height: 28px;
-                        border-radius: Theme.radius-sm;
-                        background: ExportModel.selected_color_space_index == 1 ? Theme.accent-cyan : (cs1_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken);
-                        border-width: 1px;
-                        border-color: ExportModel.selected_color_space_index == 1 ? Theme.accent-cyan : Theme.border-dialog;
+                            HorizontalLayout {
+                                spacing: 4px;
 
-                        cs1_touch := TouchArea {
-                            enabled: !ExportModel.is_exporting;
-                            clicked => { ExportModel.selected_color_space_index = 1; }
+                                SegmentPill {
+                                    text: "sRGB";
+                                    hint: "The standard for screens and the web. Safe everywhere.";
+                                    selected: ExportModel.selected_color_space_index == 0;
+                                    enabled: !ExportModel.is_exporting;
+                                    picked => { ExportModel.selected_color_space_index = 0; }
+                                }
+                                SegmentPill {
+                                    text: "Display P3";
+                                    hint: "A wider range of colours, for modern phone and laptop screens. The file carries a colour profile.";
+                                    selected: ExportModel.selected_color_space_index == 1;
+                                    enabled: !ExportModel.is_exporting;
+                                    picked => { ExportModel.selected_color_space_index = 1; }
+                                }
+                                SegmentPill {
+                                    text: "Rec.2020";
+                                    hint: "An even wider range, for HDR screens and video. The file carries a colour profile.";
+                                    selected: ExportModel.selected_color_space_index == 2;
+                                    enabled: !ExportModel.is_exporting;
+                                    picked => { ExportModel.selected_color_space_index = 2; }
+                                }
+                            }
+
+                            if ExportModel.selected_color_space_index != 0: Text {
+                                text: "Wider gamut, tagged with an embedded color profile so viewers display it correctly.";
+                                font-size: 11px;
+                                color: Theme.text-muted;
+                                wrap: word-wrap;
+                                accessible-role: AccessibleRole.text;
+                            }
                         }
 
-                        Text { text: "Display P3"; font-size: 11px; font-weight: 600; color: ExportModel.selected_color_space_index == 1 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        height: 28px;
-                        border-radius: Theme.radius-sm;
-                        background: ExportModel.selected_color_space_index == 2 ? Theme.accent-cyan : (cs2_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken);
-                        border-width: 1px;
-                        border-color: ExportModel.selected_color_space_index == 2 ? Theme.accent-cyan : Theme.border-dialog;
-
-                        cs2_touch := TouchArea {
-                            enabled: !ExportModel.is_exporting;
-                            clicked => { ExportModel.selected_color_space_index = 2; }
+                        // 2c/2d. Compute target and Max Ray Bounces -- see
+                        // `ExportComputeAndBounces`'s own doc comment
+                        // (`export_dialog/compute_and_bounces.slint`) for why this is split
+                        // out. Two-way bound: a click in there writes straight back to this
+                        // dialog's own cached pill-selection state (see `compute_target`/
+                        // `selected_bounce_index`'s own doc comments above). Advanced mode only.
+                        if GuideModel.shows_advanced(): ExportComputeAndBounces {
+                            compute_target <=> root.compute_target;
+                            selected_bounce_index <=> root.selected_bounce_index;
                         }
 
-                        Text { text: "Rec.2020"; font-size: 11px; font-weight: 600; color: ExportModel.selected_color_space_index == 2 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-                }
+                        // 3/3b. Sample Count and preset fan-out -- see
+                        // `ExportSamplesAndPresets`'s own doc comment
+                        // (`export_dialog/samples_and_presets.slint`) for why this is split
+                        // out. `effective_samples`/`sample_exponent` stay computed on THIS
+                        // dialog (the footer/key handler below need them too) and are
+                        // passed in read-only.
+                        ExportSamplesAndPresets {
+                            effective_samples: root.effective_samples;
+                            sample_exponent: root.sample_exponent;
+                        }
 
-                if ExportModel.selected_color_space_index != 0: Text {
-                    text: "Wider gamut, tagged with an embedded color profile so viewers display it correctly.";
-                    font-size: 11px;
-                    color: Theme.text-muted;
+                        if root.advanced_note_visible: AdvancedNote {}
+
+                        Rectangle { height: 1px; background: Theme.surface-raised; }
+
+                        // 4. Progress (visible only while exporting) -- keeps the user informed
+                        // during what can be a multi-minute render (Task: "a frozen UI with no
+                        // feedback is unacceptable").
+                        if ExportModel.is_exporting: VerticalLayout {
+                            spacing: 6px;
+
+                            // Live preview -- fixed-height reserved slot (present for the whole
+                            // "is_exporting" section, not just once a thumbnail exists) so the card
+                            // never resizes when the first preview tick lands; `image-fit: contain`
+                            // keeps the thumbnail at the export's own aspect ratio inside it rather
+                            // than stretching to the box's (usually different) aspect ratio.
+                            Rectangle {
+                                height: 200px;
+                                border-radius: Theme.radius-sm;
+                                background: Theme.surface-sunken;
+                                border-width: 1px;
+                                border-color: Theme.border-dialog;
+                                clip: true;
+                                accessible-role: AccessibleRole.image;
+                                accessible-label: "Preview of the export in progress. It is not the final file.";
+
+                                if ExportModel.preview_samples_done > 0: Image {
+                                    source: ExportModel.preview_image;
+                                    image-fit: contain;
+                                    width: 100%;
+                                    height: 100%;
+                                }
+
+                                if ExportModel.preview_samples_done <= 0: Text {
+                                    width: 100%;
+                                    height: 100%;
+                                    text: "Preview appears shortly...";
+                                    font-size: 10px;
+                                    color: Theme.text-muted;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            Text {
+                                text: ExportModel.preview_samples_done > 0
+                                    ? "Preview (in progress, not the final file) · " + ExportModel.preview_samples_done + " / " + ExportModel.preview_samples_total + " samples"
+                                    : "Preview";
+                                font-size: 11px;
+                                color: Theme.text-muted;
+                                horizontal-alignment: center;
+                                accessible-role: AccessibleRole.text;
+                            }
+
+                            // Preset-fan-out status: only shown once there's more than one job in
+                            // this export's queue (`preset_total > 1`) -- a plain single-render
+                            // export shows just "Rendering...".
+                            if ExportModel.preset_total > 1: Text {
+                                text: "Rendering " + (ExportModel.preset_index + 1) + " of " + ExportModel.preset_total
+                                    + (ExportModel.current_preset_label == "" ? "" : ": " + ExportModel.current_preset_label);
+                                font-size: 10px;
+                                font-weight: 600;
+                                color: Theme.accent-cyan;
+                                accessible-role: AccessibleRole.text;
+                            }
+
+                            HorizontalLayout {
+                                alignment: space-between;
+                                Text { text: "Rendering..."; font-size: 11px; font-weight: 600; color: Theme.text-secondary; accessible-role: AccessibleRole.text; }
+                                Text { text: Math.round(ExportModel.progress * 100) + "%"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; accessible-role: AccessibleRole.text; }
+                            }
+                            if ExportModel.eta_text != "": Text {
+                                text: ExportModel.eta_text;
+                                font-size: 10px;
+                                color: Theme.text-muted;
+                                horizontal-alignment: right;
+                                accessible-role: AccessibleRole.text;
+                            }
+                            Rectangle {
+                                height: 8px;
+                                border-radius: 4px;
+                                background: Theme.surface-sunken;
+                                border-width: 1px;
+                                border-color: Theme.border-dialog;
+                                clip: true;
+                                accessible-role: AccessibleRole.progress-indicator;
+                                accessible-label: "Export progress";
+                                accessible-value: Math.round(ExportModel.progress * 100) + " percent";
+
+                                Rectangle {
+                                    x: 0;
+                                    y: 0;
+                                    width: parent.width * ExportModel.progress;
+                                    height: 100%;
+                                    background: Theme.accent-cyan;
+                                    animate width { duration: 150ms; }
+                                }
+                            }
+                        }
+
+                    } // end body_col
+                } // end body := ScrollView
+
+                // 5. Result / error message, shown once the export finishes. Kept
+                // outside the scrolling body so an error is never scrolled out of view.
+                if !ExportModel.is_exporting && ExportModel.status_message != "": Text {
+                    text: ExportModel.status_message;
+                    font-size: 10px;
+                    color: ExportModel.has_error ? Theme.danger : Theme.accent-emerald;
                     wrap: word-wrap;
-                }
-            }
-
-            // 2c/2d. Compute target and Max Ray Bounces -- see
-            // `ExportComputeAndBounces`'s own doc comment
-            // (`export_dialog/compute_and_bounces.slint`) for why this is split
-            // out. Two-way bound: a click in there writes straight back to this
-            // dialog's own cached pill-selection state (see `compute_target`/
-            // `selected_bounce_index`'s own doc comments above).
-            ExportComputeAndBounces {
-                compute_target <=> root.compute_target;
-                selected_bounce_index <=> root.selected_bounce_index;
-            }
-
-            // 3/3b. Sample Count and preset fan-out -- see
-            // `ExportSamplesAndPresets`'s own doc comment
-            // (`export_dialog/samples_and_presets.slint`) for why this is split
-            // out. `effective_samples`/`sample_exponent` stay computed on THIS
-            // dialog (the footer/key handler below need them too) and are
-            // passed in read-only.
-            ExportSamplesAndPresets {
-                effective_samples: root.effective_samples;
-                sample_exponent: root.sample_exponent;
-            }
-
-            Rectangle { height: 1px; background: Theme.surface-raised; }
-
-            // 4. Progress (visible only while exporting) -- keeps the user informed
-            // during what can be a multi-minute render (Task: "a frozen UI with no
-            // feedback is unacceptable").
-            if ExportModel.is_exporting: VerticalLayout {
-                spacing: 6px;
-
-                // Live preview -- fixed-height reserved slot (present for the whole
-                // "is_exporting" section, not just once a thumbnail exists) so the card
-                // never resizes when the first preview tick lands; `image-fit: contain`
-                // keeps the thumbnail at the export's own aspect ratio inside it rather
-                // than stretching to the box's (usually different) aspect ratio.
-                Rectangle {
-                    height: 200px;
-                    border-radius: Theme.radius-sm;
-                    background: Theme.surface-sunken;
-                    border-width: 1px;
-                    border-color: Theme.border-dialog;
-                    clip: true;
-
-                    if ExportModel.preview_samples_done > 0: Image {
-                        source: ExportModel.preview_image;
-                        image-fit: contain;
-                        width: 100%;
-                        height: 100%;
-                    }
-
-                    if ExportModel.preview_samples_done <= 0: Text {
-                        width: 100%;
-                        height: 100%;
-                        text: "Preview appears shortly...";
-                        font-size: 10px;
-                        color: Theme.text-muted;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
+                    accessible-role: AccessibleRole.text;
                 }
 
-                Text {
-                    text: ExportModel.preview_samples_done > 0
-                        ? "Preview (in progress, not the final file) · " + ExportModel.preview_samples_done + " / " + ExportModel.preview_samples_total + " samples"
-                        : "Preview";
-                    font-size: 11px;
-                    color: Theme.text-muted;
-                    horizontal-alignment: center;
-                }
-
-                // Preset-fan-out status: only shown once there's more than one job in
-                // this export's queue (`preset_total > 1`) -- a plain single-render
-                // export shows just "Rendering...".
-                if ExportModel.preset_total > 1: Text {
-                    text: "Rendering " + (ExportModel.preset_index + 1) + " of " + ExportModel.preset_total
-                        + (ExportModel.current_preset_label == "" ? "" : ": " + ExportModel.current_preset_label);
-                    font-size: 10px;
-                    font-weight: 600;
-                    color: Theme.accent-cyan;
-                }
-
+                // 6. Footer Actions
                 HorizontalLayout {
-                    alignment: space-between;
-                    Text { text: "Rendering..."; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    Text { text: Math.round(ExportModel.progress * 100) + "%"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
-                }
-                if ExportModel.eta_text != "": Text {
-                    text: ExportModel.eta_text;
-                    font-size: 10px;
-                    color: Theme.text-muted;
-                    horizontal-alignment: right;
-                }
-                Rectangle {
-                    height: 8px;
-                    border-radius: 4px;
-                    background: Theme.surface-sunken;
-                    border-width: 1px;
-                    border-color: Theme.border-dialog;
-                    clip: true;
+                    spacing: 8px;
 
-                    Rectangle {
-                        x: 0;
-                        y: 0;
-                        width: parent.width * ExportModel.progress;
-                        height: 100%;
-                        background: Theme.accent-cyan;
-                        animate width { duration: 150ms; }
-                    }
-                }
-            }
-
-                } // end body_col
-            } // end body := ScrollView
-
-            // 5. Result / error message, shown once the export finishes. Kept
-            // outside the scrolling body so an error is never scrolled out of view.
-            if !ExportModel.is_exporting && ExportModel.status_message != "": Text {
-                text: ExportModel.status_message;
-                font-size: 10px;
-                color: ExportModel.has_error ? Theme.danger : Theme.accent-emerald;
-                wrap: word-wrap;
-            }
-
-            // 6. Footer Actions
-            HorizontalLayout {
-                spacing: 8px;
-
-                if ExportModel.is_exporting: Rectangle {
-                    horizontal-stretch: 1;
-                    height: 32px;
-                    border-radius: Theme.radius-sm;
-                    background: cancel_touch.has-hover ? Theme.danger-surface-hover : Theme.danger-surface;
-                    border-width: 1px;
-                    border-color: Theme.danger-border;
-
-                    cancel_touch := TouchArea {
+                    if ExportModel.is_exporting: ActionButton {
+                        horizontal-stretch: 1;
+                        height: 32px;
+                        text: "Cancel Export";
+                        hint: "Stop the export. Files already finished are kept.";
+                        fill: Theme.danger-surface;
+                        hover_fill: Theme.danger-surface-hover;
+                        ink: Theme.danger;
+                        edge: Theme.danger-border;
                         clicked => { root.cancel_export(); }
                     }
 
-                    Text { text: "Cancel Export"; font-size: 11px; font-weight: 600; color: Theme.danger; horizontal-alignment: center; vertical-alignment: center; }
-                }
-
-                if !ExportModel.is_exporting: Rectangle {
-                    width: 90px;
-                    height: 32px;
-                    border-radius: Theme.radius-sm;
-                    background: close2_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken;
-                    border-width: 1px;
-                    border-color: Theme.border-dialog;
-
-                    close2_touch := TouchArea {
+                    if !ExportModel.is_exporting: ActionButton {
+                        width: 90px;
+                        height: 32px;
+                        text: "Close";
+                        hint: "Close this dialog.";
+                        ink: Theme.text-secondary;
                         clicked => { root.close(); }
                     }
 
-                    Text { text: "Close"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                }
-
-                if !ExportModel.is_exporting: Rectangle {
-                    horizontal-stretch: 1;
-                    height: 32px;
-                    border-radius: Theme.radius-sm;
-                    background: start_touch.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan;
-
-                    start_touch := TouchArea {
+                    // Saves these settings as a render job, to start later from the Jobs
+                    // window (`gui::render_jobs`). Start Export below stays immediate.
+                    if !ExportModel.is_exporting: ActionButton {
+                        width: 130px;
+                        height: 32px;
+                        text: "Add to Queue";
+                        hint: "Save these settings as a render job instead of rendering now. Start it later from File > Render Jobs...";
+                        ink: Theme.text-secondary;
                         clicked => {
-                            root.start_export(root.effective_width, root.effective_height, root.effective_samples, ExportModel.selected_color_space_index, root.compute_target, root.effective_max_bounces);
+                            RenderJobsModel.add_still_jobs(root.effective_width, root.effective_height, root.effective_samples, ExportModel.selected_color_space_index, root.compute_target, root.effective_max_bounces);
                         }
                     }
 
-                    HorizontalLayout {
-                        alignment: center;
-                        spacing: 6px;
-                        Image { source: @image-url("../icons/save.svg"); colorize: Theme.text-on-accent; width: 12px; height: 12px; vertical-alignment: center; }
-                        Text { text: "Start Export"; font-size: 12px; font-weight: 700; color: Theme.text-on-accent; vertical-alignment: center; }
+                    if !ExportModel.is_exporting: ActionButton {
+                        horizontal-stretch: 1;
+                        height: 32px;
+                        text: "Start Export";
+                        hint: "Draw the picture at the chosen size and save it. Enter does the same.";
+                        icon: @image-url("../icons/save.svg");
+                        font_size: 12px;
+                        weight: 700;
+                        fill: Theme.accent-cyan;
+                        hover_fill: Theme.accent-cyan-hover;
+                        ink: Theme.text-on-accent;
+                        edge: Theme.accent-cyan;
+                        clicked => {
+                            root.start_export(root.effective_width, root.effective_height, root.effective_samples, ExportModel.selected_color_space_index, root.compute_target, root.effective_max_bounces);
+                        }
                     }
                 }
             }

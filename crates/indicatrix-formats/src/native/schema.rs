@@ -9,6 +9,10 @@ use std::fmt;
 
 pub use super::custom_material::CustomMaterialSnapshot;
 
+mod tier;
+
+pub use tier::{ConcaveTierTable, TierTable};
+
 /// This module's own schema version.
 ///
 /// Bumped only for a change `serde(default)` on a newly added field can't handle (see
@@ -177,7 +181,11 @@ impl PreformTable {
 ///
 /// Building one from -- or reading one back into -- an actual material selection is
 /// `indicatrix-cut-core`'s job, same as [`PreformTable`].
+///
+/// Reading also accepts the British spelling `body_colour_override`, which builds from
+/// 2026-09-28 wrote for [`Self::body_color_override`]; writing always uses `body_color_override`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(from = "MaterialTableWire")]
 pub struct MaterialTable {
     /// Display name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -207,6 +215,19 @@ pub struct MaterialTable {
     /// `[0.20000000298023224, ...]`, and loads back to the identical `f32` bits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_color_override: Option<[f64; 3]>,
+    /// The N-band form of the per-design body color (path-aware L*C*h editor),
+    /// `body_color_bands_override = [[centre_nm, width_nm, amplitude_per_mm], ...]`, written
+    /// NEXT TO the nearest [`Self::body_color_override`] triple so a build that does not know
+    /// the key (it keeps it in [`Self::unknown`] and writes it back) still shows a close
+    /// colour. When present and non-empty the bands win on load. `#[serde(default)]`: a file
+    /// written before this field existed loads with `None`; omitted when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_color_bands_override: Option<Vec<[f64; 3]>>,
+    /// Millimetres per model unit the bands were solved for
+    /// (`absorption_path_scale_override = 24.5`); only meaningful with
+    /// [`Self::body_color_bands_override`]. Omitted when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub absorption_path_scale_override: Option<f64>,
     /// See [`PreformTable::unknown`]'s doc comment.
     #[serde(flatten, default)]
     pub unknown: toml::Table,
@@ -228,8 +249,23 @@ impl MaterialTable {
             refractive_index_override,
             custom: None,
             body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
             unknown: toml::Table::new(),
         }
+    }
+
+    /// Attaches [`Self::body_color_bands_override`] and
+    /// [`Self::absorption_path_scale_override`] -- see those fields' doc comments.
+    #[must_use]
+    pub fn with_body_color_bands_override(
+        mut self,
+        bands: Option<Vec<[f64; 3]>>,
+        path_scale: Option<f64>,
+    ) -> Self {
+        self.absorption_path_scale_override = bands.as_ref().and(path_scale);
+        self.body_color_bands_override = bands;
+        self
     }
 
     /// Attaches [`Self::custom`] -- see that field's own doc comment.
@@ -244,6 +280,75 @@ impl MaterialTable {
     pub const fn with_body_color_override(mut self, rgb: Option<[f64; 3]>) -> Self {
         self.body_color_override = rgb;
         self
+    }
+}
+
+/// The key builds from 2026-09-28 wrote for `MaterialTable::body_color_override`, before
+/// the identifier was respelled. Read for old files, never written.
+const LEGACY_BODY_COLOUR_KEY: &str = "body_colour_override";
+
+/// What [`MaterialTable`] is parsed through: the same keys, plus the old spelling of the
+/// body-color key as a field of its own.
+///
+/// A plain `serde(alias)` would fail a file holding both spellings ("duplicate field"), and
+/// leaving the old key to the catch-all `unknown` table would write it back next to the new
+/// one. As a named field here, the old key is always consumed. When both spellings are
+/// present, the new one wins.
+#[derive(serde::Deserialize)]
+struct MaterialTableWire {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    specific_gravity_override: Option<f64>,
+    #[serde(default)]
+    refractive_index_override: Option<f64>,
+    #[serde(default)]
+    custom: Option<CustomMaterialSnapshot>,
+    #[serde(default)]
+    body_color_override: Option<[f64; 3]>,
+    #[serde(default)]
+    body_color_bands_override: Option<Vec<[f64; 3]>>,
+    #[serde(default)]
+    absorption_path_scale_override: Option<f64>,
+    /// Kept as a loose value so a malformed old key is parked in `unknown` untouched
+    /// instead of failing the whole file.
+    #[serde(default, rename = "body_colour_override")]
+    legacy_body_colour_override: Option<toml::Value>,
+    #[serde(flatten, default)]
+    unknown: toml::Table,
+}
+
+impl From<MaterialTableWire> for MaterialTable {
+    fn from(wire: MaterialTableWire) -> Self {
+        let MaterialTableWire {
+            name,
+            specific_gravity_override,
+            refractive_index_override,
+            custom,
+            mut body_color_override,
+            body_color_bands_override,
+            absorption_path_scale_override,
+            legacy_body_colour_override,
+            mut unknown,
+        } = wire;
+        if let Some(legacy) = legacy_body_colour_override {
+            match legacy.clone().try_into::<[f64; 3]>() {
+                Ok(rgb) => body_color_override = body_color_override.or(Some(rgb)),
+                Err(_) => {
+                    unknown.insert(LEGACY_BODY_COLOUR_KEY.to_owned(), legacy);
+                }
+            }
+        }
+        Self {
+            name,
+            specific_gravity_override,
+            refractive_index_override,
+            custom,
+            body_color_override,
+            body_color_bands_override,
+            absorption_path_scale_override,
+            unknown,
+        }
     }
 }
 
@@ -329,219 +434,6 @@ impl HistoryTable {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.entries.is_empty()
-    }
-}
-
-/// One `[[tiers]]` entry: this native file's per-tier overlay -- or, for a
-/// [`NativeDesignFile::draft`] save, the sole record of that tier at all.
-///
-/// Ordinarily NOT a full mirror of the editor's own tier type -- `angle_deg`/
-/// `indices` stay canonical in the paired `.asc`; this otherwise only carries what
-/// `.asc` cannot express (the authored [`NativeMeetConstraint`], which orbit members
-/// are detached, and -- since the "gap this closes" module docs -- the meet
-/// instruction and raw notes text a real `.asc` file's `G` field stated at import
-/// time). `name` is purely a human-readable label for raw-TOML readers (e.g. `git
-/// diff`); loading a paired (non-draft) file never reads it back into a design.
-/// Tiers correlate to the paired `.asc`'s tier list by ARRAY POSITION alone -- see
-/// the parent module's "The fingerprint" section for why a fingerprint mismatch
-/// disables re-applying this overlay, and [`NativeDesignFile::draft`]'s own doc
-/// comment for the one case where `angle_deg`/`indices` here ARE read back (a design
-/// that does not currently solve has no reliable paired `.asc` to read them from at
-/// all).
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct TierTable {
-    /// Display name.
-    pub name: String,
-    /// Meet-point constraint.
-    pub constraint: NativeMeetConstraint,
-    /// Detached parameter values.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub detached: Vec<f64>,
-    /// Mirrors `indicatrix_cut_core::design::ConstraintTier::angle_deg`. `#[serde(default)]`
-    /// so an ordinary (non-draft) file saved before this field existed, or one whose
-    /// tiers are only ever an overlay on a solvable paired `.asc`, still loads --
-    /// `None` there is never read back into a design; see this type's own doc
-    /// comment for the one caller (a draft reload) that does read it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub angle_deg: Option<f64>,
-    /// Mirrors `indicatrix_cut_core::design::ConstraintTier::indices`. See
-    /// [`Self::angle_deg`]'s own doc comment -- same rule, same one reader.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub indices: Option<Vec<f64>>,
-    /// Mirrors `indicatrix_cut_core::design::ConstraintTier::imported_meet`: the meet
-    /// instruction a real `.asc` file's `G` field actually stated for this tier at
-    /// import time, preserved so a native reload can restore the editor's one-click
-    /// "Adopt" action without needing to re-derive it from `.asc` text that (for a
-    /// draft save) may not even be trustworthy. `#[serde(default)]` so a file saved
-    /// before this field existed still loads, as `None` (nothing to adopt on
-    /// reload from such a file, same as a tier `indicatrix_cut_core` never imported).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub imported_meet: Option<NativeMeetConstraint>,
-    /// Mirrors `indicatrix_cut_core::design::ConstraintTier::original_notes`: the raw
-    /// `.asc` `G`-field text this tier's file actually carried at import time,
-    /// verbatim. `#[serde(default)]` for the same before-this-field-existed reason as
-    /// [`Self::imported_meet`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub original_notes: Option<String>,
-    /// A cutter-authored free-text note for this tier --
-    /// unlike [`Self::original_notes`] (read-only imported `.asc` `G`-field text),
-    /// this is a new authoring surface with no `.asc` counterpart to round-trip
-    /// through, so it lives only here. `#[serde(default)]` so a file saved before
-    /// this field existed still loads, as `None` (no note yet).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
-    /// A per-tier "cheater"/azimuth-offset annotation, in degrees -- mirrors
-    /// `indicatrix_cut_core::design::Design::cheater_offsets_deg`'s own map, keyed
-    /// by this tier's array position. Like [`Self::note`],
-    /// this is authored, undoable data with no `.asc` counterpart to round-trip
-    /// through, so it lives only here. `#[serde(default)]` so a file saved before
-    /// this field existed still loads, as `None` (no cheater offset recorded).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cheater_offset_deg: Option<f64>,
-    /// A stable per-tier identity, mirroring
-    /// `indicatrix_cut_core::design::TierId::value` --
-    /// `cheater_offset_deg`/`note` above are keyed by ARRAY POSITION
-    /// (this whole table already documents that), which renumbers on add/remove/
-    /// move; a `TierId` does not. `#[serde(default)]` so a file saved before this
-    /// field existed still loads, as `None` -- the loader is expected to assign a
-    /// fresh id to every such tier on load (old files have no stable identity to
-    /// recover, only a fresh one to start from).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tier_id: Option<u64>,
-    /// This tier's authoring-level target, if any -- see [`NativeTierTarget`].
-    /// `#[serde(default)]` so a file saved before this field existed still loads,
-    /// as `None` (no target authored).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target: Option<NativeTierTarget>,
-    /// See [`PreformTable::unknown`]'s doc comment -- the same rule, per tier.
-    #[serde(flatten, default)]
-    pub unknown: toml::Table,
-}
-
-/// One concave (fantasy-cut) tier of a self-contained design file: the two-line
-/// faceting-diagram standard's facet line plus its tool line, stored in the
-/// authored form so nothing is lost (plan §6.1).
-///
-/// A separate table from [`TierTable`] on purpose: a concave tier has no meet
-/// constraint, mast or target, and keeping it apart means a build that predates
-/// concave tiers cannot mistake one for a flat tier (it refuses the file by
-/// version instead). Tool and motion are the standard's own strings so the file
-/// reads like the diagram: `tool` is `"CYL"`, `"CON"`, `"CIR"`, `"DSC"` or
-/// `"SPH"`, `motion` is `"reciprocating"` or `"plunge"`. This crate does not
-/// interpret them; the loader in `indicatrix-cut-core` does and refuses a
-/// string it does not know. `tool`, `diameter_ratio` and `motion` have no serde
-/// default, so a record missing one is an error rather than a guessed tool.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ConcaveTierTable {
-    /// Facet name, free text.
-    pub name: String,
-    /// φ in degrees, signed like a flat tier's `angle_deg`.
-    pub angle_deg: f64,
-    /// Index-wheel positions of the placements.
-    pub indices: Vec<f64>,
-    /// Free-text cutting instructions, kept verbatim.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub instructions: String,
-    /// The tool code.
-    pub tool: String,
-    /// θ: direction of the tool axis in the facet plane, degrees.
-    pub tool_azimuth_deg: f64,
-    /// X, Y, Z displacement as ratios of the stone width.
-    pub displacement: [f64; 3],
-    /// Tool diameter as a ratio of the stone width.
-    pub diameter_ratio: f64,
-    /// Included angle of a cone or disc; absent for the other tools.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_angle_deg: Option<f64>,
-    /// How the tool moves while it cuts.
-    pub motion: String,
-    /// See [`PreformTable::unknown`]'s doc comment -- the same rule, per concave tier.
-    #[serde(flatten, default)]
-    pub unknown: toml::Table,
-}
-
-impl TierTable {
-    /// Builds a fresh entry with no unknown/future fields, and no `angle_deg`/
-    /// `indices`/`imported_meet`/`original_notes`/`cheater_offset_deg` (all `None`)
-    /// carried over -- see [`PreformTable::new`]'s own doc comment for why this
-    /// lives here rather than in `indicatrix-cut-core`. A caller with one of those
-    /// five to attach uses the matching `with_*` method afterward.
-    #[must_use]
-    pub fn new(
-        name: impl Into<String>,
-        constraint: NativeMeetConstraint,
-        detached: Vec<f64>,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            constraint,
-            detached,
-            angle_deg: None,
-            indices: None,
-            imported_meet: None,
-            original_notes: None,
-            note: None,
-            cheater_offset_deg: None,
-            tier_id: None,
-            target: None,
-            unknown: toml::Table::new(),
-        }
-    }
-
-    /// Attaches [`Self::tier_id`] -- see that field's own doc comment.
-    #[must_use]
-    pub const fn with_tier_id(mut self, tier_id: Option<u64>) -> Self {
-        self.tier_id = tier_id;
-        self
-    }
-
-    /// Attaches [`Self::target`] -- see that field's own doc comment.
-    #[must_use]
-    pub const fn with_target(mut self, target: Option<NativeTierTarget>) -> Self {
-        self.target = target;
-        self
-    }
-
-    /// Attaches [`Self::angle_deg`] -- see that field's own doc comment.
-    #[must_use]
-    pub const fn with_angle_deg(mut self, angle_deg: Option<f64>) -> Self {
-        self.angle_deg = angle_deg;
-        self
-    }
-
-    /// Attaches [`Self::indices`] -- see that field's own doc comment.
-    #[must_use]
-    pub fn with_indices(mut self, indices: Option<Vec<f64>>) -> Self {
-        self.indices = indices;
-        self
-    }
-
-    /// Attaches [`Self::imported_meet`] -- see that field's own doc comment.
-    #[must_use]
-    pub fn with_imported_meet(mut self, imported_meet: Option<NativeMeetConstraint>) -> Self {
-        self.imported_meet = imported_meet;
-        self
-    }
-
-    /// Attaches [`Self::original_notes`] -- see that field's own doc comment.
-    #[must_use]
-    pub fn with_original_notes(mut self, original_notes: Option<String>) -> Self {
-        self.original_notes = original_notes;
-        self
-    }
-
-    /// Attaches [`Self::note`] -- see that field's own doc comment.
-    #[must_use]
-    pub fn with_note(mut self, note: Option<String>) -> Self {
-        self.note = note;
-        self
-    }
-
-    /// Attaches [`Self::cheater_offset_deg`] -- see that field's own doc comment.
-    #[must_use]
-    pub const fn with_cheater_offset_deg(mut self, cheater_offset_deg: Option<f64>) -> Self {
-        self.cheater_offset_deg = cheater_offset_deg;
-        self
     }
 }
 

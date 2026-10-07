@@ -130,6 +130,28 @@ pub fn handle_hover_hint(
     format!("{action} {}{follow}", snap_clause(kind, snap))
 }
 
+/// The hint line right after `tier_label`'s facet is selected, for screens with no hover.
+///
+/// Meant for touch and pen: it says which of the three handles does what, by the letters
+/// the handles carry on screen (A angle, D depth, I index).
+#[must_use]
+pub fn handle_select_hint(tier_label: &str) -> String {
+    format!(
+        "{tier_label} selected. Drag A to tilt it, D to move it in or out, or I to turn it around the index wheel."
+    )
+}
+
+/// The hint line while a tier whose angle follows a relation is selected: why it has no
+/// angle handle, and what to do instead. `relation` is the relation as a cutter reads it
+/// (`"P1 - 2"`).
+#[must_use]
+pub fn angle_follows_relation_hint(tier_label: &str, relation: &str) -> String {
+    format!(
+        "{tier_label} follows a relation ({tier_label} = {relation}), so it has no angle handle. \
+         Tilt the tier it follows, or edit the relation in the Tier form."
+    )
+}
+
 /// The hint line while a drag is in progress: what the tier will become, and how many
 /// other tiers follow it, e.g. `"P1 -> 41.3 deg, 3 other tiers follow"`.
 ///
@@ -144,7 +166,8 @@ pub fn drag_live_hint(
 ) -> String {
     let head = match (kind, value) {
         (HandleKind::Angle, DragValue::AngleDeg(deg)) => {
-            format!("{tier_label} -> {} deg", trimmed(*deg, 3))
+            // The angle a person reads is a magnitude; the side of the girdle is the tier's.
+            format!("{tier_label} -> {} deg", trimmed(deg.abs(), 3))
         }
         (HandleKind::Depth, DragValue::Mast(mast)) => {
             format!("{tier_label} -> mast {}", trimmed(*mast, 3))
@@ -190,7 +213,7 @@ pub fn drag_done_toast(
     let done = match value {
         DragValue::AngleDeg(deg) => format!(
             "Set {tier_label} to {} deg. Undo restores the old angle.",
-            trimmed(*deg, 3)
+            trimmed(deg.abs(), 3)
         ),
         DragValue::Mast(mast) => format!(
             "Pinned {tier_label} at mast {}. Undo restores the old depth.",
@@ -235,7 +258,7 @@ pub fn slice_provisional_hint(
     format!(
         "New tier {tier_label}: {} at {} deg, index {}. Drag its handles to adjust; Enter keeps it, Esc discards it.",
         facets(facet_count),
-        trimmed(angle_deg, 3),
+        trimmed(angle_deg.abs(), 3),
         trimmed(index, 2)
     )
 }
@@ -246,7 +269,7 @@ pub fn slice_kept_toast(tier_label: &str, facet_count: usize, angle_deg: f64) ->
     format!(
         "Kept {tier_label}: {} at {} deg. Undo removes it.",
         facets(facet_count),
-        trimmed(angle_deg, 3)
+        trimmed(angle_deg.abs(), 3)
     )
 }
 
@@ -254,4 +277,19 @@ pub fn slice_kept_toast(tier_label: &str, facet_count: usize, angle_deg: f64) ->
 #[must_use]
 pub fn slice_discarded_toast(tier_label: &str) -> String {
     format!("Discarded {tier_label}. Nothing was changed.")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_relation_hint_names_the_tier_its_relation_and_the_way_out() {
+        let hint = angle_follows_relation_hint("P2", "P1 - 2");
+        assert_eq!(
+            hint,
+            "P2 follows a relation (P2 = P1 - 2), so it has no angle handle. \
+             Tilt the tier it follows, or edit the relation in the Tier form."
+        );
+    }
 }

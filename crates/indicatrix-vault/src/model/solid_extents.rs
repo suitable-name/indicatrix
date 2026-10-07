@@ -41,7 +41,13 @@
 /// Version 3: `volume` is the concave-carved volume (the facet stone minus the design's
 /// concave tools); widths, lengths and height are still the flat facet stone's. A cached
 /// version-2 volume is the convex one, so it is re-measured.
-pub const SOLID_EXTENTS_VERSION: u32 = 3;
+///
+/// Version 4: a design with concave tools is measured from its CARVED stone: `width_*`,
+/// `length_*` and `height` are those of the convex hull of the carved mesh (smaller than the
+/// flat stone's when a tool removes a vertex setting the outline), where version 3 kept the
+/// flat stone's. A design without tools is unchanged. A cached version-3 row of a concave
+/// design holds the flat extents, so it is re-measured.
+pub const SOLID_EXTENTS_VERSION: u32 = 4;
 
 /// One finished stone's bounding dimensions and volume, in model units.
 ///

@@ -420,7 +420,8 @@ fn finish(ctx: &Ctx, generation: u64, result: Result<SolveResponse, SolveError>,
             | SolveResponse::AnalysisFailed { .. }
             | SolveResponse::Retargeted(_)
             | SolveResponse::Metrics(_)
-            | SolveResponse::TiltCurves(_),
+            | SolveResponse::TiltCurves(_)
+            | SolveResponse::BodyColor(_),
         ) => Err("The solve worker answered a different request.".to_string()),
         // Replaced by a newer request, or cancelled with the Worker that ran it: not a
         // failure, and whoever cancelled it starts what they want next.

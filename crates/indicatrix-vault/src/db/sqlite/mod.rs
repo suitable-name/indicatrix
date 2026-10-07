@@ -60,12 +60,15 @@ use rusqlite::OpenFlags;
 use tracing::{debug, info, warn};
 
 mod base_schema;
+mod cut_progress;
+mod design_lighting;
 mod entries;
 mod materials;
 mod migrations;
 mod mirror_state;
 mod planner_exclusions;
 mod previews;
+mod render_jobs;
 mod saved_rough_plans;
 mod search;
 mod solid_extents;
@@ -74,6 +77,7 @@ mod tags;
 #[cfg(test)]
 mod tests;
 mod tilt_curves;
+mod variants;
 
 pub use materials::CustomMaterialParams;
 pub use search::{DisplayFilters, SEARCH_RESULT_CAP, SortOrder};
@@ -364,6 +368,8 @@ impl Database {
         db.migrate_per_axis_dispersion_column()?;
         db.migrate_custom_material_specific_gravity()?;
         db.migrate_custom_material_color_recipe()?;
+        db.migrate_custom_material_dispersion_model()?;
+        db.migrate_custom_material_absorption_bands()?;
         db.migrate_shape_vocabulary()?;
         db.migrate_ignored_column()?;
         db.migrate_diagram_entries_timestamps()?;
@@ -374,6 +380,10 @@ impl Database {
         db.migrate_diagram_solid_hull_table()?;
         db.migrate_saved_rough_plans_table()?;
         db.migrate_planner_exclusion_table()?;
+        db.migrate_design_variants_table()?;
+        db.migrate_design_cut_progress_table()?;
+        db.migrate_design_lighting_table()?;
+        db.migrate_render_jobs_table()?;
         db.migrate_mirror_state_tombstone_column()?;
         db.migrate_prune_tilt_curve_aggregate_columns()?;
         // Before `migrate_blob_columns_last`: that rebuild names diagram_details'
@@ -492,7 +502,7 @@ impl Database {
         // text for these two tables (the tilt-curves one in particular: its 6 generated
         // derived-aggregate columns are not something to safely hand-transcribe twice).
         let diagram_tilt_curves_sql = migrations::diagram_tilt_curves_table_sql();
-        let shared_sections: [&str; 8] = [
+        let shared_sections: [&str; 12] = [
             // Cached preview renders and cached tilt-performance curves -- see
             // migrate_diagram_previews_table/migrate_diagram_tilt_curves_table's own
             // doc comments for why both are side tables keyed by entry_id (surviving a
@@ -510,6 +520,14 @@ impl Database {
             // Designs the Rough Planner leaves out of its candidate set; see
             // migrate_planner_exclusion_table's own doc comment.
             migrations::DIAGRAM_PLANNER_EXCLUSIONS_TABLE_SQL,
+            // Per-design side data keyed by the design's UUID rather than by entry_id:
+            // saved variants, cutting progress and the lighting choice; see
+            // migrate_design_variants_table's own doc comment.
+            migrations::DESIGN_VARIANTS_TABLE_SQL,
+            migrations::DESIGN_CUT_PROGRESS_TABLE_SQL,
+            migrations::DESIGN_LIGHTING_TABLE_SQL,
+            // The desktop render queue; see migrate_render_jobs_table's own doc comment.
+            migrations::RENDER_JOBS_TABLE_SQL,
             // Flat tag set plus its many-to-many join table; see migrate_tag_tables's
             // own doc comment for why this is a side table pair, not a column on
             // diagram_entries.

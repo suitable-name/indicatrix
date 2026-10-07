@@ -3,9 +3,10 @@
 //! The built-in and design material combo lists, the RI-source explanation text, and the
 //! gear preset/remap-preview helpers the design settings panel's gear control uses.
 
+use crate::loading::number_expr::eval_number;
 use indicatrix::optics::materials::{
     GemMaterial,
-    body_color::{BODY_color_PRESETS, preset_index_for_rgb},
+    body_color::{BODY_COLOR_PRESETS, preset_index_for_rgb},
 };
 use indicatrix_cut_core::{Design, Edit, MaterialSelection, RemapRounding};
 
@@ -164,12 +165,8 @@ pub fn parse_yield_form(
     let girdle_diameter_mm = if girdle_diameter_mm.trim().is_empty() {
         None
     } else {
-        let value: f64 = girdle_diameter_mm.trim().parse().map_err(|_| {
-            format!(
-                "Girdle diameter '{}' is not a number.",
-                girdle_diameter_mm.trim()
-            )
-        })?;
+        let value = eval_number(girdle_diameter_mm, None)
+            .map_err(|error| error.message("Girdle diameter", girdle_diameter_mm))?;
         if !value.is_finite() || value <= 0.0 {
             return Err("Girdle diameter must be a positive, finite number.".to_string());
         }
@@ -179,12 +176,8 @@ pub fn parse_yield_form(
     let specific_gravity_override = if specific_gravity_override.trim().is_empty() {
         None
     } else {
-        let value: f64 = specific_gravity_override.trim().parse().map_err(|_| {
-            format!(
-                "Specific gravity '{}' is not a number.",
-                specific_gravity_override.trim()
-            )
-        })?;
+        let value = eval_number(specific_gravity_override, None)
+            .map_err(|error| error.message("Specific gravity", specific_gravity_override))?;
         if !value.is_finite() || value <= 0.0 {
             return Err("Specific gravity override must be a positive, finite number.".to_string());
         }
@@ -350,12 +343,8 @@ pub fn parse_design_material_form(
     let refractive_index_override = if ri_override_text.trim().is_empty() {
         None
     } else {
-        let value: f64 = ri_override_text.trim().parse().map_err(|_| {
-            format!(
-                "Refractive index '{}' is not a number.",
-                ri_override_text.trim()
-            )
-        })?;
+        let value = eval_number(ri_override_text, None)
+            .map_err(|error| error.message("Refractive index", ri_override_text))?;
         if !value.is_finite() || value <= 1.0 {
             return Err(
                 "Refractive index override must be a finite number greater than 1.0.".to_string(),
@@ -374,44 +363,116 @@ pub fn parse_design_material_form(
         specific_gravity_override: current.specific_gravity_override,
         refractive_index_override,
         body_color_override: current.body_color_override.filter(|_| same_material),
+        body_color_bands_override: current
+            .body_color_bands_override
+            .clone()
+            .filter(|_| same_material),
+        absorption_path_scale_override: current
+            .absorption_path_scale_override
+            .filter(|_| same_material),
     })
 }
 
 /// The design settings panel's color combo options.
 ///
 /// `"Material default"` (index 0, no override) followed by every
-/// [`indicatrix::optics::materials::body_color::BODY_color_PRESETS`] label, in
-/// that table's own order -- so combo index `i >= 1` is preset `i - 1`.
+/// [`indicatrix::optics::materials::body_color::BODY_COLOR_PRESETS`] label, in
+/// that table's own order -- so combo index `i >= 1` is preset `i - 1` -- and a last
+/// entry, [`BODY_COLOR_CUSTOM_LABEL`], that opens the hue/saturation/brightness picker
+/// ([`body_color_custom_index`]).
 #[must_use]
 pub fn body_color_options() -> Vec<String> {
     std::iter::once("Material default".to_string())
-        .chain(BODY_color_PRESETS.iter().map(|p| p.label.to_string()))
+        .chain(BODY_COLOR_PRESETS.iter().map(|p| p.label.to_string()))
+        .chain(std::iter::once(BODY_COLOR_CUSTOM_LABEL.to_string()))
         .collect()
+}
+
+/// The label of the last [`body_color_options`] entry.
+pub const BODY_COLOR_CUSTOM_LABEL: &str = "Custom\u{2026}";
+
+/// The index of the trailing "Custom..." entry of [`body_color_options`]: one past the last
+/// preset.
+#[must_use]
+pub fn body_color_custom_index() -> i32 {
+    i32::try_from(BODY_COLOR_PRESETS.len() + 1).unwrap_or(i32::MAX)
 }
 
 /// [`body_color_options`]' index for `rgb`.
 ///
-/// `0` for no override, `preset + 1` for a
-/// triple that matches a preset exactly, and `0` too for a triple that matches none
-/// (the combo cannot show an unlisted color, e.g. one typed into a design file by
-/// hand; the combo is authoritative on Apply, so applying the panel with it left at
-/// `0` returns such a design to its material's own color -- see
-/// [`body_color_from_index`]).
+/// `0` for no override, `preset + 1` for a triple that matches a preset exactly, and
+/// [`body_color_custom_index`] for a triple that matches none (a colour picked with the
+/// picker, or typed into a design file by hand).
 #[must_use]
 pub fn body_color_index_for(rgb: Option<[f32; 3]>) -> i32 {
-    rgb.and_then(preset_index_for_rgb)
-        .map_or(0, |index| index as i32 + 1)
+    rgb.map_or(0, |rgb| {
+        preset_index_for_rgb(rgb).map_or_else(body_color_custom_index, |index| index as i32 + 1)
+    })
 }
 
-/// The inverse of [`body_color_index_for`]: `None` ("Material default") for index
-/// `0` or an out-of-range index, else preset `index - 1`'s absorption triple.
+/// The combo index of a design's whole colour: [`body_color_custom_index`] while the
+/// N-band form (the L*C*h editor's colour) is set, whatever its stored triple is, else
+/// [`body_color_index_for`] the triple.
+#[must_use]
+pub fn body_color_index_for_material(material: &MaterialSelection) -> i32 {
+    if material
+        .body_color_bands_override
+        .as_ref()
+        .is_some_and(|bands| !bands.is_empty())
+    {
+        body_color_custom_index()
+    } else {
+        body_color_index_for(material.body_color_override)
+    }
+}
+
+/// The inverse of [`body_color_index_for`] for the fixed entries.
+///
+/// `None` ("Material default") for index `0`, an out-of-range index or the custom index (a custom triple is
+/// not in any table; the caller keeps the design's current triple or the picked one), else
+/// preset `index - 1`'s absorption triple.
 #[must_use]
 pub fn body_color_from_index(index: i32) -> Option<[f32; 3]> {
     usize::try_from(index)
         .ok()
         .and_then(|i| i.checked_sub(1))
-        .and_then(|i| BODY_color_PRESETS.get(i))
+        .and_then(|i| BODY_COLOR_PRESETS.get(i))
         .map(|preset| preset.absorption_rgb)
+}
+
+/// The colour an Apply stores for the combo's selected `index`: the custom entry keeps the
+/// design's `current` triple, every other index resolves through [`body_color_from_index`].
+#[must_use]
+pub fn body_color_for_apply(index: i32, current: Option<[f32; 3]>) -> Option<[f32; 3]> {
+    if index == body_color_custom_index() {
+        current
+    } else {
+        body_color_from_index(index)
+    }
+}
+
+/// `material` with the colour the combo's selected `index` stands for, given the design's
+/// `current` selection.
+///
+/// The custom entry keeps the design's whole current colour (the triple AND the N-band form
+/// with its path scale, so a colour made in the L*C*h editor survives an Apply of the
+/// material row); every other index sets that preset's triple (or none) and DROPS the bands,
+/// which would otherwise win over it.
+#[must_use]
+pub fn with_body_color_choice(
+    material: MaterialSelection,
+    index: i32,
+    current: &MaterialSelection,
+) -> MaterialSelection {
+    if index == body_color_custom_index() {
+        material.with_body_color_bands(
+            current.body_color_override,
+            current.body_color_bands_override.clone(),
+            current.absorption_path_scale_override,
+        )
+    } else {
+        material.with_body_color(body_color_from_index(index))
+    }
 }
 
 /// The gear combo's index for `gear_teeth` -- a position in [`GEAR_PRESETS`] when it

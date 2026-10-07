@@ -4,9 +4,17 @@ import { EditorModel } from "../models/editor.slint";
 import { GuideModel } from "../models/guide.slint";
 import { ActivityModel, ActivityItem } from "../models/activity.slint";
 import { StaleBadge } from "stale_badge.slint";
+// The overall Good / Check / Problem verdict -- see `models/verdict.slint`.
+import { VerdictModel } from "../models/verdict.slint";
+import { VerdictBadge } from "verdict_badge.slint";
 // The Log popup's "Copy" button reuses LibraryModel.copy_text to copy details
 // to clipboard and show "Copied!" toast.
 import { LibraryModel } from "../models/library.slint";
+// The strip's hand-drawn chips are buttons for the keyboard and a screen reader (`TouchButton`),
+// and a "?" at its right end opens the manual page on the strip.
+import { TouchButton } from "touch_button.slint";
+import { HelpButton } from "help_button.slint";
+import { HelpTopics } from "../models/help.slint";
 
 // The Edit sub-tab's full detail-width status line -- see `app.slint`'s
 // Edit-mode layout doc comment. Shows only the single highest-priority
@@ -114,16 +122,25 @@ component EditorLogPopup inherits PopupWindow {
                             background: copy_touch.has-hover ? Theme.bg-card-hover : transparent;
                             border-width: 1px;
                             border-color: Theme.border-dialog;
-                            copy_touch := TouchArea { clicked => { LibraryModel.copy_text(root.log_text()); } }
                             copy_label := Text { text: "Copy"; font-size: 10px; font-weight: 600; color: Theme.accent-cyan; horizontal-alignment: center; vertical-alignment: center; }
+                            copy_touch := TouchButton {
+                                label: "Copy details";
+                                hint: "Copy everything this window shows to the clipboard, to paste into a message.";
+                                clicked => { LibraryModel.copy_text(root.log_text()); }
+                            }
                         }
                         Rectangle {
                             width: 24px;
                             height: 24px;
                             border-radius: 12px;
-                            background: close_touch.has-hover ? Theme.bg-card-hover : transparent;
-                            close_touch := TouchArea { clicked => { root.close(); } }
+                            background: close_touch.has_hover ? Theme.bg-card-hover : transparent;
                             Image { source: @image-url("../icons/close.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                            close_touch := TouchButton {
+                                label: "Close details";
+                                hint: "Close this window (Esc).";
+                                ring_radius: 12px;
+                                clicked => { root.close(); }
+                            }
                         }
                     }
                 }
@@ -234,7 +251,8 @@ component EditorLogPopup inherits PopupWindow {
                                 Text { width: 56px; text: "BEFORE"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
                                 Text { width: 56px; text: "AFTER"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
                                 Text { width: 56px; text: "DELTA"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
-                                Text { width: 30px; text: ""; }
+                                // Same column as the Pin buttons below, which are advanced.
+                                if GuideModel.shows_advanced(): Text { width: 30px; text: ""; }
                             }
                             for r in EditorModel.deep_solve_tier_rows: HorizontalLayout {
                                 spacing: 6px;
@@ -247,21 +265,24 @@ component EditorLogPopup inherits PopupWindow {
                                 // `pin_verified_mast` takes the SAME "#N"
                                 // tier-number text this row already prints, so
                                 // no new field is needed to identify the tier.
-                                Rectangle {
+                                // Advanced: the Simple interface leaves Pin out.
+                                if GuideModel.shows_advanced(): Rectangle {
                                     width: 30px;
-                                    height: pin_text.preferred-height;
-                                    pin_touch := TouchArea {
-                                        enabled: GuideModel.allows_advanced();
-                                        clicked => { EditorModel.pin_verified_mast(r.tier_number); }
-                                    }
+                                    height: max(20px, pin_text.preferred-height);
                                     pin_text := Text {
                                         text: "Pin";
                                         font-size: 9px;
                                         font-weight: 700;
-                                        color: pin_touch.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan;
+                                        color: pin_touch.has_hover ? Theme.accent-cyan-hover : Theme.accent-cyan;
                                         horizontal-alignment: center;
+                                        vertical-alignment: center;
                                     }
-                                    Tooltip { text: @markdown("Pin this tier to Deep Solve's verified mast, as an exact scale-reference constraint. A no-op (with an explanatory toast) once this run is stale."); }
+                                    pin_touch := TouchButton {
+                                        enabled: GuideModel.allows_advanced();
+                                        label: "Pin tier " + r.tier_number;
+                                        hint: "Pin this tier to the value Deep Solve verified, as an exact scale value. Does nothing, and says why, once this run is out of date. See the glossary.";
+                                        clicked => { EditorModel.pin_verified_mast(r.tier_number); }
+                                    }
                                 }
                             }
                         }
@@ -285,12 +306,12 @@ component EditorLogPopup inherits PopupWindow {
                                     : -1;
                                 property <bool> warn_clickable: warn_tier >= 0;
                                 height: warn_text.preferred-height;
-                                warn_touch := TouchArea {
+                                // A warning about one tier is a button that selects that tier;
+                                // a warning about the whole design is plain text.
+                                warn_touch := TouchButton {
                                     enabled: warn_clickable;
-                                    // Fully qualified inside a ternary -- see
-                                    // `split_handle.slint`'s own `mouse-cursor`
-                                    // ternary for the same convention.
-                                    mouse-cursor: warn_clickable ? MouseCursor.pointer : MouseCursor.default;
+                                    label: w;
+                                    hint: warn_clickable ? "Select the tier this warning is about." : "";
                                     clicked => {
                                         EditorModel.selected_tier_index = warn_tier;
                                         EditorModel.inspector_tab = 0;
@@ -321,8 +342,8 @@ component EditorLogPopup inherits PopupWindow {
                             Text { text: EditorModel.material_suggestion_text; font-size: 11px; color: Theme.accent-cyan; wrap: word-wrap; }
                             HorizontalLayout {
                                 spacing: 8px;
-                                Button { text: "Set Material"; enabled: GuideModel.allows_design_settings(); clicked => { EditorModel.material_suggestion_accept(EditorModel.material_suggestion_name); } }
-                                Button { text: "No Thanks"; clicked => { EditorModel.material_suggestion_dismiss(); } }
+                                Button { text: "Set Material"; accessible-description: "Use the suggested material for this design. You can undo it."; enabled: GuideModel.allows_design_settings(); clicked => { EditorModel.material_suggestion_accept(EditorModel.material_suggestion_name); } }
+                                Button { text: "No Thanks"; accessible-description: "Ignore the suggested material."; clicked => { EditorModel.material_suggestion_dismiss(); } }
                             }
                         }
 
@@ -423,19 +444,24 @@ component ActivityChip inherits Rectangle {
         }
 
         if item.cancellable: Rectangle {
-            width: cancel_label.preferred-width + 4px;
-            cancel_touch := TouchArea {
-                mouse-cursor: pointer;
+            // 20 px wide: the smallest easy target.
+            width: 20px;
+            // The cross is an icon: the UI font has no cross-mark symbol.
+            Image {
+                source: @image-url("../icons/close.svg");
+                colorize: cancel_touch.has_hover ? Theme.danger : Theme.bg-darkest;
+                width: 9px;
+                height: 9px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                image-fit: contain;
+            }
+            cancel_touch := TouchButton {
+                label: "Cancel " + item.label;
+                hint: "Cancel " + item.label + ".";
+                ring_color: Theme.bg-darkest;
                 clicked => { ActivityModel.cancel(item.id); }
             }
-            cancel_label := Text {
-                text: "\u{2715}";
-                font-size: 10px;
-                font-weight: 700;
-                color: cancel_touch.has-hover ? Theme.danger : Theme.bg-darkest;
-                vertical-alignment: center;
-            }
-            Tooltip { text: @markdown("Cancel \{item.label}"); }
         }
     }
 }
@@ -502,6 +528,11 @@ export component EditorStatusStrip inherits Rectangle {
         : EditorModel.solve_state == "stale" ? "Stale"
         : EditorModel.solve_state == "failed" ? "Failed"
         : "Solved";
+    // What the state word means, for the tooltip and a screen reader.
+    property <string> solver_state_hint: EditorModel.solve_state == "solving" ? "A solve is running. The tier table and the 3D view update when it finishes."
+        : EditorModel.solve_state == "stale" ? "The design changed since the last solve, so the tier table and the 3D view may be out of date. Press Solve (F5)."
+        : EditorModel.solve_state == "failed" ? "The last solve did not give a valid stone. Details says why."
+        : "The tier table and the 3D view match the design as it is now.";
     property <color> solver_state_color: EditorModel.solve_state == "solving" ? Theme.accent-amber
         : EditorModel.solve_state == "stale" ? Theme.accent-amber
         : EditorModel.solve_state == "failed" ? Theme.accent-ruby
@@ -554,6 +585,10 @@ export component EditorStatusStrip inherits Rectangle {
         Rectangle {
             width: solver_state_layout.preferred-width;
             height: solver_state_layout.preferred-height;
+            accessible-role: AccessibleRole.text;
+            accessible-label: "Solver state: " + root.solver_state_label + ", " + EditorModel.tiers.length + (EditorModel.tiers.length == 1 ? " tier" : " tiers");
+            accessible-description: root.solver_state_hint;
+            Tooltip { text: @markdown("\{root.solver_state_hint}"); }
             solver_state_layout := HorizontalLayout {
                 spacing: 5px;
                 Rectangle { width: 8px; height: 8px; border-radius: 4px; background: root.solver_state_color; }
@@ -573,12 +608,25 @@ export component EditorStatusStrip inherits Rectangle {
                     color: Theme.text-muted;
                     vertical-alignment: center;
                 }
-                if EditorModel.last_solve_duration_ms > 0: Text {
+                // How long the last solve took: advanced detail, left out of the Simple interface.
+                if EditorModel.last_solve_duration_ms > 0 && GuideModel.shows_advanced(): Text {
                     text: "· " + EditorModel.last_solve_duration_ms + " ms";
                     font-size: 10px;
                     color: Theme.text-muted;
                     vertical-alignment: center;
                 }
+            }
+        }
+
+        // The overall verdict on the design: one word, its reasons and their fixes one
+        // click away (`VerdictBadge`). Always shown beside the solver state, outside the
+        // single-message priority chain below, for the same reason as the "UNSAVED" marker:
+        // whether the stone is sound is a fact, not a message competing for one slot.
+        // Hidden while there is nothing to judge (`level` is -1).
+        if VerdictModel.level >= 0: VerticalLayout {
+            alignment: center;
+            VerdictBadge {
+                window_height: root.window_height;
             }
         }
 
@@ -591,12 +639,16 @@ export component EditorStatusStrip inherits Rectangle {
         if EditorModel.is_dirty: Rectangle {
             // Explicit width/height bound to the named inner layout's own
             // preferred size -- same idiom the "Log" segment below uses
-            // (`log_label.preferred-width`/`-height`), needed because a plain
+            // (`log_row.preferred-width`/`-height`), needed because a plain
             // `Rectangle` does not size itself to an unnamed child on its own.
             width: unsaved_layout.preferred-width;
             height: unsaved_layout.preferred-height;
             border-radius: Theme.radius-sm;
             background: Theme.accent-amber;
+            accessible-role: AccessibleRole.text;
+            accessible-label: "Unsaved changes";
+            accessible-description: "This design has changes that are not saved to its file yet. Save with Ctrl+S.";
+            Tooltip { text: @markdown("This design has changes that are not saved to its file yet. Save with Ctrl+S."); }
             unsaved_layout := HorizontalLayout {
                 padding-left: 6px;
                 padding-right: 6px;
@@ -639,11 +691,12 @@ export component EditorStatusStrip inherits Rectangle {
             || (EditorModel.optimize_stale && !EditorModel.optimize_running): Rectangle {
             width: stale_marker_layout.preferred-width;
             height: stale_marker_layout.preferred-height;
-            stale_marker_touch := TouchArea {
-                mouse-cursor: pointer;
+            stale_marker_layout := StaleBadge { show_recompute: false; }
+            stale_marker_touch := TouchButton {
+                label: "Out-of-date Deep Solve or Optimize result";
+                hint: "The last Deep Solve or Optimize result no longer matches the design. Click to open the details.";
                 clicked => { log_popup.show(); root.log_open_pulse += 1; }
             }
-            stale_marker_layout := StaleBadge { show_recompute: false; }
         }
 
         // A persistent record of where the last Save/Export wrote,
@@ -656,13 +709,9 @@ export component EditorStatusStrip inherits Rectangle {
             width: saved_layout.preferred-width;
             height: saved_layout.preferred-height;
             border-radius: Theme.radius-sm;
-            background: saved_touch.has-hover ? Theme.bg-card-hover : transparent;
+            background: saved_touch.has_hover ? Theme.bg-card-hover : transparent;
             border-width: 1px;
             border-color: Theme.border-subtle;
-            saved_touch := TouchArea {
-                mouse-cursor: pointer;
-                clicked => { EditorModel.reveal_last_saved_path(); }
-            }
             saved_layout := HorizontalLayout {
                 padding-left: 6px;
                 padding-right: 6px;
@@ -675,6 +724,11 @@ export component EditorStatusStrip inherits Rectangle {
                     overflow: elide;
                     max-width: 180px;
                 }
+            }
+            saved_touch := TouchButton {
+                label: "Saved: " + EditorModel.last_saved_label;
+                hint: "Show the file you saved last in your file manager.";
+                clicked => { EditorModel.reveal_last_saved_path(); }
             }
         }
 
@@ -693,10 +747,6 @@ export component EditorStatusStrip inherits Rectangle {
         // hover) away regardless of how badly it elides.
         Rectangle {
             horizontal-stretch: 1;
-            strip_msg_touch := TouchArea {
-                mouse-cursor: pointer;
-                clicked => { log_popup.show(); root.log_open_pulse += 1; }
-            }
             Text {
                 x: 0px;
                 width: parent.width;
@@ -707,23 +757,57 @@ export component EditorStatusStrip inherits Rectangle {
                 vertical-alignment: center;
                 overflow: elide;
             }
-            Tooltip { text: @markdown("\{root.strip_text}"); }
+            // On top of the text; its tooltip is the message in full plus what a click does.
+            strip_msg_touch := TouchButton {
+                label: root.strip_text;
+                hint: root.strip_text + "\n\nClick to open the details.";
+                clicked => { log_popup.show(); root.log_open_pulse += 1; }
+            }
         }
 
         Rectangle {
-            width: log_label.preferred-width;
-            height: log_label.preferred-height;
+            width: log_row.preferred-width;
+            height: log_row.preferred-height;
             // "Details" is named for what it actually shows: a snapshot of
             // the CURRENT state (`EditorLogPopup.log_text`'s own doc
             // comment), not a running history a cutter could scroll back
             // through to recover a message the strip's own single-slot
             // priority chain has already replaced.
-            log_label := Text { text: "Details \u{25B8}"; font-size: 11px; font-weight: 600; color: Theme.accent-cyan; vertical-alignment: center; }
+            // The chevron points up because the popup opens above the strip. It is
+            // an icon, not a text glyph: the UI font has no small-triangle symbol.
+            log_row := HorizontalLayout {
+                spacing: 4px;
+                Text { text: "Details"; font-size: 11px; font-weight: 600; color: Theme.accent-cyan; vertical-alignment: center; }
+                VerticalLayout {
+                    alignment: center;
+                    Image {
+                        source: @image-url("../icons/chevron-up.svg");
+                        colorize: Theme.accent-cyan;
+                        width: 9px;
+                        height: 9px;
+                        image-fit: contain;
+                    }
+                }
+            }
             // Bumping `log_open_pulse` (bound into `log_popup.open_pulse`
             // below) hands keyboard focus into the popup on every open, not
             // just the first -- see `EditorLogPopup.open_pulse`'s own doc
             // comment for why.
-            log_touch := TouchArea { clicked => { log_popup.show(); root.log_open_pulse += 1; } }
+            log_touch := TouchButton {
+                label: "Details";
+                hint: "Open every message about this design in full: the solve result, warnings, Deep Solve and Optimize results, and where it was last saved.";
+                expandable: true;
+                clicked => { log_popup.show(); root.log_open_pulse += 1; }
+            }
+        }
+
+        // The manual page on the status strip.
+        VerticalLayout {
+            alignment: center;
+            HelpButton {
+                topic: HelpTopics.status-strip;
+                hint: "Open the manual page on the status strip";
+            }
         }
     }
 

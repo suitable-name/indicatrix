@@ -66,6 +66,7 @@
 
 mod dp;
 pub mod fit;
+pub mod locate;
 mod lp;
 mod pareto;
 mod piece;

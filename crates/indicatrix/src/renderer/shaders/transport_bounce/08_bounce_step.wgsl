@@ -70,8 +70,8 @@ fn transport_bounce_step(
                 return BOUNCE_STATUS_TERMINATE;
             }
             var mis_weight: f32 = 1.0;
-            if (phase_pdf_this_check > 0.0 && params.env_mode == 2u) {
-                let light_pdf = dist2d_pdf(phase_dir_this_check);
+            if (phase_pdf_this_check > 0.0 && nee_light_available()) {
+                let light_pdf = nee_light_pdf(phase_dir_this_check, studio_key_dir);
                 mis_weight = balance_heuristic(phase_pdf_this_check, light_pdf);
             }
             for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
@@ -462,9 +462,9 @@ fn transport_bounce_step(
             );
             if (fb.new_inside_gem == 0u) {
                 let ext_normal = select(normal, -normal, pre_bounce_inside_gem);
-                if (params.env_mode == 2u) {
+                if (nee_light_available()) {
                     nee_contribution_frosted_exterior(
-                        lambdas, ext_normal, seed0, bounce, stokes, radiance,
+                        lambdas, ext_normal, seed0, bounce, stokes, radiance, studio_key_dir,
                     );
                     (*pending_light_mis) = dot(fb.new_dir, ext_normal) / PI;
                     // `fb.new_dir` is already the true exterior propagation direction
@@ -764,8 +764,8 @@ fn transport_bounce_step(
                     // `exit.split_mis_weight` assignment exactly (same balance heuristic,
                     // same `dist2d_pdf` at the carried INTERIOR direction).
                     var split_mis_weight_i: f32 = 1.0;
-                    if (phase_pdf_this_check > 0.0 && params.env_mode == 2u) {
-                        let light_pdf_i = dist2d_pdf(phase_dir_this_check);
+                    if (phase_pdf_this_check > 0.0 && nee_light_available()) {
+                        let light_pdf_i = nee_light_pdf(phase_dir_this_check, studio_key_dir);
                         split_mis_weight_i = balance_heuristic(phase_pdf_this_check, light_pdf_i);
                     }
 
@@ -1044,8 +1044,8 @@ fn transport_bounce_step(
                 // hero-driven transmit dispatch, so computing the weight from it here,
                 // before any per-channel work, is exact rather than an approximation.
                 var split_mis_weight: f32 = 1.0;
-                if (is_exit_event && phase_pdf_this_check > 0.0 && params.env_mode == 2u) {
-                    let light_pdf = dist2d_pdf(phase_dir_this_check);
+                if (is_exit_event && phase_pdf_this_check > 0.0 && nee_light_available()) {
+                    let light_pdf = nee_light_pdf(phase_dir_this_check, studio_key_dir);
                     split_mis_weight = balance_heuristic(phase_pdf_this_check, light_pdf);
                 }
                 var scalar_dirs: array<vec3<f32>, 8>;

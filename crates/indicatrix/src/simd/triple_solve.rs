@@ -98,8 +98,9 @@ fn solve_triple_lane_reference(a: DVec3, b: DVec3, c: DVec3, rhs: DVec3) -> (f64
 /// so per-lane results are bit-identical to the `glam` sequence).
 ///
 /// With `u = (ax,bx,cx)`, `v = (ay,by,cy)`, `w = (az,bz,cz)` (the transposed
-/// matrix's axes), glam computes: `tmp2 = u x v`, `det = w . tmp2`,
-/// `tmp0 = v x w`, `tmp1 = w x u`, `inv_det = 1/det`, and the solution's
+/// matrix's axes), glam 0.34.1 computes: `tmp0 = v x w`, `det = u . tmp0`
+/// (both in `determinant` and as `inverse`'s `inv_det` source), `tmp1 = w x u`,
+/// `tmp2 = u x v`, `inv_det = 1/det`, and the solution's
 /// components are `res.i = ((tmpI.x*inv_det)*ma + (tmpI.y*inv_det)*mb) +
 /// (tmpI.z*inv_det)*mc`.
 ///
@@ -117,16 +118,17 @@ macro_rules! triple_lane_program {
         let sub = $sub;
         let div1 = $div1;
         // u = (ax,bx,cx), v = (ay,by,cy), w = (az,bz,cz)
-        // tmp2 = u x v  (glam cross: (u.y*v.z - v.y*u.z, u.z*v.x - v.z*u.x, u.x*v.y - v.x*u.y))
-        let t2x = sub(mul($bx, $cy), mul($by, $cx));
-        let t2y = sub(mul($cx, $ay), mul($cy, $ax));
-        let t2z = sub(mul($ax, $by), mul($ay, $bx));
-        // det = w . tmp2 = ((w.x*t2x) + (w.y*t2y)) + (w.z*t2z)
-        let det = add(add(mul($az, t2x), mul($bz, t2y)), mul($cz, t2z));
-        // tmp0 = v x w
+        // tmp0 = v x w  (glam cross: (v.y*w.z - w.y*v.z, v.z*w.x - w.z*v.x, v.x*w.y - w.x*v.y))
         let t0x = sub(mul($by, $cz), mul($bz, $cy));
         let t0y = sub(mul($cy, $az), mul($cz, $ay));
         let t0z = sub(mul($ay, $bz), mul($az, $by));
+        // det = u . tmp0 = ((u.x*t0x) + (u.y*t0y)) + (u.z*t0z)  (glam 0.34.1 order;
+        // `inverse` computes the same `x_axis.dot(tmp0)` for its `inv_det`)
+        let det = add(add(mul($ax, t0x), mul($bx, t0y)), mul($cx, t0z));
+        // tmp2 = u x v
+        let t2x = sub(mul($bx, $cy), mul($by, $cx));
+        let t2y = sub(mul($cx, $ay), mul($cy, $ax));
+        let t2z = sub(mul($ax, $by), mul($ay, $bx));
         // tmp1 = w x u
         let t1x = sub(mul($bz, $cx), mul($bx, $cz));
         let t1y = sub(mul($cz, $ax), mul($cx, $az));

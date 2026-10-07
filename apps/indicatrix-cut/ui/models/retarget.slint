@@ -1,24 +1,56 @@
 import { RetargetRowItem } from "../types.slint";
 
+// One option of a finished Optimize search, as the candidate list shows it. Every number is
+// already formatted text (`retarget_actions::proposal_view::candidate_row_views`), so the
+// list only places it. Exported from `app.slint` so Rust can build it.
+export struct RetargetCandidateItem {
+    // 1 for the best option.
+    rank: int,
+    // Where the option came from ("Shift result", "Searched angles", ...).
+    label: string,
+    // The combined score, lower is better.
+    score: string,
+    windowing: string,
+    brilliance: string,
+    extinction: string,
+    yield_loss: string,
+    // "Valid" for every option the list offers.
+    verdict: string,
+}
+
 // "Retarget for material": reviews a `gui::editor::retarget::RetargetProposal` before
-// applying it as one undoable `Edit::RetargetAngles`. `target_material_*` comes from
-// the design settings panel's material combo, not necessarily `state.design.material`;
-// `RetargetMode::Optimize` still runs synchronously on this first wiring pass
-// (`gui::editor::callbacks::retarget_actions`).
+// applying it as ONE undoable edit (the angle changes, the re-anchored masts and the
+// material together). The target material is owned by this dialog (the picker below),
+// seeded from the design's current material when the dialog opens; Shift mode's plan is
+// built on the spot and its validity check runs on a worker thread. Optimize mode lists the
+// same Shift angles as its starting point and searches only when the Search button is
+// pressed, also off the UI thread (`gui::editor::callbacks::retarget_actions`).
 export global RetargetModel {
     in-out property <bool> is_open: false;
 
-    // Mode selector: 0 = Shift (deterministic, default), 1 = Optimize
-    // (`optimize_design`-backed).
+    // Mode selector: 0 = Shift (deterministic, default), 1 = Optimize (a search over every
+    // crown and pavilion angle, started with the Search button).
     in-out property <int> mode_index: 0;
 
-    // Crown handling (`gui::editor::retarget::CrownShift`): a fraction (0.0..1.0) of
-    // the pavilion's own critical-angle delta, OR (when `scale_crown_by_ratio` is on)
-    // ignore the fraction and scale the raw crown angle by the two critical angles'
-    // ratio instead. Disabled (not hidden) while `scale_crown_by_ratio` is on, so the
-    // last fraction value survives toggling back off.
+    // Crown handling (`gui::editor::retarget::CrownShift`), three rules. Precedence: scale
+    // by ratio > follow the pavilion > fraction. `crown_follows_pavilion` (the default)
+    // scales every crown angle's tangent by the pavilion's vertical stretch, so the stone
+    // keeps its silhouette and table size. `crown_fraction` (0.0..1.0) moves the crown by
+    // that share of the pavilion's own critical-angle delta. `scale_crown_by_ratio` scales
+    // the raw crown angle by the two critical angles' ratio. The fraction controls are
+    // disabled (not hidden) while either other rule is on, so the last fraction value
+    // survives toggling back off.
     in-out property <float> crown_fraction: 0.0;
     in-out property <bool> scale_crown_by_ratio: false;
+    in-out property <bool> crown_follows_pavilion: true;
+
+    // Optimize, Advanced only: score every option with a penalty for drifting from the
+    // design's table size and crown-to-pavilion ratio (`SearchSettings::keep_look`).
+    in-out property <bool> keep_look: true;
+
+    // Advanced: may the girdle band thicken (up to +10 %) when its corners would otherwise
+    // pinch (`SearchSettings::girdle`, `CheckInputs::girdle`). Used by Shift and Optimize.
+    in-out property <bool> girdle_allowance: true;
 
     // The target material picker: owned by THIS dialog (not borrowed from the
     // design settings panel's own combo/RI-override fields any more -- see
@@ -50,23 +82,69 @@ export global RetargetModel {
     // opened).
     in property <[RetargetRowItem]> rows: [];
     in property <[string]> notes: [];
-    // Optimize mode's own refusal (`RetargetError::AnchoredTiers`), pre-formatted as
-    // one line per anchored tier -- empty means either Shift mode (which never
-    // refuses) or an Optimize proposal that built successfully.
+    // The verdict on the retargeted stone (`retarget::validity`): Shift mode judges it on a
+    // worker thread after every rebuild, Optimize mode shows the verdict of the option picked.
+    // `validity_state`: 0 = no verdict (Optimize before an option is picked, an error,
+    // nothing to retarget), 1 = still checking, 2 = valid, 3 = not valid (Apply
+    // is disabled, Compare still works), 4 = could not be checked (the design itself does
+    // not solve; Apply stays available). `validity_text` is the one-line verdict
+    // ("Valid: girdle 2.1 % (was 2.3 %), table 56 % (was 56 %)", "Not valid: ..."),
+    // `validity_details` the further reasons and warnings, `strategy_text` one sentence on
+    // how the facet heights were chosen.
+    in property <int> validity_state: 0;
+    in property <string> validity_text: "";
+    in property <[string]> validity_details: [];
+    in property <string> strategy_text: "";
+    // The optical comparison table: nine cells, row by row (windowing, brilliance,
+    // extinction), each row in the column order current design / current design in the
+    // target material / retargeted design in the target material. Empty = hide the table.
+    in property <[string]> metrics_cells: [];
+
+    // Shared view fields the desktop dialog no longer fills: Optimize used to refuse a design
+    // whose tiers are pinned (`RetargetError::AnchoredTiers`); the search now varies them
+    // about their girdle edges. Kept because the web app shares the view type.
     in property <[string]> anchored_tier_errors: [];
-    // `RetargetError::Solve`'s message, or "" -- the OTHER way Optimize mode can fail
-    // to produce a proposal at all.
+    // The design does not solve (the legacy refusal), or "".
     in property <string> solve_error: "";
-    // Optimize mode's search is running, off the UI thread (see
-    // `gui::editor::optimize_solve::spawn_optimize_solve`) -- the dialog stays
-    // interactive while this is true; only the mode/crown/target controls and the
-    // Apply button disable, and the footer's Cancel button switches to actually
-    // cancelling the search instead of closing the dialog.
+    // Optimize mode's search is running, off the UI thread -- the dialog stays interactive
+    // while this is true; only the mode/crown/target controls, the Optimize settings and the
+    // Apply button disable, and the footer's Cancel button switches to actually cancelling
+    // the search instead of closing the dialog.
     in property <bool> is_busy: false;
     // Real running progress while `is_busy`, from `SearchHooks::on_progress` --
     // both `0` before the first tick arrives.
     in property <int> optimize_evaluations: 0;
     in property <int> optimize_max_evaluations: 0;
+
+    // --- Optimize mode ---
+    // The three settings, as indices into the option lists below (set by Rust at `open()` to
+    // the defaults: Balanced, 6 degrees, Normal).
+    in-out property <int> objective_index: 0;
+    in-out property <int> range_index: 1;
+    in-out property <int> effort_index: 1;
+    in property <[string]> objective_options: [];
+    in property <[string]> range_options: [];
+    in property <[string]> effort_options: [];
+    // One sentence on what the chosen objective favours.
+    in property <string> objective_description: "";
+    // How long the search takes: the step budget and, once one step has been timed, the time.
+    in property <string> estimate_text: "";
+    // How many crown and pavilion angles the search may vary.
+    in property <int> free_tier_count: 0;
+    // The valid options a finished search found, best first, and the one the table, the
+    // verdict and the comparison currently show (-1 = none).
+    in property <[RetargetCandidateItem]> candidates: [];
+    in property <int> selected_candidate: -1;
+    // One line on what the search found, then plain notes (where it started, what it dropped
+    // and why, what to try when nothing was found).
+    in property <string> search_summary: "";
+    in property <[string]> search_notes: [];
+    // The search could not run, in plain words, or "".
+    in property <string> search_error: "";
+    // The progress line while `is_busy` ("Trying angles: step 120 of up to 335. ...").
+    in property <string> search_progress_text: "";
+    // A search has finished (with options or without).
+    in property <bool> search_done: false;
 
     // Legacy viewport ghost preview switch. The dialog no longer offers a toggle
     // (the main viewport is paused behind it and the embedded comparison pane shows
@@ -109,15 +187,26 @@ export global RetargetModel {
     // `proposal_changed()` (rebuilds against the live design/current controls).
     in property <bool> stale: false;
 
+    // Whether a setting that Simple mode hides is off its default: the crown fraction, the
+    // scale-by-ratio switch, then the objective, range and effort indices, then whether the
+    // crown follows the pavilion, then whether the search keeps the design's look
+    // (`gui::editor::callbacks::retarget_actions::advanced_in_use` holds the rule and its tests).
+    pure callback advanced_in_use(float, bool, int, int, int, bool, bool, bool) -> bool;
+
     // Opens the dialog and builds the first (Shift-mode) proposal.
     callback open();
     callback close();
     // The dialog's mode/crown/target controls changed -- rebuild the proposal.
     callback proposal_changed();
     // The footer's Cancel button, while `is_busy`: cancels the running Optimize
-    // search (a real mid-search checkpoint, see `OptimizeSolveHandle::cancel`'s own
-    // doc comment) without closing the dialog.
+    // search (it reads a cancel flag between steps) without closing the dialog.
     callback cancel_optimize();
+    // The Search button: runs the Optimize search from the Shift angles listed.
+    callback search();
+    // A row of the candidate list was clicked: show that option.
+    callback select_candidate(int);
+    // The objective, range or effort combo changed: refresh the estimate.
+    callback settings_changed();
     callback apply();
     // Closes the Compare panel -- deliberately separate from `close()`, which also
     // discards a pending Retarget proposal that Compare never builds.

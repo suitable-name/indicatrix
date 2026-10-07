@@ -1,0 +1,32 @@
+import { Theme } from "../theme.slint";
+
+// One quiet line that tells the cutter the Simple interface is hiding something that matters:
+// a hidden control holds a value that is not its default (a cheater offset on the open tier, a
+// tier that is detached, an Optimize setting the cutter changed). Nothing is lost -- the value
+// still applies -- but without the line a design could behave in a way the panel gives no hint
+// about. The caller decides when to show it (`if !GuideModel.shows_advanced() && <in use>`).
+//
+// The sentence is the same everywhere in the program on purpose, so it is easy to recognise.
+export component AdvancedNote inherits HorizontalLayout {
+    spacing: 4px;
+    VerticalLayout {
+        alignment: start;
+        padding-top: 1px;
+        Image {
+            source: @image-url("../icons/info.svg");
+            colorize: Theme.text-muted;
+            width: 12px;
+            height: 12px;
+            image-fit: contain;
+        }
+    }
+    Text {
+        horizontal-stretch: 1;
+        text: "Some advanced settings are in use. Switch to Advanced to see them.";
+        font-size: 9px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+        vertical-alignment: center;
+        accessible-role: AccessibleRole.text;
+    }
+}

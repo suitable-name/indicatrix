@@ -44,7 +44,14 @@ fn every_page_to_worker_message_round_trips() {
             pitch: 0.35,
             distance: 4.2,
         },
-        lighting: LightingSpec::new(LightingPreset::LightTent, 1.0, 0.4, 0.35, Backdrop::Grey),
+        lighting: LightingSpec::new(
+            LightingPreset::LightTent,
+            1.0,
+            0.4,
+            0.35,
+            Backdrop::Grey,
+            16.0,
+        ),
         max_bounces: 12,
         width: 640,
         height: 480,
@@ -199,8 +206,8 @@ fn hex(bytes: &[u8]) -> String {
 #[test]
 fn wire_format_is_pinned() {
     assert_eq!(
-        PROTOCOL_VERSION, 9,
-        "the bytes below were pinned for version 9"
+        PROTOCOL_VERSION, 14,
+        "the bytes below were pinned for version 14"
     );
 
     // TraceChunk = variant 4; scene id 300 = varint AC 02.
@@ -224,7 +231,7 @@ fn wire_format_is_pinned() {
         hex(&encode_to_worker(&watch).expect("encodes")),
         "08 05 06 62 6C 6F 62 3A 78"
     );
-    // Init = variant 0, then version 9, role Render = 0, worker index 2.
+    // Init = variant 0, then version 14, role Render = 0, worker index 2.
     let init = ToWorker::Init {
         protocol_version: PROTOCOL_VERSION,
         role: WorkerRole::Render,
@@ -232,7 +239,7 @@ fn wire_format_is_pinned() {
     };
     assert_eq!(
         hex(&encode_to_worker(&init).expect("encodes")),
-        "00 09 00 02"
+        "00 0E 00 02"
     );
 
     // ChunkResult = variant 2; one [0.5, 1.0, 2.0] sum; 187.25 ms = 0x4067680000000000.
@@ -263,7 +270,51 @@ fn wire_format_is_pinned() {
     let loaded = FromWorker::Loaded {
         protocol_version: PROTOCOL_VERSION,
     };
-    assert_eq!(hex(&encode_from_worker(&loaded).expect("encodes")), "00 09");
+    assert_eq!(hex(&encode_from_worker(&loaded).expect("encodes")), "00 0E");
+}
+
+/// `LightingSpec` pinned: preset index and backdrop index as zigzag varints, then the
+/// three `f32`s and the appended v11 `head_shadow_deg` (16.0 = `00 00 80 41`). The
+/// first preset of the combo (the light tent) is index 0.
+#[test]
+fn lighting_spec_wire_format_is_pinned() {
+    let spec = LightingSpec::new(
+        LightingPreset::LightTent,
+        1.0,
+        0.5,
+        0.25,
+        Backdrop::Grey,
+        16.0,
+    );
+    assert_eq!(
+        hex(&postcard::to_allocvec(&spec).expect("encodes")),
+        "00 00 00 80 3F 00 00 00 3F 00 00 80 3E 02 00 00 80 41"
+    );
+}
+
+/// A Retarget message from before `crown_follows_pavilion` existed (as a self-describing
+/// format would carry it) reads the field as `true`, the default: the crown follows the
+/// pavilion. The postcard wire itself has no defaults, which is why the field bumped
+/// [`PROTOCOL_VERSION`].
+#[test]
+fn a_retarget_message_without_the_crown_follow_field_reads_it_as_true() {
+    let params = RetargetParams {
+        target: MaterialSelectionData::default(),
+        crown_fraction: 0.25,
+        scale_crown_by_ratio: false,
+        crown_follows_pavilion: false,
+        mode: RetargetModeData::Shift,
+        optimize: OptimizeParams::default(),
+    };
+    let mut json = serde_json::to_value(&params).expect("serialises");
+    let object = json.as_object_mut().expect("a struct is an object");
+    assert_eq!(
+        object.remove("crown_follows_pavilion"),
+        Some(serde_json::Value::Bool(false))
+    );
+    let old: RetargetParams = serde_json::from_value(json).expect("an old message still reads");
+    assert!(old.crown_follows_pavilion);
+    assert!((old.crown_fraction - 0.25).abs() < 1e-12);
 }
 
 /// A `CustomMaterialSpec` carrying a `color_recipe`, pinned like the messages above:
@@ -279,16 +330,17 @@ fn custom_material_with_color_recipe_wire_format_is_pinned() {
         dispersion_delta: 0.25,
         birefringence_delta: 0.0,
         absorption_rgb: Some([0.5, 1.0, 2.0]),
-        color_recipe: Some(indicatrix_formats::native::colorRecipeDto {
+        color_recipe: Some(indicatrix_formats::native::ColorRecipeDto {
             recipe_json: "{}".to_string(),
             fallback_rgb: [0.5, 1.0, 2.0],
         }),
+        absorption_bands: Vec::new(),
     };
     // "Ruby" = 04 + 4 bytes; 1.5, 0.25, 0.0 as f64; Some = 01 then [0.5, 1.0, 2.0];
     // Some = 01, "{}" = 02 7B 7D, then fallback_rgb [0.5, 1.0, 2.0].
     assert_eq!(
         hex(&postcard::to_allocvec(&spec).expect("encodes")),
-        "04 52 75 62 79 00 00 00 00 00 00 F8 3F 00 00 00 00 00 00 D0 3F 00 00 00 00 00 00 00 00 01 00 00 00 00 00 00 E0 3F 00 00 00 00 00 00 F0 3F 00 00 00 00 00 00 00 40 01 02 7B 7D 00 00 00 00 00 00 E0 3F 00 00 00 00 00 00 F0 3F 00 00 00 00 00 00 00 40"
+        "04 52 75 62 79 00 00 00 00 00 00 F8 3F 00 00 00 00 00 00 D0 3F 00 00 00 00 00 00 00 00 01 00 00 00 00 00 00 E0 3F 00 00 00 00 00 00 F0 3F 00 00 00 00 00 00 00 40 01 02 7B 7D 00 00 00 00 00 00 E0 3F 00 00 00 00 00 00 F0 3F 00 00 00 00 00 00 00 40 00"
     );
 }
 
@@ -324,6 +376,7 @@ fn the_optimize_and_retarget_messages_round_trip() {
                     },
                     crown_fraction: 0.5,
                     scale_crown_by_ratio: true,
+                    crown_follows_pavilion: false,
                     mode: RetargetModeData::Optimize,
                     optimize: OptimizeParams::default(),
                 },
@@ -398,7 +451,14 @@ fn the_metrics_and_tilt_messages_round_trip() {
             pitch: 0.45,
             distance: 2.4,
         },
-        lighting: LightingSpec::new(LightingPreset::LightTent, 1.0, 0.85, 0.95, Backdrop::Grey),
+        lighting: LightingSpec::new(
+            LightingPreset::LightTent,
+            1.0,
+            0.85,
+            0.95,
+            Backdrop::Grey,
+            16.0,
+        ),
         max_bounces: 12,
         width: 64,
         height: 48,
@@ -475,7 +535,14 @@ fn the_metrics_hdr_fields_are_pinned() {
             pitch: 0.45,
             distance: 2.4,
         },
-        lighting: LightingSpec::new(LightingPreset::LightTent, 1.0, 0.85, 0.95, Backdrop::Grey),
+        lighting: LightingSpec::new(
+            LightingPreset::LightTent,
+            1.0,
+            0.85,
+            0.95,
+            Backdrop::Grey,
+            16.0,
+        ),
         max_bounces: 12,
         width: 64,
         height: 48,
@@ -530,4 +597,101 @@ fn the_metrics_hdr_fields_are_pinned() {
 fn garbage_is_an_error_not_a_panic() {
     assert!(decode_to_worker(&[0xff, 0xff, 0xff]).is_err());
     assert!(decode_from_worker(&[]).is_err());
+}
+
+/// The v12 band fields pinned: `body_color_bands` is a varint length and then each row as
+/// three little-endian `f32`s, `absorption_path_scale_override` a 0/1 tag before its payload.
+/// `DesignMaterialOverrides` is `refractive_index_override` (`None` = 00), `body_color_override`
+/// (`None` = 00), then the two new fields; an old message without bands writes `00 00` for them.
+#[test]
+fn the_band_fields_wire_format_is_pinned_and_round_trips() {
+    let overrides = crate::scene::DesignMaterialOverrides {
+        body_color_bands: vec![[1.0, 2.0, 3.0]],
+        absorption_path_scale_override: Some(2.0),
+        ..crate::scene::DesignMaterialOverrides::default()
+    };
+    let bytes = postcard::to_allocvec(&overrides).expect("encodes");
+    assert_eq!(
+        hex(&bytes),
+        "00 00 01 00 00 80 3F 00 00 00 40 00 00 40 40 01 00 00 00 40"
+    );
+    let back: crate::scene::DesignMaterialOverrides =
+        postcard::from_bytes(&bytes).expect("decodes");
+    assert_eq!(back, overrides);
+    assert_eq!(
+        hex(
+            &postcard::to_allocvec(&crate::scene::DesignMaterialOverrides::default())
+                .expect("encodes")
+        ),
+        "00 00 00 00"
+    );
+
+    // The retarget target carries the same two fields after its four older ones.
+    let target = MaterialSelectionData {
+        body_color_bands: vec![[460.0, 45.0, 0.25]],
+        absorption_path_scale_override: Some(1.5),
+        ..MaterialSelectionData::default()
+    };
+    let bytes = postcard::to_allocvec(&target).expect("encodes");
+    let back: MaterialSelectionData = postcard::from_bytes(&bytes).expect("decodes");
+    assert_eq!(back, target);
+    let selection = indicatrix_cut_core::MaterialSelection::from(back);
+    assert_eq!(
+        selection.body_color_bands_override,
+        Some(vec![[460.0, 45.0, 0.25]])
+    );
+    assert_eq!(selection.absorption_path_scale_override, Some(1.5));
+    assert_eq!(MaterialSelectionData::from(&selection), target);
+}
+
+/// The body-colour job crosses the page/Worker boundary both ways (request variant 5, response
+/// variant 8, each the last of its enum).
+#[test]
+fn the_body_colour_job_round_trips_and_is_the_last_variant() {
+    use crate::solve::{BodyColorParams, BodyColorResultData};
+    let request = ToWorker::Solve {
+        job_id: 9,
+        design_toml: String::new(),
+        request: SolveRequest::BodyColor {
+            params: BodyColorParams {
+                lch: [50.0, 30.0, 265.0],
+                path_mm: 5.0,
+            },
+        },
+    };
+    round_trip_to(&request);
+    let bytes = postcard::to_allocvec(&SolveRequest::BodyColor {
+        params: BodyColorParams {
+            lch: [0.0; 3],
+            path_mm: 0.0,
+        },
+    })
+    .expect("encodes");
+    assert_eq!(bytes[0], 5, "appended after Tilt (variant 4)");
+
+    let answer = FromWorker::SolveResult {
+        job_id: 9,
+        response: SolveResponse::BodyColor(BodyColorResultData {
+            lch: [50.0, 30.0, 265.0],
+            path_mm: 5.0,
+            delta_e: 0.5,
+            reachable: true,
+            bands: vec![[460.0, 45.0, 0.25]],
+            triple: [0.1, 0.2, 0.3],
+            swatches: vec![[0.2, 0.3, 0.9]],
+        }),
+        elapsed_ms: 150.0,
+    };
+    round_trip_from(&answer);
+    let bytes = postcard::to_allocvec(&SolveResponse::BodyColor(BodyColorResultData {
+        lch: [0.0; 3],
+        path_mm: 0.0,
+        delta_e: 0.0,
+        reachable: false,
+        bands: Vec::new(),
+        triple: [0.0; 3],
+        swatches: Vec::new(),
+    }))
+    .expect("encodes");
+    assert_eq!(bytes[0], 8, "appended after TiltCurves (variant 7)");
 }

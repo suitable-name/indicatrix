@@ -19,7 +19,11 @@ use crate::rough_plan::{
 
 /// Most times [`PartialSolver::solve_in_mesh`] adds the planes of the triangles that block
 /// the solution so far and solves again, before it gives up.
-pub const MESH_ROUNDS: usize = 6;
+///
+/// The loop clears a smooth
+/// cap's contacts in a few rounds (every wall the centre is on the material side of goes in
+/// together); 12 is a safety cap.
+pub const MESH_ROUNDS: usize = 12;
 
 /// The caliper extents of a stone of `norm`, in units of its width, along the
 /// three rough axes under assignment `orient`.
@@ -56,6 +60,8 @@ pub struct ClipRegion<'a> {
 #[derive(Debug, Default)]
 pub struct PartialSolver {
     rows: Vec<ScaleRow>,
+    /// `rows` with the offsets shifted to the frame of the current centre.
+    shifted: Vec<ScaleRow>,
     scratch: LpScratch,
 }
 
@@ -123,8 +129,9 @@ impl PartialSolver {
     /// The mesh is not convex, so it is not one LP. The LP of the region is solved; if the
     /// stone box it gives meets triangles of the mesh, the plane of the blocking triangle
     /// the box passes least far (its outward side kept, `inset_mm` clear) is added as a
-    /// row and the LP is solved again, at most [`MESH_ROUNDS`] times. One row per round:
-    /// the walls of a notch face each other, so all of them together would leave no stone. Rows only shrink the feasible set, so
+    /// row and the LP is solved again, at most [`MESH_ROUNDS`] times. One wall per round,
+    /// plus every plane the stone's centre is on the material side of: the walls of a notch
+    /// face each other, so all of them together would leave no stone. Rows only shrink the feasible set, so
     /// every stone returned has been checked against the mesh (no triangle meets its box
     /// and its centre is in the material): the answer is valid, if conservative near a
     /// notch, because a blocking triangle's plane also forbids the air side far beyond the
@@ -146,21 +153,26 @@ impl PartialSolver {
             let half = extents.map(|e| 0.5 * k * e);
             let min = [0, 1, 2].map(|i| t[i] - half[i]);
             let max = [0, 1, 2].map(|i| t[i] + half[i]);
+            let (reach, centre) = (
+                |n: DVec3| n.abs().dot(DVec3::from(extents) * (0.5 * k)),
+                DVec3::from(t),
+            );
+            let violation = |n: DVec3, d: f64| n.dot(centre) + reach(n) - (d - mesh.inset_mm);
             mesh.mesh
                 .box_blockers(min, max, mesh.inset_mm, &mut blockers);
+            mesh.mesh.drop_cleared(&mut blockers, violation);
             if blockers.is_empty() {
                 return mesh.mesh.contains_point(DVec3::from(t)).then_some(solution);
             }
             if round == MESH_ROUNDS {
                 return None;
             }
-            let (reach, centre) = (
-                |n: DVec3| n.abs().dot(DVec3::from(extents) * (0.5 * k)),
-                DVec3::from(t),
+            let added = mesh.mesh.blocker_rows(
+                &blockers,
+                &known,
+                |n, d| n.dot(centre) <= d - mesh.inset_mm,
+                violation,
             );
-            let added = mesh.mesh.blocker_rows(&blockers, &known, |n, d| {
-                n.dot(centre) + reach(n) - (d - mesh.inset_mm)
-            });
             if added.is_empty() {
                 return None;
             }
@@ -172,8 +184,32 @@ impl PartialSolver {
                     offset: d - mesh.inset_mm,
                 });
             }
-            solution = max_scale_with_scratch(&self.rows, &mut self.scratch)?;
+            solution = self.solve_about(centre)?;
         }
         None
+    }
+
+    /// Solves the LP of `self.rows` in the frame of `centre`: every offset becomes
+    /// `offset - n . centre` and the centre is added back to the stone position.
+    ///
+    /// Every row the centre satisfies gets a non-negative offset, so the simplex needs no
+    /// artificial variables for it (one pivot each in phase 1, `lp.rs`), which is where a
+    /// 200-row LP spends its time. The post-check in `lp.rs` accepts `1e-9 (1 + |offset|)`
+    /// per row; the shifted offsets are smaller, so the check is a little stricter, never
+    /// looser.
+    fn solve_about(&mut self, centre: DVec3) -> Option<(f64, [f64; 3])> {
+        self.shifted.clear();
+        let c = [centre.x, centre.y, centre.z];
+        self.shifted.extend(self.rows.iter().map(|row| {
+            let shift =
+                row.normal[2].mul_add(c[2], row.normal[1].mul_add(c[1], row.normal[0] * c[0]));
+            ScaleRow {
+                normal: row.normal,
+                support: row.support,
+                offset: row.offset - shift,
+            }
+        }));
+        let (k, t) = max_scale_with_scratch(&self.shifted, &mut self.scratch)?;
+        Some((k, [t[0] + c[0], t[1] + c[1], t[2] + c[2]]))
     }
 }

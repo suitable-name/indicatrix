@@ -120,6 +120,15 @@ impl FacetMap {
         let mut selected = vec![false; plane_count];
 
         for (facet_id, info) in self.facets.iter().enumerate() {
+            // A concave tool facet carries no flat tier index. The editor addresses a
+            // concave row at table position `design.tiers.len() + concave_index`, so a
+            // selection at that position tints every facet of that concave tier.
+            if let FacetKind::Concave { tier, .. } = info.kind {
+                if selected_tier == Some(design.tiers.len() + tier) {
+                    selected[facet_id] = true;
+                }
+                continue;
+            }
             let Some(tier_index) = info.tier_index else {
                 continue;
             };

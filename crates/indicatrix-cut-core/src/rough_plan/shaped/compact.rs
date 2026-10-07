@@ -14,11 +14,25 @@
 //! again in the larger piece (its value can only grow). A bar without a stone
 //! merges into its neighbour bar of the slab the same way, and a slab without
 //! one into its neighbour slab. When nothing is left the tree is empty.
+//!
+//! # A merge never loses or shrinks a stone
+//!
+//! For a convex rough the re-fit of a larger piece can only grow its stone. With a mesh
+//! rough the cutting-plane solver is a heuristic (see `PartialSolver::solve_in_mesh`): a
+//! wider piece can start it from a different optimum, and it may then fail or find a
+//! smaller stone beside a notch although the old stone is still valid, because it lies in
+//! a piece that the new one contains. Every re-fit therefore keeps the better of the new
+//! stone and the stone the previous pass had placed in the piece it grew from, the same
+//! rule as [`absorb`] uses within a bar, so a merge can only help.
 
 use crate::rough_plan::{
     CutOrder, PlacedStone,
     tree::{Bar, Leaf, Slab, Tree, to_canonical},
 };
+
+/// How far, in mm, a piece's edge may lie outside the larger piece it grew into and still
+/// count as inside it. The edges reach the same position through different sums.
+const CONTAIN_TOLERANCE_MM: f64 = 1e-9;
 
 /// Fits a stone into the piece at `origin` with `size` (canonical `[x, y, z]`
 /// in mm) holding `leaf`'s design; `None` when no stone fits.
@@ -76,13 +90,19 @@ pub fn compact_tree(
         origin: origin_mm,
         kerf: kerf_mm,
     };
+    // The stones of the previous pass, which a re-sweep of the widened pieces must not
+    // lose or shrink.
+    let mut previous: Vec<PlacedStone> = Vec::new();
     loop {
         let mut stones = Vec::new();
         let mut changed = false;
         let mut has_stone = Vec::with_capacity(tree.slabs.len());
         let mut t_off = frame.origin[frame.ord[0]];
+        let mut keep = |origin: [f64; 3], size: [f64; 3], leaf: &Leaf| {
+            keep_better(fit(origin, size, leaf), &previous, origin, size)
+        };
         for slab in &mut tree.slabs {
-            let (slab_stones, merged) = compact_slab(&frame, t_off, slab, fit);
+            let (slab_stones, merged) = compact_slab(&frame, t_off, slab, &mut keep);
             changed |= merged;
             has_stone.push(!slab_stones.is_empty());
             stones.extend(slab_stones);
@@ -92,6 +112,48 @@ pub fn compact_tree(
         if !changed {
             return stones;
         }
+        previous = stones;
+    }
+}
+
+/// Whether the piece `stone` was placed in lies inside the piece at `origin` with `size`.
+fn piece_within(stone: &PlacedStone, origin: [f64; 3], size: [f64; 3]) -> bool {
+    (0..3).all(|i| {
+        let (low, high) = (
+            stone.piece_origin_mm[i],
+            stone.piece_origin_mm[i] + stone.piece_size_mm[i],
+        );
+        low >= origin[i] - CONTAIN_TOLERANCE_MM
+            && high <= origin[i] + size[i] + CONTAIN_TOLERANCE_MM
+    })
+}
+
+/// The stone for the piece at `origin` with `size`: the freshly `fitted` one, or the stone
+/// the previous pass placed in a piece this one contains, whichever is larger.
+///
+/// The old stone wins only when it is strictly larger or there is no fresh one (a tie goes
+/// to the fresh stone, as in [`absorb`]); it is then moved into the larger piece, which it
+/// still fits, because a stone does not depend on the piece around it. At most one stone of
+/// the previous pass lies in a piece: pieces only grow by merging in pieces without a stone.
+fn keep_better(
+    fitted: Option<PlacedStone>,
+    previous: &[PlacedStone],
+    origin: [f64; 3],
+    size: [f64; 3],
+) -> Option<PlacedStone> {
+    let held = previous
+        .iter()
+        .filter(|old| piece_within(old, origin, size))
+        .max_by(|a, b| a.volume_mm3.total_cmp(&b.volume_mm3));
+    let moved = |old: &PlacedStone| PlacedStone {
+        piece_origin_mm: origin,
+        piece_size_mm: size,
+        ..*old
+    };
+    match (fitted, held) {
+        (Some(fresh), Some(old)) if old.volume_mm3 > fresh.volume_mm3 => Some(moved(old)),
+        (None, Some(old)) => Some(moved(old)),
+        (fresh, _) => fresh,
     }
 }
 
@@ -479,6 +541,123 @@ mod tests {
             let stones = compact_tree(order, &mut tree, [1.0, 2.0, 3.0], kerf, &mut stone_for);
             assert_eq!(stones.len(), 1, "{order:?}");
             assert!((stones[0].volume_mm3 - 21.0).abs() < 1e-12, "{order:?}");
+        }
+    }
+
+    /// Like [`stone_for`], but a piece longer than `limit` mm along the axis of stage
+    /// `stage` of `order` (0 slab, 1 bar, 2 piece) holds no stone: a fit that fails where
+    /// a smaller piece succeeded, as the mesh solver can beside a notch.
+    fn failing_fitter(
+        order: CutOrder,
+        stage: usize,
+        limit: f64,
+    ) -> impl FnMut([f64; 3], [f64; 3], &Leaf) -> Option<PlacedStone> {
+        let axis = order.axes()[stage];
+        move |origin, size, leaf| {
+            if size[axis] > limit {
+                None
+            } else {
+                stone_for(origin, size, leaf)
+            }
+        }
+    }
+
+    #[test]
+    fn a_bar_merge_never_loses_the_stone_the_narrow_bar_had() {
+        // The bar 3.0 wide holds a stone (2.0 x 3.0 x 3.0 = 18.0). The empty bar next to
+        // it merges into it, 3.0 + kerf + 2.0 = 5.5 wide, where this fitter finds nothing;
+        // the stone it had stays, in the wider piece.
+        let kerf = 0.5;
+        for order in CutOrder::ALL {
+            let mut tree = Tree {
+                slabs: vec![Slab {
+                    thickness: 2.0,
+                    bars: vec![bar(3.0, vec![leaf(3.0, 0)]), bar(2.0, vec![leaf(3.0, 1)])],
+                }],
+            };
+            let mut fitter = failing_fitter(order, 1, 4.0);
+            let stones = compact_tree(order, &mut tree, [1.0, 2.0, 3.0], kerf, &mut fitter);
+            assert_eq!(stones.len(), 1, "{order:?}");
+            assert!((stones[0].volume_mm3 - 18.0).abs() < 1e-12, "{order:?}");
+            assert_eq!(tree.slabs[0].bars.len(), 1, "{order:?}");
+            assert!((tree.slabs[0].bars[0].width - 5.5).abs() < 1e-12);
+            assert_close3(
+                stones[0].piece_size_mm,
+                to_canonical(order.axes(), [2.0, 5.5, 3.0]),
+                "size",
+            );
+        }
+    }
+
+    #[test]
+    fn a_slab_merge_never_loses_the_stone_the_thin_slab_had() {
+        // The same for slabs: 2.0 thick holds a stone, 2.0 + kerf + 1.0 = 3.5 thick holds
+        // none for this fitter.
+        let kerf = 0.5;
+        for order in CutOrder::ALL {
+            let slab = |thickness: f64, design: usize| Slab {
+                thickness,
+                bars: vec![bar(3.0, vec![leaf(3.0, design)])],
+            };
+            let mut tree = Tree {
+                slabs: vec![slab(2.0, 0), slab(1.0, 1)],
+            };
+            let mut fitter = failing_fitter(order, 0, 3.0);
+            let stones = compact_tree(order, &mut tree, [1.0, 2.0, 3.0], kerf, &mut fitter);
+            assert_eq!(stones.len(), 1, "{order:?}");
+            assert!((stones[0].volume_mm3 - 18.0).abs() < 1e-12, "{order:?}");
+            assert_eq!(tree.slabs.len(), 1, "{order:?}");
+            assert!((tree.slabs[0].thickness - 3.5).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn a_stone_kept_by_a_piece_merge_survives_the_re_sweep_after_a_bar_merge() {
+        // Pass one: the 1.0 long empty piece joins the stone's 2.0 long piece (3.5 long,
+        // where this fitter finds nothing, so the old stone stays) and the empty second
+        // bar joins the first. Pass two fits the 3.5 long piece again, and must not lose
+        // the stone the first pass kept.
+        let kerf = 0.5;
+        for order in CutOrder::ALL {
+            let mut tree = Tree {
+                slabs: vec![Slab {
+                    thickness: 2.0,
+                    bars: vec![
+                        bar(3.0, vec![leaf(2.0, 0), leaf(1.0, 1)]),
+                        bar(2.0, vec![leaf(3.0, 1)]),
+                    ],
+                }],
+            };
+            let mut fitter = failing_fitter(order, 2, 3.0);
+            let stones = compact_tree(order, &mut tree, [1.0, 2.0, 3.0], kerf, &mut fitter);
+            assert_eq!(stones.len(), 1, "{order:?}");
+            // The stone of the 2.0 long piece: 2.0 x 3.0 x 2.0.
+            assert!((stones[0].volume_mm3 - 12.0).abs() < 1e-12, "{order:?}");
+            assert_eq!(tree.slabs[0].bars.len(), 1, "{order:?}");
+            assert!((tree.slabs[0].bars[0].leaves[0].len - 3.5).abs() < 1e-12);
+            assert_close3(
+                stones[0].piece_size_mm,
+                to_canonical(order.axes(), [2.0, 5.5, 3.5]),
+                "size",
+            );
+        }
+    }
+
+    #[test]
+    fn a_larger_fresh_stone_still_replaces_the_one_a_merge_started_from() {
+        // The same bar merge with a fitter that never fails: the 5.5 wide piece holds
+        // 2.0 x 5.5 x 3.0 = 33.0, more than the 18.0 the narrow bar had.
+        let kerf = 0.5;
+        for order in CutOrder::ALL {
+            let mut tree = Tree {
+                slabs: vec![Slab {
+                    thickness: 2.0,
+                    bars: vec![bar(3.0, vec![leaf(3.0, 0)]), bar(2.0, vec![leaf(3.0, 1)])],
+                }],
+            };
+            let stones = compact_tree(order, &mut tree, [1.0, 2.0, 3.0], kerf, &mut stone_for);
+            assert_eq!(stones.len(), 1, "{order:?}");
+            assert!((stones[0].volume_mm3 - 33.0).abs() < 1e-12, "{order:?}");
         }
     }
 

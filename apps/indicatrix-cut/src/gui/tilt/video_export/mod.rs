@@ -37,13 +37,16 @@
 //! duration exactly as a still-image export does (`RenderContext::export_active`, see
 //! `run`'s own doc comment) -- never running two GPU programs at once.
 
-mod encode;
-mod metrics;
+// `pub`: the render job executor (`gui::render_jobs`) drives the same frame loop,
+// encoder and sweep maths. `overlay` and `render` stay private to this group.
+pub mod encode;
+pub mod frames;
+pub mod metrics;
 mod overlay;
-mod params;
+pub mod params;
 mod render;
-mod run;
-mod template;
+pub mod run;
+pub mod template;
 
 use crate::{
     ActivityModel, ExportModel, LibraryModel, MainWindow, TiltModel, TiltVideoExportModel,
@@ -56,6 +59,7 @@ use crate::{
     settings::{ExportTransfer, SettingsPersister},
 };
 use indicatrix::color::{ColorSpace, metrics::PROFILE_AZIMUTHS_DEG};
+use indicatrix_solid::preview::StoneGeometryBuf;
 use slint::{ComponentHandle, Model};
 use std::{
     path::PathBuf,
@@ -218,52 +222,167 @@ fn handle_start_video_export(
     let settings_store = settings_store.clone();
     let current_run = Arc::clone(current_run);
     resolve_export_directory_then(ui, move |ui, export_dir| {
-        let model = ui.global::<TiltVideoExportModel>();
         let Some(export_dir) = export_dir else {
             // The cutter's own explicit cancel -- no error banner.
             return;
         };
-
-        let request = match build_request(ui, &render_ctx, &settings_store, axis_index, &export_dir)
-        {
-            Ok(request) => request,
-            Err(message) => {
-                model.set_has_error(true);
-                model.set_status_message(message.into());
-                return;
-            }
-        };
-
-        let cancel = Arc::new(AtomicBool::new(false));
-        // Real progress (`run::run`'s own frame counter -- frames done / total,
-        // `report_progress`) and a real cancel handle -- registered only once
-        // the request itself is known good, so a request that fails to build
-        // (an unset curve) never leaves an orphaned activity behind.
-        let activity_id = ui.global::<ActivityModel>().invoke_start_external(
-            "tilt_video".into(),
-            "Tilt video export".into(),
-            true,
+        // The video shows the FINISHED gem whatever the Cut slider says (the tilt curves
+        // were swept for it too -- see `gui::editor::finished_stone`). With the slider cut
+        // back and no current solve in the editor's cache, the stone is solved on the
+        // editor's solve worker and the request is built when it lands: a solve never runs
+        // on the UI thread.
+        let render_ctx_later = Arc::clone(&render_ctx);
+        crate::gui::editor::finished_stone_then(
+            ui,
+            &render_ctx,
+            |ui| {
+                let model = ui.global::<TiltVideoExportModel>();
+                model.set_has_error(false);
+                model.set_status_message("Preparing the finished stone...".into());
+            },
+            move |ui, finished| match finished {
+                Ok(finished) => start_video_run(
+                    ui,
+                    render_ctx_later,
+                    &settings_store,
+                    &current_run,
+                    axis_index,
+                    &export_dir,
+                    finished.as_ref(),
+                ),
+                // The design does not solve, or changed while its stone was prepared: never
+                // render the half-cut stone the render context holds.
+                Err(withheld) => {
+                    let model = ui.global::<TiltVideoExportModel>();
+                    model.set_has_error(true);
+                    model.set_status_message(withheld.export_message().into());
+                }
+            },
         );
-        *current_run
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some((activity_id, cancel.clone()));
+    });
+}
 
-        model.set_is_exporting(true);
-        model.set_has_error(false);
-        model.set_status_message("Rendering...".into());
-        model.set_current_frame(0);
-        model.set_total_frames(request.total_frames as i32);
-        model.set_progress(0.0);
-        model.set_eta_text(String::new().into());
+/// [`handle_start_video_export`]'s tail, once the export folder and the finished stone are
+/// known: builds the request and starts the background render, or reports why it could
+/// not.
+fn start_video_run(
+    ui: &MainWindow,
+    render_ctx: Arc<Mutex<RenderContext>>,
+    settings_store: &Arc<SettingsPersister>,
+    current_run: &CurrentExportRun,
+    axis_index: i32,
+    export_dir: &std::path::Path,
+    finished: Option<&StoneGeometryBuf>,
+) {
+    let model = ui.global::<TiltVideoExportModel>();
+    if model.get_is_exporting() {
+        // A second click while the finished stone was being solved: the first one is
+        // already running.
+        return;
+    }
+    let mut request = match build_request(
+        ui,
+        &render_ctx,
+        settings_store,
+        axis_index,
+        export_dir,
+        finished,
+    ) {
+        Ok(request) => request,
+        Err(message) => {
+            model.set_has_error(true);
+            model.set_status_message(message.into());
+            return;
+        }
+    };
+    // `build_request` names the folder but does not touch the disk (a queued video must not
+    // create it), so the direct export finds a free name and creates the folder itself.
+    request.out_dir = template::unique_folder_path(export_dir, &request.out_name);
+    if let Err(e) = std::fs::create_dir_all(&request.out_dir) {
+        model.set_has_error(true);
+        model.set_status_message(
+            format!("Could not create {}: {e}", request.out_dir.display()).into(),
+        );
+        return;
+    }
 
-        // Pauses the live viewport for the WHOLE video, matching the still-image
-        // export's own `export_active_count` increment in `gui::render::render_export::
-        // wiring::finish_start_export` -- `run::spawn`'s every exit path (completion,
-        // cancel, error, caught panic) decrements this exactly once, mirroring
-        // `finish_export_queue`'s single decrement point.
-        RenderContext::lock(&render_ctx).export_active_count += 1;
-        run::spawn(ui.as_weak(), render_ctx, request, cancel, activity_id);
+    let cancel = Arc::new(AtomicBool::new(false));
+    // Real progress (`run::run`'s own frame counter -- frames done / total,
+    // `report_progress`) and a real cancel handle -- registered only once
+    // the request itself is known good, so a request that fails to build
+    // (an unset curve) never leaves an orphaned activity behind.
+    let activity_id = ui.global::<ActivityModel>().invoke_start_external(
+        "tilt_video".into(),
+        "Tilt video export".into(),
+        true,
+    );
+    *current_run
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((activity_id, cancel.clone()));
+
+    model.set_is_exporting(true);
+    model.set_has_error(false);
+    model.set_status_message("Rendering...".into());
+    model.set_current_frame(0);
+    model.set_total_frames(request.total_frames as i32);
+    model.set_progress(0.0);
+    model.set_eta_text(String::new().into());
+
+    // Pauses the live viewport for the WHOLE video, matching the still-image
+    // export's own `export_active_count` increment in `gui::render::render_export::
+    // wiring::finish_start_export` -- `run::spawn`'s every exit path (completion,
+    // cancel, error, caught panic) decrements this exactly once, mirroring
+    // `finish_export_queue`'s single decrement point.
+    RenderContext::lock(&render_ctx).export_active_count += 1;
+    run::spawn(ui.as_weak(), render_ctx, request, cancel, activity_id);
+}
+
+/// The queue's "Add to Queue" entry for a tilt video: resolves the export folder and the
+/// finished stone like [`handle_start_video_export`], then builds the request with
+/// [`build_request`] and hands it to `on_ready` without starting or creating anything.
+///
+/// `on_ready` gets `Ok(Some(request))` (its `out_dir` is only the candidate folder),
+/// `Ok(None)` when the person closed the folder picker, or `Err` with the reason no request
+/// could be built. It runs on the UI thread, possibly after a picker or a solve, so it holds
+/// no borrow of anything.
+pub(in crate::gui) fn prepare_queued_video(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    settings_store: &Arc<SettingsPersister>,
+    axis_index: i32,
+    on_ready: impl FnOnce(&MainWindow, Result<Option<run::VideoExportRequest>, String>) + 'static,
+) {
+    let render_ctx = Arc::clone(render_ctx);
+    let settings_store = Arc::clone(settings_store);
+    resolve_export_directory_then(ui, move |ui, export_dir| {
+        let Some(export_dir) = export_dir else {
+            on_ready(ui, Ok(None));
+            return;
+        };
+        let render_ctx_later = Arc::clone(&render_ctx);
+        crate::gui::editor::finished_stone_then(
+            ui,
+            &render_ctx,
+            |ui| {
+                let model = ui.global::<TiltVideoExportModel>();
+                model.set_has_error(false);
+                model.set_status_message("Preparing the finished stone...".into());
+            },
+            move |ui, finished| match finished {
+                Ok(finished) => {
+                    let request = build_request(
+                        ui,
+                        &render_ctx_later,
+                        &settings_store,
+                        axis_index,
+                        &export_dir,
+                        finished.as_ref(),
+                    );
+                    on_ready(ui, request.map(Some));
+                }
+                Err(withheld) => on_ready(ui, Err(withheld.export_message())),
+            },
+        );
     });
 }
 
@@ -280,6 +399,7 @@ fn build_request(
     settings_store: &Arc<SettingsPersister>,
     axis_index: i32,
     export_dir: &std::path::Path,
+    finished: Option<&StoneGeometryBuf>,
 ) -> Result<run::VideoExportRequest, String> {
     let model = ui.global::<TiltVideoExportModel>();
 
@@ -318,7 +438,11 @@ fn build_request(
     // -- same reasoning as `gui::render_export::apply_export_bounce_cap` (that helper
     // itself is `pub(super)` to a different module, so this overrides the field
     // directly rather than importing it).
-    let mut scene = SceneSnapshot::capture(render_ctx)?;
+    //
+    // The video shows the FINISHED gem whatever the Cut slider says (the tilt curves above
+    // were swept for it too): `finished` is that stone, resolved by the caller (see
+    // `gui::editor::finished_stone`).
+    let mut scene = SceneSnapshot::capture_finished(render_ctx, finished)?;
     scene.max_bounces = max_bounces;
 
     // The SAME compute configuration source the still-image export reads (see this
@@ -376,9 +500,9 @@ fn build_request(
         raw_template.as_str()
     };
     let folder_name = template::resolve_folder_name(raw_template, &template_ctx, &extras);
-    let out_dir = template::unique_folder_path(export_dir, &folder_name);
-    std::fs::create_dir_all(&out_dir)
-        .map_err(|e| format!("Could not create {}: {e}", out_dir.display()))?;
+    // The candidate folder only: the direct export makes it unique and creates it
+    // (`start_video_run`), the queue reserves it against its other jobs (`render_jobs`).
+    let out_dir = export_dir.join(&folder_name);
 
     Ok(run::VideoExportRequest {
         scene,

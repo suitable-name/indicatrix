@@ -15,7 +15,7 @@ pub mod metrics;
 pub mod space;
 
 pub use body_color::{
-    Bodycolor, Bodycolors, Illuminant, body_color, body_colors, color_change_delta_e, delta_e_2000,
+    BodyColor, BodyColors, Illuminant, body_color, body_colors, color_change_delta_e, delta_e_2000,
     srgb_to_lab, xyz_to_lab,
 };
 pub use space::{ColorSpace, ToneMap, TransferFunction};

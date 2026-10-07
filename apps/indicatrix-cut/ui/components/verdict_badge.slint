@@ -1,0 +1,113 @@
+import { Theme } from "../theme.slint";
+import { VerdictModel } from "../models/verdict.slint";
+import { GuideModel } from "../models/guide.slint";
+import { VerdictPopover } from "verdict_popover.slint";
+
+// The status strip's verdict badge: a small chip with an icon and ONE word (Good, Check or
+// Problem) in the level's colour. Hovering it shows the verdict as a sentence; a click, or
+// Enter / Space once it has keyboard focus (Tab), opens the popover with the reasons and
+// their Show and Fix buttons. The caller mounts it only while `VerdictModel.level >= 0`.
+//
+// While the design has changed since the verdict was worked out (`VerdictModel.stale`) the
+// chip is dimmed: it still says what the last solve found, but it is not claiming to be
+// current.
+export component VerdictBadge inherits Rectangle {
+    // Bound from the status strip's `window_height`, forwarded to the popover so its list can
+    // cap itself against the real window height.
+    in property <length> window_height: 900px;
+
+    // Bumped on every open so the popover takes keyboard focus each time (a property of the
+    // popover cannot be written from here, only bound; see `EditorStatusStrip.log_open_pulse`).
+    property <int> open_pulse: 0;
+    property <color> tone: VerdictModel.level_color(VerdictModel.level);
+    // What the tooltip and a screen reader say after the label: the verdict as a sentence, that
+    // it is out of date when the design changed since, and how to see the reasons.
+    property <string> tip_text: VerdictModel.headline
+        + (VerdictModel.stale ? " This is out of date: the design changed since it was checked." : "")
+        + " Click to see the reasons and the Fix buttons.";
+
+    // Opens the popover. The guide's verdict lesson waits for this.
+    function open_popover() {
+        popover.show();
+        root.open_pulse += 1;
+        GuideModel.event("verdict_opened");
+    }
+
+    width: badge_layout.preferred-width;
+    // At least 20 px tall, so the badge is an easy target.
+    height: max(20px, badge_layout.preferred-height);
+    border-radius: Theme.radius-sm;
+    background: badge_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
+    border-width: badge_focus.has-focus ? 2px : 1px;
+    border-color: badge_focus.has-focus ? Theme.border-accent : root.tone;
+    opacity: VerdictModel.stale ? 0.6 : 1.0;
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: "Overall verdict: " + VerdictModel.word;
+    accessible-description: root.tip_text;
+    accessible-action-default => {
+        root.open_popover();
+    }
+
+    badge_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.open_popover();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    badge_layout := HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        padding-top: 2px;
+        padding-bottom: 2px;
+        spacing: 5px;
+
+        // Icons, not glyphs: the UI font has no tick or warning-sign symbol. Check and
+        // Problem share the warning sign; the colour and the word tell them apart.
+        VerticalLayout {
+            alignment: center;
+            Image {
+                source: VerdictModel.level == 0 ? @image-url("../icons/check.svg") : @image-url("../icons/warning.svg");
+                colorize: root.tone;
+                width: 10px;
+                height: 10px;
+                image-fit: contain;
+            }
+        }
+        Text {
+            text: VerdictModel.word;
+            font-size: 10px;
+            font-weight: 700;
+            color: root.tone;
+            vertical-alignment: center;
+        }
+    }
+
+    badge_touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.open_popover();
+        }
+    }
+
+    // The guide's verdict lessons outline the badge.
+    if GuideModel.highlight_target == "verdict_badge": Rectangle {
+        border-width: 2px;
+        border-color: Theme.accent-cyan;
+        border-radius: Theme.radius-sm;
+    }
+
+    Tooltip { text: @markdown("\{root.tip_text}"); }
+
+    // Opens above the strip, like the Details popup beside it.
+    popover := VerdictPopover {
+        x: 0px;
+        y: -self.height - 6px;
+        open_pulse: root.open_pulse;
+        window_height: root.window_height;
+    }
+}

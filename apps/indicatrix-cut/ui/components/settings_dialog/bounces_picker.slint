@@ -1,5 +1,7 @@
 import { Theme } from "../../theme.slint";
 import { SettingsModel } from "../../models/settings.slint";
+import { SegmentPill } from "../pill_button.slint";
+import { SettingLabel } from "setting_label.slint";
 
 // Ray Bounces - Segmented Pill Selector.
 //
@@ -11,166 +13,33 @@ import { SettingsModel } from "../../models/settings.slint";
 // 64 and 128 are the measured points where the hardest case (Diamond) crosses
 // 99.5% and 99.99% converged against a 1024-bounce reference; nothing above
 // 128 is offered since the measurement shows zero further change up to 1024.
+//
+// Advanced: Simple mode hides it (`settings_dialog.slint`). The ladder is also in
+// `gui::render::advanced_in_use` (the test table there), which says when the hidden pick is
+// off its default.
 export component BouncesPicker inherits VerticalLayout {
+    // The pill index to the bounce cap it stands for.
+    pure function cap_for(idx: int) -> int {
+        return idx == 0 ? 4 : (idx == 1 ? 8 : (idx == 2 ? 12 : (idx == 3 ? 24 : (idx == 4 ? 64 : 128))));
+    }
+
     spacing: 6px;
-    Text { text: "Max Ray Bounces (Dispersion Depth)"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+    SettingLabel {
+        text: "Max Ray Bounces (Dispersion Depth)";
+        hint: "Max Ray Bounces: the most times one light path may bounce inside the stone before it is dropped. A higher cap follows long, faint paths and shows more colour play. 12 is a good middle.";
+    }
 
     HorizontalLayout {
         spacing: 4px;
 
-        // 4 Bounces
-        Rectangle {
-            horizontal-stretch: 1;
-            height: 28px;
-            border-radius: Theme.radius-sm;
-            background: SettingsModel.bounce_index == 0 ? Theme.accent-cyan : (b0_touch.has-hover ? #1e293b : #0f172a);
-            border-width: 1px;
-            border-color: SettingsModel.bounce_index == 0 ? Theme.accent-cyan : #334155;
-
-            b0_touch := TouchArea {
-                clicked => {
-                    SettingsModel.bounce_index = 0;
-                    SettingsModel.bounces_changed(4);
-                }
-            }
-
-            Text {
-                text: "4";
-                font-size: 11px;
-                font-weight: 600;
-                color: SettingsModel.bounce_index == 0 ? #0f172a : Theme.text-secondary;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-        }
-
-        // 8 Bounces
-        Rectangle {
-            horizontal-stretch: 1;
-            height: 28px;
-            border-radius: Theme.radius-sm;
-            background: SettingsModel.bounce_index == 1 ? Theme.accent-cyan : (b1_touch.has-hover ? #1e293b : #0f172a);
-            border-width: 1px;
-            border-color: SettingsModel.bounce_index == 1 ? Theme.accent-cyan : #334155;
-
-            b1_touch := TouchArea {
-                clicked => {
-                    SettingsModel.bounce_index = 1;
-                    SettingsModel.bounces_changed(8);
-                }
-            }
-
-            Text {
-                text: "8";
-                font-size: 11px;
-                font-weight: 600;
-                color: SettingsModel.bounce_index == 1 ? #0f172a : Theme.text-secondary;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-        }
-
-        // 12 Bounces (default)
-        Rectangle {
-            horizontal-stretch: 1;
-            height: 28px;
-            border-radius: Theme.radius-sm;
-            background: SettingsModel.bounce_index == 2 ? Theme.accent-cyan : (b2_touch.has-hover ? #1e293b : #0f172a);
-            border-width: 1px;
-            border-color: SettingsModel.bounce_index == 2 ? Theme.accent-cyan : #334155;
-
-            b2_touch := TouchArea {
-                clicked => {
-                    SettingsModel.bounce_index = 2;
-                    SettingsModel.bounces_changed(12);
-                }
-            }
-
-            Text {
-                text: "12";
-                font-size: 11px;
-                font-weight: 600;
-                color: SettingsModel.bounce_index == 2 ? #0f172a : Theme.text-secondary;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-        }
-
-        // 24 Bounces
-        Rectangle {
-            horizontal-stretch: 1;
-            height: 28px;
-            border-radius: Theme.radius-sm;
-            background: SettingsModel.bounce_index == 3 ? Theme.accent-cyan : (b3_touch.has-hover ? #1e293b : #0f172a);
-            border-width: 1px;
-            border-color: SettingsModel.bounce_index == 3 ? Theme.accent-cyan : #334155;
-
-            b3_touch := TouchArea {
-                clicked => {
-                    SettingsModel.bounce_index = 3;
-                    SettingsModel.bounces_changed(24);
-                }
-            }
-
-            Text {
-                text: "24";
-                font-size: 11px;
-                font-weight: 600;
-                color: SettingsModel.bounce_index == 3 ? #0f172a : Theme.text-secondary;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-        }
-
-        // 64 Bounces
-        Rectangle {
-            horizontal-stretch: 1;
-            height: 28px;
-            border-radius: Theme.radius-sm;
-            background: SettingsModel.bounce_index == 4 ? Theme.accent-cyan : (b4_touch.has-hover ? #1e293b : #0f172a);
-            border-width: 1px;
-            border-color: SettingsModel.bounce_index == 4 ? Theme.accent-cyan : #334155;
-
-            b4_touch := TouchArea {
-                clicked => {
-                    SettingsModel.bounce_index = 4;
-                    SettingsModel.bounces_changed(64);
-                }
-            }
-
-            Text {
-                text: "64";
-                font-size: 11px;
-                font-weight: 600;
-                color: SettingsModel.bounce_index == 4 ? #0f172a : Theme.text-secondary;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-        }
-
-        // 128 Bounces (ceiling)
-        Rectangle {
-            horizontal-stretch: 1;
-            height: 28px;
-            border-radius: Theme.radius-sm;
-            background: SettingsModel.bounce_index == 5 ? Theme.accent-cyan : (b5_touch.has-hover ? #1e293b : #0f172a);
-            border-width: 1px;
-            border-color: SettingsModel.bounce_index == 5 ? Theme.accent-cyan : #334155;
-
-            b5_touch := TouchArea {
-                clicked => {
-                    SettingsModel.bounce_index = 5;
-                    SettingsModel.bounces_changed(128);
-                }
-            }
-
-            Text {
-                text: "128";
-                font-size: 11px;
-                font-weight: 600;
-                color: SettingsModel.bounce_index == 5 ? #0f172a : Theme.text-secondary;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+        // 12 Bounces is the default; 128 is the ceiling.
+        for label[idx] in ["4", "8", "12", "24", "64", "128"]: SegmentPill {
+            text: label;
+            hint: "Stop a light path after " + label + " bounces.";
+            selected: SettingsModel.bounce_index == idx;
+            picked => {
+                SettingsModel.bounce_index = idx;
+                SettingsModel.bounces_changed(root.cap_for(idx));
             }
         }
     }

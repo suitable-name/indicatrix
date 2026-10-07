@@ -173,6 +173,44 @@ pub const fn concave_tier_save_edit(
     }
 }
 
+/// Why the concave form must refuse `name` for the concave tier at `existing`.
+///
+/// `existing` is `None` for a new tier. The reason is that another tier, flat or concave,
+/// already holds the name; the result is `None` when the name is free or blank (an unnamed
+/// tier is exempt, as for flat tiers).
+///
+/// The cutting sheet, the `.asc` footnotes and the cutting-mode pages tell tiers apart by
+/// name, so two tiers sharing one would read as one step printed twice. The comparison
+/// ignores case, like the flat form's own rule ([`other_tier_names_excluding`]). The message
+/// starts like the flat form's, so `tier_form_error_field` puts the red border on the name.
+/// Not an `Edit` rule: an edit that refused a repeat would also refuse replays (a saved
+/// variant, the undo of a rename) on a file an earlier build saved with one.
+#[must_use]
+pub fn concave_name_clash_message(
+    design: &Design,
+    existing: Option<usize>,
+    name: &str,
+) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let flat = design.tiers.iter().flat_map(ConstraintTier::names);
+    let concave = design
+        .concave_tiers
+        .iter()
+        .enumerate()
+        .filter(|&(index, _)| Some(index) != existing)
+        .map(|(_, tier)| tier.name.as_str());
+    let other = flat
+        .chain(concave)
+        .find(|other| other.eq_ignore_ascii_case(name))?;
+    Some(format!(
+        "Another tier is already named '{other}' -- facet names must be unique so the cutting \
+         sheet and cutting mode can tell the tiers apart."
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,6 +345,28 @@ mod tests {
             None,
         );
         assert!(matches!(with, Edit::Batch(edits) if edits.len() == 2));
+    }
+
+    #[test]
+    fn a_concave_name_another_tier_holds_is_refused_in_any_case() {
+        let design = indicatrix_cut_core::Design::concave_fixture();
+        // A new tier cannot take a concave name, in any case ...
+        let message = concave_name_clash_message(&design, None, " groove ").expect("Groove exists");
+        assert!(
+            message.starts_with("Another tier is already named 'Groove'"),
+            "{message}"
+        );
+        assert_eq!(crate::loading::tier_form_error_field(&message), "name");
+        // ... nor a flat one (the fixture's flat tiers are unnamed, so name one).
+        let mut named = design.clone();
+        named.tiers[1].name = "P1".to_owned();
+        assert!(concave_name_clash_message(&named, None, "p1").is_some());
+        // The tier being edited may keep its own name; the other tier's name is taken.
+        assert_eq!(concave_name_clash_message(&design, Some(0), "Groove"), None);
+        assert!(concave_name_clash_message(&design, Some(0), "Dimple").is_some());
+        // A free name and a blank one are fine.
+        assert_eq!(concave_name_clash_message(&design, None, "Fresh"), None);
+        assert_eq!(concave_name_clash_message(&design, None, "  "), None);
     }
 
     #[test]

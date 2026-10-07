@@ -11,7 +11,10 @@ use std::sync::Arc;
 
 use glam::DVec3;
 
-use super::clip::filter_non_box;
+use super::{
+    clip::filter_non_box,
+    grid::{SHAPED_MESH_PIECE_CAP, SHAPED_PIECE_CAP, ShapedGrid, choose_shaped_grid_capped},
+};
 use crate::rough_plan::{FitMesh, PlanSettings, RoughMesh, RoughModel, ShapeError};
 
 /// Geometry of one modelled rough, computed once per plan.
@@ -64,6 +67,20 @@ impl ShapedCtx {
             mesh: model.mesh(),
             inset_mm: inset,
         })
+    }
+
+    /// The unit grid this rough is planned on: the coarser mesh cap
+    /// ([`SHAPED_MESH_PIECE_CAP`]) when the rough has a mesh, the plain cap otherwise
+    /// (bitwise [`choose_shaped_grid_at`]). The core's plan and the application's driver
+    /// both call this, so they can never disagree about the grid.
+    #[must_use]
+    pub fn choose_grid(&self, settings: &PlanSettings) -> ShapedGrid {
+        let cap = if self.mesh.is_some() {
+            SHAPED_MESH_PIECE_CAP
+        } else {
+            SHAPED_PIECE_CAP
+        };
+        choose_shaped_grid_capped(self.bbox_min, self.bbox_extents, settings, cap)
     }
 
     /// The mesh with its clearance for the fit and the piece checks, `None` for a convex

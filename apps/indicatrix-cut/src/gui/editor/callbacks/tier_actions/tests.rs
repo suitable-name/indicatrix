@@ -143,7 +143,7 @@ fn tier_form_error_field_classifies_every_documented_message_shape() {
         "name"
     );
     assert_eq!(
-        tier_form_error_field("Index '99' is outside this design's 96-tooth gear."),
+        tier_form_error_field("Index '99' is off the gear. Indices run from 0 to 96 on this gear."),
         "indices"
     );
     assert_eq!(

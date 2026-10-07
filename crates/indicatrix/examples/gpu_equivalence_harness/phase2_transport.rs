@@ -3,7 +3,10 @@
 //! computable truth, statistical image comparison, and spectral-space debug
 //! self-consistency.
 
-use indicatrix::renderer::gpu::{GpuContext, estimator_check, layout_check, transport_check};
+use indicatrix::renderer::{
+    buffers::GpuTransportParams,
+    gpu::{GpuContext, estimator_check, layout_check, transport_check},
+};
 
 use crate::common::{LayoutCheckFn, report_image_comparison_material, report_transport_ulp_check};
 
@@ -13,7 +16,10 @@ use crate::common::{LayoutCheckFn, report_image_comparison_material, report_tran
 
 /// Tier 1: the struct-layout GPU echo test for `GpuTransportParams`.
 fn report_transport_params_layout_check(ctx: &GpuContext) -> bool {
-    print!("[Tier 1] Phase 2 struct-layout echo test (GpuTransportParams, 80 bytes) ... ");
+    print!(
+        "[Tier 1] Phase 2 struct-layout echo test (GpuTransportParams, {} bytes) ... ",
+        std::mem::size_of::<GpuTransportParams>()
+    );
     let result = layout_check::run_transport_params(ctx);
     if result.passed() {
         println!("PASS");

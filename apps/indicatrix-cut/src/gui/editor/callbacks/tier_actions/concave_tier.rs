@@ -212,6 +212,13 @@ fn save_concave_tier(
             return;
         }
     };
+    if let Some(message) =
+        indicatrix_editor::tier_save::concave_name_clash_message(&st.design, existing, &tier.name)
+    {
+        drop(st);
+        report_tier_form_error(ui, &message, tier_form_error_field(&message));
+        return;
+    }
     let edit = indicatrix_editor::tier_save::concave_tier_save_edit(&st.design, existing, tier);
     match st.apply(edit) {
         Ok(()) => {

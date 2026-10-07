@@ -6,7 +6,7 @@ use crate::{
     EditorModel, LibraryModel, MainWindow, SolidPreviewModel, ViewportModel,
     bridge::{library::source::LibrarySource, render_thread::RenderContext},
     gui::{
-        batch, editor, editor_layout,
+        batch, commands, editor, editor_layout,
         external_links::{setup_reveal_last_saved_callback, setup_user_manual_callback},
         library, optics,
         remote::{setup_remote_rendering, setup_worker_callbacks},
@@ -41,8 +41,13 @@ pub(super) fn setup_render_callbacks(
     // collapsed sections the same way -- see `editor_layout::
     // setup_editor_layout_callbacks`'s own doc comment.
     editor_layout::setup_editor_layout_callbacks(ui, settings_store);
+    // The Preferences dialog and the header's Simple | Advanced pill: save each choice
+    // and apply it -- see `gui::preferences`.
+    crate::gui::preferences::setup_preferences_callbacks(ui, settings_store);
 
     setup_user_manual_callback(ui);
+    // Context help ("?" buttons, the planner's Help button) and the glossary dialog.
+    crate::gui::help::setup_help_callbacks(ui);
     setup_reveal_last_saved_callback(ui);
     render::camera_lighting::setup_camera_and_lighting_callbacks(
         ui,
@@ -55,6 +60,7 @@ pub(super) fn setup_render_callbacks(
     render::material_quality::setup_material_changed_callback(ui, render_ctx, settings_store);
     render::material_quality::setup_backdrop_callback(ui, render_ctx, settings_store);
     render::material_quality::setup_surface_glare_callback(ui, render_ctx, settings_store);
+    render::material_quality::setup_head_shadow_callback(ui, render_ctx, settings_store);
     render::material_quality::setup_material_and_quality_callbacks(ui, render_ctx, settings_store);
     render::material_quality::setup_material_effect_override_callbacks(
         ui,
@@ -70,6 +76,15 @@ pub(super) fn setup_render_callbacks(
     );
     render::render_export::setup_render_export_callbacks(
         ui,
+        render_ctx,
+        settings_store,
+        &solid.mesh_bounding_radius,
+    );
+    // The render queue: "Add to Queue" in the export and tilt video dialogs, the Jobs
+    // window and the queue controller. Needs the export's mesh radius for presets.
+    crate::gui::render_jobs::setup_render_jobs(
+        ui,
+        db,
         render_ctx,
         settings_store,
         &solid.mesh_bounding_radius,
@@ -143,7 +158,7 @@ pub(super) fn setup_editor(
     let solid_pick_state = SolidPickState {
         pick: Arc::clone(&solid.pick),
         hover_text: Arc::clone(&solid.hover_text),
-        facet_tier: Arc::clone(&solid.facet_tier),
+        facet_owners: Arc::clone(&solid.facet_owners),
         geometry: Arc::clone(&solid.geometry),
     };
     editor::setup_editor_callbacks(
@@ -155,6 +170,8 @@ pub(super) fn setup_editor(
         &solid.last_solved,
         &solid_pick_state,
     );
+    // The command palette (Ctrl+K) reads the same Slint state the menus and buttons do.
+    commands::setup_command_palette(ui);
 }
 
 /// Persists the Solid viewport's view mode and redraws on a mode change or a viewport
@@ -373,7 +390,10 @@ pub(super) fn setup_window_close(
         let is_dirty = ui_weak_close
             .upgrade()
             .is_some_and(|ui| ui.global::<EditorModel>().get_is_dirty());
-        let planner_risk = rough_plan::planner_work_at_risk();
+        let planner_risk = joined_risk(
+            rough_plan::planner_work_at_risk(),
+            crate::gui::render_jobs::work_at_risk(),
+        );
         if !is_dirty && planner_risk.is_none() {
             render_ctx_close
                 .lock()
@@ -386,6 +406,8 @@ pub(super) fn setup_window_close(
             // (and the process) running after the main window is gone.
             editor::close_compare_window();
             rough_plan::close_planner_window();
+            crate::gui::render_jobs::stop_for_app_close();
+            crate::gui::help::close_help_window();
             return slint::CloseRequestResponse::HideWindow;
         }
         if let Some(ui) = ui_weak_close.upgrade() {
@@ -404,8 +426,18 @@ pub(super) fn setup_window_close(
 const DIRTY_DESIGN_MESSAGE: &str =
     "Closing the window will discard the current design's unsaved changes.";
 
-/// The message of the close guard: the dirty design's sentence, the planner's sentence
-/// (see `rough_plan::planner_work_at_risk`), or both, design first.
+/// The risk sentences of the work that closing the app would stop (the rough planner's and
+/// the render queue's), joined with a space, or `None` when neither has any.
+fn joined_risk(planner: Option<String>, render_jobs: Option<String>) -> Option<String> {
+    match (planner, render_jobs) {
+        (Some(planner), Some(jobs)) => Some(format!("{planner} {jobs}")),
+        (one, other) => one.or(other),
+    }
+}
+
+/// The message of the close guard: the dirty design's sentence, the work-at-risk sentences
+/// (see `rough_plan::planner_work_at_risk` and `render_jobs::work_at_risk`), or both,
+/// design first.
 fn close_confirm_message(design_dirty: bool, planner_risk: Option<&str>) -> String {
     match (design_dirty, planner_risk) {
         (true, Some(risk)) => format!("{DIRTY_DESIGN_MESSAGE} {risk}"),
@@ -432,6 +464,30 @@ mod close_message_tests {
         assert_eq!(
             close_confirm_message(true, Some("A rough plan is still running.")),
             "Closing the window will discard the current design's unsaved changes. A rough plan is still running."
+        );
+    }
+
+    /// J4: a rough plan and a render job both at risk give one message, planner first,
+    /// and a design that is also dirty puts its own sentence first.
+    #[test]
+    fn the_guard_joins_the_planner_and_render_job_risks() {
+        let joined = joined_risk(
+            Some("A rough plan is still running.".to_string()),
+            Some("A render job is running.".to_string()),
+        );
+        assert_eq!(
+            joined.as_deref(),
+            Some("A rough plan is still running. A render job is running.")
+        );
+        assert_eq!(
+            joined_risk(None, Some("A render job is running.".to_string())).as_deref(),
+            Some("A render job is running.")
+        );
+        assert_eq!(joined_risk(None, None), None);
+        assert_eq!(
+            close_confirm_message(true, joined.as_deref()),
+            "Closing the window will discard the current design's unsaved changes. \
+             A rough plan is still running. A render job is running."
         );
     }
 }

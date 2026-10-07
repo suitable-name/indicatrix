@@ -15,11 +15,18 @@
 //!   three black cards on the ring positions away from the key (the contrast
 //!   photographers add so a diamond reads as a facet pattern rather than a white blur),
 //!   one small hard spark light for scintillation, black velvet below the girdle.
-//! - `DaylightDome`: a clear sky, brighter at the horizon than at the zenith with an
-//!   aureole around the sun, a 2 degree sun disc, dark ground.
+//! - `DaylightDome`: a clear sky only (no sun disc), brighter at the horizon than at the
+//!   zenith with an aureole around the key direction, dark ground.
+//! - `DaylightSun` (id 5): the same sky plus a physically bright 0.27 degree sun disc
+//!   (about 82 % of the horizontal irradiance at the default key elevation), sampled by
+//!   analytic next-event estimation with uniform cone sampling and balance-heuristic MIS
+//!   (see `rig.rs`). The sun is the only analytic light with an NEE technique.
+//! - `Aset` (id 4): the contrast view (zone-coloured spectral power by exit elevation).
+//! - `Studio` also carries `IlluminantA` (2856 K); `LightTent` also carries `ShopLights`,
+//!   `WindowDaylight` and `WhiteTray` (per-preset tent parameters come from lane TENTPARAMS).
 //!
 //! The three lit models also darken every exit direction inside the observer's
-//! head-shadow cone (`HEAD_SHADOW_*`), the term that gives a face-up stone its dark
+//! head-shadow cone ([`head_shadow_cosines`], default 16 degrees), the term that gives a face-up stone its dark
 //! table reflections; `Studio` ignores the observer. Radiances are chosen so that at
 //! exposure 1 the ambient terms land near middle grey after the ACES curve and only a
 //! direct reflection of a light source clips to white.
@@ -41,15 +48,92 @@ mod spectral;
 mod tests;
 
 // rig.rs
-pub use rig::sample_studio_environment_with_rig;
 pub(super) use rig::{
-    environment_nee_pdf, fill_backdrop, sample_environment_channel, sample_environment_channels,
-    sample_environment_for_nee,
+    environment_nee_pdf, environment_supports_nee, fill_backdrop, sample_environment_channel,
+    sample_environment_channels, sample_environment_for_nee,
 };
+
+/// The analytic sun's cone sampler for key direction `key_dir`, for the GPU Tier-2 twin check
+/// (`renderer::gpu::environment_check::sun_nee`): the direction drawn from `(u0, u1)` and the
+/// pdf of the sampling technique there.
+#[cfg(feature = "gpu")]
+#[must_use]
+pub(crate) fn sun_nee_reference_sample(key_dir: Vec3, u0: f32, u1: f32) -> (Vec3, f32) {
+    let dir = rig::sun_cone_direction(key_dir, u0, u1);
+    (dir, rig::sun_nee_pdf(key_dir, dir))
+}
+
+/// The sun's wavelength-independent radiance factor (radiance 40 000 faded by the horizon
+/// at the key direction), for the same GPU check.
+#[cfg(feature = "gpu")]
+#[must_use]
+pub(crate) fn sun_nee_reference_factor(key_dir: Vec3) -> f32 {
+    rig::sun_radiance_factor(key_dir)
+}
+
+/// The sun's NEE pdf at `dir` (`0.0` outside the disc), for the same GPU check.
+#[cfg(feature = "gpu")]
+#[must_use]
+pub(crate) fn sun_nee_reference_pdf(key_dir: Vec3, dir: Vec3) -> f32 {
+    rig::sun_nee_pdf(key_dir, dir)
+}
+pub use rig::{sample_studio_environment_with_rig, sample_studio_environment_with_rig_shadow};
 
 // spectral.rs
 use spectral::{BlackbodyNorm, IlluminantSpectrum};
 pub use spectral::{blackbody_spectrum, d65_relative_spectral_power};
+
+/// Default observer head-shadow size, degrees: fully dark within 14 degrees of the eye
+/// direction, gone by 18 (the metrics' own 16 degree cone, softened so its edge never
+/// aliases).
+pub const DEFAULT_HEAD_SHADOW_DEG: f32 = 16.0;
+/// `[outer, inner]` cosines of [`DEFAULT_HEAD_SHADOW_DEG`] (14 and 18 degrees). Literal
+/// values, never computed, so the CPU rig and the WGSL twins use identical bits.
+pub const DEFAULT_HEAD_SHADOW_COSINES: [f32; 2] = [0.951_056_5, 0.970_295_7];
+
+/// Largest head-shadow size accepted (the outer cone, `deg + 2`, stays under 90 degrees).
+pub const MAX_HEAD_SHADOW_DEG: f32 = 88.0;
+/// Smallest nonzero head-shadow size (the inner cone, `deg - 2`, stays at or above 1 degree).
+pub const MIN_HEAD_SHADOW_DEG: f32 = 3.0;
+
+/// The `[outer, inner]` cosine pair of a head shadow `deg` degrees wide, evaluated once
+/// per scene. The cone is fully dark within `deg - 2` degrees of the eye direction and
+/// gone by `deg + 2`.
+///
+/// `deg <= 0` switches the shadow off: the pair `[2.0, 3.0]` is never
+/// reached by a dot product, so `smoothstep` is `0` and the visibility is exactly `1`.
+/// The default 16 degrees returns [`DEFAULT_HEAD_SHADOW_COSINES`] bit for bit; NaN is the
+/// default; other values are clamped to `3..=88`.
+#[must_use]
+pub fn head_shadow_cosines(deg: f32) -> [f32; 2] {
+    if deg.is_nan() || deg.to_bits() == DEFAULT_HEAD_SHADOW_DEG.to_bits() {
+        return DEFAULT_HEAD_SHADOW_COSINES;
+    }
+    if deg <= 0.0 {
+        return [2.0, 3.0];
+    }
+    let deg = deg.clamp(MIN_HEAD_SHADOW_DEG, MAX_HEAD_SHADOW_DEG);
+    [
+        (deg + 2.0).to_radians().cos(),
+        (deg - 2.0).to_radians().cos(),
+    ]
+}
+
+/// Sanitises a head-shadow size for storage: NaN is the default, `<= 0` is off (`0.0`),
+/// anything else is clamped to `3..=88`.
+const fn clamp_head_shadow_deg(deg: f32) -> f32 {
+    if deg.is_nan() {
+        DEFAULT_HEAD_SHADOW_DEG
+    } else if deg <= 0.0 {
+        0.0
+    } else if deg < MIN_HEAD_SHADOW_DEG {
+        MIN_HEAD_SHADOW_DEG
+    } else if deg > MAX_HEAD_SHADOW_DEG {
+        MAX_HEAD_SHADOW_DEG
+    } else {
+        deg
+    }
+}
 
 /// color temperature and rig-intensity parameters for one named studio lighting preset.
 ///
@@ -64,6 +148,53 @@ pub struct LightingRigParams {
     /// Multiplier on the key-softbox and ring-emitter intensity terms (does not affect
     /// the fill light or the ambient backdrop).
     pub spot_mult: f32,
+    /// The light-tent model's per-preset knobs (ignored by every other model). The
+    /// default ([`TentParams::DEFAULT`]) reproduces `LightTent` bit for bit.
+    pub tent: TentParams,
+}
+
+/// Per-preset parameters of the [`LightingModel::LightTent`] model: the tent walls' scale,
+/// the black cards' strength, the spark on/off flag and the ground radiance.
+///
+/// Every field is chosen so that the default is an exact identity in f32: the walls scale
+/// multiplies by `1.0`, the cards strength multiplies the card mask by `1.0`, the spark flag
+/// multiplies the spark term by `1.0` (`0.0` removes it), and the ground radiance replaces
+/// the literal `0.02` it had before (the same `f32`). The CPU, the three WGSL twins and the
+/// `GpuTransportParams` uniform carry the same four floats.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TentParams {
+    /// Scale on the wall radiance (`0.14` at the girdle to `0.22` at the zenith before the
+    /// scale).
+    pub walls: f32,
+    /// Strength of the three black cards: `1.0` darkens the walls to a tenth inside a card
+    /// (the tent), `0.0` removes the cards.
+    pub cards: f32,
+    /// `1.0` keeps the spark (a bare bulb at the fill position), `0.0` removes it.
+    pub spark: f32,
+    /// Radiance of the ground (every direction below the girdle plane).
+    pub ground: f32,
+    /// `0.0..=1.0`: blends the wall elevation gradient towards one uniform value,
+    /// `walls = mix(gradient, 0.18 * walls_scale, flat)` (`0.18` = the gradient at 30 degrees
+    /// elevation). `0.0` is today's arithmetic exactly (the blend is skipped, not multiplied
+    /// by zero), so every preset with `flat == 0` keeps its bits.
+    pub flat: f32,
+}
+
+impl TentParams {
+    /// The light tent's own values: walls x1, cards on, spark on, ground `0.02`, no flattening.
+    pub const DEFAULT: Self = Self {
+        walls: 1.0,
+        cards: 1.0,
+        spark: 1.0,
+        ground: 0.02,
+        flat: 0.0,
+    };
+
+    /// The four floats in uniform order `[walls, cards, spark, ground]`.
+    #[must_use]
+    pub const fn to_array(self) -> [f32; 4] {
+        [self.walls, self.cards, self.spark, self.ground]
+    }
 }
 
 /// The gemological studio lighting rig presets, as a closed, exhaustively-matched set
@@ -72,18 +203,20 @@ pub struct LightingRigParams {
 /// An unrecognised preset is not representable, unlike a `&str`-keyed lookup where a
 /// caller could pass a string that silently falls through to a default.
 ///
-/// `Daylight` is index `0` / the [`Default`], and is what any legacy or unrecognised
+/// `LightTent` (UI index `0`) is the [`Default`], and is what any legacy or unrecognised
 /// persisted label -- including the old, mislabelled `"D65 Daylight (5500K)"` string --
-/// migrates to via [`Self::from_label`].
+/// migrates to via [`Self::from_label`]. The declaration order below (the postcard
+/// variant index, every wire index) is unchanged; [`Self::index`] / [`Self::ALL`] are the
+/// UI order, lit models first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LightingPreset {
-    #[default]
     Daylight,
     Incandescent,
     RingLights,
     DarkSpotlight,
     IsoHemisphere,
+    #[default]
     LightTent,
     DaylightDome,
     /// A 365 nm UV lamp: the `Studio` rig geometry lit by a narrow Gaussian line, no
@@ -93,6 +226,22 @@ pub enum LightingPreset {
     /// A 395 nm UV LED lamp (same rig as [`Self::UvLamp365`]); its tail reaches into the
     /// violet, so a non-fluorescent stone looks faintly violet under it.
     UvLamp395,
+    /// Clear-sky daylight with a physically bright, small direct sun
+    /// ([`LightingModel::DaylightSun`]). Appended after the UV lamps: the declaration order
+    /// is the postcard variant index, so earlier indices never move.
+    DaylightSun,
+    /// ASET-style contrast view ([`LightingModel::Aset`]): the environment is coloured by
+    /// the exit elevation, identity white balance, no adaptation.
+    Aset,
+    /// Jewellery shop: bright diffuse walls plus pinpoint spots (`LightTent` model).
+    ShopLights,
+    /// Window daylight: one broad soft source, dim room (`LightTent` model).
+    WindowDaylight,
+    /// White tray lit from below: bright uniform walls and ground (`LightTent` model).
+    WhiteTray,
+    /// Illuminant A (2856 K), the colour-change standard: the `Studio` rig, Planckian,
+    /// Bradford white balance.
+    IlluminantA,
 }
 
 /// Which environment the preset samples -- see this module's "Lighting models" doc.
@@ -102,6 +251,8 @@ pub enum LightingModel {
     IsoHemisphere,
     LightTent,
     DaylightDome,
+    Aset,
+    DaylightSun,
 }
 
 impl LightingModel {
@@ -113,21 +264,32 @@ impl LightingModel {
             Self::IsoHemisphere => 1,
             Self::LightTent => 2,
             Self::DaylightDome => 3,
+            Self::Aset => 4,
+            Self::DaylightSun => 5,
         }
     }
 }
 
 impl LightingPreset {
-    /// All nine presets, in the same order as their UI index / the `lighting_options`
-    /// combo box list (`apps/indicatrix-cut/ui/models/viewport.slint`).
-    pub const ALL: [Self; 9] = [
+    /// All fifteen presets, in the same order as their UI index / the `lighting_options`
+    /// combo box list (`apps/indicatrix-cut/ui/models/viewport.slint`): the light tent
+    /// (the default), the grading tray, the tent variants, the daylight models, the
+    /// product-photography rigs, the contrast view, then the UV lamps. This is the display
+    /// order only; the enum declaration order (the postcard variant index) is unchanged.
+    pub const ALL: [Self; 15] = [
+        Self::LightTent,
+        Self::IsoHemisphere,
+        Self::WhiteTray,
+        Self::ShopLights,
+        Self::WindowDaylight,
+        Self::DaylightDome,
+        Self::DaylightSun,
         Self::Daylight,
         Self::Incandescent,
+        Self::IlluminantA,
         Self::RingLights,
         Self::DarkSpotlight,
-        Self::IsoHemisphere,
-        Self::LightTent,
-        Self::DaylightDome,
+        Self::Aset,
         Self::UvLamp365,
         Self::UvLamp395,
     ];
@@ -141,28 +303,88 @@ impl LightingPreset {
             Self::Incandescent => LightingRigParams {
                 temp_k: 3200.0,
                 spot_mult: 1.2,
+                tent: TentParams::DEFAULT,
             },
             Self::RingLights => LightingRigParams {
                 temp_k: 5000.0,
                 spot_mult: 1.6,
+                tent: TentParams::DEFAULT,
             },
             Self::DarkSpotlight => LightingRigParams {
                 temp_k: 6000.0,
                 spot_mult: 2.4,
+                tent: TentParams::DEFAULT,
             },
+            // The light tent itself: FROZEN until the owner's photos settle the re-tune.
             Self::LightTent => LightingRigParams {
                 temp_k: 5000.0,
                 spot_mult: 1.0,
+                tent: TentParams::DEFAULT,
+            },
+            // The three tent variants are D65 (identity white balance, so `temp_k` is
+            // unused by their spectrum) and differ only in `tent` (and `spot_mult`, which
+            // scales the key softbox and the spark).
+            //
+            // Jewellery shop: bright diffuse walls (0.42 at the girdle to 0.66 at the zenith,
+            // about 0.5 overall), the key as an overhead spot (1.4) and the spark as a
+            // pinpoint (5.0) on top, no cards, a lit floor (0.05).
+            Self::ShopLights => LightingRigParams {
+                temp_k: 5000.0,
+                spot_mult: 1.0,
+                tent: TentParams {
+                    walls: 3.0,
+                    cards: 0.0,
+                    spark: 1.0,
+                    ground: 0.05,
+                    flat: 0.0,
+                },
+            },
+            // Window daylight: a dim room (walls 0.056 to 0.088) lit by ONE broad soft
+            // source, the key softbox cone (20 to 40 degrees wide at 1.4); no cards, no
+            // spark. The key's elevation comes from the light pose (set it to 20-40 degrees).
+            Self::WindowDaylight => LightingRigParams {
+                temp_k: 5000.0,
+                spot_mult: 1.0,
+                tent: TentParams {
+                    walls: 0.4,
+                    cards: 0.0,
+                    spark: 0.0,
+                    ground: 0.03,
+                    flat: 0.0,
+                },
+            },
+            // White tray lit from below: perfectly uniform walls (`flat` 1: 0.18 * 5.0 = 0.9
+            // at every elevation) and a bright ground (0.8), so a window shows white as on
+            // paper. `spot_mult` 0 removes the key softbox and the spark, which would be hot
+            // spots on a uniform tray.
+            Self::WhiteTray => LightingRigParams {
+                temp_k: 5000.0,
+                spot_mult: 0.0,
+                tent: TentParams {
+                    walls: 5.0,
+                    cards: 0.0,
+                    spark: 0.0,
+                    ground: 0.8,
+                    flat: 1.0,
+                },
+            },
+            Self::IlluminantA => LightingRigParams {
+                temp_k: 2856.0,
+                spot_mult: 1.2,
+                tent: TentParams::DEFAULT,
             },
             // The UV lamps are not Planckian: `temp_k` is unused by their spectrum, white
             // balance and CPU path (they never reach the GPU); 6500 K is a placeholder.
             Self::Daylight
             | Self::IsoHemisphere
             | Self::DaylightDome
+            | Self::DaylightSun
+            | Self::Aset
             | Self::UvLamp365
             | Self::UvLamp395 => LightingRigParams {
                 temp_k: 6500.0,
                 spot_mult: 1.0,
+                tent: TentParams::DEFAULT,
             },
         }
     }
@@ -178,32 +400,51 @@ impl LightingPreset {
             Self::Incandescent => "Incandescent (3200K)",
             Self::RingLights => "Gem Studio Ring Lights",
             Self::DarkSpotlight => "Dramatic Dark Spotlight",
-            Self::IsoHemisphere => "ISO hemisphere",
+            Self::IsoHemisphere => "Grading tray (D65 hemisphere + head shadow)",
             Self::LightTent => "Light tent + black cards",
-            Self::DaylightDome => "Daylight sky + sun",
+            Self::DaylightDome => "Daylight sky (no sun)",
+            Self::DaylightSun => "Daylight sky + direct sun",
+            Self::Aset => "Contrast view (ASET-style)",
+            Self::ShopLights => "Jewellery shop (diffuse + spots)",
+            Self::WindowDaylight => "Window daylight",
+            Self::WhiteTray => "White tray (lit from below)",
+            Self::IlluminantA => "Incandescent A (2856K)",
             Self::UvLamp365 => "UV lamp 365 nm",
             Self::UvLamp395 => "UV lamp 395 nm",
         }
     }
 
     /// Parses a persisted or UI-supplied label back into a preset. Falls back to
-    /// [`Self::Daylight`] for anything unrecognised -- including the legacy
-    /// `"D65 Daylight (5500K)"` label an older settings file may still contain, which
-    /// already resolved to D65 6500K, so migration is silent. The lit models' first
-    /// labels (`"ISO hemisphere (GemRay-style)"`, `"Soft dome + ring lights"`,
-    /// `"Daylight dome + sun"`) resolve to their current presets the same way.
+    /// [`Self::LightTent`] (the default) for anything unrecognised. Both D65 labels -- `"D65 Daylight (6500K)"`
+    /// and the legacy, mislabelled `"D65 Daylight (5500K)"` -- resolve to [`Self::Daylight`]. The
+    /// lit models' earlier labels (`"ISO hemisphere"`, `"ISO hemisphere (GemRay-style)"`,
+    /// `"Soft dome + ring lights"`, `"Daylight dome + sun"`) resolve to their current
+    /// presets the same way.
     #[must_use]
     pub fn from_label(label: &str) -> Self {
         match label {
+            "D65 Daylight (6500K)" | "D65 Daylight (5500K)" => Self::Daylight,
             "Incandescent (3200K)" => Self::Incandescent,
             "Gem Studio Ring Lights" => Self::RingLights,
             "Dramatic Dark Spotlight" => Self::DarkSpotlight,
-            "ISO hemisphere" | "ISO hemisphere (GemRay-style)" => Self::IsoHemisphere,
-            "Light tent + black cards" | "Soft dome + ring lights" => Self::LightTent,
-            "Daylight sky + sun" | "Daylight dome + sun" => Self::DaylightDome,
+            "Grading tray (D65 hemisphere + head shadow)"
+            | "ISO hemisphere"
+            | "ISO hemisphere (GemRay-style)" => Self::IsoHemisphere,
+            // "Light tent + black cards" and the legacy "Soft dome + ring lights" map to
+            // `LightTent`, which is the fallback arm below.
+            // The old "Daylight sky + sun" label is what saved settings meant: the dome.
+            "Daylight sky (no sun)" | "Daylight sky + sun" | "Daylight dome + sun" => {
+                Self::DaylightDome
+            }
+            "Daylight sky + direct sun" => Self::DaylightSun,
+            "Contrast view (ASET-style)" => Self::Aset,
+            "Jewellery shop (diffuse + spots)" => Self::ShopLights,
+            "Window daylight" => Self::WindowDaylight,
+            "White tray (lit from below)" => Self::WhiteTray,
+            "Incandescent A (2856K)" => Self::IlluminantA,
             "UV lamp 365 nm" => Self::UvLamp365,
             "UV lamp 395 nm" => Self::UvLamp395,
-            _ => Self::Daylight,
+            _ => Self::LightTent,
         }
     }
 
@@ -211,32 +452,45 @@ impl LightingPreset {
     #[must_use]
     pub const fn index(self) -> i32 {
         match self {
-            Self::Daylight => 0,
-            Self::Incandescent => 1,
-            Self::RingLights => 2,
-            Self::DarkSpotlight => 3,
-            Self::IsoHemisphere => 4,
-            Self::LightTent => 5,
-            Self::DaylightDome => 6,
-            Self::UvLamp365 => 7,
-            Self::UvLamp395 => 8,
+            Self::LightTent => 0,
+            Self::IsoHemisphere => 1,
+            Self::WhiteTray => 2,
+            Self::ShopLights => 3,
+            Self::WindowDaylight => 4,
+            Self::DaylightDome => 5,
+            Self::DaylightSun => 6,
+            Self::Daylight => 7,
+            Self::Incandescent => 8,
+            Self::IlluminantA => 9,
+            Self::RingLights => 10,
+            Self::DarkSpotlight => 11,
+            Self::Aset => 12,
+            Self::UvLamp365 => 13,
+            Self::UvLamp395 => 14,
         }
     }
 
-    /// Inverse of [`Self::index`]; out-of-range indices fall back to [`Self::Daylight`]
-    /// (index 0), matching [`Self::from_label`]'s fallback.
+    /// Inverse of [`Self::index`]; out-of-range indices fall back to [`Self::LightTent`]
+    /// (the default), matching [`Self::from_label`]'s fallback. Index `0` is `LightTent`.
     #[must_use]
     pub const fn from_index(index: i32) -> Self {
         match index {
-            1 => Self::Incandescent,
-            2 => Self::RingLights,
-            3 => Self::DarkSpotlight,
-            4 => Self::IsoHemisphere,
-            5 => Self::LightTent,
-            6 => Self::DaylightDome,
-            7 => Self::UvLamp365,
-            8 => Self::UvLamp395,
-            _ => Self::Daylight,
+            // Index 0 is `LightTent`, which is the fallback arm below.
+            1 => Self::IsoHemisphere,
+            2 => Self::WhiteTray,
+            3 => Self::ShopLights,
+            4 => Self::WindowDaylight,
+            5 => Self::DaylightDome,
+            6 => Self::DaylightSun,
+            7 => Self::Daylight,
+            8 => Self::Incandescent,
+            9 => Self::IlluminantA,
+            10 => Self::RingLights,
+            11 => Self::DarkSpotlight,
+            12 => Self::Aset,
+            13 => Self::UvLamp365,
+            14 => Self::UvLamp395,
+            _ => Self::LightTent,
         }
     }
 
@@ -248,11 +502,17 @@ impl LightingPreset {
             | Self::Incandescent
             | Self::RingLights
             | Self::DarkSpotlight
+            | Self::IlluminantA
             | Self::UvLamp365
             | Self::UvLamp395 => LightingModel::Studio,
             Self::IsoHemisphere => LightingModel::IsoHemisphere,
-            Self::LightTent => LightingModel::LightTent,
+            // The three variants differ from the tent only in `params().tent`.
+            Self::LightTent | Self::ShopLights | Self::WindowDaylight | Self::WhiteTray => {
+                LightingModel::LightTent
+            }
             Self::DaylightDome => LightingModel::DaylightDome,
+            Self::Aset => LightingModel::Aset,
+            Self::DaylightSun => LightingModel::DaylightSun,
         }
     }
 
@@ -261,7 +521,17 @@ impl LightingPreset {
     pub const fn uses_d65(self) -> bool {
         matches!(
             self,
-            Self::Daylight | Self::IsoHemisphere | Self::DaylightDome
+            Self::Daylight
+                | Self::IsoHemisphere
+                | Self::DaylightDome
+                | Self::DaylightSun
+                | Self::ShopLights
+                | Self::WindowDaylight
+                | Self::WhiteTray
+                // The contrast view keeps the D65 flag only for the neutral backdrop card
+                // and the metrics' fallback; its zone bands are evaluated inside the model
+                // from the wavelength (`rig::aset_spec_input`), not from this curve.
+                | Self::Aset
         )
     }
 
@@ -284,12 +554,12 @@ impl LightingPreset {
     }
 
     /// Whether the von-Kries white balance toward D65 applies: only the Planckian
-    /// presets (`Incandescent`, `RingLights`, `DarkSpotlight`, `LightTent`). The D65
+    /// presets (`Incandescent`, `IlluminantA`, `RingLights`, `DarkSpotlight`, `LightTent`). The D65
     /// presets are already D65-white (identity), and the UV lamps have no meaningful
     /// white point at all (identity: the stone shows the lamp's own color).
     #[must_use]
     pub const fn uses_white_balance(self) -> bool {
-        !self.uses_d65() && !self.is_uv_lamp()
+        !self.uses_d65() && !self.is_uv_lamp() && !matches!(self, Self::Aset)
     }
 
     /// Whether the `Studio` rig adds its dim ambient backdrop term. `false` for the UV
@@ -340,6 +610,7 @@ impl LightingPreset {
             light_pitch,
             backdrop: 0.0,
             surface_glare: 1.0,
+            head_shadow_deg: DEFAULT_HEAD_SHADOW_DEG,
         }
     }
 }
@@ -371,6 +642,11 @@ pub enum EnvironmentSource<'a> {
         /// viewing). Everything that went into the stone is untouched. See
         /// [`EnvironmentSource::with_surface_glare`].
         surface_glare: f32,
+        /// Width of the observer head shadow the three lit models darken around the eye
+        /// direction, in degrees (`0.0`: off; default [`DEFAULT_HEAD_SHADOW_DEG`], which
+        /// renders bit-identically to before the field existed). `Studio` ignores it. See
+        /// [`head_shadow_cosines`] and [`EnvironmentSource::with_head_shadow`].
+        head_shadow_deg: f32,
     },
     HdrMap(&'a EnvironmentMap),
 }
@@ -392,6 +668,7 @@ impl EnvironmentSource<'_> {
                 light_yaw,
                 light_pitch,
                 surface_glare,
+                head_shadow_deg,
                 ..
             } => Self::Studio {
                 preset,
@@ -400,8 +677,48 @@ impl EnvironmentSource<'_> {
                 light_pitch,
                 backdrop,
                 surface_glare,
+                head_shadow_deg,
             },
             hdr @ Self::HdrMap(_) => hdr,
+        }
+    }
+
+    /// Sets the head-shadow size in degrees (see the `Studio` variant's field): `0.0`
+    /// turns it off, NaN means the default, other values are clamped to `3..=88`. An HDR
+    /// map is returned unchanged.
+    #[must_use]
+    pub const fn with_head_shadow(self, head_shadow_deg: f32) -> Self {
+        match self {
+            Self::Studio {
+                preset,
+                exposure,
+                light_yaw,
+                light_pitch,
+                backdrop,
+                surface_glare,
+                ..
+            } => Self::Studio {
+                preset,
+                exposure,
+                light_yaw,
+                light_pitch,
+                backdrop,
+                surface_glare,
+                head_shadow_deg: clamp_head_shadow_deg(head_shadow_deg),
+            },
+            hdr @ Self::HdrMap(_) => hdr,
+        }
+    }
+
+    /// The head-shadow size in force, degrees: the `Studio` field, the default for an
+    /// HDR map (which has no head shadow).
+    #[must_use]
+    pub const fn head_shadow_deg(&self) -> f32 {
+        match *self {
+            Self::Studio {
+                head_shadow_deg, ..
+            } => head_shadow_deg,
+            Self::HdrMap(_) => DEFAULT_HEAD_SHADOW_DEG,
         }
     }
 
@@ -418,6 +735,7 @@ impl EnvironmentSource<'_> {
                 light_yaw,
                 light_pitch,
                 backdrop,
+                head_shadow_deg,
                 ..
             } => Self::Studio {
                 preset,
@@ -426,6 +744,7 @@ impl EnvironmentSource<'_> {
                 light_pitch,
                 backdrop,
                 surface_glare: clamp_surface_glare(surface_glare),
+                head_shadow_deg,
             },
             hdr @ Self::HdrMap(_) => hdr,
         }

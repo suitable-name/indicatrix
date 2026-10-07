@@ -244,6 +244,17 @@ fn unique_path(dir: &Path, filename: &str) -> PathBuf {
     candidate
 }
 
+/// Renders `template` against `ctx`, sanitises it and appends `.png` if missing: the
+/// file name [`resolve_export_path`] starts from, without a folder or a uniqueness check.
+///
+/// The render queue uses this to name a job's picture when the job is added, and then
+/// reserves the name itself against the disk and the other queued jobs.
+#[must_use]
+pub fn resolve_export_name(template: &str, ctx: &TemplateContext) -> String {
+    let rendered = render(template, ctx, SystemTime::now());
+    ensure_png_extension(&sanitize_filename(&rendered))
+}
+
 /// Renders `template` against `ctx`, sanitises it, appends `.png` if missing, and
 /// resolves a collision-free path inside `export_dir`.
 ///
@@ -262,9 +273,7 @@ fn unique_path(dir: &Path, filename: &str) -> PathBuf {
 /// unreachable given [`sanitize_filename`]'s guarantee.
 #[must_use]
 pub fn resolve_export_path(export_dir: &Path, template: &str, ctx: &TemplateContext) -> PathBuf {
-    let rendered = render(template, ctx, SystemTime::now());
-    let sanitized = sanitize_filename(&rendered);
-    let named = ensure_png_extension(&sanitized);
+    let named = resolve_export_name(template, ctx);
 
     assert!(
         !named.contains('/') && !named.contains('\\'),

@@ -18,7 +18,7 @@ use super::{
     cut_rows::{CutField, apply_field, cut_row, cut_rows, field_text, set_field_text},
     format::to_i32,
     host::{Host, on_host, on_idle_host},
-    inputs::{PICK_MATERIAL_MESSAGE, is_input_message, parse_mm, parse_weighed},
+    inputs::{PICK_MATERIAL_MESSAGE, is_input_message, parse_weighed, parse_with_unit},
     shape_worker::{ShapeRequest, show_blank},
 };
 use crate::{RoughCutRow, RoughPlanModel};
@@ -58,6 +58,7 @@ pub(super) fn setup_edit_callbacks(host: &Rc<Host>) {
     model.on_undo_shape(|| on_idle_host(undo_shape));
     model.on_redo_shape(|| on_idle_host(redo_shape));
     model.on_new_model(|| on_idle_host(new_model));
+    super::inclusions::setup_inclusion_callbacks(host);
 }
 
 /// The window inputs the shape worker needs besides the model.
@@ -186,6 +187,7 @@ fn rebuild(host: &Rc<Host>, rewrite_base: bool, keep_azimuths: bool) {
         model.set_selected_cut(-1);
     }
     push_history_flags(host);
+    super::inclusions::push(host);
     host.shape.invalidate();
     after_change(host);
 }
@@ -450,7 +452,7 @@ fn cut_field_edited(host: &Rc<Host>, row: i32, field: i32, text: &str) {
     let (Ok(index), Some(cut_field)) = (usize::try_from(row), CutField::from_index(field)) else {
         return;
     };
-    let value = match parse_mm(text, cut_field.label()) {
+    let value = match parse_with_unit(text, cut_field.label(), cut_field.unit()) {
         Ok(value) => value,
         Err(message) => {
             mark_bad_text(host, index, field, &message);
@@ -642,8 +644,10 @@ fn redo_shape(host: &Rc<Host>) {
     }
 }
 
-/// The New button: an empty model (one undo step), without weighed carat or selection.
+/// The New button: an empty model (one undo step), without weighed carat or selection. A
+/// mesh that is still being read or scaled in the background is dropped.
 fn new_model(host: &Rc<Host>) {
+    super::mesh_task::cancel(host);
     {
         let mut session = host.session.borrow_mut();
         session.replace_model(blank_model());

@@ -31,6 +31,7 @@ pub(in crate::gui::editor) fn tier_item_from_row(row: TierRow) -> EditorTierItem
         orbit_incomplete: row.orbit_incomplete,
         is_detached: row.is_detached,
         block: row.block.into(),
+        code: row.code.into(),
         margin_text: row.margin_text.into(),
         risk_level: row.risk_level,
         meet_partners_text: row.meet_partners_text.into(),
@@ -39,6 +40,7 @@ pub(in crate::gui::editor) fn tier_item_from_row(row: TierRow) -> EditorTierItem
         proposed_angle: row.proposed_angle.into(),
         kind: i32::from(row.kind == TierRowKind::Concave),
         tool_line: row.tool_line.into(),
+        relation_text: row.relation_text.into(),
     }
 }
 
@@ -242,6 +244,18 @@ mod concave_row_tests {
         assert_eq!(kinds, [0, 0, 1, 1]);
         assert_eq!(items[2].tool_line.as_str(), "CYL  +10.00\u{b0}");
         assert_eq!(items[0].tool_line.as_str(), "");
+    }
+
+    /// The table's code column reads `EditorTierItem::code`, for flat and concave rows alike.
+    #[test]
+    fn a_rows_code_reaches_the_table_item() {
+        let mut flat = row(TierRowKind::Flat, 0, "Pavilion Main");
+        flat.code = "P1".to_owned();
+        let mut concave = row(TierRowKind::Concave, 0, "Groove");
+        concave.code = "P3".to_owned();
+        let items = tier_items_from_rows(vec![flat, concave]);
+        assert_eq!(items[0].code.as_str(), "P1");
+        assert_eq!(items[1].code.as_str(), "P3");
     }
 
     #[test]

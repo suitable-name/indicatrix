@@ -208,6 +208,8 @@ fn set_material_then_undo_restores_the_old_selection() {
                     specific_gravity_override: None,
                     refractive_index_override: None,
                     body_color_override: None,
+                    body_color_bands_override: None,
+                    absorption_path_scale_override: None,
                 },
             },
         )

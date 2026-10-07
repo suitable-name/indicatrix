@@ -3,6 +3,11 @@ import { Theme } from "../theme.slint";
 import { SettingsModel } from "../models/settings.slint";
 import { ViewportModel } from "../models/viewport.slint";
 import { TiltModel } from "../models/tilt.slint";
+import { GuideModel } from "../models/guide.slint";
+import { HelpTopics } from "../models/help.slint";
+import { HelpButton } from "help_button.slint";
+import { IconButton } from "icon_button.slint";
+import { SegmentPill } from "pill_button.slint";
 import { ResolutionPicker } from "settings_dialog/resolution_picker.slint";
 import { MotionPreviewPicker } from "settings_dialog/motion_preview_picker.slint";
 import { LiveComputePicker } from "settings_dialog/live_compute_picker.slint";
@@ -12,6 +17,8 @@ import { CrystalAxisSection } from "settings_dialog/crystal_axis_section.slint";
 import { EnvironmentMapSection } from "settings_dialog/environment_map_section.slint";
 import { LightingPresetsSection } from "settings_dialog/lighting_presets_section.slint";
 import { PerformanceCurvePanel } from "settings_dialog/performance_curve_panel.slint";
+import { SettingLabel } from "settings_dialog/setting_label.slint";
+import { ToggleRow } from "toggle_switch.slint";
 // `gui::editor::view::refresh_design_settings` pushes the design's own
 // `girdle_diameter_mm` into
 // `ctx.stone_width_mm`/`SettingsModel.stone_width_mm` under the same
@@ -20,6 +27,123 @@ import { PerformanceCurvePanel } from "settings_dialog/performance_curve_panel.s
 // showing a typed-in-looking number the slider itself did not set.
 import { EditorModel } from "../models/editor.slint";
 
+// One button of the dialog's footer: Reset to Defaults, its Confirm and Cancel, and Done.
+// `kind` 0 is a plain button, 1 the main action (the dialog's cyan), 2 a destructive one.
+// Tab reaches it, Space or Enter presses it, a tooltip says what it does.
+component FooterButton inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <image> icon;
+    in property <int> kind: 0;
+    callback clicked();
+
+    height: 30px;
+    border-radius: Theme.radius-sm;
+    background: root.kind == 1
+        ? (footer_touch.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan)
+        : (root.kind == 2
+            ? (footer_touch.has-hover ? Theme.accent-ruby.darker(0.25) : Theme.accent-ruby)
+            : (footer_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken));
+    border-width: footer_focus.has-focus ? 2px : (root.kind == 0 ? 1px : 0px);
+    border-color: footer_focus.has-focus ? Theme.accent-cyan-hover : Theme.border-dialog;
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.text;
+    accessible-description: root.hint;
+    accessible-action-default => { root.clicked(); }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    footer_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    HorizontalLayout {
+        alignment: center;
+        spacing: 5px;
+        if root.icon.width > 0: Image {
+            source: root.icon;
+            colorize: Theme.text-secondary;
+            width: 11px;
+            height: 11px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.text;
+            font-size: root.kind == 1 ? 12px : 11px;
+            font-weight: root.kind == 0 ? 600 : 700;
+            color: root.kind == 1 ? Theme.text-on-accent : (root.kind == 2 ? Theme.text-on-primary : Theme.text-secondary);
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    footer_touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// A small underlined-on-hover text button inside a settings row ("Reset to 100 %"). Tab
+// reaches it, Space or Enter presses it.
+component TextLink inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    callback clicked();
+
+    width: link_text.preferred-width + 4px;
+    height: link_text.preferred-height + 4px;
+    border-radius: 2px;
+    border-width: link_focus.has-focus ? 1px : 0px;
+    border-color: Theme.accent-cyan-hover;
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.text;
+    accessible-description: root.hint;
+    accessible-action-default => { root.clicked(); }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    link_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    link_text := Text {
+        x: 2px;
+        y: 2px;
+        text: root.text;
+        font-size: 10px;
+        color: link_touch.has-hover ? Theme.accent-cyan : Theme.text-muted;
+        vertical-alignment: center;
+    }
+
+    link_touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// The Live Render viewport's "Rendering Settings" card (the gear in its toolbar): picture
+// quality, resolution, compute, lighting and a few material effects.
+//
+// Simple mode (`GuideModel.shows_advanced()`) keeps the controls most designs need -- target
+// samples, resolution, inclusion haze, crystal axis, frosted girdle, edge rounding, stone
+// size, environment map, exposure, backdrop, surface glare, light direction and the lighting
+// presets -- and hides the rest: catalogue preview size and samples, motion preview, live and
+// local compute, ray bounces and the tilt curve panel. A hidden control keeps its value and
+// still applies; the card says so when one is off its default.
 export component SettingsDialog inherits Rectangle {
     // This popup is positioned by absolute x/y/z in `gem_viewport.slint` rather than
     // laid out in a container, so `GemViewportView` passes its own height through
@@ -45,9 +169,22 @@ export component SettingsDialog inherits Rectangle {
     // rather than looking like it does something.
     property <bool> surface_glare_enabled: !SettingsModel.env_map_loaded;
     property <int> surface_glare_shown: Math.round(SettingsModel.surface_glare_pct / 5.0) * 5;
+    property <bool> head_shadow_enabled: !SettingsModel.env_map_loaded;
+    property <int> head_shadow_shown: Math.round(SettingsModel.head_shadow_deg);
     property <string> stone_size_tooltip: root.stone_size_is_design_driven
-        ? "Girdle width in millimetres for scale-accurate rendering. Currently set from the linked design's own girdle diameter -- turn off \"Linked to design\" to set this manually."
-        : "Girdle width in millimetres for scale-accurate rendering.";
+        ? "Stone Size: the width of the stone across the girdle in millimetres, so the colour and depth of a render match a real stone. Currently set from the linked design's own girdle diameter -- turn off \"Linked to design\" to set this manually."
+        : "Stone Size: the width of the stone across the girdle in millimetres, so the colour and depth of a render match a real stone. 0 leaves the picture unscaled.";
+    // Simple mode hides some controls that are off their defaults: say so (see the
+    // callback's own comment in `models/settings.slint`).
+    property <bool> advanced_note_visible: !GuideModel.shows_advanced() && SettingsModel.advanced_in_use(
+        Math.round(SettingsModel.preview_size_val),
+        Math.round(SettingsModel.preview_spp_val),
+        SettingsModel.local_preview_scale_index,
+        SettingsModel.live_compute_target_index,
+        SettingsModel.live_transfer_index,
+        SettingsModel.contribute_to_final_picture,
+        SettingsModel.local_compute_target_index,
+        SettingsModel.bounce_index);
 
     // `SettingsModel` used to carry its own `close()` callback here too,
     // invoked with no Rust `on_close` ever registered for it (dead wiring --
@@ -70,6 +207,8 @@ export component SettingsDialog inherits Rectangle {
         TiltModel.toggle_dialog();
     }
 
+    // The defaults here are also in `gui::render::advanced_in_use::HiddenRenderSettings::
+    // DEFAULT` (a test keeps that equal to the persisted defaults): change both together.
     function reset_defaults() {
         SettingsModel.target_samples_exponent = 8.0;
         SettingsModel.resolution_index = 1;
@@ -84,6 +223,7 @@ export component SettingsDialog inherits Rectangle {
         SettingsModel.exposure_val = 1.0;
         SettingsModel.backdrop_index = 1;
         SettingsModel.surface_glare_pct = 100.0;
+        SettingsModel.head_shadow_deg = 16.0;
         SettingsModel.light_yaw_deg = 48.0;
         SettingsModel.light_pitch_deg = 54.0;
         SettingsModel.inclusion_sigma_s = 0.0;
@@ -106,6 +246,7 @@ export component SettingsDialog inherits Rectangle {
         SettingsModel.exposure_changed(1.0);
         SettingsModel.backdrop_changed(1);
         SettingsModel.surface_glare_changed(100.0);
+        SettingsModel.head_shadow_changed(16.0);
         ViewportModel.light_pos_changed(48.0, 54.0);
         SettingsModel.inclusion_changed(0.0);
         SettingsModel.c_axis_override_changed(false);
@@ -134,7 +275,7 @@ export component SettingsDialog inherits Rectangle {
     border-width: 1px;
     border-color: Theme.border-dialog;
     drop-shadow-blur: 24px;
-    drop-shadow-color: #000000ee;
+    drop-shadow-color: Theme.shadow-heavy;
     drop-shadow-offset-y: 6px;
 
     // `width`/`height: 100%` are deliberate: `root.height` above is already the
@@ -147,7 +288,7 @@ export component SettingsDialog inherits Rectangle {
         padding: 16px;
         spacing: 14px;
 
-        // Header with Title and Close '×' button
+        // Header with Title, the manual's "?" and the Close '×' button
         HorizontalLayout {
             alignment: space-between;
 
@@ -157,17 +298,42 @@ export component SettingsDialog inherits Rectangle {
                 Text { text: "Rendering Settings"; font-size: 13px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
             }
 
-            Rectangle {
-                width: 24px;
-                height: 24px;
-                border-radius: 12px;
-                background: close_btn.has-hover ? Theme.surface-raised : transparent;
-
-                close_btn := TouchArea {
+            HorizontalLayout {
+                spacing: 6px;
+                VerticalLayout {
+                    alignment: center;
+                    HelpButton {
+                        topic: HelpTopics.render-settings;
+                        hint: "Open the manual page on the rendering settings";
+                    }
+                }
+                IconButton {
+                    icon: @image-url("../icons/close.svg");
+                    glyph: 12px;
+                    hint: "Close the rendering settings";
                     clicked => { root.close(); }
                 }
+            }
+        }
 
-                Image { source: @image-url("../icons/close.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; horizontal-alignment: center; vertical-alignment: center; }
+        // Simple mode hides some settings; one of them is off its default.
+        if root.advanced_note_visible: Rectangle {
+            border-radius: Theme.radius-sm;
+            background: Theme.notice-surface;
+            border-width: 1px;
+            border-color: Theme.notice-accent;
+            height: advanced_note.preferred-height + 12px;
+            accessible-role: AccessibleRole.text;
+            accessible-label: "Some advanced settings are in use. Switch to Advanced to see them.";
+            Tooltip { text: @markdown("Simple mode hides some render settings (preview size and samples, motion preview, compute choices, ray bounces). One of them is not at its default. It still applies. Switch to Advanced in the header to see and change it."); }
+            advanced_note := Text {
+                x: 8px;
+                y: 6px;
+                width: parent.width - 16px;
+                text: "Some advanced settings are in use. Switch to Advanced to see them.";
+                font-size: 11px;
+                color: Theme.notice-text;
+                wrap: word-wrap;
             }
         }
 
@@ -179,13 +345,17 @@ export component SettingsDialog inherits Rectangle {
             spacing: 4px;
             HorizontalLayout {
                 alignment: space-between;
-                Text { text: "Target Samples"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                SettingLabel {
+                    text: "Target Samples";
+                    hint: "Target Samples: how many light paths are traced for every pixel before the picture counts as finished. More samples mean less grain and a longer wait; each step doubles the number.";
+                }
                 Text { text: root.target_samples_count; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
             }
             Slider {
                 minimum: 3;
                 maximum: 10;
                 step: 1;
+                accessible-label: "Target Samples";
                 value <=> SettingsModel.target_samples_exponent;
                 // `SliderBase.set-value` updates `target_samples_exponent` BEFORE
                 // firing `changed`, so `root.sample_exponent` reflects this change
@@ -196,33 +366,41 @@ export component SettingsDialog inherits Rectangle {
 
         // Catalogue preview thumbnails: size and quality. Plain linear sliders (not
         // the samples-exponent's drag-then-round idiom) since both ranges (96-256px,
-        // 32-512spp) are narrow enough for a linear drag to stay fine-grained.
-        VerticalLayout {
+        // 32-512spp) are narrow enough for a linear drag to stay fine-grained. Advanced.
+        if GuideModel.shows_advanced(): VerticalLayout {
             spacing: 4px;
             HorizontalLayout {
                 alignment: space-between;
-                Text { text: "Preview Image Size"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                SettingLabel {
+                    text: "Preview Image Size";
+                    hint: "Preview Image Size: the width of the small pictures the catalogue draws for each design, in pixels. Larger pictures are sharper and take longer to draw.";
+                }
                 Text { text: Math.round(SettingsModel.preview_size_val) + "px"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
             }
             Slider {
                 minimum: 96;
                 maximum: 256;
                 step: 16;
+                accessible-label: "Preview Image Size";
                 value <=> SettingsModel.preview_size_val;
                 changed(val) => { SettingsModel.preview_size_changed(Math.round(val)); }
             }
         }
-        VerticalLayout {
+        if GuideModel.shows_advanced(): VerticalLayout {
             spacing: 4px;
             HorizontalLayout {
                 alignment: space-between;
-                Text { text: "Preview Samples"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                SettingLabel {
+                    text: "Preview Samples";
+                    hint: "Preview Samples: how many light paths are traced for each pixel of a catalogue picture. More samples mean less grain and a slower batch.";
+                }
                 Text { text: Math.round(SettingsModel.preview_spp_val); font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
             }
             Slider {
                 minimum: 32;
                 maximum: 512;
                 step: 32;
+                accessible-label: "Preview Samples";
                 value <=> SettingsModel.preview_spp_val;
                 changed(val) => { SettingsModel.preview_spp_changed(Math.round(val)); }
             }
@@ -235,22 +413,22 @@ export component SettingsDialog inherits Rectangle {
 
         // Motion Preview Resolution, off by default. Same segmented-pill idiom as
         // Render Resolution above; a discrete choice rather than a slider since
-        // there's no meaningful continuum between "half" and "0.47".
-        MotionPreviewPicker { }
+        // there's no meaningful continuum between "half" and "0.47". Advanced.
+        if GuideModel.shows_advanced(): MotionPreviewPicker { }
 
         // Live Compute: which engine(s) trace the settled viewport image. Same
         // segmented-pill idiom, and the same disabled-with-a-reason treatment, as
-        // `export_dialog.slint`'s "Compute" section.
-        LiveComputePicker {
+        // `export_dialog.slint`'s "Compute" section. Advanced.
+        if GuideModel.shows_advanced(): LiveComputePicker {
             unavailable_reason: root.live_remote_unavailable_reason;
         }
 
         // Local Compute: which engine(s) the LOCAL (non-remote) render loop uses --
         // only shown on a GPU-capable build (`gpu_build`), since the choice is
-        // meaningless without a `gpu` feature to route through.
-        if SettingsModel.gpu_build: LocalComputePicker { }
+        // meaningless without a `gpu` feature to route through. Advanced.
+        if SettingsModel.gpu_build && GuideModel.shows_advanced(): LocalComputePicker { }
 
-        // Ray Bounces - Segmented Pill Selector.
+        // Ray Bounces - Segmented Pill Selector. Advanced.
         //
         // Ladder is 4/8/12/24/64/128, backed by
         // `crates/indicatrix/examples/bounce_cost.rs` measurements: cost is nearly
@@ -260,7 +438,7 @@ export component SettingsDialog inherits Rectangle {
         // 64 and 128 are the measured points where the hardest case (Diamond) crosses
         // 99.5% and 99.99% converged against a 1024-bounce reference; nothing above
         // 128 is offered since the measurement shows zero further change up to 1024.
-        BouncesPicker { }
+        if GuideModel.shows_advanced(): BouncesPicker { }
 
         // Inclusion Haze: subsurface/inclusion scattering amount, off by default.
         // Linear, unlike the samples slider above, since `scattering_sigma_s` is
@@ -269,10 +447,9 @@ export component SettingsDialog inherits Rectangle {
             spacing: 4px;
             HorizontalLayout {
                 alignment: space-between;
-                Rectangle {
-                    height: inclusion_lbl.preferred-height;
-                    Tooltip { text: @markdown("Subsurface haze from 0 (clean) to 3 (milky)."); }
-                    inclusion_lbl := Text { text: "Inclusion Haze"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                SettingLabel {
+                    text: "Inclusion Haze";
+                    hint: "Inclusion Haze: a milky veil inside the stone, from 0 (clean) to 3 (milky), as tiny inclusions scatter the light.";
                 }
                 Text {
                     text: SettingsModel.inclusion_sigma_s <= 0.0 ? "Off" : Math.round(SettingsModel.inclusion_sigma_s * 100.0) / 100.0 + "";
@@ -284,6 +461,7 @@ export component SettingsDialog inherits Rectangle {
             Slider {
                 minimum: 0.0;
                 maximum: 3.0;
+                accessible-label: "Inclusion Haze";
                 value <=> SettingsModel.inclusion_sigma_s;
                 changed(val) => { SettingsModel.inclusion_changed(val); }
             }
@@ -298,38 +476,13 @@ export component SettingsDialog inherits Rectangle {
 
         // Frosted Girdle: renders the girdle band with a bruted (ground, diffusely
         // scattering) finish instead of polished. Off by default.
-        VerticalLayout {
-            spacing: 4px;
-            HorizontalLayout {
-                alignment: space-between;
-                Rectangle {
-                    height: frosted_lbl.preferred-height;
-                    Tooltip { text: @markdown("Render the girdle band ground instead of polished."); }
-                    frosted_lbl := Text { text: "Frosted Girdle"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
-                }
-                Rectangle {
-                    width: 36px;
-                    height: 20px;
-                    border-radius: 10px;
-                    background: SettingsModel.girdle_frosted ? Theme.accent-cyan : Theme.border-dialog;
-
-                    TouchArea {
-                        clicked => {
-                            SettingsModel.girdle_frosted = !SettingsModel.girdle_frosted;
-                            SettingsModel.girdle_frosted_changed(SettingsModel.girdle_frosted);
-                        }
-                    }
-
-                    Rectangle {
-                        width: 16px;
-                        height: 16px;
-                        border-radius: 8px;
-                        background: white;
-                        x: SettingsModel.girdle_frosted ? parent.width - self.width - 2px : 2px;
-                        y: 2px;
-                        animate x { duration: 120ms; }
-                    }
-                }
+        ToggleRow {
+            text: "Frosted Girdle";
+            hint: "Frosted Girdle: draw the girdle band ground (matt) instead of polished.";
+            checked: SettingsModel.girdle_frosted;
+            toggled => {
+                SettingsModel.girdle_frosted = !SettingsModel.girdle_frosted;
+                SettingsModel.girdle_frosted_changed(SettingsModel.girdle_frosted);
             }
         }
 
@@ -339,10 +492,9 @@ export component SettingsDialog inherits Rectangle {
             spacing: 4px;
             HorizontalLayout {
                 alignment: space-between;
-                Rectangle {
-                    height: edge_rounding_lbl.preferred-height;
-                    Tooltip { text: @markdown("Soften facet edges from sharp toward a subtle rounded glint."); }
-                    edge_rounding_lbl := Text { text: "Edge Rounding"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                SettingLabel {
+                    text: "Edge Rounding";
+                    hint: "Edge Rounding: soften the edges between facets from perfectly sharp toward a faint rounded glint, as on a real polished stone.";
                 }
                 Text {
                     text: SettingsModel.edge_rounding_radius <= 0.0 ? "Off" : Math.round(SettingsModel.edge_rounding_radius * 1000.0) / 1000.0 + "";
@@ -354,6 +506,7 @@ export component SettingsDialog inherits Rectangle {
             Slider {
                 minimum: 0.0;
                 maximum: 0.03;
+                accessible-label: "Edge Rounding";
                 value <=> SettingsModel.edge_rounding_radius;
                 changed(val) => { SettingsModel.edge_rounding_changed(val); }
             }
@@ -365,20 +518,10 @@ export component SettingsDialog inherits Rectangle {
             spacing: 4px;
             HorizontalLayout {
                 alignment: space-between;
-                Rectangle {
-                    height: stone_size_lbl.preferred-height;
-                    Tooltip { text: @markdown("\{root.stone_size_tooltip}"); }
-                    HorizontalLayout {
-                        spacing: 4px;
-                        stone_size_lbl := Text { text: "Stone Size"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
-                        if root.stone_size_is_design_driven: Text {
-                            text: "(from design)";
-                            font-size: 10px;
-                            font-italic: true;
-                            color: Theme.text-muted;
-                            vertical-alignment: center;
-                        }
-                    }
+                SettingLabel {
+                    text: "Stone Size";
+                    note: root.stone_size_is_design_driven ? "(from design)" : "";
+                    hint: root.stone_size_tooltip;
                 }
                 Text {
                     text: SettingsModel.stone_width_mm <= 0.0 ? "Off" : Math.round(SettingsModel.stone_width_mm * 100.0) / 100.0 + "mm";
@@ -390,6 +533,7 @@ export component SettingsDialog inherits Rectangle {
             Slider {
                 minimum: 0.0;
                 maximum: 20.0;
+                accessible-label: "Stone Size in millimetres";
                 value <=> SettingsModel.stone_width_mm;
                 changed(val) => { SettingsModel.stone_width_changed(val); }
             }
@@ -406,16 +550,16 @@ export component SettingsDialog inherits Rectangle {
             spacing: 4px;
             HorizontalLayout {
                 alignment: space-between;
-                Rectangle {
-                    height: exposure_lbl.preferred-height;
-                    Tooltip { text: @markdown("Overall brightness; key-light position around and above the stone."); }
-                    exposure_lbl := Text { text: "Studio Exposure"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                SettingLabel {
+                    text: "Studio Exposure";
+                    hint: "Studio Exposure: the overall brightness of the picture. 1x is the normal level.";
                 }
                 Text { text: Math.round(SettingsModel.exposure_val * 100.0) / 100.0 + "x"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
             }
             Slider {
                 minimum: 0.4;
                 maximum: 2.5;
+                accessible-label: "Studio Exposure";
                 value <=> SettingsModel.exposure_val;
                 changed(val) => { SettingsModel.exposure_changed(val); }
             }
@@ -425,34 +569,37 @@ export component SettingsDialog inherits Rectangle {
         // optics never do, so leakage stays dark whatever is picked here.
         VerticalLayout {
             spacing: 4px;
-            Rectangle {
-                height: backdrop_lbl.preferred-height;
-                Tooltip { text: @markdown("What the camera sees behind the stone. **As lit**: the environment's own ground. **Grey**: a neutral grey backdrop card (about sRGB 160), for like-for-like comparisons. **White**: a light box. The stone's optics never see the card, so leakage stays dark."); }
-                backdrop_lbl := Text { text: "Backdrop"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+            SettingLabel {
+                text: "Backdrop";
+                hint: "Backdrop: what the camera sees behind the stone. As lit: the lighting's own ground. Grey: a neutral grey card (about sRGB 160), for like-for-like comparisons. White: a light box. The stone's optics never see the card, so light leaking out of the back stays dark.";
             }
             HorizontalLayout {
                 spacing: 4px;
-                for label[i] in ["As lit", "Grey", "White"]: Rectangle {
-                    horizontal-stretch: 1;
-                    height: 28px;
-                    border-radius: Theme.radius-sm;
-                    background: SettingsModel.backdrop_index == i ? Theme.accent-cyan : (backdrop_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken);
-                    border-width: 1px;
-                    border-color: SettingsModel.backdrop_index == i ? Theme.accent-cyan : Theme.border-dialog;
-
-                    backdrop_touch := TouchArea {
-                        clicked => {
-                            SettingsModel.backdrop_index = i;
-                            SettingsModel.backdrop_changed(i);
-                        }
+                SegmentPill {
+                    text: "As lit";
+                    hint: "Show the ground of the chosen lighting behind the stone.";
+                    selected: SettingsModel.backdrop_index == 0;
+                    picked => {
+                        SettingsModel.backdrop_index = 0;
+                        SettingsModel.backdrop_changed(0);
                     }
-                    Text {
-                        text: label;
-                        font-size: 11px;
-                        font-weight: 600;
-                        color: SettingsModel.backdrop_index == i ? Theme.text-on-accent : Theme.text-secondary;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                }
+                SegmentPill {
+                    text: "Grey";
+                    hint: "Show a neutral grey card behind the stone, the same for every design.";
+                    selected: SettingsModel.backdrop_index == 1;
+                    picked => {
+                        SettingsModel.backdrop_index = 1;
+                        SettingsModel.backdrop_changed(1);
+                    }
+                }
+                SegmentPill {
+                    text: "White";
+                    hint: "Show a white light box behind the stone.";
+                    selected: SettingsModel.backdrop_index == 2;
+                    picked => {
+                        SettingsModel.backdrop_index = 2;
+                        SettingsModel.backdrop_changed(2);
                     }
                 }
             }
@@ -466,36 +613,19 @@ export component SettingsDialog inherits Rectangle {
             HorizontalLayout {
                 alignment: space-between;
                 spacing: 6px;
-                Rectangle {
-                    height: glare_lbl.preferred-height;
-                    Tooltip { text: @markdown("Hides the white mirror image of the light on the table so the inner facets stay visible. 0 % = light that entered the stone only. Applies to the built-in lighting presets, not to HDR maps, and to the path-traced view and exports (the Solid view is unaffected)."); }
-                    HorizontalLayout {
-                        spacing: 4px;
-                        glare_lbl := Text { text: "Surface glare"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
-                        if !root.surface_glare_enabled: Text {
-                            text: "(not used with an HDR map)";
-                            font-size: 10px;
-                            font-italic: true;
-                            color: Theme.text-muted;
-                            vertical-alignment: center;
-                        }
-                    }
+                SettingLabel {
+                    text: "Surface glare";
+                    note: !root.surface_glare_enabled ? "(not used with an HDR map)" : "";
+                    hint: "Surface glare: hides the white mirror image of the light on the table so the inner facets stay visible. 0 % keeps only light that entered the stone. Applies to the built-in lighting presets, not to HDR maps, and to the path-traced view and exports (the Solid view is unaffected).";
                 }
                 HorizontalLayout {
                     spacing: 6px;
-                    if root.surface_glare_shown < 100 && root.surface_glare_enabled: Rectangle {
-                        width: glare_reset_text.preferred-width;
-                        glare_reset_touch := TouchArea {
-                            clicked => {
-                                SettingsModel.surface_glare_pct = 100.0;
-                                SettingsModel.surface_glare_changed(100.0);
-                            }
-                        }
-                        glare_reset_text := Text {
-                            text: "Reset to 100 %";
-                            font-size: 10px;
-                            color: glare_reset_touch.has-hover ? Theme.accent-cyan : Theme.text-muted;
-                            vertical-alignment: center;
+                    if root.surface_glare_shown < 100 && root.surface_glare_enabled: TextLink {
+                        text: "Reset to 100 %";
+                        hint: "Put the surface glare back to 100 %, the unchanged look.";
+                        clicked => {
+                            SettingsModel.surface_glare_pct = 100.0;
+                            SettingsModel.surface_glare_changed(100.0);
                         }
                     }
                     Text { text: root.surface_glare_shown + " %"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
@@ -506,8 +636,46 @@ export component SettingsDialog inherits Rectangle {
                 maximum: 100.0;
                 step: 5.0;
                 enabled: root.surface_glare_enabled;
+                accessible-label: "Surface glare in percent";
                 value <=> SettingsModel.surface_glare_pct;
                 changed(val) => { SettingsModel.surface_glare_changed(Math.round(val / 5.0) * 5.0); }
+            }
+        }
+
+        // Head shadow: the angular radius of the viewer's head shadow on the lit presets,
+        // 0-30 degrees (0 = off). Rust rounds and applies it
+        // (`gui::render::material_quality::setup_head_shadow_callback`).
+        VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                alignment: space-between;
+                spacing: 6px;
+                SettingLabel {
+                    text: "Head shadow";
+                    note: !root.head_shadow_enabled ? "(not used with an HDR map)" : "";
+                    hint: "How much of the sky the viewer's head hides: the dark table reflections a face-up stone shows. 16 degrees is a head at arm's length; 0 turns it off. Product-photography rigs (D65 Daylight, Incandescent, Ring Lights, Dark Spotlight) ignore it.";
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    if root.head_shadow_shown != 16 && root.head_shadow_enabled: TextLink {
+                        text: "Reset to 16°";
+                        hint: "Put the head shadow back to 16 degrees, a head at arm's length.";
+                        clicked => {
+                            SettingsModel.head_shadow_deg = 16.0;
+                            SettingsModel.head_shadow_changed(16.0);
+                        }
+                    }
+                    Text { text: root.head_shadow_shown == 0 ? "Off" : root.head_shadow_shown + "°"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
+                }
+            }
+            Slider {
+                minimum: 0.0;
+                maximum: 30.0;
+                step: 1.0;
+                enabled: root.head_shadow_enabled;
+                accessible-label: "Head shadow in degrees";
+                value <=> SettingsModel.head_shadow_deg;
+                changed(val) => { SettingsModel.head_shadow_changed(Math.round(val)); }
             }
         }
 
@@ -516,20 +684,17 @@ export component SettingsDialog inherits Rectangle {
             spacing: 4px;
             HorizontalLayout {
                 alignment: space-between;
-                Rectangle {
-                    height: azimuth_row.preferred-height;
-                    Tooltip { text: @markdown("Overall brightness; key-light position around and above the stone."); }
-                    azimuth_row := HorizontalLayout {
-                        spacing: 5px;
-                        Image { source: @image-url("../icons/lightbulb.svg"); colorize: Theme.text-muted; width: 10px; height: 10px; vertical-alignment: center; }
-                        Text { text: "Light Azimuth"; font-size: 11px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; }
-                    }
+                SettingLabel {
+                    icon: @image-url("../icons/lightbulb.svg");
+                    text: "Light Azimuth";
+                    hint: "Light Azimuth: the direction the main light shines from, as an angle around the stone (0 to 360 degrees). Dragging with the right mouse button, or Shift and the left button, in the viewport moves it too.";
                 }
                 Text { text: Math.round(SettingsModel.light_yaw_deg) + "°"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
             }
             Slider {
                 minimum: 0.0;
                 maximum: 360.0;
+                accessible-label: "Light Azimuth in degrees";
                 value <=> SettingsModel.light_yaw_deg;
                 changed(val) => { ViewportModel.light_pos_changed(val, SettingsModel.light_pitch_deg); }
             }
@@ -540,20 +705,17 @@ export component SettingsDialog inherits Rectangle {
             spacing: 4px;
             HorizontalLayout {
                 alignment: space-between;
-                Rectangle {
-                    height: elevation_row.preferred-height;
-                    Tooltip { text: @markdown("Overall brightness; key-light position around and above the stone."); }
-                    elevation_row := HorizontalLayout {
-                        spacing: 5px;
-                        Image { source: @image-url("../icons/lightbulb.svg"); colorize: Theme.text-muted; width: 10px; height: 10px; vertical-alignment: center; }
-                        Text { text: "Light Elevation"; font-size: 11px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; }
-                    }
+                SettingLabel {
+                    icon: @image-url("../icons/lightbulb.svg");
+                    text: "Light Elevation";
+                    hint: "Light Elevation: how high the main light is above the stone, from 10 degrees (low and raking) to 90 degrees (straight overhead).";
                 }
                 Text { text: Math.round(SettingsModel.light_pitch_deg) + "°"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
             }
             Slider {
                 minimum: 10.0;
                 maximum: 90.0;
+                accessible-label: "Light Elevation in degrees";
                 value <=> SettingsModel.light_pitch_deg;
                 changed(val) => { ViewportModel.light_pos_changed(SettingsModel.light_yaw_deg, val); }
             }
@@ -564,8 +726,8 @@ export component SettingsDialog inherits Rectangle {
         // yaw/pitch, so applying one never spins the gem out from under the user.
         LightingPresetsSection { }
 
-        // Performance Curve over Tilt Angles (Extinction & Brilliance Graph)
-        PerformanceCurvePanel {
+        // Performance Curve over Tilt Angles (Extinction & Brilliance Graph). Advanced.
+        if GuideModel.shows_advanced(): PerformanceCurvePanel {
             open_performance_graph => { root.open_performance_graph(); }
         }
 
@@ -576,25 +738,12 @@ export component SettingsDialog inherits Rectangle {
 
             // Two-step affordance: the first click only opens the confirm prompt
             // below; nothing resets until "Confirm" is clicked.
-            if !root.confirming_reset: Rectangle {
+            if !root.confirming_reset: FooterButton {
                 width: 130px;
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: rst_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken;
-                border-width: 1px;
-                border-color: Theme.border-dialog;
-
-                rst_touch := TouchArea {
-                    clicked => { root.confirming_reset = true; }
-                }
-                Tooltip { text: @markdown("Reset every setting here to its default. Cannot be undone."); }
-
-                HorizontalLayout {
-                    alignment: center;
-                    spacing: 5px;
-                    Image { source: @image-url("../icons/reset.svg"); colorize: Theme.text-secondary; width: 11px; height: 11px; vertical-alignment: center; }
-                    Text { text: "Reset to Defaults"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; vertical-alignment: center; }
-                }
+                icon: @image-url("../icons/reset.svg");
+                text: "Reset to Defaults";
+                hint: "Reset every setting here to its default. Cannot be undone.";
+                clicked => { root.confirming_reset = true; }
             }
             if root.confirming_reset: HorizontalLayout {
                 spacing: 6px;
@@ -604,44 +753,30 @@ export component SettingsDialog inherits Rectangle {
                     color: Theme.accent-amber;
                     vertical-alignment: center;
                 }
-                Rectangle {
+                FooterButton {
                     width: 64px;
-                    height: 30px;
-                    border-radius: Theme.radius-sm;
-                    background: confirm_reset_touch.has-hover ? #b91c1c : Theme.accent-ruby;
-                    confirm_reset_touch := TouchArea {
-                        clicked => {
-                            root.confirming_reset = false;
-                            root.reset_defaults();
-                        }
+                    kind: 2;
+                    text: "Confirm";
+                    hint: "Yes, put every setting here back to its default.";
+                    clicked => {
+                        root.confirming_reset = false;
+                        root.reset_defaults();
                     }
-                    Text { text: "Confirm"; font-size: 11px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
                 }
-                Rectangle {
+                FooterButton {
                     width: 60px;
-                    height: 30px;
-                    border-radius: Theme.radius-sm;
-                    background: cancel_reset_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken;
-                    border-width: 1px;
-                    border-color: Theme.border-dialog;
-                    cancel_reset_touch := TouchArea {
-                        clicked => { root.confirming_reset = false; }
-                    }
-                    Text { text: "Cancel"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    text: "Cancel";
+                    hint: "Keep the settings as they are.";
+                    clicked => { root.confirming_reset = false; }
                 }
             }
 
-            Rectangle {
+            FooterButton {
                 horizontal-stretch: 1;
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: done_touch.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan;
-
-                done_touch := TouchArea {
-                    clicked => { root.close(); }
-                }
-
-                Text { text: "Done"; font-size: 12px; font-weight: 700; color: Theme.text-on-accent; horizontal-alignment: center; vertical-alignment: center; }
+                kind: 1;
+                text: "Done";
+                hint: "Close the rendering settings.";
+                clicked => { root.close(); }
             }
         }
     }

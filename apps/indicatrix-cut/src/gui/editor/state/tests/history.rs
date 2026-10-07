@@ -57,6 +57,8 @@ fn fresh_from_spec_round_trips_gear_symmetry_mirror_and_material() {
             specific_gravity_override: None,
             refractive_index_override: Some(1.55),
             body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
         },
         preform: indicatrix_cut_core::PreformSpec::cylinder(80, 1.4, 1.0, 1.3),
     };
@@ -101,6 +103,8 @@ fn set_material_edit_leaves_every_tier_untouched_but_bumps_generation() {
                 specific_gravity_override: None,
                 refractive_index_override: None,
                 body_color_override: None,
+                body_color_bands_override: None,
+                absorption_path_scale_override: None,
             },
         })
         .unwrap();
@@ -140,6 +144,45 @@ fn angle_nudge_coalesce_key_distinguishes_disjoint_targets() {
     assert_ne!(
         angle_nudge_coalesce_key(&[0]),
         angle_nudge_coalesce_key(&[1]),
+    );
+}
+
+// --- EditorState::nudge_angles: the arrows move the SHOWN number ---
+
+/// The tier table prints a pavilion tier's angle without its minus sign, so the inline cell's
+/// Up arrow and the Offset box have to make that shown number bigger for a pavilion tier too.
+#[test]
+fn the_nudge_path_moves_the_shown_angle_of_a_pavilion_tier_up_on_up() {
+    let mut state = EditorState::fresh();
+    for (index, (name, angle)) in [("C1", 34.5), ("P1", -40.0)].into_iter().enumerate() {
+        state
+            .apply(Edit::AddTier {
+                index,
+                tier: ConstraintTier {
+                    angle_deg: angle,
+                    name: name.to_string(),
+                    indices: vec![],
+                    constraint: indicatrix::geometry::meet_solver::MeetConstraint::ScaleReference(
+                        0.5,
+                    ),
+                    imported_meet: None,
+                    original_notes: None,
+                    detached: Vec::new(),
+                },
+            })
+            .unwrap();
+    }
+    state.nudge_angles(&[0, 1], 0.5).unwrap().unwrap();
+    let shown: Vec<f64> = state
+        .design
+        .tiers
+        .iter()
+        .map(|tier| tier.angle_deg.abs())
+        .collect();
+    assert_eq!(shown, [35.0, 40.5]);
+    assert!(
+        state.design.tiers[1].angle_deg.is_sign_negative(),
+        "the pavilion tier keeps its stored sign"
     );
 }
 

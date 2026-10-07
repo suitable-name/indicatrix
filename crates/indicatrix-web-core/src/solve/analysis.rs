@@ -38,7 +38,7 @@ use indicatrix_cut_core::{
     AngleChange, Design, DesignSolveError, MaterialSelection, ObjectiveComponents,
     ObjectiveWeights, OptimizeConfig, OptimizeOutcome, ResolvedMaterial, Risk, SearchHooks,
     free_tier_indices,
-    optimize::{SearchStage, inclusive_max_evaluations},
+    optimize::{OptimizeOptions, SearchStage, inclusive_max_evaluations_for},
     optimize_design,
 };
 use indicatrix_editor::{
@@ -103,6 +103,9 @@ pub struct OptimizeParams {
     /// Index of the `LightingPreset` the objective scores under (the preset the
     /// viewport shows); decoded with `LightingPreset::from_index`.
     pub lighting_preset_index: i32,
+    /// How many starting arrangements the search tries (1 = the single descent; the web
+    /// UI sends 1). The Worker runs them one after the other, on its one thread.
+    pub starts: u32,
 }
 
 impl Default for OptimizeParams {
@@ -119,6 +122,8 @@ impl Default for OptimizeParams {
             polish: config.polish_start_step_deg.is_some(),
             only_tiers: None,
             lighting_preset_index: config.lighting.index(),
+            // The web keeps the single descent whatever the core's default is.
+            starts: 1,
         }
     }
 }
@@ -134,10 +139,16 @@ impl OptimizeParams {
                 extinction: self.extinction,
                 tilt_brilliance: self.tilt_brilliance,
                 yield_weight: self.yield_weight,
+                // The web request carries no face-up tone: the tone objective stays off.
+                ..ObjectiveWeights::default()
             },
             seed: self.seed,
             max_evaluations: self.max_evaluations as usize,
             lighting: LightingPreset::from_index(self.lighting_preset_index),
+            starts: (self.starts as usize).clamp(1, 32),
+            // wasm32 runs the starts in order whatever this says; one keeps native
+            // test runs of the same request sequential too.
+            max_lanes: 1,
             ..OptimizeConfig::default()
         };
         if !self.polish {
@@ -158,6 +169,16 @@ pub struct MaterialSelectionData {
     pub refractive_index_override: Option<f64>,
     /// A body-color absorption triple.
     pub body_color_override: Option<[f32; 3]>,
+    /// The seven-band body colour of the path-aware L*C*h editor
+    /// (`MaterialSelection::body_color_bands_override`), rows
+    /// `[centre_nm, width_nm, amplitude_per_mm]`; empty is "no bands" and the triple above
+    /// colours the stone. Wire version 12.
+    #[serde(default)]
+    pub body_color_bands: Vec<[f32; 3]>,
+    /// `MaterialSelection::absorption_path_scale_override` (mm per model unit) for the bands.
+    /// Wire version 12.
+    #[serde(default)]
+    pub absorption_path_scale_override: Option<f32>,
 }
 
 impl From<&MaterialSelection> for MaterialSelectionData {
@@ -167,17 +188,25 @@ impl From<&MaterialSelection> for MaterialSelectionData {
             specific_gravity_override: selection.specific_gravity_override,
             refractive_index_override: selection.refractive_index_override,
             body_color_override: selection.body_color_override,
+            body_color_bands: selection
+                .body_color_bands_override
+                .clone()
+                .unwrap_or_default(),
+            absorption_path_scale_override: selection.absorption_path_scale_override,
         }
     }
 }
 
 impl From<MaterialSelectionData> for MaterialSelection {
     fn from(data: MaterialSelectionData) -> Self {
+        let bands = (!data.body_color_bands.is_empty()).then_some(data.body_color_bands);
         Self {
             name: data.name,
             specific_gravity_override: data.specific_gravity_override,
             refractive_index_override: data.refractive_index_override,
             body_color_override: data.body_color_override,
+            absorption_path_scale_override: bands.as_ref().and(data.absorption_path_scale_override),
+            body_color_bands_override: bands,
         }
     }
 }
@@ -300,6 +329,11 @@ pub enum RetargetModeData {
     Optimize,
 }
 
+/// The value of [`RetargetParams::crown_follows_pavilion`] when a message does not carry it.
+const fn crown_follows_pavilion_default() -> bool {
+    true
+}
+
 /// Retarget's settings as plain data: the target material, the crown policy, the mode and
 /// (for Optimize mode) the search settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -310,6 +344,10 @@ pub struct RetargetParams {
     pub crown_fraction: f64,
     /// Scale the crown angle by the critical-angle ratio instead.
     pub scale_crown_by_ratio: bool,
+    /// Let every crown angle follow the pavilion's vertical stretch (the default; a message
+    /// from before this field existed reads as `true`).
+    #[serde(default = "crown_follows_pavilion_default")]
+    pub crown_follows_pavilion: bool,
     /// Shift or Optimize.
     pub mode: RetargetModeData,
     /// The search settings for Optimize mode (its `only_tiers` is ignored).
@@ -488,7 +526,13 @@ fn search(
     free_tier_count: usize,
     hooks: &SolveHooks<'_>,
 ) -> Result<OptimizeOutcome, DesignSolveError> {
-    let max_evaluations = inclusive_max_evaluations(config, free_tier_count);
+    // `optimize_design` runs with the default options, so that is the candidate count the
+    // multi-start budget (screening plus one polish per kept start) is quoted for.
+    let max_evaluations = inclusive_max_evaluations_for(
+        config,
+        OptimizeOptions::default().keep_candidates,
+        free_tier_count,
+    );
     let on_progress = |evaluations: usize, stage: SearchStage| {
         (hooks.on_progress)(ProgressReport {
             stage,
@@ -499,6 +543,7 @@ fn search(
     let search_hooks = SearchHooks {
         cancel: Some(hooks.cancel),
         on_progress: Some(&on_progress),
+        on_start: None,
     };
     optimize_design(design, material, config, &search_hooks)
 }
@@ -523,6 +568,7 @@ pub fn run_retarget(
     let crown = CrownShift {
         fraction: params.crown_fraction,
         scale_by_ratio: params.scale_crown_by_ratio,
+        follow_pavilion: params.crown_follows_pavilion,
     };
     let result = match params.mode {
         RetargetModeData::Shift => proposal_result(retarget::build_proposal(
@@ -600,7 +646,13 @@ fn optimize_mode_result(
             );
             RetargetResultData {
                 rows: rows.iter().map(RetargetRowData::from).collect(),
-                notes: retarget::build_notes(RetargetMode::Optimize(config), n_from, n_to),
+                notes: retarget::build_notes(
+                    RetargetMode::Optimize(config),
+                    n_from,
+                    n_to,
+                    crown,
+                    retarget::plan::pavilion_stretch(design, n_from, n_to),
+                ),
                 ..RetargetResultData::default()
             }
         }

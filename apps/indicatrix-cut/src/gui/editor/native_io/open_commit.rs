@@ -3,6 +3,8 @@
 //! (a `.indicatrix` design file, an older pair, an older self-contained sidecar, or a
 //! bare `.asc`) funnels through.
 
+mod restore_material;
+
 use super::{
     autosave::record_recent_native_file,
     design_paths::{is_autosave_design_path, schedule_name_for_design_path},
@@ -10,7 +12,7 @@ use super::{
     remember_design_location,
 };
 use crate::{
-    EditorModel, MainWindow, PhysicscolorModel,
+    EditorModel, MainWindow,
     bridge::render_thread::RenderContext,
     gui::{
         editor::{
@@ -26,19 +28,12 @@ use crate::{
         solid_preview::preview_state::SolidPreviewState,
     },
 };
-use indicatrix::optics::{
-    chromophore::ChromophoreCatalogue, fluorescence::Fluorescence, materials::GemMaterial,
-};
 use indicatrix_cut_core::{
     FingerprintCheck, History, LoadPairedResult, TierOverlay,
-    material::colorMode,
-    native::{
-        CustomMaterialSnapshot, LoadNativeOnlyResult, LoadedDesign as DesignFileLoaded,
-        MaterialResolution, Snapshotcolor, gem_material_from_custom_snapshot,
-        gem_material_from_custom_snapshot_keeping_recipe, snapshot_color,
-    },
+    native::{LoadNativeOnlyResult, LoadedDesign as DesignFileLoaded},
 };
 use indicatrix_editor::EditorSession;
+use restore_material::restore_custom_material;
 use slint::ComponentHandle;
 use std::{
     cell::RefCell,
@@ -124,75 +119,6 @@ pub(super) struct SelfContainedLoad<'a> {
     pub(super) asc_filename: &'a str,
 }
 
-/// A custom material the opened file carried a snapshot for is registered in this
-/// session's custom-material list (replacing a same-named entry), so the design does
-/// not silently render as Diamond. Returns the note for the open toast, if any, and
-/// whether the material is still unresolved (named, but neither built in nor
-/// restorable).
-fn restore_custom_material(
-    ui: &MainWindow,
-    render_ctx: &Arc<Mutex<RenderContext>>,
-    snapshot: Option<&CustomMaterialSnapshot>,
-    material_name: Option<&str>,
-    resolution: MaterialResolution,
-) -> (Option<String>, bool) {
-    if let (Some(snapshot), Some(name)) = (snapshot, material_name) {
-        // A physics recipe renders from its stored `resolved_bands`. When an older build edited
-        // the top-level color since (it differs from the fallback the file recorded) the file
-        // counts as fantasy-edited: the edited color is restored now and the user is asked
-        // whether to keep the recipe instead.
-        let color = snapshot_color(snapshot);
-        let gem: GemMaterial = gem_material_from_custom_snapshot(name, snapshot);
-        let edited_elsewhere = matches!(color, Snapshotcolor::EditedElsewhere(_));
-        let mut ctx = render_ctx
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let materials = Arc::make_mut(&mut ctx.custom_materials);
-        if let Some(pos) = materials
-            .iter()
-            .position(|m| m.name.eq_ignore_ascii_case(name))
-        {
-            materials[pos] = gem;
-        } else {
-            materials.push(gem);
-        }
-        ctx.set_custom_material_physics(name, matches!(color, Snapshotcolor::Physics(_)));
-        let catalogue = ChromophoreCatalogue::global();
-        let glow = |mode: &colorMode| mode.fluorescence(catalogue);
-        ctx.set_custom_material_fluorescence(
-            name,
-            match &color {
-                Snapshotcolor::Physics(mode) => glow(mode),
-                _ => Fluorescence::new(Vec::new()),
-            },
-        );
-        ctx.pending_color_choice = match &color {
-            Snapshotcolor::EditedElsewhere(mode) => Some((
-                name.to_string(),
-                gem_material_from_custom_snapshot_keeping_recipe(name, snapshot),
-                glow(mode),
-            )),
-            _ => None,
-        };
-        drop(ctx);
-        let mut note = format!(" '{name}' was restored from this file's own saved material data.");
-        if edited_elsewhere {
-            note.push_str(
-                " Its color was changed by an older version since the physics recipe was saved.",
-            );
-            ui.global::<PhysicscolorModel>()
-                .set_color_conflict_name(name.into());
-        }
-        return (Some(note), false);
-    }
-    // A material name this build can't resolve AND has no snapshot to restore from
-    // still silently becomes Diamond once `MaterialSelection::resolve` runs -- see
-    // `MaterialResolution`'s own doc comment. Surfaced rather than swallowed, so at
-    // least the open toast says so.
-    let unresolved = matches!(resolution, MaterialResolution::Unresolved);
-    (unresolved.then(|| format!(" {resolution}")), unresolved)
-}
-
 /// [`open_design_file`]'s own load result -- bundled (rather than two more
 /// parameters) purely to keep that function under clippy's argument-count lint.
 pub(super) struct DesignFileLoad {
@@ -259,8 +185,17 @@ pub(super) fn open_design_file(
         material_combo_cache: RefCell::new(MaterialComboCache::default()),
         source_entry_id: None,
         used_placeholder: false,
-        // The design file's own `[meta]` and attachments, kept for the next Save.
-        file_extras: DesignFileExtras::new(loaded.metadata, loaded.attachments),
+        // The design file's own `[meta]` and attachments, kept for the next Save. A file
+        // without an id gets the UUID of its location now (the same one every time it is
+        // opened), which that Save writes. A recovered autosave snapshot is not a place
+        // the design stays at, so it gets a fresh one.
+        file_extras: if recovered {
+            DesignFileExtras::new(loaded.metadata, loaded.attachments)
+                .with_design_uuid_assigned(None)
+        } else {
+            DesignFileExtras::new(loaded.metadata, loaded.attachments)
+                .with_design_uuid_assigned_for_file(&native_path)
+        },
         has_design: true,
     });
     finish_state_replace(ui, render_ctx, preview_state, solid_last_solved, state);
@@ -354,7 +289,9 @@ pub(super) fn open_native_self_contained(
         material_combo_cache: RefCell::new(MaterialComboCache::default()),
         source_entry_id: None,
         used_placeholder: false,
-        file_extras: DesignFileExtras::default(),
+        // The older sidecar has no id: its location names the design (see
+        // `state::design_identity`).
+        file_extras: DesignFileExtras::default().with_design_uuid_assigned_for_file(native_path),
         has_design: true,
     });
     finish_state_replace(ui, render_ctx, preview_state, solid_last_solved, state);
@@ -396,6 +333,7 @@ pub(super) fn open_plain_asc(
                 render_ctx,
                 preview_state,
                 solid_last_solved,
+                asc_path,
                 loaded,
             );
             show_toast(
@@ -444,6 +382,7 @@ pub(super) fn open_converted_design(
                 render_ctx,
                 preview_state,
                 solid_last_solved,
+                &source_path,
                 loaded,
             );
             if let Some(name) = source_path.file_name() {
@@ -476,13 +415,16 @@ pub(super) fn open_converted_design(
 /// Replaces `state` wholesale with a design loaded from a bare `.asc` (or a
 /// `.gem`/`.gcs` converted to one) and runs [`finish_state_replace`] -- the shared
 /// body of [`open_plain_asc`] and [`open_converted_design`]. There is no native
-/// design file, so the remembered save location is cleared.
+/// design file, so the remembered save location is cleared. `source_path` is the file
+/// the cutter actually picked (the `.asc`, or the `.gem`/`.gcs` it was converted from):
+/// it names the design for the library database until a Save gives it an id.
 fn commit_plain_design(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
     render_ctx: &Arc<Mutex<RenderContext>>,
     preview_state: &Arc<SolidPreviewState>,
     solid_last_solved: &crate::gui::editor::view::SolidLastSolved,
+    source_path: &Path,
     loaded: LoadedDesign,
 ) {
     // A bare `.asc` has no design file at all -- see `CURRENT_NATIVE_PATH`'s own doc
@@ -523,7 +465,7 @@ fn commit_plain_design(
         // A native/plain-`.asc` open carries a real recorded
         // schedule, never the angle-table reconstruction fallback.
         used_placeholder: false,
-        file_extras: DesignFileExtras::default(),
+        file_extras: DesignFileExtras::default().with_design_uuid_assigned_for_file(source_path),
         has_design: true,
     });
     finish_state_replace(ui, render_ctx, preview_state, solid_last_solved, state);
@@ -567,6 +509,10 @@ fn finish_state_replace(
     // Every open path (Open, Open Recent, the startup restore) installs a
     // real design -- the empty-state card grid must give way to it.
     push_has_design(ui, &st);
+    // The UUID the library database files this design's variants, cutting progress and
+    // lighting choice under -- logged so a "my variants are gone" report can be matched
+    // against what the file carries.
+    tracing::debug!("Opened design with UUID {}", st.design_uuid());
     drop(st);
     ui.global::<EditorModel>().set_selected_tier_index(-1);
     let pulse = ui.global::<EditorModel>().get_form_reset_pulse();
@@ -703,7 +649,10 @@ pub(super) fn commit_loaded_native(
         // A native/plain-`.asc` open carries a real recorded
         // schedule, never the angle-table reconstruction fallback.
         used_placeholder: false,
-        file_extras: DesignFileExtras::default(),
+        // The older pair has no id: the sidecar's location names the design (see
+        // `state::design_identity`).
+        file_extras: DesignFileExtras::default()
+            .with_design_uuid_assigned_for_file(Path::new(&native_path_display)),
         has_design: true,
     });
     finish_state_replace(ui, render_ctx, preview_state, solid_last_solved, state);

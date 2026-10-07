@@ -279,19 +279,109 @@ pub(super) fn sides_from_rows<'a>(
         .collect()
 }
 
+/// Which block a catalogue row numbers itself in, for [`standard_codes`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodeBlock {
+    Pavilion,
+    Crown,
+    Girdle,
+}
+
+impl CodeBlock {
+    /// The letter of the standard code (`P1`, `C1`, `G1`).
+    const fn letter(self) -> char {
+        match self {
+            Self::Pavilion => 'P',
+            Self::Crown => 'C',
+            Self::Girdle => 'G',
+        }
+    }
+}
+
+/// The block of a row: its [`AngleItem::side`] says pavilion or crown; a row on neither side
+/// is the girdle only when its own label or index column says so (an old-style label, a `G`
+/// label, an index of "girdle"), so an unplaceable row is never numbered as a girdle facet.
+fn code_block(label: &str, index_val: &str, side: i32) -> Option<CodeBlock> {
+    match side.cmp(&0) {
+        std::cmp::Ordering::Less => Some(CodeBlock::Pavilion),
+        std::cmp::Ordering::Greater => Some(CodeBlock::Crown),
+        std::cmp::Ordering::Equal => (indicatrix_cut_core::is_legacy_123_abc(label)
+            || starts_with_girdle_letter(label)
+            || eq_ignore_case_trim(index_val, "girdle"))
+        .then_some(CodeBlock::Girdle),
+    }
+}
+
+/// The label a person reads for each catalogue row: the standard code (`P1`, `G1`, `C1`, `T`)
+/// where the catalogue kept the old 123/ABC convention, and the catalogue's own label
+/// otherwise.
+///
+/// `rows` is each row's `(facet label, index column)` in schedule order and `sides` the
+/// matching [`sides_from_rows`] result. An old-style label (`1`, `3A`, `B`; see
+/// `indicatrix_cut_core::is_legacy_123_abc`) is numbered the way `compute_tier_labels`
+/// numbers a design's tiers: per block, in the listed order, counting every row of the block
+/// (a row already labelled `P1` takes its place in the count). So `1`, `2` (a girdle row), `3`,
+/// `A`, `B` become `P1`, `G1`, `P2`, `C1`, `C2`. The table is `T`. A row that already follows
+/// the standard (`P1`, `C1`, `G1`, `PF1`, `Table`) keeps its label exactly, and so does a row
+/// no block can be told for. A row with no label at all, on a known side, gets its code too.
+pub(super) fn standard_codes(rows: &[(&str, &str)], sides: &[i32]) -> Vec<String> {
+    let (mut pavilion, mut crown, mut girdle) = (0_usize, 0_usize, 0_usize);
+    rows.iter()
+        .zip(sides)
+        .map(|(&(facet, index_val), &side)| {
+            let label = facet.trim();
+            if is_table_row(facet, index_val) {
+                // The table is not numbered: `T` stays `T`, `Table` stays `Table`.
+                return if label.eq_ignore_ascii_case("t") {
+                    "T".to_string()
+                } else {
+                    facet.to_string()
+                };
+            }
+            let Some(block) = code_block(label, index_val, side) else {
+                return facet.to_string();
+            };
+            // A preform (`PF`) facet has its own numbering and its own label.
+            if block == CodeBlock::Pavilion && label.to_ascii_uppercase().starts_with("PF") {
+                return facet.to_string();
+            }
+            let counter = match block {
+                CodeBlock::Pavilion => &mut pavilion,
+                CodeBlock::Crown => &mut crown,
+                CodeBlock::Girdle => &mut girdle,
+            };
+            *counter += 1;
+            if label.is_empty() || indicatrix_cut_core::is_legacy_123_abc(label) {
+                format!("{}{}", block.letter(), *counter)
+            } else {
+                facet.to_string()
+            }
+        })
+        .collect()
+}
+
+/// Whether a row with this [`AngleItem::side`] is shown under `mode` (0 = All, 1 = Pavilion,
+/// 2 = Crown) -- exactly `cutting_table.slint`'s own `row_shown` predicate (side < 0 pavilion,
+/// side > 0 crown). Shared by the row counts and by the keyboard cursor
+/// (`row_cursor::step_row_cursor`'s caller), so the three can never disagree.
+#[must_use]
+pub(super) const fn side_shown_in_mode(side: i32, mode: i32) -> bool {
+    match mode {
+        1 => side < 0,
+        2 => side > 0,
+        _ => true,
+    }
+}
+
 /// Counts `angles` under `mode` (0 = All, 1 = Pavilion, 2 = Crown) by
 /// [`AngleItem::side`] -- exactly `cutting_table.slint`'s own `row_shown` predicate
-/// (side < 0 pavilion, side > 0 crown), pulled out so [`setup_filtered_row_count_callback`]
+/// ([`side_shown_in_mode`]), pulled out so [`setup_filtered_row_count_callback`]
 /// stays a thin Slint-callback wrapper.
 #[must_use]
 pub(super) fn count_angles_for_mode(angles: &ModelRc<AngleItem>, mode: i32) -> i32 {
     let count = angles
         .iter()
-        .filter(|a| match mode {
-            1 => a.side < 0,
-            2 => a.side > 0,
-            _ => true,
-        })
+        .filter(|a| side_shown_in_mode(a.side, mode))
         .count();
     i32::try_from(count).unwrap_or(i32::MAX)
 }
@@ -315,6 +405,9 @@ pub fn setup_filtered_row_count_callback(ui: &MainWindow) {
             let angles = ui.global::<LibraryModel>().get_current_angles();
             count_angles_for_mode(&angles, mode)
         });
+    // The cutting table's keyboard cursor lives next to its row counts: both read the same
+    // `side` filter, and this function is already wired into the main window.
+    super::row_cursor::setup_row_cursor_callback(ui);
 }
 
 /// Clears the detail pane's display fields and drops the current row selection.

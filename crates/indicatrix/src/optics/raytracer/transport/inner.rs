@@ -747,6 +747,10 @@ fn trace_spectral_ray_core(
                             .mul_add(unit_draw(rng_seed, bounce, FLUORESCENCE_DIR_U_STREAM), 1.0);
                         let phi = std::f32::consts::TAU
                             * unit_draw(rng_seed, bounce, FLUORESCENCE_DIR_V_STREAM);
+                        #[expect(
+                            clippy::suboptimal_flops,
+                            reason = "transport results are pinned bit for bit (goldens, twins); a fused `1 - z*z` rounds once and moves the last bit"
+                        )]
                         let r = (1.0 - z * z).max(0.0).sqrt();
                         let new_dir = Vec3::new(r * phi.cos(), r * phi.sin(), z);
                         current_ray.origin += segment_t * current_ray.dir;

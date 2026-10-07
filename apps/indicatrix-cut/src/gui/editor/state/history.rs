@@ -54,9 +54,11 @@ impl EditorState {
             .map(|_| ())
     }
 
-    /// Nudges every tier in `targets` by `delta_deg` as one coalescing edit, each
-    /// clamped to its own side of zero -- see
-    /// [`indicatrix_editor::EditorSession::nudge_angles`].
+    /// Nudges the angle every tier in `targets` SHOWS by `delta_deg` as one coalescing
+    /// edit, each clamped to its own side of zero. The tier table prints a pavilion
+    /// tier's angle without its minus sign, so a positive `delta_deg` makes the shown
+    /// number bigger for a crown and a pavilion tier alike -- see
+    /// [`indicatrix_editor::EditorSession::nudge_displayed_angles`].
     ///
     /// # Errors
     ///
@@ -67,7 +69,7 @@ impl EditorState {
         delta_deg: f64,
     ) -> Result<Option<NudgeOutcome>, EditError> {
         self.session
-            .nudge_angles(targets, delta_deg, coalesce_timestamp())
+            .nudge_displayed_angles(targets, delta_deg, coalesce_timestamp())
     }
 
     /// Sets tier `tier`'s angle as one coalescing edit of a handle drag -- see
@@ -139,10 +141,14 @@ impl EditorState {
 
     /// Redoes through [`indicatrix_cut_core::History::redo`] -- see [`Self::undo`].
     ///
+    /// Test-only: the Redo callback needs the row renumbering of the step and calls
+    /// `EditorSession::redo_mapped` itself.
+    ///
     /// # Errors
     ///
     /// Same as [`Self::undo`], symmetrically for
     /// [`indicatrix_cut_core::History::redo`].
+    #[cfg(test)]
     pub(in crate::gui::editor) fn redo(&mut self) -> Result<bool, EditError> {
         self.session.redo().map(|change| change.is_some())
     }

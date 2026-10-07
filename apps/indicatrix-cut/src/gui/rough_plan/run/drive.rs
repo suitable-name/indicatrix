@@ -16,10 +16,11 @@ use indicatrix_cut_core::rough_plan::{
     CandidateDesign, CutOrder, FINAL_LAYOUTS, LayoutGroup, PLAIN_SINGLE_FITS, PlanInput, PlanPath,
     PlanProgress, REFINE_TOP, RoughBlock, RoughLayout, SHAPED_SINGLE_FITS, SHAPED_SINGLE_LAYOUTS,
     best_layout, build_piece_table, choose_grid, final_ranking, finish_plan, flatten_groups,
-    merge_and_rank, own_pool, pareto_front, plan_alternatives, plan_rough_for_order, rank_indices,
+    merge_and_rank, own_pool, pareto_front, partial_ranking, plan_alternatives,
+    plan_rough_for_order, rank_indices,
     shaped::{
-        ShapedAltParams, ShapedCtx, ShapedGrid, choose_shaped_grid_at, grid_poll_events,
-        plan_shaped_alternatives, plan_shaped_for_order, refine_shaped, shaped_uniform_layouts,
+        ShapedAltParams, ShapedCtx, ShapedGrid, grid_poll_events, plan_shaped_alternatives,
+        plan_shaped_for_order, refine_shaped, shaped_uniform_layouts,
     },
     single_fit_layouts, uniform_layouts, uniform_pool,
 };
@@ -56,21 +57,18 @@ fn dp_ticks(cells: [usize; 3], ticks_per_cell: usize) -> usize {
 }
 
 /// The `Grid` events of a shaped rough's two piece tables: the size table reports one per
-/// plane of the first axis; the clipped table is built one plane of the first axis at a
-/// time (see `build_clipped_table_parallel`) and each such build reports one event per
+/// plane of the first axis; the clipped table is built one a-range at a time (see
+/// `build_clipped_table_parallel`) and each such job reports one event per
 /// `GRID_POLL_PIECES` entries, rounded up.
 ///
 /// The unit is one `PlanProgress::Grid` event, and only the first two tables count: the
 /// leave-one-out rounds build their own tables and report their own `Grid` events, which
 /// the tracker routes to the alternatives stage once an `Alternatives` event was seen.
-/// For the plane `a0` the clipped build covers `(cells[0] - a0)` planes of
-/// `range_count(1) * range_count(2)` entries each.
-fn shaped_grid_events(grid: &ShapedGrid) -> usize {
+/// Every a-range holds `range_count(1) * range_count(2)` entries, and there are
+/// `range_count(0)` of them.
+const fn shaped_grid_events(grid: &ShapedGrid) -> usize {
     let per_plane = grid.range_count(1) * grid.range_count(2);
-    let clipped: usize = (0..grid.cells[0])
-        .map(|a0| grid_poll_events((grid.cells[0] - a0) * per_plane))
-        .sum();
-    grid.cells[0] + clipped
+    grid.cells[0] + grid.range_count(0) * grid_poll_events(per_plane)
 }
 
 /// The plain block: the legacy stages, plus the exact single-stone fits merged into the
@@ -193,7 +191,21 @@ fn plan_shaped(
         return Some(Vec::new());
     };
 
-    let mut groups = shaped_dp_groups(input, &ctx, &front, lanes, progress)?;
+    // The time limit belongs to mesh roughs alone: a convex or hull rough is never armed, so
+    // none of the early exits below can happen for it.
+    if ctx.fit_mesh().is_some() {
+        progress.arm_deadline();
+    }
+
+    let mut groups = match shaped_dp_groups(input, &ctx, &front, lanes, progress) {
+        Some(groups) => groups,
+        // Stopped by the limit inside the tables or the six DPs: nothing to show yet.
+        None if progress.time_stopped() => return Some(Vec::new()),
+        None => return None,
+    };
+    if progress.time_stopped() {
+        return Some(partial_ranking(&groups, Vec::new()));
+    }
     let job = FitJob {
         region: &ctx.usable,
         coarse_region: &coarse_region,
@@ -202,10 +214,23 @@ fn plan_shaped(
         keep: SHAPED_SINGLE_FITS,
         mesh: ctx.fit_mesh(),
     };
-    let single_fits = fit_single_stones_parallel(&job, lanes, progress)?;
+    let Some(single_fits) = fit_single_stones_parallel(&job, lanes, progress) else {
+        return stopped_layouts(progress, || partial_ranking(&groups, Vec::new()));
+    };
+    let single_layouts = || {
+        single_fit_layouts(
+            &single_fits,
+            input.hulls,
+            SHAPED_SINGLE_LAYOUTS,
+            ctx.model_volume,
+        )
+    };
 
     let pool = uniform_pool(&front, &single_fits, designs);
-    let uniforms = shaped_uniform_layouts(&ctx, &pool, settings, lanes, &mut on_progress)?;
+    let Some(uniforms) = shaped_uniform_layouts(&ctx, &pool, settings, lanes, &mut on_progress)
+    else {
+        return stopped_layouts(progress, || partial_ranking(&groups, single_layouts()));
+    };
     groups.push(LayoutGroup {
         pool: Vec::new(),
         layouts: uniforms,
@@ -213,7 +238,7 @@ fn plan_shaped(
 
     let (flat, group_of) = flatten_groups(&groups);
     let ranked = rank_indices(&flat, REFINE_TOP);
-    let mut refined = refine_parallel(ranked.len(), lanes, progress, |slot| {
+    let Some(mut refined) = refine_parallel(ranked.len(), lanes, progress, |slot| {
         let index = ranked[slot];
         let group = &groups[group_of[index]];
         let pool = if group.pool.is_empty() {
@@ -222,14 +247,20 @@ fn plan_shaped(
             group.pool.clone()
         };
         refine_shaped(&ctx, flat[index], &pool, settings)
-    })?;
-    refined.extend(single_fit_layouts(
-        &single_fits,
-        input.hulls,
-        SHAPED_SINGLE_LAYOUTS,
-        ctx.model_volume,
-    ));
+    }) else {
+        return stopped_layouts(progress, || partial_ranking(&groups, single_layouts()));
+    };
+    refined.extend(single_layouts());
     Some(final_ranking(refined, &flat, &ranked))
+}
+
+/// What a stage that returned `None` means: the time limit stopped the plan (the layouts
+/// found so far, built by `partial`) or the user cancelled (`None`).
+fn stopped_layouts(
+    progress: &dyn Progress,
+    partial: impl FnOnce() -> Vec<RoughLayout>,
+) -> Option<Vec<RoughLayout>> {
+    progress.time_stopped().then(partial)
 }
 
 /// The size table, the clipped table, the six DPs and the alternatives of a shaped
@@ -243,7 +274,7 @@ fn shaped_dp_groups(
 ) -> Option<Vec<LayoutGroup>> {
     let settings = input.settings;
     let mut on_progress = |event: PlanProgress| progress.event(event);
-    let grid = choose_shaped_grid_at(ctx.bbox_min, ctx.bbox_extents, settings);
+    let grid = ctx.choose_grid(settings);
     progress.note(Note::Grid(shaped_grid_events(&grid)));
     progress.note(Note::Dp(dp_ticks(grid.cells, SHAPED_TICKS_PER_CELL)));
 
@@ -271,7 +302,12 @@ fn shaped_dp_groups(
                 settings,
                 lanes,
             };
-            plan_shaped_alternatives(&params, &mut on_progress)?
+            match plan_shaped_alternatives(&params, &mut on_progress) {
+                Some(alternatives) => alternatives,
+                // The limit stopped the leave-one-out rounds: the DP layouts stand.
+                None if progress.time_stopped() => Vec::new(),
+                None => return None,
+            }
         }
         None => Vec::new(),
     };

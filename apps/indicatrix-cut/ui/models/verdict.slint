@@ -1,0 +1,50 @@
+// The overall verdict on the open design: one Good / Check / Problem word in the status
+// strip, and the reasons behind it with a "Show" and a "Fix" for each where there is one.
+// The words, thresholds and fixes are `indicatrix_editor::verdict`; the Rust glue (the worker
+// that works the verdict out, the Fix callback) is `gui::editor::verdict`; the badge and the
+// popover are `components/verdict_badge.slint` and `components/verdict_popover.slint`.
+import { Theme } from "../theme.slint";
+
+// One thing the verdict found.
+export struct VerdictReasonData {
+    // 0 Good, 1 Check, 2 Problem -- the reason's own level (a Check reason inside a Problem
+    // verdict stays amber).
+    level: int,
+    // The plain sentence.
+    text: string,
+    // The tier the reason is about (its row number in the tier table, counting from 0), or -1
+    // for a reason about the whole stone. "Show" selects it.
+    tier: int,
+    // The label of the Fix button ("Snap to teeth", "Steepen", ...), or "" when no safe tool
+    // exists for this reason.
+    fix_label: string,
+    // What the Fix does, for its tooltip.
+    fix_hint: string,
+}
+
+export global VerdictModel {
+    // -1 nothing to judge (no design, or no tiers yet: the badge is hidden), 0 Good,
+    // 1 Check, 2 Problem.
+    in property <int> level: -1;
+    // The one word for `level`: "Good", "Check" or "Problem".
+    in property <string> word: "";
+    // The verdict as one plain sentence; the badge's tooltip and the popover's first line.
+    in property <string> headline: "";
+    // The reasons, worst first. Empty for Good.
+    in property <[VerdictReasonData]> reasons: [];
+    // The design changed since this verdict was worked out (an edit, or a solve still
+    // running). The old verdict stays on screen, dimmed, and its Fix buttons wait.
+    in property <bool> stale: false;
+    // A fix is being planned or applied; a second one has to wait.
+    in property <bool> busy: false;
+
+    // The Fix button of reason `index` was pressed. The Rust side asks for a confirmation
+    // where the fix removes something, plans the fix on a worker, applies it as one undo
+    // step and says what it did in a toast.
+    callback fix_reason(int);
+
+    // The colour for a level (the badge, the dots in the popover).
+    public pure function level_color(code: int) -> color {
+        return code >= 2 ? Theme.accent-ruby : (code == 1 ? Theme.accent-amber : Theme.accent-emerald);
+    }
+}

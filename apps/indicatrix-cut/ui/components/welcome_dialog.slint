@@ -1,0 +1,79 @@
+import { Theme } from "../theme.slint";
+import { TutorialsModel } from "../models/tutorials.slint";
+import { HelpTopics } from "../models/help.slint";
+import { HelpButton } from "help_button.slint";
+import { TipButton } from "compact_controls.slint";
+
+// The welcome dialog a new user sees once (`PreferencesModel.first_run_tour_pending`), and
+// again whenever Preferences > "Show the welcome tour again" is used. Three answers, each of
+// which records that the welcome has been seen: take the tour (a short guide, "welcome-tour"),
+// start with a template (opens the New Design dialog), or not now. Mounted by `app.slint`
+// inside a wrapping `FocusScope`: Escape means "Not now" and Enter takes the tour.
+export component WelcomeDialog inherits Rectangle {
+    background: Theme.overlay-backdrop;
+
+    // Swallows clicks on the backdrop: the welcome closes only through one of its buttons.
+    TouchArea {}
+
+    Rectangle {
+        width: min(500px, parent.width - 40px);
+        height: content.preferred-height;
+        background: Theme.surface-dialog;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-dialog;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.modal-shadow;
+        clip: true;
+
+        TouchArea {}
+
+        content := VerticalLayout {
+            padding: 20px;
+            spacing: 12px;
+
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    horizontal-stretch: 1;
+                    text: "Welcome to Indicatrix Cut";
+                    font-size: 16px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                    wrap: word-wrap;
+                }
+                VerticalLayout {
+                    alignment: start;
+                    HelpButton { topic: HelpTopics.tutorials; hint: "Open the manual page on the tutorials and the welcome tour"; }
+                }
+            }
+            Text {
+                text: "Indicatrix Cut helps you design a faceted gem, check that it closes into a solid stone, and see how it performs. Take a short tour of the window, or start from a ready-made template. You can find the tour again under Edit > Preferences.";
+                font-size: 11px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                TipButton {
+                    text: "Not now";
+                    hint: "Close this welcome. You can find the tour again under Edit > Preferences. Escape does the same.";
+                    clicked => { TutorialsModel.tour_dismiss(); }
+                }
+                TipButton {
+                    text: "Start with a template";
+                    hint: "Open the New Design dialog, with a gallery of ready-made shapes to start from.";
+                    clicked => { TutorialsModel.tour_templates(); }
+                }
+                TipButton {
+                    text: "Take the 2-minute tour";
+                    hint: "Walk through the window step by step: where the stone, the tier list and the inspector are. Enter does the same.";
+                    primary: true;
+                    clicked => { TutorialsModel.tour_start(); }
+                }
+            }
+        }
+    }
+}

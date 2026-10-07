@@ -2,6 +2,7 @@ import { Theme } from "../../theme.slint";
 import { LineEdit } from "std-widgets.slint";
 import { RoughPlanModel } from "../../models/rough_plan.slint";
 import { RoughPill } from "fields.slint";
+import { TipBox } from "../tip_box.slint";
 
 // Inline save naming row at the top of the right column. Its title says how many
 // results the save will take: the ticked ones when it was opened from a "Save
@@ -32,21 +33,27 @@ export component SaveNameRow inherits Rectangle {
             spacing: 6px;
             alignment: center;
 
-            name_input := LineEdit {
+            TipBox {
                 horizontal-stretch: 1;
-                min-width: 0px;
-                text <=> RoughPlanModel.save_name;
-                placeholder-text: "Plan name...";
-                init => { self.focus(); }
-                accepted => {
-                    if !RoughPlanModel.running {
-                        RoughPlanModel.confirm_save();
+                hint: "The name to save the plan under. Enter saves it.";
+                name_input := LineEdit {
+                    min-width: 0px;
+                    text <=> RoughPlanModel.save_name;
+                    placeholder-text: "Plan name...";
+                    accessible-label: "Plan name";
+                    init => { self.focus(); }
+                    accepted => {
+                        if !RoughPlanModel.running {
+                            RoughPlanModel.confirm_save();
+                        }
                     }
                 }
             }
 
             RoughPill {
                 text: "Save";
+                hint: RoughPlanModel.running ? "Wait for the plan to finish: saving reads the results it is producing."
+                    : "Save the layouts under this name. Enter does the same.";
                 active: true;
                 enabled: !RoughPlanModel.running;
                 clicked => { RoughPlanModel.confirm_save(); }
@@ -54,6 +61,7 @@ export component SaveNameRow inherits Rectangle {
 
             RoughPill {
                 text: "Cancel";
+                hint: "Do not save. Escape does the same.";
                 clicked => { RoughPlanModel.save_name_open = false; }
             }
         }

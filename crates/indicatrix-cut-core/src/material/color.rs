@@ -1,9 +1,9 @@
 //! Active color mode (Fantasy vs Physics), color mode storage, and recipe undo history.
 //!
-//! [`colorMode`] is the one typed payload every store keeps for a custom material's color
+//! [`ColorMode`] is the one typed payload every store keeps for a custom material's color
 //! (spec 5/6): the vault row's `color_recipe_json` and the native file's
-//! [`indicatrix_formats::native::colorRecipeDto::recipe_json`] both hold its JSON
-//! ([`colorMode::to_json`]), so switching modes never loses the inactive payload.
+//! [`indicatrix_formats::native::ColorRecipeDto::recipe_json`] both hold its JSON
+//! ([`ColorMode::to_json`]), so switching modes never loses the inactive payload.
 
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +12,7 @@ use indicatrix::{
     optics::{
         absorption::{AbsorptionTensor, legacy_rgb_bands},
         chromophore::{
-            Cancelled, ChromophoreCatalogue, SolveRequest, SolveResult, colorRecipe,
+            Cancelled, ChromophoreCatalogue, ColorRecipe, SolveRequest, SolveResult,
             resolve_fluorescence, solve_fantasy_lab, solve_physics_with,
         },
         fluorescence::Fluorescence,
@@ -26,7 +26,7 @@ pub const FANTASY_PATH_UNITS: f64 = 1.0;
 
 /// Active color mode in custom materials.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum Activecolor {
+pub enum ActiveColor {
     /// Historical fantasy mode: 3 Gaussian bands parameterized by an [R, G, B] triple.
     #[default]
     Fantasy,
@@ -36,19 +36,19 @@ pub enum Activecolor {
 
 /// Material color state holding both the fantasy payload and the physical recipe payload.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct colorMode {
+pub struct ColorMode {
     /// Active color mode.
-    pub active: Activecolor,
+    pub active: ActiveColor,
     /// Legacy fantasy [R, G, B] absorption triple.
     pub fantasy_rgb: [f32; 3],
     /// Last authored or solved physical color recipe (kept while fantasy is active).
-    pub last_recipe: Option<colorRecipe>,
+    pub last_recipe: Option<ColorRecipe>,
 }
 
-impl Default for colorMode {
+impl Default for ColorMode {
     fn default() -> Self {
         Self {
-            active: Activecolor::Fantasy,
+            active: ActiveColor::Fantasy,
             fantasy_rgb: [0.0, 0.0, 0.0],
             last_recipe: None,
         }
@@ -116,12 +116,12 @@ pub fn solve_blocking(
         .unwrap_or_else(|Cancelled| unreachable!("a flag nobody sets cannot cancel"))
 }
 
-impl colorMode {
+impl ColorMode {
     /// Creates a fantasy color mode from an RGB triple.
     #[must_use]
     pub const fn fantasy(rgb: [f32; 3]) -> Self {
         Self {
-            active: Activecolor::Fantasy,
+            active: ActiveColor::Fantasy,
             fantasy_rgb: rgb,
             last_recipe: None,
         }
@@ -129,9 +129,9 @@ impl colorMode {
 
     /// Creates a physics color mode from a recipe and a fallback legacy RGB triple.
     #[must_use]
-    pub const fn physics(recipe: colorRecipe, fallback_rgb: [f32; 3]) -> Self {
+    pub const fn physics(recipe: ColorRecipe, fallback_rgb: [f32; 3]) -> Self {
         Self {
-            active: Activecolor::Physics,
+            active: ActiveColor::Physics,
             fantasy_rgb: fallback_rgb,
             last_recipe: Some(recipe),
         }
@@ -140,7 +140,7 @@ impl colorMode {
     /// Whether the material renders from its recipe: physics is active and a recipe exists.
     #[must_use]
     pub const fn is_physics(&self) -> bool {
-        matches!(self.active, Activecolor::Physics) && self.last_recipe.is_some()
+        matches!(self.active, ActiveColor::Physics) && self.last_recipe.is_some()
     }
 
     /// The target color (D65 `Lab`) of the current fantasy payload.
@@ -184,7 +184,7 @@ impl colorMode {
     /// through the legacy solver (spec 5); a fantasy color that was ever set is never
     /// overwritten, and the recipe is always kept.
     pub fn switch_to_fantasy(&mut self) {
-        self.active = Activecolor::Fantasy;
+        self.active = ActiveColor::Fantasy;
         if self.fantasy_rgb == [0.0; 3]
             && let Some(lab) = self.recipe_lab()
         {
@@ -203,7 +203,7 @@ impl colorMode {
     /// on the calling thread -- the desktop dialog instead calls
     /// [`Self::needs_initial_solve`] and solves on its worker.
     pub fn switch_to_physics(&mut self, host_id: &str, catalogue: &ChromophoreCatalogue) {
-        self.active = Activecolor::Physics;
+        self.active = ActiveColor::Physics;
         if self.last_recipe.is_none() {
             let res = solve_blocking(catalogue, host_id, self.fantasy_target_lab(), 5.0, &[]);
             self.last_recipe = Some(res.recipe);
@@ -211,8 +211,8 @@ impl colorMode {
     }
 
     /// Installs `recipe` as the physics payload and makes Physics active.
-    pub fn install_recipe(&mut self, recipe: colorRecipe) {
-        self.active = Activecolor::Physics;
+    pub fn install_recipe(&mut self, recipe: ColorRecipe) {
+        self.active = ActiveColor::Physics;
         self.last_recipe = Some(recipe);
     }
 
@@ -221,7 +221,7 @@ impl colorMode {
     #[must_use]
     pub fn resolve_tensor(&self) -> AbsorptionTensor {
         match (self.active, self.last_recipe.as_ref()) {
-            (Activecolor::Physics, Some(recipe)) => recipe.resolved_bands.to_tensor(),
+            (ActiveColor::Physics, Some(recipe)) => recipe.resolved_bands.to_tensor(),
             _ => AbsorptionTensor::isotropic(legacy_rgb_bands(self.fantasy_rgb)),
         }
     }
@@ -254,8 +254,8 @@ impl colorMode {
         serde_json::to_string(self).unwrap_or_default()
     }
 
-    /// Parses stored JSON: a [`colorMode`], or -- for the bare recipe an interim build wrote --
-    /// a [`colorRecipe`] (read as active physics). `None` for blank or unreadable text.
+    /// Parses stored JSON: a [`ColorMode`], or -- for the bare recipe an interim build wrote --
+    /// a [`ColorRecipe`] (read as active physics). `None` for blank or unreadable text.
     #[must_use]
     pub fn from_json(json: &str) -> Option<Self> {
         let json = json.trim();
@@ -263,7 +263,7 @@ impl colorMode {
             return None;
         }
         serde_json::from_str::<Self>(json).ok().or_else(|| {
-            serde_json::from_str::<colorRecipe>(json)
+            serde_json::from_str::<ColorRecipe>(json)
                 .ok()
                 .map(|recipe| Self::physics(recipe, [0.0; 3]))
         })
@@ -273,8 +273,8 @@ impl colorMode {
 /// History stack for the material editor dialog (cap 50).
 #[derive(Debug, Clone, Default)]
 pub struct RecipeHistory {
-    undo_stack: Vec<colorRecipe>,
-    redo_stack: Vec<colorRecipe>,
+    undo_stack: Vec<ColorRecipe>,
+    redo_stack: Vec<ColorRecipe>,
 }
 
 impl RecipeHistory {
@@ -288,7 +288,7 @@ impl RecipeHistory {
     }
 
     /// Pushes a recipe before modification, clearing the redo stack.
-    pub fn push(&mut self, recipe: colorRecipe) {
+    pub fn push(&mut self, recipe: ColorRecipe) {
         if self.undo_stack.len() >= Self::CAPACITY {
             self.undo_stack.remove(0);
         }
@@ -297,7 +297,7 @@ impl RecipeHistory {
     }
 
     /// Undoes to the previous state, saving `current` to the redo stack.
-    pub fn undo(&mut self, current: colorRecipe) -> Option<colorRecipe> {
+    pub fn undo(&mut self, current: ColorRecipe) -> Option<ColorRecipe> {
         if let Some(prev) = self.undo_stack.pop() {
             self.redo_stack.push(current);
             Some(prev)
@@ -307,7 +307,7 @@ impl RecipeHistory {
     }
 
     /// Redoes to the next state, saving `current` to the undo stack.
-    pub fn redo(&mut self, current: colorRecipe) -> Option<colorRecipe> {
+    pub fn redo(&mut self, current: ColorRecipe) -> Option<ColorRecipe> {
         if let Some(next) = self.redo_stack.pop() {
             self.undo_stack.push(current);
             Some(next)
@@ -334,9 +334,9 @@ mod tests {
     use super::*;
     use indicatrix::{color::body_color::delta_e_2000, optics::chromophore::resolve};
 
-    fn ruby() -> colorRecipe {
+    fn ruby() -> ColorRecipe {
         let cat = ChromophoreCatalogue::global();
-        let mut recipe = colorRecipe::new("corundum", cat.data_version);
+        let mut recipe = ColorRecipe::new("corundum", cat.data_version);
         recipe.set_amount("Cr", 0.3);
         let (tensor, _) = resolve(&recipe, cat).expect("ruby resolves");
         recipe.resolved_bands =
@@ -346,18 +346,18 @@ mod tests {
 
     #[test]
     fn mode_switching_preserves_both_payloads() {
-        let mut mode = colorMode::fantasy([0.1, 0.2, 0.3]);
-        assert_eq!(mode.active, Activecolor::Fantasy);
+        let mut mode = ColorMode::fantasy([0.1, 0.2, 0.3]);
+        assert_eq!(mode.active, ActiveColor::Fantasy);
         assert_eq!(mode.fantasy_rgb, [0.1, 0.2, 0.3]);
 
         let cat = ChromophoreCatalogue::global();
         mode.switch_to_physics("corundum", cat);
-        assert_eq!(mode.active, Activecolor::Physics);
+        assert_eq!(mode.active, ActiveColor::Physics);
         assert!(mode.last_recipe.is_some());
         assert_eq!(mode.fantasy_rgb, [0.1, 0.2, 0.3]);
 
         mode.switch_to_fantasy();
-        assert_eq!(mode.active, Activecolor::Fantasy);
+        assert_eq!(mode.active, ActiveColor::Fantasy);
         assert_eq!(mode.fantasy_rgb, [0.1, 0.2, 0.3]);
         assert!(
             mode.last_recipe.is_some(),
@@ -370,8 +370,8 @@ mod tests {
     #[test]
     fn first_switch_to_physics_solves_the_fantasy_color() {
         let cat = ChromophoreCatalogue::global();
-        let mut red = colorMode::fantasy([0.2, 2.8, 2.4]);
-        let mut blue = colorMode::fantasy([2.8, 1.2, 0.1]);
+        let mut red = ColorMode::fantasy([0.2, 2.8, 2.4]);
+        let mut blue = ColorMode::fantasy([2.8, 1.2, 0.1]);
         red.switch_to_physics("corundum", cat);
         blue.switch_to_physics("corundum", cat);
         assert_ne!(red.last_recipe, blue.last_recipe);
@@ -380,14 +380,14 @@ mod tests {
     /// Saving while fantasy is active keeps the recipe in the JSON both stores hold.
     #[test]
     fn json_round_trip_keeps_both_payloads_in_fantasy_mode() {
-        let mut mode = colorMode::physics(ruby(), [0.4, 0.9, 1.8]);
+        let mut mode = ColorMode::physics(ruby(), [0.4, 0.9, 1.8]);
         mode.switch_to_fantasy();
-        let back = colorMode::from_json(&mode.to_json()).expect("parses");
+        let back = ColorMode::from_json(&mode.to_json()).expect("parses");
         assert_eq!(back, mode);
-        assert_eq!(back.active, Activecolor::Fantasy);
+        assert_eq!(back.active, ActiveColor::Fantasy);
         assert!(back.last_recipe.is_some());
-        assert_eq!(colorMode::from_json("  "), None);
-        assert_eq!(colorMode::from_json("{not json"), None);
+        assert_eq!(ColorMode::from_json("  "), None);
+        assert_eq!(ColorMode::from_json("{not json"), None);
     }
 
     /// An interim build wrote a bare recipe; it still reads (as active physics).
@@ -395,7 +395,7 @@ mod tests {
     fn a_bare_recipe_json_reads_as_physics() {
         let recipe = ruby();
         let json = serde_json::to_string(&recipe).expect("serialises");
-        let mode = colorMode::from_json(&json).expect("parses");
+        let mode = ColorMode::from_json(&json).expect("parses");
         assert!(mode.is_physics());
         assert_eq!(mode.last_recipe, Some(recipe));
     }
@@ -404,12 +404,12 @@ mod tests {
     fn data_outdated_compares_the_recipe_version_with_the_catalogue() {
         let cat = ChromophoreCatalogue::global();
         let mut recipe = ruby();
-        let mode = colorMode::physics(recipe.clone(), [0.0; 3]);
+        let mode = ColorMode::physics(recipe.clone(), [0.0; 3]);
         assert!(!mode.data_outdated(cat));
         recipe.data_version = cat.data_version.saturating_sub(1);
-        let old = colorMode::physics(recipe, [0.0; 3]);
+        let old = ColorMode::physics(recipe, [0.0; 3]);
         assert!(old.data_outdated(cat));
-        assert!(!colorMode::fantasy([0.0; 3]).data_outdated(cat));
+        assert!(!ColorMode::fantasy([0.0; 3]).data_outdated(cat));
     }
 
     /// An older build reads only the top-level `absorption_rgb` (the fallback): the color it
@@ -419,7 +419,7 @@ mod tests {
         let cat = ChromophoreCatalogue::global();
         let mut recipes = vec![ruby()];
         for (host, id, amount) in [("corundum", "Fe", 1000.0), ("beryl", "Cr", 0.2)] {
-            let mut r = colorRecipe::new(host, cat.data_version);
+            let mut r = ColorRecipe::new(host, cat.data_version);
             r.set_amount(id, amount);
             if host == "corundum" {
                 r.set_amount("Ti", 200.0);
@@ -430,7 +430,7 @@ mod tests {
         }
         for recipe in recipes {
             let host = recipe.host.clone();
-            let mode = colorMode::physics(recipe, [0.0; 3]);
+            let mode = ColorMode::physics(recipe, [0.0; 3]);
             let fallback = mode.fallback_rgb();
             let physics = mode.recipe_lab().expect("has a recipe");
             let de = delta_e_2000(physics, fantasy_lab(fallback));
@@ -445,10 +445,10 @@ mod tests {
     /// seeded from the physics color.
     #[test]
     fn switching_to_fantasy_seeds_only_a_default_payload() {
-        let mut fresh = colorMode::physics(ruby(), [0.0; 3]);
+        let mut fresh = ColorMode::physics(ruby(), [0.0; 3]);
         fresh.switch_to_fantasy();
         assert_ne!(fresh.fantasy_rgb, [0.0; 3]);
-        let mut set = colorMode::physics(ruby(), [0.1, 0.2, 0.3]);
+        let mut set = ColorMode::physics(ruby(), [0.1, 0.2, 0.3]);
         set.switch_to_fantasy();
         assert_eq!(set.fantasy_rgb, [0.1, 0.2, 0.3]);
     }
@@ -461,13 +461,13 @@ mod tests {
 
         // Push 60 recipes to test capacity cap of 50
         for i in 0..60 {
-            let mut r = colorRecipe::new("corundum", 1);
+            let mut r = ColorRecipe::new("corundum", 1);
             r.strength = f64::from(i);
             history.push(r);
         }
 
         assert!(history.can_undo());
-        let mut current = colorRecipe::new("corundum", 1);
+        let mut current = ColorRecipe::new("corundum", 1);
         current.strength = 100.0;
         let undone = history.undo(current).expect("undo available");
         // Oldest 10 dropped, so top of undo was 59

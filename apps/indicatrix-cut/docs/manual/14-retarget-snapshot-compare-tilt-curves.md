@@ -15,6 +15,18 @@ what would change before you apply anything. It compares your current
 design against a *hypothetical* re-angled version of itself, not against
 another design or an earlier state.
 
+Three things from that chapter matter when you compare. The table, the
+culet and the girdle keep their angles (the table and culet are listed
+greyed as **Not changed**); with **Allow a thicker girdle (up to +10 %)** on,
+the girdle band may grow in thickness (never in outline) when a change would
+otherwise pinch it, and the result text says so. The retargeted stone is judged before you can
+apply it: the dialog shows **Checking...**, then **Valid: ...** with the
+girdle and table figures and the stone's total depth (**depth 61 % (was
+58 %)**), or **Not valid: ...** with the reasons and Apply
+disabled. And **Compare...** keeps working on a change that is not valid, so
+the visual comparison below is the quickest way to see what goes wrong; it
+only waits while the check is still running.
+
 ## Snapshot Design and Compare to Snapshot
 
 Two buttons on the command bar's second row let you diff your current
@@ -47,8 +59,8 @@ click of Snapshot Design, never against catalogue data.
 
 The tables above tell you which angles move; the **compare window** shows
 you what the stone looks like before and after. Open it with **Compare…**
-next to "Preview in viewport" in the Retarget dialog (once a proposal is
-ready), with **Compare…** next to "Preview" in the Optimize tab (once a
+in the Retarget dialog's Comparison row (once a proposal is ready and its
+check has finished), with **Compare…** next to "Preview" in the Optimize tab (once a
 result is waiting for Apply), or with **Compare visually…** at the bottom
 of the Compare to Snapshot table. It is a separate window you can move and
 resize freely; opening it again replaces whatever it was showing. Both
@@ -68,15 +80,101 @@ starts once you stop turning the stone, showing the solid view meanwhile —
 the status line reads "Tracing… 1 of 2" while it works. A side that does
 not solve shows a hatched placeholder and the status line says why.
 
+Concave tiers (Chapter 16) are part of the stone: Compare draws and traces
+the grooves and dimples of both sides, and the optical figures and the tilt
+average are measured on the stone with its tools, so a groove can change a
+figure. A concave stone traces more slowly than a flat one; if one concave
+side takes more than 3 seconds, its next trace uses half the samples and the
+status line names the side and the lower count. If a side's concave tiers
+cannot be placed, the status line says so and the flat stone is shown and
+measured instead.
+
 **Keep after** applies the change exactly as the Retarget dialog's or the
 Optimize tab's own Apply button does (one undo step, same checks), then
 closes the window; it is disabled unless both sides solve, and if the
 proposal changed after you opened the window you get a toast asking you to
-open Compare again instead. **Discard** closes the window without applying
-anything and switches that feature's viewport preview off, leaving the
-proposal or result pending so you can adjust it and compare again.
+open Compare again instead. A Retarget change that is not valid is refused
+with the reason, just like the Apply button. For Retarget, the "after" side
+is the stone with its facet heights adjusted, exactly what Apply would
+leave. **Discard** closes the window without applying anything and switches
+any viewport ghost preview off, leaving the proposal or result pending so
+you can adjust it and compare again.
 **Close** (or the window's own close button) just closes it. A snapshot
 comparison only offers Close.
+
+### Compare against: the current design or the original
+
+When the comparison is opened from the Optimize tab, a **Compare against:**
+list in its header picks the "before" side: **Current design** (the default,
+the design as it is now) or **Original (before retarget)**. The second entry
+is offered only after you applied a Retarget in this session; it is the design
+as it was just before that Retarget, held in memory like a snapshot (applying
+another Retarget replaces it). It lets you judge an optimized, retargeted stone
+against the stone you started with, each side in its own material. Opening
+Compare again always starts on Current design. The Optimize tab's own baseline
+and its accept gate stay tied to the design the search started from; only the
+comparison window changes sides. The Retarget dialog's own comparison has no
+such list.
+
+### The numbers under the pictures
+
+Under the two stones the compare window shows a small table with the optical
+figures of both sides, and a few sentences that say in words what changed. (The
+Retarget dialog has its own table of numbers, so its embedded picture does not
+repeat this strip.)
+
+The figures are measured **table up**, which means looking straight down at the
+table, with each side in its **own material** (for Retarget, the "after" side uses
+the target material) and under the **lighting that was selected in the viewport when
+you opened Compare**. If you change the lighting, open Compare again to measure
+again. They are the same quick figures Optimize and the Angle Sweep use, so the
+numbers agree with theirs.
+
+| Figure | What it tells you | Better is |
+| --- | --- | --- |
+| **Brilliance** | The share of the light that comes back to your eye | Higher |
+| **Windowing** | The share of the light that leaks out through the pavilion (the see-through look) | Lower |
+| **Extinction** | The share of the light that is lost or trapped (the dark look) | Lower |
+| **Fire** | How strongly the stone splits white light into colours (an index, not a percent) | Higher |
+| **Scintillation** | How much the stone flashes on and off as it moves | Higher |
+
+For each figure the table shows the value before, the value after, the change, and
+a word: **better**, **worse** or **same**. The change is green when it helps and red
+when it hurts, and which way helps depends on the figure: less windowing is better,
+more brilliance is better. The change in brilliance, windowing, extinction and
+scintillation is in **percentage points** (62 % to 66 % is +4). The change in fire
+is **relative** (an index of 20 going to 21.2 is +6 %).
+
+**What counts as the same.** Two stones are never measured to the last digit. The
+measurement sends a grid of rays through the stone, and a single grid cell is worth
+about 0.4 of a point, so a facet edge sliding across a few rays moves a figure a
+little without any difference you could see. A change smaller than the threshold
+below is reported as "about the same" instead of as a gain or a loss.
+
+| Figure | Reads "same" when it moved by less than |
+| --- | --- |
+| Brilliance, windowing, extinction | 2 points |
+| Scintillation | 3 points (it is a contrast figure and jumps more) |
+| Fire | 5 % of the before value, and at least half an index point |
+| Tilt averages (below) | 1 point (an average of 724 poses is much steadier) |
+
+**The sentences** run from the most important change to the least: first brilliance,
+windowing and extinction ("The after design is brighter face-up (+4 %) and shows
+less windowing (-3 %)."), then fire and scintillation ("It also shows more fire
+(+8 %)."), then the figures that stayed the same ("Extinction is about the same.").
+When nothing moved beyond its threshold the strip says "No clear optical
+difference." If a side does not solve into a closed stone there is nothing to
+measure, and the strip says which side it is. In the Compare to Snapshot dialog the
+same sentences appear under the title, with "the current design" as the subject.
+
+**Tilt average.** The button next to the sentences adds the average over four
+directions and 181 tilt angles for both stones (1,448 measurements, a few seconds).
+It runs in the background; the button turns into **Cancel** with the percent done,
+and closing the window or opening another comparison stops it. When it finishes,
+three rows are added (tilt brilliance, windowing and extinction) and one more
+sentence, "Averaged over all tilts, ...". Fire and scintillation are not part of a
+tilt sweep. These averages use the viewport lighting, so they can differ a little
+from the curves in the Tilt Performance dialog, which has its own lighting.
 
 ## Tilt curves: when a computed result actually persists
 
@@ -134,6 +232,19 @@ Because a video now shares the app's single GPU adapter and the remote
 with the rest of the app, the live viewport pauses for the whole
 video's duration — exactly as it does during a still-image export — and
 resumes automatically once the video finishes, is cancelled, or fails.
+
+A video always draws the finished gem, even while the Edit tab's Cut slider is on an
+earlier step (Chapter 9).
+
+Next to **Start Video Export** sits **Add to Queue**. It saves the video as a render
+job instead of rendering it now. A queued video can be paused, and when you resume it,
+it continues with its first missing frame in the same folder. See Chapter 23.
+
+In Simple mode (Chapter 17) the section hides Max Ray Bounces, Color Space, the remote
+Transfer row and the folder-name template. They keep their saved values and still
+apply, and the **Resolves to** line under the folder shows the name they produce.
+Switch to Advanced to change them. The round **?** in the dialog's title bar opens the
+manual page about the graph, and every chip and button in the dialog has a hover note.
 
 ## Stale results
 

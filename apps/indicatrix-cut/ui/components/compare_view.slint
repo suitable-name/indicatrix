@@ -13,10 +13,13 @@
 // never feed back into it.
 import { Theme } from "../theme.slint";
 import { CompareModel } from "../models/compare.slint";
+import { CompareMetricsStrip } from "compare_metrics_strip.slint";
 
-// A small toggle pill for the layout/renderer switches.
+// A small pill for the layout/renderer switches: one of a group where exactly one is chosen, so
+// a screen reader hears a radio button. Tab reaches it, Space and Enter pick it.
 component ChoicePill inherits Rectangle {
     in property <string> label;
+    in property <string> hint;
     in property <bool> active;
     callback clicked();
 
@@ -24,8 +27,30 @@ component ChoicePill inherits Rectangle {
     width: pill_text.preferred-width + 20px;
     border-radius: Theme.radius-sm;
     background: root.active ? Theme.accent-cyan : (pill_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control);
+    border-width: pill_focus.has-focus ? 2px : 0px;
+    border-color: Theme.accent-cyan-hover;
+
+    accessible-role: AccessibleRole.radio-button;
+    accessible-label: root.label;
+    accessible-description: root.hint;
+    accessible-checkable: true;
+    accessible-checked: root.active;
+    accessible-action-default => { root.clicked(); }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    pill_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
 
     pill_touch := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
         clicked => { root.clicked(); }
     }
 
@@ -95,6 +120,10 @@ export component CompareView inherits Rectangle {
     // Whether the "Split slider" layout is offered (the pop-out window; the
     // Retarget dialog's pane has no room for a divider).
     in property <bool> show_split: true;
+    // Whether the optical-figures strip is drawn under the images. Off by default: the
+    // Retarget dialog's pane has its own metrics table, so only the pop-out window turns
+    // this on.
+    in property <bool> show_metrics: false;
 
     // Side by side: the gap between the two slots and the caption row under them.
     property <length> gap: 8px;
@@ -174,6 +203,7 @@ export component CompareView inherits Rectangle {
 
             ChoicePill {
                 label: "Side by side";
+                hint: "Show the current design and the changed one next to each other.";
                 active: CompareModel.mode_index == 0;
                 clicked => {
                     CompareModel.mode_index = 0;
@@ -183,6 +213,7 @@ export component CompareView inherits Rectangle {
 
             ChoicePill {
                 label: "Overlay";
+                hint: "Draw the difference on top of the changed design: red where material was removed, green where it was added.";
                 active: CompareModel.mode_index == 2;
                 clicked => {
                     CompareModel.mode_index = 2;
@@ -192,6 +223,7 @@ export component CompareView inherits Rectangle {
 
             if root.show_split: ChoicePill {
                 label: "Split slider";
+                hint: "Show both designs in one picture, with a divider you can drag. The left of the divider is the current design, the right is the changed one.";
                 active: CompareModel.mode_index == 1;
                 clicked => {
                     CompareModel.mode_index = 1;
@@ -203,6 +235,7 @@ export component CompareView inherits Rectangle {
 
             ChoicePill {
                 label: "Solid";
+                hint: "Draw both stones quickly with the solid view. The picture updates as you turn them.";
                 active: CompareModel.renderer_index == 0;
                 clicked => {
                     CompareModel.renderer_index = 0;
@@ -212,6 +245,7 @@ export component CompareView inherits Rectangle {
 
             ChoicePill {
                 label: "Path traced";
+                hint: "Draw both stones with the path tracer, which follows the light through the stone. It looks more like the real thing and takes a moment after you stop turning.";
                 active: CompareModel.renderer_index == 1;
                 clicked => {
                     CompareModel.renderer_index = 1;
@@ -222,7 +256,7 @@ export component CompareView inherits Rectangle {
             if root.width > 760px: Rectangle { width: 16px; }
 
             if root.width > 760px: Text {
-                text: "Drag to turn · wheel to zoom · double-click to reset";
+                text: "Drag to turn · wheel to zoom · double-click to reset · arrow keys turn, + and - zoom";
                 font-size: 10px;
                 color: Theme.text-muted;
                 vertical-alignment: center;
@@ -396,6 +430,64 @@ export component CompareView inherits Rectangle {
                 }
             }
 
+            // The keyboard way to move the shared camera: arrow keys turn the stones, plus and
+            // minus zoom, Home resets the view. It is one Tab stop; a click on the picture also
+            // gives it the keyboard. Each key press is a short drag, so the traced render still
+            // waits for it to end.
+            view_focus := FocusScope {
+                x: 0px;
+                y: 0px;
+                width: image_area.width;
+                height: image_area.height;
+                accessible-role: AccessibleRole.image;
+                accessible-label: "Comparison of the two stones";
+                accessible-description: "Left, right, up and down turn both stones. Plus and minus zoom. Home resets the view.";
+                key-pressed(event) => {
+                    if event.text == Key.LeftArrow {
+                        CompareModel.drag_begin();
+                        CompareModel.orbit(-20, 0);
+                        CompareModel.drag_end();
+                        return accept;
+                    } else if event.text == Key.RightArrow {
+                        CompareModel.drag_begin();
+                        CompareModel.orbit(20, 0);
+                        CompareModel.drag_end();
+                        return accept;
+                    } else if event.text == Key.UpArrow {
+                        CompareModel.drag_begin();
+                        CompareModel.orbit(0, -20);
+                        CompareModel.drag_end();
+                        return accept;
+                    } else if event.text == Key.DownArrow {
+                        CompareModel.drag_begin();
+                        CompareModel.orbit(0, 20);
+                        CompareModel.drag_end();
+                        return accept;
+                    } else if event.text == "+" || event.text == "=" {
+                        CompareModel.zoom(60);
+                        return accept;
+                    } else if event.text == "-" {
+                        CompareModel.zoom(-60);
+                        return accept;
+                    } else if event.text == Key.Home {
+                        CompareModel.reset_pose();
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
+
+            // The ring that shows the picture has the keyboard.
+            if view_focus.has-focus: Rectangle {
+                x: 0px;
+                y: 0px;
+                width: image_area.width;
+                height: image_area.height;
+                border-width: 2px;
+                border-color: Theme.accent-cyan-hover;
+                border-radius: Theme.radius-sm;
+            }
+
             // Orbit/zoom/reset over the whole image area, in every layout: any
             // image (or the split area) turns the ONE shared camera. The traced
             // render waits for `drag_end`, so a held button never starts one.
@@ -407,6 +499,7 @@ export component CompareView inherits Rectangle {
 
                 pointer-event(event) => {
                     if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                        view_focus.focus();
                         root.last_mouse_x = self.mouse-x;
                         root.last_mouse_y = self.mouse-y;
                         root.begin_drag();
@@ -436,15 +529,45 @@ export component CompareView inherits Rectangle {
             }
 
             // The split divider -- declared after `orbit_touch`, so a drag that
-            // starts on it moves the divider instead of the camera.
+            // starts on it moves the divider instead of the camera. It is 20 px wide to be
+            // easy to hit, and it is a slider for the keyboard: Tab to it, Left and Right move it
+            // by 5 %.
             if CompareModel.mode_index == 1: Rectangle {
-                x: image_area.width * CompareModel.split_fraction - 7px;
+                x: image_area.width * CompareModel.split_fraction - 10px;
                 y: 0px;
-                width: 14px;
+                width: 20px;
                 height: image_area.height;
+                border-width: divider_focus.has-focus ? 2px : 0px;
+                border-color: Theme.accent-cyan-hover;
+                border-radius: Theme.radius-sm;
+
+                accessible-role: AccessibleRole.slider;
+                accessible-label: "Split divider";
+                accessible-description: "Left and Right move the divider. Left of it is the current design, right of it is the changed one.";
+                accessible-value: "" + Math.round(CompareModel.split_fraction * 100);
+                accessible-value-minimum: 0;
+                accessible-value-maximum: 100;
+                accessible-value-step: 5;
+                accessible-action-increment => { CompareModel.split_fraction = min(1.0, CompareModel.split_fraction + 0.05); }
+                accessible-action-decrement => { CompareModel.split_fraction = max(0.0, CompareModel.split_fraction - 0.05); }
+
+                Tooltip { text: @markdown("Drag the divider to compare. What is left of it is the current design; what is right of it is the changed one."); }
+
+                divider_focus := FocusScope {
+                    key-pressed(event) => {
+                        if event.text == Key.LeftArrow {
+                            CompareModel.split_fraction = max(0.0, CompareModel.split_fraction - 0.05);
+                            return accept;
+                        } else if event.text == Key.RightArrow {
+                            CompareModel.split_fraction = min(1.0, CompareModel.split_fraction + 0.05);
+                            return accept;
+                        }
+                        return reject;
+                    }
+                }
 
                 Rectangle {
-                    x: 5px;
+                    x: 8px;
                     y: 0px;
                     width: 4px;
                     height: parent.height;
@@ -452,7 +575,7 @@ export component CompareView inherits Rectangle {
                 }
 
                 Rectangle {
-                    x: 0px;
+                    x: 3px;
                     y: (parent.height - self.height) / 2;
                     width: 14px;
                     height: 32px;
@@ -466,6 +589,11 @@ export component CompareView inherits Rectangle {
                     width: parent.width;
                     height: parent.height;
                     mouse-cursor: ew-resize;
+                    pointer-event(event) => {
+                        if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                            divider_focus.focus();
+                        }
+                    }
                     moved => {
                         if (self.pressed && image_area.width > 0px) {
                             CompareModel.split_fraction = max(0.0, min(1.0, (parent.x + self.mouse-x) / image_area.width));
@@ -482,12 +610,12 @@ export component CompareView inherits Rectangle {
             alignment: start;
 
             LegendItem {
-                swatch: #ef4444;
+                swatch: Theme.compare-removed;
                 label: "red = removed";
             }
 
             LegendItem {
-                swatch: #22c55e;
+                swatch: Theme.compare-added;
                 label: "green = added";
             }
 
@@ -499,6 +627,10 @@ export component CompareView inherits Rectangle {
                 overflow: elide;
             }
         }
+
+        // The optical figures of both sides (pop-out window only), once there is
+        // something to say: figures, or the reason there are none.
+        if root.show_metrics && (CompareModel.metric_rows.length > 0 || CompareModel.metric_note != ""): CompareMetricsStrip { }
 
         // The dimmed status line.
         Text {

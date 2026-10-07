@@ -11,6 +11,7 @@ use crate::{
         editor::{
             callbacks::resubmit_facet_overlay,
             edit_intent::{EditIntent, EditIntentQueue},
+            relation_ui::{edit_error_text, with_followers},
             state::{EditorState, coalesce_timestamp},
             view::{refresh_editor_panel_stale, submit_preview_replan},
         },
@@ -20,7 +21,7 @@ use crate::{
 use indicatrix::geometry::meet_solver::{MeetConstraint, SolvedTier};
 use indicatrix_cut_core::EditError;
 use indicatrix_editor::manipulate::{
-    DragStart, DragValue, HandleKind, drag_value, moved_tiers, text,
+    DragStart, DragValue, HandleKind, IndexRotation, drag_value, moved_tiers, text,
 };
 use slint::ComponentHandle as _;
 use std::{collections::BTreeSet, time::Duration};
@@ -142,6 +143,10 @@ pub(super) struct ActiveDrag {
     pub(super) provisional: bool,
     /// The provisional tier as it was at the press, for Escape.
     pub(super) restore: Option<slice::Snapshot>,
+    /// The index handle's rotation about the centre of a Diagram panel. `None` for every
+    /// other handle and for the 3D views, whose index drag reads the pointer's travel along
+    /// the handle ([`drag_value`]).
+    pub(super) rotation: Option<IndexRotation>,
 }
 
 /// What a press on a handle captures from the design it will edit.
@@ -219,6 +224,17 @@ pub(super) fn begin(ui: &MainWindow, ctx: &Shared, kind: i32, x: f32, y: f32) {
     if kind == HandleKind::Index && target.frame.is_indexless() {
         return;
     }
+    // A tier whose angle follows a relation has no angle handle (it is not drawn and not
+    // hit-testable); a press that still names it is refused with the reason.
+    if kind == HandleKind::Angle
+        && let Some(relation) = handles::driven_relation(ctx, target.tier)
+    {
+        set_hint(
+            ui,
+            &text::angle_follows_relation_hint(&target.label, &relation),
+        );
+        return;
+    }
     let Some(GestureInputs {
         start_angle_deg,
         masts,
@@ -235,12 +251,22 @@ pub(super) fn begin(ui: &MainWindow, ctx: &Shared, kind: i32, x: f32, y: f32) {
     // An unsolved design has no masts: the mast falls back to 0 (depth drags were
     // refused above), which the angle and index drags never read.
     let start_mast = start_masts.get(target.tier).map_or(0.0, |s| s.mast);
+    let pointer = handles::pointer_to_pick(ui, x, y);
+    // On a crown or pavilion panel the index handle turns the wheel about the panel centre.
+    let rotation = target
+        .diagram
+        .and_then(|placed| placed.rotation)
+        .filter(|_| kind == HandleKind::Index)
+        .map(|mut rotation| {
+            rotation.begin(pointer);
+            rotation
+        });
     let drag = ActiveDrag {
         start: DragStart {
             kind,
             start_angle_deg,
             start_mast,
-            pointer: handles::pointer_to_pick(ui, x, y),
+            pointer,
             layout: target.layout,
         },
         tier: target.tier,
@@ -252,6 +278,7 @@ pub(super) fn begin(ui: &MainWindow, ctx: &Shared, kind: i32, x: f32, y: f32) {
         gesture_now: coalesce_timestamp(),
         provisional: target.provisional,
         restore,
+        rotation,
     };
     let hint = if drag.provisional {
         slice::provisional_hint_text().unwrap_or_default()
@@ -282,7 +309,10 @@ pub(super) fn move_to(ui: &MainWindow, queue: &EditIntentQueue, x: f32, y: f32, 
     let posted = SESSION.with(|cell| {
         let mut session = cell.borrow_mut();
         let drag = session.drag.as_mut()?;
-        let value = drag_value(&drag.start, pointer, snap);
+        let value = match drag.rotation.as_mut() {
+            Some(rotation) => DragValue::IndexTeeth(rotation.teeth_at(pointer)),
+            None => drag_value(&drag.start, pointer, snap),
+        };
         drag.requested = Some(value);
         Some((drag.tier, value))
     });
@@ -355,13 +385,15 @@ fn apply_value(ui: &MainWindow, ctx: &Shared, drag: &mut ActiveDrag, value: Drag
         match apply_step(&mut st, tier, step, now) {
             Ok(edit) => edit,
             Err(error) => {
-                failure = Some(error.to_string());
+                // A follower that would leave 0-90 degrees refuses the drag in words.
+                failure = Some(edit_error_text(&mut st, &error));
                 None
             }
         }
     });
     if applied {
-        let dirty = BTreeSet::from([tier]);
+        // The tiers that follow the dragged tier through a relation moved with it.
+        let dirty = with_followers(&st.design, [tier]);
         refresh_editor_panel_stale(ui, &ctx.render_ctx, &st, &dirty);
         submit_preview_replan(
             ui,

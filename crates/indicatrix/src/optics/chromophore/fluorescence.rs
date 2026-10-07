@@ -20,7 +20,7 @@ use glam::Vec3;
 
 use super::{
     catalogue::{ChromophoreCatalogue, ChromophoreData, FluorescenceData, HostData, QuenchData},
-    recipe::{ResolveError, colorRecipe},
+    recipe::{ColorRecipe, ResolveError},
     resolve::{
         MAX_PEAK_PER_MM, MAX_STRENGTH, Treated, apply_treatments, clamped_amounts,
         effective_concentration, energy_params, merged_pair,
@@ -166,9 +166,11 @@ impl FluorescenceReport {
     }
 }
 
-/// The analytic glow of `fluorescence` under a lamp of `lamp_nm`:
-/// `Sum_c Phi_eff,c * alpha_c(lamp) / alpha_total(lamp) * f_c(lambda)`, weighted by the absorbed
-/// fraction `1 - exp(-alpha_total * path_mm)`, integrated against the CIE 1931 observer.
+/// The analytic glow of `fluorescence` under a lamp of `lamp_nm`.
+///
+/// The glow is `Sum_c Phi_eff,c * alpha_c(lamp) / alpha_total(lamp) * f_c(lambda)`, weighted by
+/// the absorbed fraction `1 - exp(-alpha_total * path_mm)` and integrated against the CIE 1931
+/// observer.
 ///
 /// `background_per_mm` is the lamp absorption of everything that does not emit. Pure and
 /// deterministic.
@@ -223,7 +225,6 @@ pub fn uv_glow(
 
 /// CIELAB hue angle (degrees) of `xyz` scaled to a relative luminance of [`HUE_REFERENCE_Y`]
 /// against the D65 white.
-#[expect(clippy::many_single_char_names, reason = "CIELAB's own X, Y, Z, a, b")]
 fn lab_hue_deg(xyz: Vec3) -> f32 {
     let s = f64::from(HUE_REFERENCE_Y / xyz.y);
     let lab = xyz_to_lab(
@@ -245,6 +246,10 @@ fn swatch_srgb(xyz: Vec3, photon_yield: f32) -> [f32; 3] {
     if peak <= 0.0 {
         return [0.0; 3];
     }
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "kept unfused: `mul_add` rounds once and would move the swatch brightness by a last bit against the existing readouts"
+    )]
     let gain = 0.1 + 0.9 * (photon_yield / STRONG_YIELD).min(1.0);
     let lit = linear / peak * gain;
     [
@@ -254,13 +259,15 @@ fn swatch_srgb(xyz: Vec3, photon_yield: f32) -> [f32; 3] {
     ]
 }
 
-/// Resolves the fluorescence of `recipe`: one [`FluorescentEmitter`] per emitting active
-/// chromophore, with its quenched yield. Empty (no fluorescence) for an unknown host, a
-/// non-finite or inconsistent recipe, and for recipes without emitters.
+/// Resolves the fluorescence of `recipe`.
+///
+/// The result holds one [`FluorescentEmitter`] per emitting active chromophore, with its
+/// quenched yield. It is empty (no fluorescence) for an unknown host, a non-finite or inconsistent
+/// recipe, and for recipes without emitters.
 #[must_use]
 pub fn resolve_fluorescence(
     catalogue: &ChromophoreCatalogue,
-    recipe: &colorRecipe,
+    recipe: &ColorRecipe,
 ) -> Fluorescence {
     fluorescence_report(catalogue, recipe).fluorescence
 }
@@ -270,7 +277,7 @@ pub fn resolve_fluorescence(
 #[must_use]
 pub fn fluorescence_report(
     catalogue: &ChromophoreCatalogue,
-    recipe: &colorRecipe,
+    recipe: &ColorRecipe,
 ) -> FluorescenceReport {
     report_impl(catalogue, recipe).unwrap_or_else(|_| FluorescenceReport {
         fluorescence: Fluorescence::new(Vec::new()),
@@ -281,7 +288,7 @@ pub fn fluorescence_report(
 
 fn report_impl(
     catalogue: &ChromophoreCatalogue,
-    recipe: &colorRecipe,
+    recipe: &ColorRecipe,
 ) -> Result<FluorescenceReport, ResolveError> {
     let host = catalogue
         .host(&recipe.host)
@@ -388,7 +395,8 @@ fn excitation_bands(
         };
         let w = match host.optical.as_str() {
             "biaxial" => (weight(&["a"], 0.0) + weight(&["b"], 0.0) + weight(&["g"], 0.0)) / 3.0,
-            "uniaxial" => (2.0 * weight(&["o"], 0.0) + weight(&["e"], 0.0)) / 3.0,
+            // `2.0 * x` is exact in binary floating point, so the fused form rounds identically.
+            "uniaxial" => 2.0f64.mul_add(weight(&["o"], 0.0), weight(&["e"], 0.0)) / 3.0,
             _ => weight(&["o"], 1.0),
         };
         let peak = coeff_mm * w;
@@ -447,7 +455,7 @@ fn emission_bands(entry: &FluorescenceData) -> Vec<EmissionBand> {
                 .get(i)
                 .or_else(|| entry.emission_fwhm_nm.first())
                 .copied()
-                .unwrap_or(MIN_EMISSION_FWHM_NM.into());
+                .unwrap_or_else(|| MIN_EMISSION_FWHM_NM.into());
             EmissionBand::new(
                 centre as f32,
                 (fwhm as f32).max(MIN_EMISSION_FWHM_NM),
@@ -506,8 +514,8 @@ mod tests {
         ChromophoreCatalogue::global()
     }
 
-    fn recipe(host: &str, amounts: &[(&str, f64)]) -> colorRecipe {
-        let mut r = colorRecipe::new(host, cat().data_version);
+    fn recipe(host: &str, amounts: &[(&str, f64)]) -> ColorRecipe {
+        let mut r = ColorRecipe::new(host, cat().data_version);
         for (id, a) in amounts {
             r.set_amount(id, *a);
         }
@@ -572,7 +580,7 @@ mod tests {
     #[test]
     fn every_host_at_maximum_concentration_validates() {
         for host in &cat().hosts {
-            let mut r = colorRecipe::new(&host.id, cat().data_version);
+            let mut r = ColorRecipe::new(&host.id, cat().data_version);
             let members: Vec<_> = host.end_members.iter().filter(|m| !m.colorless).collect();
             for id in cat().selectable_elements(&host.id) {
                 if members.iter().any(|m| m.id == id) {
@@ -607,7 +615,7 @@ mod tests {
         assert!(b.photon_yield < 0.1 * a.photon_yield, "{b:?} vs {a:?}");
     }
 
-    /// Emerald: iron halves the R-line yield at 660 ppm Fe (0.0849 wt% FeO; a DERIVED estimate
+    /// Emerald: iron halves the R-line yield at 660 ppm Fe (0.0849 wt% `FeO`; a DERIVED estimate
     /// from the GIA Fall 2017 abstract, `research-2026-10-primary-data` section 8) and the n = 2
     /// law gives the abstract's tenfold fall (12-fold) at 2200 ppm Fe.
     #[test]

@@ -56,14 +56,18 @@ use std::{
     time::Duration,
 };
 
+mod history_view;
+mod relations;
 mod selection;
 mod tier_ops;
 
 #[cfg(test)]
 mod tests;
 
-use selection::TierIndexMap;
+pub use selection::TierIndexMap;
 
+pub use history_view::{HistorySnapshot, JumpFailure, JumpOutcome};
+pub use relations::{ClearedRelation, RelationNotice, RelationRefusal, SessionEditError};
 pub use tier_ops::{
     DetachOutcome, DuplicateOutcome, GeneratedSeries, InlineAngle, MirrorOutcome, MovedTier,
     RemoveTierError, RemovedTier, selection_after_remove,
@@ -165,6 +169,15 @@ pub struct EditorSession {
     /// design was created/loaded -- see [`Self::is_dirty`]. Undoing back to exactly
     /// the saved content still reads as dirty: generation counts steps, not content.
     pub saved_generation: u64,
+    /// The relations the last edit cleared, if nobody took them yet -- see
+    /// [`Self::take_relation_notice`]. The next edit, undo, redo or jump drops it.
+    relation_notice: Option<RelationNotice>,
+    /// Whether a command made of several edits (removing every selected tier) is running:
+    /// its edits add to [`Self::relation_notice`] instead of dropping it.
+    notice_command_open: bool,
+    /// Why the last edit of the old `apply` family was refused because of a tier
+    /// relation -- see [`Self::take_refusal`].
+    refusal: Option<SessionEditError>,
 }
 
 impl EditorSession {
@@ -221,6 +234,9 @@ impl EditorSession {
             selected_concave: None,
             generation: Arc::new(AtomicU64::new(0)),
             saved_generation: 0,
+            relation_notice: None,
+            notice_command_open: false,
+            refusal: None,
         }
     }
 
@@ -259,16 +275,17 @@ impl EditorSession {
         self.saved_generation = self.current_generation();
     }
 
-    /// Applies `edit` through [`History::apply`].
+    /// Applies `edit` through [`History::apply`], keeping tier relations true (see the
+    /// `relations` module: [`Self::try_apply`] is the same call with a typed error).
     ///
     /// # Errors
     ///
-    /// [`History::apply`]'s error, verbatim; nothing changes on `Err`.
+    /// [`History::apply`]'s error, verbatim; nothing changes on `Err`. An edit refused
+    /// because of a tier relation also fails with an `EditError` (naming the driven
+    /// tier); [`Self::take_refusal`] then has the real reason.
     pub fn apply(&mut self, edit: Edit) -> Result<EditChange, EditError> {
-        let before = self.tier_counts();
-        let renumbering = TierIndexMap::of(&edit);
-        self.history.apply(&mut self.design, edit)?;
-        Ok(self.record_change(before, Some(&renumbering)))
+        self.try_apply(edit)
+            .map_err(|error| self.legacy_edit_error(error))
     }
 
     /// Like [`Self::apply`], but through [`History::apply_coalescing`]: an edit with
@@ -279,18 +296,16 @@ impl EditorSession {
     ///
     /// # Errors
     ///
-    /// [`History::apply_coalescing`]'s error, verbatim.
+    /// [`History::apply_coalescing`]'s error, verbatim; a refusal because of a tier
+    /// relation is reported as for [`Self::apply`].
     pub fn apply_coalescing(
         &mut self,
         edit: Edit,
         key: u64,
         now: Duration,
     ) -> Result<EditChange, EditError> {
-        let before = self.tier_counts();
-        let renumbering = TierIndexMap::of(&edit);
-        self.history
-            .apply_coalescing(&mut self.design, edit, key, now)?;
-        Ok(self.record_change(before, Some(&renumbering)))
+        self.try_apply_coalescing(edit, key, now)
+            .map_err(|error| self.legacy_edit_error(error))
     }
 
     /// Undoes through [`History::undo`]. `Ok(None)` when there was nothing to undo.
@@ -299,10 +314,26 @@ impl EditorSession {
     ///
     /// [`History::undo`]'s error (a failed replay of the recorded inverse).
     pub fn undo(&mut self) -> Result<Option<EditChange>, EditError> {
+        Ok(self.undo_mapped()?.map(|(change, _)| change))
+    }
+
+    /// [`Self::undo`], also returning how the undone step renumbered the tier rows, for a
+    /// caller that keeps a row selection of its own (the desktop's single selected row)
+    /// and must make it follow its tier the way [`Self::multi_selected`] does. See
+    /// [`TierIndexMap::map_table_row`].
+    ///
+    /// # Errors
+    ///
+    /// [`History::undo`]'s error (a failed replay of the recorded inverse).
+    pub fn undo_mapped(&mut self) -> Result<Option<(EditChange, TierIndexMap)>, EditError> {
+        self.expire_relation_notice();
         let before = self.tier_counts();
         let renumbering = self.history.peek_undo().map(TierIndexMap::of);
         let undone = self.history.undo(&mut self.design)?;
-        Ok(undone.then(|| self.record_change(before, renumbering.as_ref())))
+        Ok(undone.then(|| {
+            let change = self.record_change(before, renumbering.as_ref());
+            (change, renumbering.unwrap_or_default())
+        }))
     }
 
     /// Redoes through [`History::redo`]. `Ok(None)` when there was nothing to redo.
@@ -311,10 +342,24 @@ impl EditorSession {
     ///
     /// [`History::redo`]'s error, symmetrically to [`Self::undo`].
     pub fn redo(&mut self) -> Result<Option<EditChange>, EditError> {
+        Ok(self.redo_mapped()?.map(|(change, _)| change))
+    }
+
+    /// [`Self::redo`], also returning the step's renumbering of the tier rows, as
+    /// [`Self::undo_mapped`] does for an undo.
+    ///
+    /// # Errors
+    ///
+    /// [`History::redo`]'s error, symmetrically to [`Self::undo`].
+    pub fn redo_mapped(&mut self) -> Result<Option<(EditChange, TierIndexMap)>, EditError> {
+        self.expire_relation_notice();
         let before = self.tier_counts();
         let renumbering = self.history.peek_redo().map(TierIndexMap::of);
         let redone = self.history.redo(&mut self.design)?;
-        Ok(redone.then(|| self.record_change(before, renumbering.as_ref())))
+        Ok(redone.then(|| {
+            let change = self.record_change(before, renumbering.as_ref());
+            (change, renumbering.unwrap_or_default())
+        }))
     }
 
     /// Applies an Optimize result's angle changes as real, undoable edits through
@@ -334,6 +379,9 @@ impl EditorSession {
         &mut self,
         outcome: &OptimizeOutcome,
     ) -> Result<usize, EditError> {
+        if !self.design.tier_relations.is_empty() {
+            return self.apply_optimize_outcome_with_relations(outcome);
+        }
         let result = indicatrix_cut_core::apply_optimize_outcome(
             &mut self.history,
             &mut self.design,
@@ -364,12 +412,46 @@ impl EditorSession {
         delta_deg: f64,
         now: Duration,
     ) -> Result<Option<NudgeOutcome>, EditError> {
+        self.nudge_with(targets, now, |_| delta_deg)
+    }
+
+    /// Like [`Self::nudge_angles`], but `delta_deg` moves the number each tier's row
+    /// SHOWS: the tier table prints a pavilion tier's angle without its minus sign (the
+    /// side is the label), so a positive delta makes the shown number bigger for a crown
+    /// and a pavilion tier alike, and the stored sign stays. See [`displayed_nudge_delta`].
+    /// What the inline angle cell's Up/Down/wheel and the multi-select Offset box use.
+    ///
+    /// `Ok(None)` (nothing applied) when `targets` is empty or names a tier that does not
+    /// exist.
+    ///
+    /// # Errors
+    ///
+    /// [`Self::apply_coalescing`]'s error.
+    pub fn nudge_displayed_angles(
+        &mut self,
+        targets: &[usize],
+        delta_deg: f64,
+        now: Duration,
+    ) -> Result<Option<NudgeOutcome>, EditError> {
+        self.nudge_with(targets, now, |tier| {
+            displayed_nudge_delta(tier.angle_deg, delta_deg)
+        })
+    }
+
+    /// The one nudge both public entry points share: `delta_for` gives each tier's SIGNED
+    /// change.
+    fn nudge_with(
+        &mut self,
+        targets: &[usize],
+        now: Duration,
+        delta_for: impl Fn(&ConstraintTier) -> f64,
+    ) -> Result<Option<NudgeOutcome>, EditError> {
         let mut clamped_labels: Vec<String> = Vec::new();
         let changes: Option<Vec<(usize, f64, f64)>> = targets
             .iter()
             .map(|&index| {
                 self.design.tiers.get(index).map(|tier| {
-                    let wanted = tier.angle_deg + delta_deg;
+                    let wanted = tier.angle_deg + delta_for(tier);
                     let nudged = clamp_nudge_to_side(tier.angle_deg, wanted);
                     if nudged != wanted {
                         clamped_labels.push(tier_nudge_label(tier, index));
@@ -555,6 +637,20 @@ impl EditorSession {
         renumbering: Option<&TierIndexMap>,
     ) -> EditChange {
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        self.renumber_selection(renumbering);
+        let (tier_count_after, concave_count_after) = self.tier_counts();
+        EditChange {
+            generation,
+            tier_count_before,
+            tier_count_after,
+            concave_count_before,
+            concave_count_after,
+        }
+    }
+
+    /// Renumbers the selections through `renumbering` (see [`Self::record_change`]) without
+    /// touching the generation.
+    fn renumber_selection(&mut self, renumbering: Option<&TierIndexMap>) {
         let (tier_count_after, concave_count_after) = self.tier_counts();
         self.selected_concave = renumbering
             .and_then(|map| map.map_concave(self.selected_concave?))
@@ -565,13 +661,6 @@ impl EditorSession {
                 .filter(|&index| index < tier_count_after)
                 .collect()
         });
-        EditChange {
-            generation,
-            tier_count_before,
-            tier_count_after,
-            concave_count_before,
-            concave_count_after,
-        }
     }
 
     /// `(flat, concave)` tier counts, for [`EditChange`].
@@ -608,6 +697,23 @@ pub const fn clamp_nudge_to_side(current: f64, nudged: f64) -> f64 {
         -0.0
     } else {
         0.0
+    }
+}
+
+/// The signed change that moves the number a tier's row SHOWS by `displayed_delta`
+/// degrees.
+///
+/// The tier table prints the angle's magnitude (a pavilion tier's `-40` reads `40`, the
+/// side being the label), so "up" has to make that number bigger. A crown tier's stored
+/// angle is positive and takes the delta as it is; a pavilion tier's is negative (a `-0.0`
+/// culet included), so its stored value moves the other way. The result still goes
+/// through [`clamp_nudge_to_side`], which stops a tier at zero.
+#[must_use]
+pub const fn displayed_nudge_delta(current: f64, displayed_delta: f64) -> f64 {
+    if current.is_sign_negative() {
+        -displayed_delta
+    } else {
+        displayed_delta
     }
 }
 

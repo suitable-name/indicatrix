@@ -4,8 +4,10 @@
 //! This module wires the main window's menu entry to the window in [`host`]. The
 //! window's callbacks live with what they drive: model editing in [`editing`], the plan
 //! run in [`run`], the live model figures in [`shape_worker`], the 3D view in [`view`],
-//! library links in [`library_link`], saved plans in [`saved`] and the designs excluded
-//! from planning in [`exclusions`].
+//! library links in [`library_link`], saved plans in [`saved`], the designs excluded
+//! from planning in [`exclusions`], the inclusions of a mesh rough in [`inclusions`] and
+//! locating an inclusion from photos on a camera rig (the locate window and the rig window)
+//! in [`locate`].
 
 mod base;
 mod carat;
@@ -16,8 +18,11 @@ mod editing;
 mod exclusions;
 mod format;
 mod host;
+mod inclusions;
 mod inputs;
 mod library_link;
+mod locate;
+mod mesh_task;
 mod metrics;
 mod obj_import;
 mod run;

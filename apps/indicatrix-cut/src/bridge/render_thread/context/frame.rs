@@ -48,6 +48,7 @@ pub(in crate::bridge::render_thread) struct FrameInputs {
     pub(in crate::bridge::render_thread) lighting_preset: LightingPreset,
     pub(in crate::bridge::render_thread) backdrop: crate::settings::model::Backdrop,
     pub(in crate::bridge::render_thread) surface_glare: f32,
+    pub(in crate::bridge::render_thread) head_shadow_deg: f32,
     pub(in crate::bridge::render_thread) target_samples: u32,
     pub(in crate::bridge::render_thread) max_bounces: u32,
     pub(in crate::bridge::render_thread) exposure: f32,
@@ -117,11 +118,14 @@ pub(in crate::bridge::render_thread) fn snapshot_frame_inputs(
         light_yaw: ctx.light_yaw,
         light_pitch: ctx.light_pitch,
         material_name: ctx.material_name.clone(),
-        material_override: ctx.material_override.clone(),
+        // The override with the Live Render toolbar's view-only colour applied (a plain
+        // clone while none is in force) -- see `RenderContext::tinted_material_override`.
+        material_override: ctx.tinted_material_override(),
         material_unresolved: ctx.material_unresolved.clone(),
         lighting_preset: ctx.lighting_preset,
         backdrop: ctx.backdrop,
         surface_glare: ctx.surface_glare,
+        head_shadow_deg: ctx.head_shadow_deg,
         target_samples: ctx.target_samples,
         max_bounces: ctx.max_bounces,
         exposure: ctx.exposure,

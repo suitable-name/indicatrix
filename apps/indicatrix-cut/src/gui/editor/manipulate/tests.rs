@@ -11,8 +11,9 @@ use super::{
     },
     kind_from_int, kind_to_int,
     slice::{
-        LandedAction, SliceLine, cut_hides_tier, keep_allowed, landed_action, plan_slice,
-        replan_chain, session_outlives, surviving_facets, wheel_turn, with_provisional_tier,
+        LandedAction, SliceLine, cut_hides_tier, cut_moved, expected_plane_count, keep_allowed,
+        landed_action, plan_slice, replan_chain, session_outlives, surviving_facets, wheel_turn,
+        with_provisional_tier,
     },
     snap_mode, tier_label,
 };
@@ -25,7 +26,7 @@ use crate::gui::{
 };
 use glam::Vec3;
 use indicatrix::geometry::meet_solver::{MeetConstraint, SolveStrategy, SolvedTier};
-use indicatrix_cut_core::{ConstraintTier, Edit};
+use indicatrix_cut_core::{ConstraintTier, Design, Edit, PreformSpec, ScheduleMeta};
 use indicatrix_editor::manipulate::{
     DragValue, HandleKind, HandleLayout, ScreenPoint, ScreenSize, SliceSide, SnapMode,
 };
@@ -669,6 +670,99 @@ fn the_cut_slider_hides_a_provisional_tier_it_stops_short_of() {
     );
     assert!(!cut_hides_tier(5, 5), "through tier 5 includes it");
     assert!(!cut_hides_tier(9, 5));
+}
+
+#[test]
+fn the_rough_hides_every_tier_including_the_first() {
+    // The Cut slider's -2 is the rough alone: no tier is on the stone, so the Slice hint
+    // must appear whichever tier the provisional one is.
+    assert!(cut_hides_tier(-2, 0), "not even the first tier is cut yet");
+    assert!(cut_hides_tier(-2, 5));
+    assert!(cut_hides_tier(-2, 99));
+    assert!(!cut_hides_tier(0, 0), "through tier 0 includes tier 0");
+}
+
+/// A tier pinned by a scale reference, so a design of them solves without the solver.
+fn pinned_tier(name: &str, angle_deg: f64, mast: f64) -> ConstraintTier {
+    ConstraintTier {
+        angle_deg,
+        name: name.to_string(),
+        indices: vec![0.0],
+        constraint: MeetConstraint::ScaleReference(mast),
+        imported_meet: None,
+        original_notes: None,
+        detached: Vec::new(),
+    }
+}
+
+#[test]
+fn the_expected_plane_count_follows_the_cut_the_slider_has() {
+    let design = Design::new(
+        PreformSpec::block(2.0, 1.0, 2.0),
+        ScheduleMeta {
+            gear_teeth: 96,
+            ..ScheduleMeta::default()
+        },
+        vec![
+            pinned_tier("C1", 30.0, 0.6),
+            pinned_tier("C2", 40.0, 0.7),
+            pinned_tier("P1", -40.0, 0.6),
+        ],
+    );
+    let masts = design.solve().expect("every tier is pinned");
+    let preform = design.preform.planes().len();
+    let count = |steps| expected_plane_count(&design, &masts, steps);
+
+    assert_eq!(count(None), design.planes_from_solved(&masts).len());
+    assert_eq!(count(Some(0)), preform, "the rough has no tier");
+    assert_eq!(count(Some(1)), preform + 1);
+    assert_eq!(count(Some(2)), preform + 2);
+    assert_eq!(
+        count(Some(3)),
+        count(None),
+        "the last step is the whole stone"
+    );
+    assert_eq!(count(Some(40)), count(None), "past the last step too");
+}
+
+#[test]
+fn the_expected_plane_count_of_a_concave_design_never_exceeds_the_finished_stone() {
+    // With concave tiers the slider walks the cutting order, so the shown flat tiers are
+    // not a prefix of the stored ones; the count still has to be the drawn planes'.
+    let design = Design::concave_fixture();
+    let masts = design.solve().expect("the fixture solves");
+    let finished = expected_plane_count(&design, &masts, None);
+    assert_eq!(finished, design.planes_from_solved(&masts).len());
+    let preform = design.preform.planes().len();
+    assert_eq!(expected_plane_count(&design, &masts, Some(0)), preform);
+
+    let steps = design.preview_step_count();
+    let mut previous = preform;
+    for cut in 1..steps {
+        let count = expected_plane_count(&design, &masts, Some(cut));
+        assert!(
+            count >= previous && count <= finished,
+            "step {cut}: {count} planes after {previous}, {finished} when finished"
+        );
+        previous = count;
+    }
+    assert_eq!(expected_plane_count(&design, &masts, Some(steps)), finished);
+}
+
+#[test]
+fn moving_the_cut_slider_invalidates_the_planes_a_slice_was_drawn_with() {
+    assert!(!cut_moved(None, None), "the finished stone stays finished");
+    assert!(
+        !cut_moved(Some(3), Some(3)),
+        "the same step is the same stone"
+    );
+    assert!(
+        cut_moved(None, Some(3)),
+        "cutting back from the finished stone"
+    );
+    assert!(cut_moved(Some(3), None), "back to the finished stone");
+    assert!(cut_moved(Some(3), Some(4)));
+    assert!(cut_moved(Some(0), Some(3)), "off the rough");
 }
 
 #[test]

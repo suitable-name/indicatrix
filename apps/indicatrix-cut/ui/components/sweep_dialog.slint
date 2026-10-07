@@ -1,0 +1,174 @@
+// Edit > Angle Sweep...: try one tier's angle over a range and read the figures off a table
+// and a chart, or take them away as CSV. The state lives in `models/sweep.slint`; the run
+// and the numbers come from `gui::editor::sweep` (and the sweep itself from
+// `indicatrix_editor::sweep`).
+//
+// Mounted by `app.slint` inside a wrapping `FocusScope` while `SweepModel.dialog_open`
+// (Escape cancels a running sweep, else closes). The card is sized from the window, never
+// from its content, so a long table cannot raise the window's minimum size.
+import { Theme } from "../theme.slint";
+import { SweepModel } from "../models/sweep.slint";
+import { HelpTopics } from "../models/help.slint";
+import { HelpButton } from "help_button.slint";
+import { IconButton } from "icon_button.slint";
+import { SweepButton } from "sweep_dialog/sweep_button.slint";
+import { SweepForm } from "sweep_dialog/sweep_form.slint";
+import { SweepChart } from "sweep_dialog/sweep_chart.slint";
+import { SweepTable } from "sweep_dialog/sweep_table.slint";
+
+export component SweepDialog inherits Rectangle {
+    background: Theme.overlay-backdrop;
+
+    // A click beside the card closes it, unless a sweep is running (stop that with Cancel).
+    TouchArea {
+        clicked => {
+            if !SweepModel.running {
+                SweepModel.close_dialog();
+            }
+        }
+    }
+
+    Rectangle {
+        width: min(root.width - 48px, 1000px);
+        height: min(root.height - 48px, 800px);
+        background: Theme.surface-dialog;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-dialog;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.modal-shadow;
+        clip: true;
+
+        TouchArea {} // Isolate clicks inside the modal.
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            // 1. Header
+            HorizontalLayout {
+                alignment: space-between;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Image {
+                        source: @image-url("../icons/bar-chart.svg");
+                        colorize: Theme.text-primary;
+                        width: 15px;
+                        height: 15px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "Angle Sweep";
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: Theme.text-primary;
+                        vertical-alignment: center;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    VerticalLayout {
+                        alignment: center;
+                        HelpButton { topic: HelpTopics.sweep; hint: "Open the manual page on angle sweeps"; }
+                    }
+                    IconButton {
+                        icon: @image-url("../icons/close.svg");
+                        hint: "Close the angle sweep. A sweep that is running is stopped. Escape does the same.";
+                        tint: Theme.text-muted;
+                        width: 24px;
+                        height: 24px;
+                        clicked => { SweepModel.close_dialog(); }
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.surface-raised; }
+
+            // 2. The form
+            SweepForm {}
+
+            Rectangle { height: 1px; background: Theme.surface-raised; }
+
+            // 3. The results
+            if SweepModel.has_results: VerticalLayout {
+                vertical-stretch: 1;
+                spacing: 8px;
+                Text {
+                    text: SweepModel.result_title;
+                    font-size: 12px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                    overflow: elide;
+                    accessible-role: AccessibleRole.text;
+                }
+                SweepChart {}
+                SweepTable { vertical-stretch: 1; }
+            }
+            if !SweepModel.has_results: Rectangle {
+                vertical-stretch: 1;
+                Text {
+                    width: 100%;
+                    height: 100%;
+                    text: SweepModel.running
+                        ? "Working..."
+                        : "Pick a tier and a range, then press Run sweep. Each angle is solved and scored on a copy of the design, so your design is not changed. When the sweep is done, select the angle you like and press Use this angle.";
+                    font-size: 12px;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.surface-raised; }
+
+            // 4. Footer
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    horizontal-stretch: 1;
+                    text: SweepModel.status_text;
+                    font-size: 11px;
+                    color: Theme.text-secondary;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                SweepButton {
+                    text: SweepModel.use_label;
+                    hint: SweepModel.selected_usable && !SweepModel.running
+                        ? "Make the selected angle the tier's angle. It is one change, and Undo takes it back."
+                        : (SweepModel.running
+                            ? "Wait for the sweep to finish, or cancel it."
+                            : "Select an angle first, in the table or on the chart. An angle that gives no stone cannot be used.");
+                    icon: @image-url("../icons/check.svg");
+                    primary: true;
+                    enabled: SweepModel.selected_usable && !SweepModel.running;
+                    clicked => { SweepModel.use_selected(); }
+                }
+                SweepButton {
+                    text: "Copy CSV";
+                    hint: SweepModel.has_results
+                        ? "Copy the table to the clipboard as comma-separated text, to paste into a spreadsheet."
+                        : "Run a sweep first: there is no table to copy yet.";
+                    icon: @image-url("../icons/copy.svg");
+                    enabled: SweepModel.has_results;
+                    clicked => { SweepModel.copy_csv(); }
+                }
+                SweepButton {
+                    text: "Save CSV...";
+                    hint: SweepModel.has_results
+                        ? "Save the table as a .csv file that a spreadsheet opens."
+                        : "Run a sweep first: there is no table to save yet.";
+                    icon: @image-url("../icons/save.svg");
+                    enabled: SweepModel.has_results;
+                    clicked => { SweepModel.save_csv(); }
+                }
+                SweepButton {
+                    text: "Close";
+                    hint: "Close the angle sweep. A sweep that is running is stopped. Escape does the same.";
+                    clicked => { SweepModel.close_dialog(); }
+                }
+            }
+        }
+    }
+}

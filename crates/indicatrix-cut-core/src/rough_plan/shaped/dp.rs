@@ -12,7 +12,7 @@
 //! The bar, slab and root value tables are `f64` and far smaller.
 
 use super::{
-    clip::{BuildClipParams, ClippedTable, build_clipped_table_lanes},
+    clip::{BuildClipParams, ClippedTable, build_clipped_table_jobs},
     ctx::ShapedCtx,
     grid::ShapedGrid,
     tree::layout_from_tree_shaped,
@@ -537,8 +537,9 @@ pub struct ShapedAltParams<'a> {
     pub best: &'a RoughLayout,
     /// Planning settings.
     pub settings: &'a PlanSettings,
-    /// Scoped threads each round's size table and clipped table are built on (`1` builds
-    /// on the calling thread and spawns nothing). The result never depends on it.
+    /// Scoped threads each round's size table (per `a0` plane) and clipped table (per
+    /// a-range job, see `build_clipped_table_jobs`) are built on (`1` builds on the
+    /// calling thread and spawns nothing). The result never depends on it.
     pub lanes: usize,
 }
 
@@ -547,7 +548,8 @@ pub struct ShapedAltParams<'a> {
 /// The size-only table of interior pieces is rebuilt for `pool`: its design
 /// indices point into the pool it was built from, so the baseline's table would
 /// score the round with designs that may no longer exist. The classification is
-/// reused from the baseline table. Both tables are built on `params.lanes` threads.
+/// reused from the baseline table. Both tables are built on `params.lanes` threads, the
+/// clipped one in one job per a-range.
 pub(super) fn alternative_table(
     params: &ShapedAltParams<'_>,
     pool: &[CandidateDesign],
@@ -567,7 +569,7 @@ pub(super) fn alternative_table(
         slice: 0..params.grid.cells[0],
         cached_classes: Some(&params.table.classes),
     };
-    build_clipped_table_lanes(&clip_params, params.lanes, on_progress)
+    build_clipped_table_jobs(&clip_params, params.lanes, on_progress)
 }
 
 /// Runs leave-one-out alternative rounds for shaped planning.

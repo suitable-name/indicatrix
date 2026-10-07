@@ -117,7 +117,7 @@ mod tests;
 pub use decode::{decode_asc_bytes, parse_asc_bytes};
 pub use error::AscParseError;
 pub use meet_instruction::MeetInstruction;
-pub use parse::parse_asc;
+pub use parse::{parse_asc, parse_asc_with_gear_line};
 pub use schedule::{AscLineEnding, AscSchedule};
 pub use tier::AscTier;
 pub use write::{

@@ -229,6 +229,9 @@ fn write_progress<S: Write>(
 /// - [`TransferMode::LiveProgressive`]: whatever's left un-coalesced as a `FRAME`;
 /// - [`TransferMode::DisplayOnly`]: the final, denoised `DISPLAY_FRAME`.
 ///
+/// Under `FinalOnly`/`LiveProgressive` with a downscaled preview configured, a last
+/// `PREVIEW` of the running total goes out first whenever the last one sent is stale.
+///
 /// The whole-request sum is the producer's own `final_total` when it left one (a
 /// coordinator's deterministic merge), else the emitter's running total. Swaps once more
 /// before reading `emitter`'s state: the producer's last chunk(s) may have landed after
@@ -245,7 +248,7 @@ pub(super) fn emit_final<S: Write>(
     emission_count: &mut u32,
 ) -> Result<StreamOutcome, NetError> {
     let request = spec.request;
-    let (range, _samples_done) = emitter.swap_and_fold(state);
+    let (range, samples_done) = emitter.swap_and_fold(state);
     let (final_total, reclaimed_samples) = {
         let mut guard = state
             .lock()
@@ -288,56 +291,29 @@ pub(super) fn emit_final<S: Write>(
         return Ok(StreamOutcome::Completed);
     }
 
-    match request.stream.transfer_mode {
-        TransferMode::FinalOnly => {
-            let write = |encoded: &EncodedPayload<'_>| {
-                let header = FrameHeader::for_encoded(
-                    request.request_id,
-                    request.first_sample,
-                    request.samples,
-                    encoded,
-                );
-                indicatrix_net::messages::write_stream_event(
-                    stream,
-                    &StreamEvent::Frame(header),
-                    Some(encoded.bytes),
-                )
-            };
-            match &final_total {
-                Some(total) => emitter.send_other(total, write)?,
-                None => emitter.send_running_total(write)?,
-            }
-            *emission_count += 1;
-        }
-        TransferMode::LiveProgressive => {
-            if let Some((first_sample, samples)) = range {
-                emitter.send_delta(|encoded| {
-                    let header = FrameHeader::for_encoded(
-                        request.request_id,
-                        first_sample,
-                        samples,
-                        encoded,
-                    );
-                    indicatrix_net::messages::write_stream_event(
-                        stream,
-                        &StreamEvent::Frame(header),
-                        Some(encoded.bytes),
-                    )
-                })?;
-                *emission_count += 1;
-            }
-        }
-        TransferMode::DisplayOnly => {
-            emit_final_display(
-                stream,
-                request,
-                state,
-                emitter,
-                final_total.as_deref(),
-                emission_count,
-            )?;
-        }
+    // A downscaled `PREVIEW` of the finished state, so a client watching previews never
+    // ends on a stale one: the last chunk(s) often land after the last cadence tick (a
+    // short request can finish before any tick sees a sample at all). A full-scale
+    // preview is skipped, as on a tick: the final `FRAME` already carries that picture.
+    if request.stream.transfer_mode != TransferMode::DisplayOnly
+        && let Some(cfg) = request.stream.preview
+        && samples_done > 0
+        && !(cfg.width == request.scene.width && cfg.height == request.scene.height)
+        && emitter.preview_due(samples_done, request.samples)
+    {
+        write_preview(stream, request, cfg, emitter, samples_done)?;
+        emitter.record_preview_sent(samples_done);
     }
+
+    emit_final_payload(
+        stream,
+        request,
+        state,
+        emitter,
+        range,
+        final_total.as_deref(),
+        emission_count,
+    )?;
 
     write_done(
         stream,
@@ -389,6 +365,61 @@ fn emit_display_tick<S: Write>(
 /// denoiser -- waited for, with a `PROGRESS` heartbeat every
 /// [`super::super::HEARTBEAT_INTERVAL`] so a slow 4K denoise never looks like a dead
 /// server. Falls back to the plain tone-map if the denoise thread is unavailable.
+fn emit_final_payload<S: Write>(
+    stream: &mut S,
+    request: &RenderRequest,
+    state: &Arc<Mutex<SharedState>>,
+    emitter: &mut EmitterAccum,
+    range: Option<(u32, u32)>,
+    final_total: Option<&[Vec3]>,
+    emission_count: &mut u32,
+) -> Result<(), NetError> {
+    match request.stream.transfer_mode {
+        TransferMode::FinalOnly => {
+            let write = |encoded: &EncodedPayload<'_>| {
+                let header = FrameHeader::for_encoded(
+                    request.request_id,
+                    request.first_sample,
+                    request.samples,
+                    encoded,
+                );
+                indicatrix_net::messages::write_stream_event(
+                    stream,
+                    &StreamEvent::Frame(header),
+                    Some(encoded.bytes),
+                )
+            };
+            match final_total {
+                Some(total) => emitter.send_other(total, write)?,
+                None => emitter.send_running_total(write)?,
+            }
+            *emission_count += 1;
+        }
+        TransferMode::LiveProgressive => {
+            if let Some((first_sample, samples)) = range {
+                emitter.send_delta(|encoded| {
+                    let header = FrameHeader::for_encoded(
+                        request.request_id,
+                        first_sample,
+                        samples,
+                        encoded,
+                    );
+                    indicatrix_net::messages::write_stream_event(
+                        stream,
+                        &StreamEvent::Frame(header),
+                        Some(encoded.bytes),
+                    )
+                })?;
+                *emission_count += 1;
+            }
+        }
+        TransferMode::DisplayOnly => {
+            emit_final_display(stream, request, state, emitter, final_total, emission_count)?;
+        }
+    }
+    Ok(())
+}
+
 fn emit_final_display<S: Write>(
     stream: &mut S,
     request: &RenderRequest,

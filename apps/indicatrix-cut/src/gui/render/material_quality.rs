@@ -17,10 +17,15 @@ use crate::{
         optics::c_axis::{angles_to_c_axis, c_axis_to_angles},
         render::sample_scale::exponent_to_count,
         show_toast,
+        tutorial_events::raise,
     },
-    settings::{SettingsPersister, model::surface_glare_from_percent},
+    settings::{
+        SettingsPersister,
+        model::{head_shadow_deg_from_slider, surface_glare_from_percent},
+    },
 };
-use indicatrix::optics::{LightingPreset, materials::GemMaterial};
+use indicatrix::optics::materials::GemMaterial;
+use indicatrix_editor::guide::viewing_events as events;
 use slint::{ComponentHandle, SharedString};
 use std::sync::{Arc, Mutex};
 
@@ -129,7 +134,7 @@ pub(in crate::gui) fn setup_material_and_quality_callbacks(
     let ui_weak_lit = ui.as_weak();
     ui.global::<ViewportModel>()
         .on_lighting_changed(move |idx: i32| {
-            let preset = LightingPreset::from_index(idx);
+            let preset = crate::gui::optics::offered_lighting::offered_from_index(idx);
             let mut ctx = RenderContext::lock(&render_ctx_lit);
             ctx.lighting_preset = preset;
             ctx.dirty = true;
@@ -137,6 +142,8 @@ pub(in crate::gui) fn setup_material_and_quality_callbacks(
             settings_store_lit.update(|s| s.settings.lighting_rig = preset.label().to_string());
             if let Some(ui) = ui_weak_lit.upgrade() {
                 show_toast(&ui, &format!("Lighting preset: {}", preset.label()), "info");
+                // A tutorial step may wait for a lighting preset to be chosen.
+                raise(&ui, events::LIGHTING_PRESET_CHOSEN);
             }
         });
 
@@ -243,6 +250,9 @@ pub(in crate::gui) fn setup_material_and_quality_callbacks(
             drop(ctx);
             settings_store_exp.update(|s| s.settings.exposure = clamped);
         });
+
+    // The settings dialog's "Some advanced settings are in use" note (Simple mode).
+    super::advanced_in_use::setup_advanced_in_use_callback(ui);
 }
 
 /// Wires up the two local render-path controls: the preview-then-settle resolution
@@ -436,6 +446,32 @@ pub(in crate::gui) fn setup_surface_glare_callback(
             ctx.dirty = true;
             drop(ctx);
             settings_store.update(|s| s.settings.surface_glare = glare);
+        });
+}
+
+/// Wires the head-shadow slider: the angular radius of the viewer's head shadow on the
+/// lit lighting presets, in the live view and every export
+/// (`RenderContext::head_shadow_deg`, persisted as `AppSettings::head_shadow_deg`). The
+/// slider reports whole degrees; a drag that stays on the same degree changes nothing and
+/// so never restarts accumulation.
+pub(in crate::gui) fn setup_head_shadow_callback(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    settings_store: &Arc<SettingsPersister>,
+) {
+    let render_ctx = render_ctx.clone();
+    let settings_store = settings_store.clone();
+    ui.global::<SettingsModel>()
+        .on_head_shadow_changed(move |degrees: f32| {
+            let deg = head_shadow_deg_from_slider(degrees);
+            let mut ctx = RenderContext::lock(&render_ctx);
+            if ctx.head_shadow_deg.to_bits() == deg.to_bits() {
+                return;
+            }
+            ctx.head_shadow_deg = deg;
+            ctx.dirty = true;
+            drop(ctx);
+            settings_store.update(|s| s.settings.head_shadow_deg = deg);
         });
 }
 

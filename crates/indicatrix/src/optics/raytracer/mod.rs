@@ -83,9 +83,15 @@ pub use sampling::{
 
 // environment.rs
 pub use environment::{
-    BACKDROP_GREY, BACKDROP_WHITE, EnvironmentSource, LightingModel, LightingPreset,
-    LightingRigParams, blackbody_spectrum, sample_studio_environment,
+    BACKDROP_GREY, BACKDROP_WHITE, DEFAULT_HEAD_SHADOW_COSINES, DEFAULT_HEAD_SHADOW_DEG,
+    EnvironmentSource, LightingModel, LightingPreset, LightingRigParams, TentParams,
+    blackbody_spectrum, head_shadow_cosines, sample_studio_environment,
     sample_studio_environment_observed, sample_studio_environment_with_rig,
+    sample_studio_environment_with_rig_shadow,
+};
+#[cfg(feature = "gpu")]
+pub(crate) use environment::{
+    sun_nee_reference_factor, sun_nee_reference_pdf, sun_nee_reference_sample,
 };
 
 // color.rs

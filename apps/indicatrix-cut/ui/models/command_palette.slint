@@ -1,0 +1,76 @@
+// The command palette's state (`components/command_palette.slint` is its view).
+//
+// Slint owns whether the palette is open, the typed query and the highlighted row, so
+// typing and arrow keys never wait for Rust. Rust (`gui::commands`) owns the list: it
+// fills `rows` when the palette opens or the query changes, and runs the command when
+// `activate` fires.
+
+import { EditorModel } from "editor.slint";
+
+// One result line: a command's title, its category, its key combination, and -- when it
+// cannot run right now -- why. An empty `reason` means the command is available.
+export struct PaletteRow {
+    title: string,
+    category: string,
+    shortcut: string,
+    reason: string,
+}
+
+export global CommandPaletteModel {
+    // Whether the palette is showing.
+    in-out property <bool> open: false;
+    // The search text. Empty lists the recently used commands first.
+    in-out property <string> query: "";
+    // The commands that match the query, best first.
+    in property <[PaletteRow]> rows: [];
+    // The highlighted row (index into `rows`).
+    in-out property <int> selected: 0;
+    // Bumped every time Rust replaces `rows`, so the view can scroll back to the top even
+    // when the highlighted row did not change.
+    in property <int> generation: 0;
+    // Bumped when the palette closes, so the main window takes the keyboard focus back
+    // (`app.slint` watches it). A closed palette would otherwise leave no focused item.
+    in-out property <int> restore_focus_pulse: 0;
+
+    // Fired once the palette has opened, so Rust fills `rows`.
+    callback opened();
+    // The query changed; Rust re-ranks the commands.
+    callback query_changed(string);
+    // Run the command shown in row `index` (Enter or a click).
+    callback activate(int);
+
+    // Opens the palette with an empty query. Called from the Edit menu and the
+    // Ctrl+K / Ctrl+Shift+P keys in `app.slint`.
+    public function open_palette() {
+        root.query = "";
+        root.selected = 0;
+        root.open = true;
+        root.opened();
+    }
+
+    // Closes the palette. `text_focus` is reset here because the search field is removed
+    // from the window while it still has focus, which drops its own focus handler.
+    public function close_palette() {
+        root.open = false;
+        EditorModel.text_focus = false;
+        root.restore_focus_pulse += 1;
+    }
+
+    // Moves the highlight by `delta` rows. With `wrap`, going past either end continues at
+    // the other; without it the highlight stops at the first or last row.
+    public function move_by(delta: int, wrap: bool) {
+        if root.rows.length <= 0 {
+            return;
+        }
+        let target = root.selected + delta;
+        if target < 0 {
+            root.selected = wrap ? root.rows.length - 1 : 0;
+        } else if target >= root.rows.length {
+            root.selected = wrap ? 0 : root.rows.length - 1;
+        } else {
+            root.selected = target;
+        }
+    }
+
+    changed query => { root.query_changed(root.query); }
+}

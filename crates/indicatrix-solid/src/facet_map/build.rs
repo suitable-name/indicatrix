@@ -133,7 +133,12 @@ impl FacetMap {
         solved: &[SolvedTier],
         placements: &[(usize, usize)],
     ) -> Self {
-        let mut map = Self::from_design(design, solved);
+        Self::from_design(design, solved).with_tools(design, placements)
+    }
+
+    /// `self` (a flat-only map) with one concave facet per `placements` entry appended,
+    /// the second half of [`Self::from_design_with_tools`].
+    pub(super) fn with_tools(mut self, design: &Design, placements: &[(usize, usize)]) -> Self {
         for &(tier, placement) in placements {
             let concave = design.concave_tiers.get(tier);
             let name = concave.map_or("", |t| t.name.as_str());
@@ -161,7 +166,7 @@ impl FacetMap {
                     Block::Pavilion
                 }
             });
-            map.facets.push(FacetInfo {
+            self.facets.push(FacetInfo {
                 tier_index: None,
                 index_on_gear: index,
                 angle_deg,
@@ -170,8 +175,8 @@ impl FacetMap {
                 display_name: label,
                 kind: FacetKind::Concave { tier, placement },
             });
-            map.concave_hover.push(hover);
+            self.concave_hover.push(hover);
         }
-        map
+        self
     }
 }

@@ -55,6 +55,8 @@ fn preset_alone_uses_its_representative_figure() {
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     assert_eq!(m.effective_specific_gravity(), Some(3.52));
 }
@@ -68,6 +70,8 @@ fn override_wins_over_a_known_preset() {
         specific_gravity_override: Some(3.515),
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     assert_eq!(m.effective_specific_gravity(), Some(3.515));
 }
@@ -80,6 +84,8 @@ fn override_alone_works_for_a_species_with_no_preset() {
         specific_gravity_override: Some(3.90),
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     assert_eq!(m.effective_specific_gravity(), Some(3.90));
 }
@@ -97,6 +103,8 @@ fn with_specific_gravity_override_replaces_only_that_field() {
         specific_gravity_override: Some(3.50),
         refractive_index_override: Some(2.42),
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let updated = original.with_specific_gravity_override(Some(3.55));
     assert_eq!(updated.specific_gravity_override, Some(3.55));
@@ -116,6 +124,8 @@ fn with_specific_gravity_override_can_clear_the_override() {
         specific_gravity_override: Some(2.70),
         refractive_index_override: Some(1.55),
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let updated = original.with_specific_gravity_override(None);
     assert_eq!(updated.specific_gravity_override, None);
@@ -132,6 +142,8 @@ fn resolve_a_known_preset_returns_that_material_and_its_own_n_d() {
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let resolved = m.resolve(&BuiltinMaterials);
     assert_eq!(
@@ -164,6 +176,8 @@ fn resolve_with_an_unrecognized_name_falls_back_to_diamond() {
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let resolved = m.resolve(&BuiltinMaterials);
     assert_eq!(resolved.gem.name, GemMaterial::diamond().name);
@@ -177,6 +191,8 @@ fn resolve_refractive_index_override_wins_over_the_resolved_material() {
         specific_gravity_override: None,
         refractive_index_override: Some(1.70),
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let resolved = m.resolve(&BuiltinMaterials);
     assert!((resolved.n_d - 1.70).abs() < 1e-12);
@@ -225,6 +241,8 @@ fn effective_specific_gravity_with_matches_built_ins_only_path() {
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     assert_eq!(
         m.effective_specific_gravity_with(&BuiltinMaterials),
@@ -240,6 +258,8 @@ fn effective_specific_gravity_with_override_wins_over_the_catalogue() {
         specific_gravity_override: Some(3.515),
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     assert_eq!(
         m.effective_specific_gravity_with(&BuiltinMaterials),
@@ -265,6 +285,8 @@ fn effective_specific_gravity_with_resolves_a_custom_material_the_built_in_table
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     assert_eq!(m.effective_specific_gravity(), None);
     assert_eq!(
@@ -375,6 +397,8 @@ fn with_body_color_sets_only_the_override_and_none_clears_it() {
         specific_gravity_override: Some(4.0),
         refractive_index_override: Some(1.77),
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     assert!(!base.has_body_color_override());
     let yellow = base.clone().with_body_color(Some([0.2, 0.4, 2.8]));
@@ -420,6 +444,35 @@ fn apply_overrides_changes_only_the_absorption_for_a_color() {
     assert_ne!(colored.absorption, sapphire.absorption);
 }
 
+/// The N-band colour wins over the triple stored next to it, sets the path scale, and an
+/// empty band list falls back to the triple.
+#[test]
+fn apply_overrides_prefers_the_bands_and_their_path_scale() {
+    let sapphire = GemMaterial::sapphire();
+    let rows = vec![[460.0f32, 45.0, 0.25], [620.0, 45.0, 0.5]];
+    let selection = MaterialSelection::none().with_body_color_bands(
+        Some([0.2, 0.4, 2.8]),
+        Some(rows.clone()),
+        Some(24.5),
+    );
+    let banded = selection.apply_overrides(sapphire.clone());
+    assert_eq!(banded, sapphire.clone().with_body_color_bands(&rows, 24.5));
+    assert!((banded.absorption_path_scale - 24.5).abs() < f32::EPSILON);
+    assert_ne!(banded, sapphire.clone().with_body_color([0.2, 0.4, 2.8]));
+
+    let empty = MaterialSelection::none().with_body_color_bands(
+        Some([0.2, 0.4, 2.8]),
+        Some(Vec::new()),
+        Some(24.5),
+    );
+    assert_eq!(
+        empty.apply_overrides(sapphire.clone()),
+        sapphire.with_body_color([0.2, 0.4, 2.8])
+    );
+    let text = format!("{selection:?}");
+    assert!(text.contains("body_color_bands_override") && text.contains("24.5"));
+}
+
 /// The hand-written `Debug` prints exactly the pre-color field list when no color
 /// is set (the desktop's identity pins hash these dumps), and names the color when
 /// one is.
@@ -430,6 +483,8 @@ fn debug_omits_an_unset_body_color_and_prints_a_set_one() {
         specific_gravity_override: None,
         refractive_index_override: Some(1.55),
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     assert_eq!(
         format!("{plain:?}"),

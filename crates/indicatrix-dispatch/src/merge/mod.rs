@@ -75,7 +75,7 @@ pub trait ParkedBudget: fmt::Debug + Send + Sync {
 
     /// Releases `bytes` reserved by an earlier [`Self::reserve`] once its chunk folds
     /// into the merged prefix (or the [`Merger`] is consumed by
-    /// [`Merger::into_parts`] while the chunk was still parked).
+    /// [`Merger::into_parts`] or dropped while the chunk was still parked).
     fn release(&self, bytes: u64);
 }
 
@@ -314,20 +314,10 @@ impl Merger {
     /// incomplete run (cancel, lanes lost) are folded in `first_sample` order, so this
     /// is deterministic too.
     #[must_use]
-    pub fn into_parts(self) -> (Vec<Vec3>, u32) {
+    pub fn into_parts(mut self) -> (Vec<Vec3>, u32) {
         let pixels = self.pixels;
-        let chunk_bytes = self.chunk_bytes();
-        let budget = self.budget;
-        let mut state = self
-            .state
-            .into_inner()
-            .unwrap_or_else(PoisonError::into_inner);
-        let parked = std::mem::take(&mut state.parked);
-        if let Some(budget) = &budget
-            && !parked.is_empty()
-        {
-            budget.release(chunk_bytes * parked.len() as u64);
-        }
+        let parked = self.take_parked();
+        let state = self.state.get_mut().unwrap_or_else(PoisonError::into_inner);
         for chunk in parked.into_values() {
             fold(&mut state.merged, pixels, &chunk.sum);
             state.merged_count += chunk.done;
@@ -335,7 +325,31 @@ impl Merger {
         if state.merged.is_empty() {
             state.merged = vec![Vec3::ZERO; pixels];
         }
-        (state.merged, state.merged_count)
+        (std::mem::take(&mut state.merged), state.merged_count)
+    }
+
+    /// Empties the parked map and releases its budget charge, so the charge is returned
+    /// exactly once however the merger ends ([`Self::into_parts`] or [`Drop`]).
+    fn take_parked(&mut self) -> BTreeMap<u32, Parked> {
+        let chunk_bytes = self.chunk_bytes();
+        let state = self.state.get_mut().unwrap_or_else(PoisonError::into_inner);
+        let parked = std::mem::take(&mut state.parked);
+        state.parked_count = 0;
+        if let Some(budget) = &self.budget
+            && !parked.is_empty()
+        {
+            budget.release(chunk_bytes * parked.len() as u64);
+        }
+        parked
+    }
+}
+
+impl Drop for Merger {
+    /// Returns whatever is still charged for parked chunks, so a merger dropped without
+    /// [`Merger::into_parts`] (a cancelled or exhausted run) does not leak its parked
+    /// bytes into a shared budget.
+    fn drop(&mut self) {
+        drop(self.take_parked());
     }
 }
 

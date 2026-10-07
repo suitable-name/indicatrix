@@ -1,10 +1,16 @@
 import { ComboBox, LineEdit, SpinBox, Slider } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { TiltVideoExportModel } from "../../models/tilt.slint";
+import { GuideModel } from "../../models/guide.slint";
+import { SegmentPill } from "../pill_button.slint";
+import { ToggleRow } from "../toggle_switch.slint";
+import { ChipToggle, ActionButton } from "../chip_toggle.slint";
 // Read-only reuse of the still-image export's own output folder (`ExportModel.directory`)
 // -- see `video_export::resolve_export_directory`'s own doc comment on why the video
 // export shares that folder rather than keeping a second, independent one.
 import { ExportModel } from "../../models/export.slint";
+// "Add to Queue" saves the video as a render job -- see `models/render_jobs.slint`.
+import { RenderJobsModel } from "../../models/render_jobs.slint";
 
 // "Export tilt video" collapsible section, shown near the bottom of
 // `PerformanceGraphDialog`, below the tilt performance chart. Renders one
@@ -16,6 +22,10 @@ import { ExportModel } from "../../models/export.slint";
 // `PerformanceGraphDialog` (`video_export_expanded`/`confirmed_large_run`,
 // both reset fresh every re-open of that dialog) and passed through here two-way,
 // matching the task's own "collapsed on popup open, not persisted" requirement.
+//
+// Simple mode (`GuideModel.shows_advanced()`) hides the ray-bounce cap, the colour space, the
+// remote transfer choice and the folder-name template. They keep their saved values and still
+// apply; "Resolves to" below the folder shows the name they produce.
 export component TiltVideoExportSection inherits Rectangle {
     in-out property <bool> video_export_expanded: false;
     in-out property <bool> confirmed_large_run: false;
@@ -39,8 +49,30 @@ export component TiltVideoExportSection inherits Rectangle {
         Rectangle {
             height: 36px;
             background: video_header_touch.has-hover ? Theme.surface-raised : transparent;
+            border-width: video_header_focus.has-focus ? 2px : 0px;
+            border-color: Theme.accent-cyan-hover;
+
+            accessible-role: AccessibleRole.button;
+            accessible-label: "Export Tilt Video";
+            accessible-description: root.video_export_expanded
+                ? "Open. Press to hide the video export settings."
+                : "Closed. Press to show the video export settings.";
+            accessible-action-default => { root.video_export_expanded = !root.video_export_expanded; }
+
+            Tooltip { text: @markdown("Show or hide the settings for saving the tilt sweep as a video."); }
+
+            video_header_focus := FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.Space || event.text == Key.Return {
+                        root.video_export_expanded = !root.video_export_expanded;
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
 
             video_header_touch := TouchArea {
+                mouse-cursor: pointer;
                 clicked => { root.video_export_expanded = !root.video_export_expanded; }
             }
 
@@ -112,12 +144,22 @@ export component TiltVideoExportSection inherits Rectangle {
                     VerticalLayout {
                         spacing: 2px;
                         Text { text: "Start (°)"; font-size: 10px; color: Theme.text-muted; }
-                        SpinBox { minimum: -90; maximum: 90; value <=> TiltVideoExportModel.start_angle_deg; }
+                        SpinBox {
+                            minimum: -90;
+                            maximum: 90;
+                            accessible-label: "Start angle in degrees";
+                            value <=> TiltVideoExportModel.start_angle_deg;
+                        }
                     }
                     VerticalLayout {
                         spacing: 2px;
                         Text { text: "End (°)"; font-size: 10px; color: Theme.text-muted; }
-                        SpinBox { minimum: -90; maximum: 90; value <=> TiltVideoExportModel.end_angle_deg; }
+                        SpinBox {
+                            minimum: -90;
+                            maximum: 90;
+                            accessible-label: "End angle in degrees";
+                            value <=> TiltVideoExportModel.end_angle_deg;
+                        }
                     }
                     VerticalLayout {
                         spacing: 2px;
@@ -125,13 +167,14 @@ export component TiltVideoExportSection inherits Rectangle {
                         Rectangle {
                             height: 26px;
                             width: 84px;
-                            background: #131b2e;
+                            background: Theme.surface-chip;
                             border-radius: Theme.radius-sm;
                             border-width: 1px;
                             border-color: Theme.border-dialog;
                             LineEdit {
                                 width: 100%;
                                 height: 100%;
+                                accessible-label: "Step between frames in degrees";
                                 text: "" + TiltVideoExportModel.step_deg;
                                 edited(text) => { TiltVideoExportModel.step_deg = TiltVideoExportModel.parse_step_deg(text); }
                             }
@@ -140,26 +183,12 @@ export component TiltVideoExportSection inherits Rectangle {
                 }
                 HorizontalLayout {
                     spacing: 6px;
-                    for chip in [0.05, 0.1, 0.25, 0.5, 1.0]: Rectangle {
-                        height: 20px;
-                        border-radius: Theme.radius-sm;
-                        background: Math.abs(TiltVideoExportModel.step_deg - chip) < 0.001 ? Theme.accent-cyan : #131b2e;
-                        border-width: 1px;
-                        border-color: Math.abs(TiltVideoExportModel.step_deg - chip) < 0.001 ? Theme.accent-cyan : Theme.border-dialog;
-
-                        TouchArea { clicked => { TiltVideoExportModel.step_deg = chip; } }
-
-                        HorizontalLayout {
-                            padding-left: 6px;
-                            padding-right: 6px;
-                            alignment: center;
-                            Text {
-                                text: "" + chip;
-                                font-size: 10px;
-                                font-weight: 600;
-                                color: Math.abs(TiltVideoExportModel.step_deg - chip) < 0.001 ? Theme.text-on-accent : Theme.text-secondary;
-                            }
-                        }
+                    for chip in [0.05, 0.1, 0.25, 0.5, 1.0]: SegmentPill {
+                        height: 24px;
+                        text: "" + chip;
+                        hint: "Step by " + chip + " degrees between frames.";
+                        selected: Math.abs(TiltVideoExportModel.step_deg - chip) < 0.001;
+                        picked => { TiltVideoExportModel.step_deg = chip; }
                     }
                 }
                 Text {
@@ -183,24 +212,16 @@ export component TiltVideoExportSection inherits Rectangle {
                 Text { text: "Frame Rate"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
                 HorizontalLayout {
                     spacing: 4px;
-                    for label[idx] in ["24 fps", "30 fps", "60 fps"]: Rectangle {
-                        horizontal-stretch: 1;
+                    for label[idx] in ["24 fps", "30 fps", "60 fps"]: SegmentPill {
                         height: 26px;
-                        border-radius: Theme.radius-sm;
-                        background: TiltVideoExportModel.fps_index == idx ? Theme.accent-cyan : #131b2e;
-                        border-width: 1px;
-                        border-color: TiltVideoExportModel.fps_index == idx ? Theme.accent-cyan : Theme.border-dialog;
-
-                        TouchArea { clicked => { TiltVideoExportModel.fps_index = idx; } }
-
-                        Text {
-                            text: label;
-                            font-size: 10px;
-                            font-weight: 600;
-                            color: TiltVideoExportModel.fps_index == idx ? Theme.text-on-accent : Theme.text-secondary;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
+                        text: label;
+                        hint: idx == 0
+                            ? "Make the video at 24 frames a second, the look of film."
+                            : (idx == 1
+                                ? "Make the video at 30 frames a second."
+                                : "Make the video at 60 frames a second, the smoothest, with a longer render.");
+                        selected: TiltVideoExportModel.fps_index == idx;
+                        picked => { TiltVideoExportModel.fps_index = idx; }
                     }
                 }
             }
@@ -213,6 +234,7 @@ export component TiltVideoExportSection inherits Rectangle {
                 spacing: 6px;
                 Text { text: "Resolution"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
                 ComboBox {
+                    accessible-label: "Video resolution";
                     model: [
                         "128 x 128", "256 x 256", "512 x 512", "1024 x 1024", "2048 x 2048", "4096 x 4096", "8192 x 8192",
                         "1280 x 720 (720p)", "1920 x 1080 (1080p)", "2560 x 1440 (1440p)", "3840 x 2160 (4K)", "7680 x 4320 (8K)",
@@ -225,12 +247,24 @@ export component TiltVideoExportSection inherits Rectangle {
                     VerticalLayout {
                         spacing: 2px;
                         Text { text: "Width (px)"; font-size: 10px; color: Theme.text-muted; }
-                        SpinBox { minimum: 128; maximum: 8192; step-size: 8; value <=> TiltVideoExportModel.custom_width; }
+                        SpinBox {
+                            minimum: 128;
+                            maximum: 8192;
+                            step-size: 8;
+                            accessible-label: "Video width in pixels";
+                            value <=> TiltVideoExportModel.custom_width;
+                        }
                     }
                     VerticalLayout {
                         spacing: 2px;
                         Text { text: "Height (px)"; font-size: 10px; color: Theme.text-muted; }
-                        SpinBox { minimum: 128; maximum: 8192; step-size: 8; value <=> TiltVideoExportModel.custom_height; }
+                        SpinBox {
+                            minimum: 128;
+                            maximum: 8192;
+                            step-size: 8;
+                            accessible-label: "Video height in pixels";
+                            value <=> TiltVideoExportModel.custom_height;
+                        }
                     }
                 }
             }
@@ -249,83 +283,61 @@ export component TiltVideoExportSection inherits Rectangle {
                     Text { text: "Samples per pixel:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
                     Text { text: Math.round(Math.pow(2.0, Math.round(TiltVideoExportModel.sample_exponent_raw))); font-size: 12px; font-weight: 700; color: Theme.accent-cyan; }
                 }
-                Slider { minimum: 3; maximum: 15; step: 1; value <=> TiltVideoExportModel.sample_exponent_raw; }
+                Slider {
+                    minimum: 3;
+                    maximum: 15;
+                    step: 1;
+                    accessible-label: "Samples per pixel, as a power of two";
+                    value <=> TiltVideoExportModel.sample_exponent_raw;
+                }
 
-                Text { text: "Max Ray Bounces"; font-size: 10px; color: Theme.text-muted; }
-                HorizontalLayout {
+                // Advanced: the ray-bounce cap.
+                if GuideModel.shows_advanced(): Text { text: "Max Ray Bounces"; font-size: 10px; color: Theme.text-muted; }
+                if GuideModel.shows_advanced(): HorizontalLayout {
                     spacing: 4px;
-                    for label[idx] in ["4", "8", "12", "24", "64", "128"]: Rectangle {
-                        horizontal-stretch: 1;
+                    for label[idx] in ["4", "8", "12", "24", "64", "128"]: SegmentPill {
                         height: 24px;
-                        border-radius: Theme.radius-sm;
-                        background: TiltVideoExportModel.selected_bounce_index == idx ? Theme.accent-cyan : #131b2e;
-                        border-width: 1px;
-                        border-color: TiltVideoExportModel.selected_bounce_index == idx ? Theme.accent-cyan : Theme.border-dialog;
-
-                        TouchArea { clicked => { TiltVideoExportModel.selected_bounce_index = idx; } }
-
-                        Text {
-                            text: label;
-                            font-size: 10px;
-                            font-weight: 600;
-                            color: TiltVideoExportModel.selected_bounce_index == idx ? Theme.text-on-accent : Theme.text-secondary;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
+                        text: label;
+                        hint: "Stop a light path after " + label + " bounces.";
+                        selected: TiltVideoExportModel.selected_bounce_index == idx;
+                        picked => { TiltVideoExportModel.selected_bounce_index = idx; }
                     }
                 }
 
-                Text { text: "color Space"; font-size: 10px; color: Theme.text-muted; }
-                HorizontalLayout {
+                // Advanced: the colour space.
+                if GuideModel.shows_advanced(): Text { text: "Color Space"; font-size: 10px; color: Theme.text-muted; }
+                if GuideModel.shows_advanced(): HorizontalLayout {
                     spacing: 4px;
-                    for label[idx] in ["sRGB", "Display P3", "Rec.2020"]: Rectangle {
-                        horizontal-stretch: 1;
+                    for label[idx] in ["sRGB", "Display P3", "Rec.2020"]: SegmentPill {
                         height: 24px;
-                        border-radius: Theme.radius-sm;
-                        background: TiltVideoExportModel.selected_color_space_index == idx ? Theme.accent-cyan : #131b2e;
-                        border-width: 1px;
-                        border-color: TiltVideoExportModel.selected_color_space_index == idx ? Theme.accent-cyan : Theme.border-dialog;
-
-                        TouchArea { clicked => { TiltVideoExportModel.selected_color_space_index = idx; } }
-
-                        Text {
-                            text: label;
-                            font-size: 10px;
-                            font-weight: 600;
-                            color: TiltVideoExportModel.selected_color_space_index == idx ? Theme.text-on-accent : Theme.text-secondary;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
+                        text: label;
+                        hint: idx == 0
+                            ? "Standard screen colours. The safe choice."
+                            : (idx == 1
+                                ? "Wider colours, for modern screens and phones."
+                                : "Very wide colours for HDR video. Only some screens show them.");
+                        selected: TiltVideoExportModel.selected_color_space_index == idx;
+                        picked => { TiltVideoExportModel.selected_color_space_index = idx; }
                     }
                 }
 
                 // Transfer -- only with a remote configured; a
                 // video always offers the remote its share (Compute is always Local +
-                // Remote here), so no compute gate is needed.
-                if TiltVideoExportModel.remote_configured: Text { text: "Transfer"; font-size: 10px; color: Theme.text-muted; }
-                if TiltVideoExportModel.remote_configured: HorizontalLayout {
+                // Remote here), so no compute gate is needed. Advanced.
+                if TiltVideoExportModel.remote_configured && GuideModel.shows_advanced(): Text { text: "Transfer"; font-size: 10px; color: Theme.text-muted; }
+                if TiltVideoExportModel.remote_configured && GuideModel.shows_advanced(): HorizontalLayout {
                     spacing: 4px;
-                    for label[idx] in ["Full data", "Final picture only"]: Rectangle {
-                        horizontal-stretch: 1;
+                    for label[idx] in ["Full data", "Final picture only"]: SegmentPill {
                         height: 24px;
-                        border-radius: Theme.radius-sm;
-                        background: TiltVideoExportModel.transfer_index == idx ? Theme.accent-cyan : #131b2e;
-                        border-width: 1px;
-                        border-color: TiltVideoExportModel.transfer_index == idx ? Theme.accent-cyan : Theme.border-dialog;
-
-                        TouchArea { clicked => { TiltVideoExportModel.transfer_index = idx; } }
-
-                        Text {
-                            text: label;
-                            font-size: 10px;
-                            font-weight: 600;
-                            color: TiltVideoExportModel.transfer_index == idx ? Theme.text-on-accent : Theme.text-secondary;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
+                        text: label;
+                        hint: idx == 0
+                            ? "The remote sends its raw samples, so they combine with the ones traced here."
+                            : "The remote sends one finished picture per frame. Much less data travels, but this computer does not help trace.";
+                        selected: TiltVideoExportModel.transfer_index == idx;
+                        picked => { TiltVideoExportModel.transfer_index = idx; }
                     }
                 }
-                if TiltVideoExportModel.remote_configured && TiltVideoExportModel.transfer_index == 1: Text {
+                if TiltVideoExportModel.remote_configured && GuideModel.shows_advanced() && TiltVideoExportModel.transfer_index == 1: Text {
                     text: "One finished PNG per frame from the remote -- far less data, but your own CPU/GPU do not help. A plain worker falls back to full data.";
                     font-size: 10px;
                     color: Theme.text-muted;
@@ -348,20 +360,22 @@ export component TiltVideoExportSection inherits Rectangle {
                     color: Theme.text-muted;
                     wrap: word-wrap;
                 }
-                Text { text: "Folder name template:"; font-size: 10px; color: Theme.text-muted; }
-                Rectangle {
+                // Advanced: the folder-name template and its field list.
+                if GuideModel.shows_advanced(): Text { text: "Folder name template:"; font-size: 10px; color: Theme.text-muted; }
+                if GuideModel.shows_advanced(): Rectangle {
                     height: 26px;
-                    background: #131b2e;
+                    background: Theme.surface-chip;
                     border-radius: Theme.radius-sm;
                     border-width: 1px;
                     border-color: Theme.border-dialog;
                     LineEdit {
                         width: 100%;
                         height: 100%;
+                        accessible-label: "Video folder name template";
                         text <=> TiltVideoExportModel.filename_template;
                     }
                 }
-                Text {
+                if GuideModel.shows_advanced(): Text {
                     text: "{design} {designer} {shape} {material} {ri} {width} {height} {spp} {bounces} {colorspace} {axis} {fps} {step} {start} {end} {frames} {date} {time} {timestamp}";
                     font-size: 11px;
                     color: Theme.text-muted;
@@ -385,115 +399,70 @@ export component TiltVideoExportSection inherits Rectangle {
             // `gui::tilt::video_export::overlay::select_overlay_layout`.
             VerticalLayout {
                 spacing: 6px;
-                HorizontalLayout {
-                    alignment: space-between;
-                    Text { text: "Show Performance Values"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; vertical-alignment: center; }
-                    Rectangle {
-                        width: 36px;
-                        height: 20px;
-                        border-radius: 10px;
-                        background: TiltVideoExportModel.show_values ? Theme.accent-cyan : Theme.border-dialog;
-
-                        TouchArea { clicked => { TiltVideoExportModel.show_values = !TiltVideoExportModel.show_values; } }
-
-                        Rectangle {
-                            width: 16px;
-                            height: 16px;
-                            border-radius: 8px;
-                            background: white;
-                            y: 2px;
-                            x: TiltVideoExportModel.show_values ? parent.width - self.width - 2px : 2px;
-                            animate x { duration: 100ms; }
-                        }
-                    }
+                ToggleRow {
+                    text: "Show Performance Values";
+                    hint: "Write the brilliance, windowing and extinction numbers of the current angle onto every frame of the video.";
+                    label_color: Theme.text-secondary;
+                    checked: TiltVideoExportModel.show_values;
+                    toggled => { TiltVideoExportModel.show_values = !TiltVideoExportModel.show_values; }
                 }
 
                 if TiltVideoExportModel.show_values: HorizontalLayout {
                     spacing: 6px;
 
-                    Rectangle {
+                    ChipToggle {
+                        text: "Brilliance";
+                        hint: "Write the brilliance value on each frame.";
                         height: 22px;
-                        border-radius: Theme.radius-sm;
-                        background: TiltVideoExportModel.metric_brilliance ? #0284c733 : #131b2e;
-                        border-width: 1px;
-                        border-color: TiltVideoExportModel.metric_brilliance ? Theme.accent-cyan : Theme.border-dialog;
-                        TouchArea { clicked => { TiltVideoExportModel.metric_brilliance = !TiltVideoExportModel.metric_brilliance; } }
-                        HorizontalLayout {
-                            padding-left: 6px; padding-right: 6px; alignment: center;
-                            Text { text: "Brilliance"; font-size: 10px; font-weight: 600; color: TiltVideoExportModel.metric_brilliance ? Theme.accent-cyan : Theme.text-muted; }
-                        }
+                        active: TiltVideoExportModel.metric_brilliance;
+                        accent: Theme.accent-cyan;
+                        fill: Theme.tint-cyan;
+                        toggled => { TiltVideoExportModel.metric_brilliance = !TiltVideoExportModel.metric_brilliance; }
                     }
-                    Rectangle {
+                    ChipToggle {
+                        text: "Windowing";
+                        hint: "Write the windowing value on each frame.";
                         height: 22px;
-                        border-radius: Theme.radius-sm;
-                        background: TiltVideoExportModel.metric_windowing ? #d9770633 : #131b2e;
-                        border-width: 1px;
-                        border-color: TiltVideoExportModel.metric_windowing ? Theme.accent-amber : Theme.border-dialog;
-                        TouchArea { clicked => { TiltVideoExportModel.metric_windowing = !TiltVideoExportModel.metric_windowing; } }
-                        HorizontalLayout {
-                            padding-left: 6px; padding-right: 6px; alignment: center;
-                            Text { text: "Windowing"; font-size: 10px; font-weight: 600; color: TiltVideoExportModel.metric_windowing ? Theme.accent-amber : Theme.text-muted; }
-                        }
+                        active: TiltVideoExportModel.metric_windowing;
+                        accent: Theme.accent-amber;
+                        fill: Theme.tint-amber;
+                        toggled => { TiltVideoExportModel.metric_windowing = !TiltVideoExportModel.metric_windowing; }
                     }
-                    Rectangle {
+                    ChipToggle {
+                        text: "Extinction";
+                        hint: "Write the extinction value on each frame.";
                         height: 22px;
-                        border-radius: Theme.radius-sm;
-                        background: TiltVideoExportModel.metric_extinction ? #b91c1c33 : #131b2e;
-                        border-width: 1px;
-                        border-color: TiltVideoExportModel.metric_extinction ? #ef4444 : Theme.border-dialog;
-                        TouchArea { clicked => { TiltVideoExportModel.metric_extinction = !TiltVideoExportModel.metric_extinction; } }
-                        HorizontalLayout {
-                            padding-left: 6px; padding-right: 6px; alignment: center;
-                            Text { text: "Extinction"; font-size: 10px; font-weight: 600; color: TiltVideoExportModel.metric_extinction ? #ef4444 : Theme.text-muted; }
-                        }
+                        active: TiltVideoExportModel.metric_extinction;
+                        accent: Theme.chart-extinction;
+                        fill: Theme.tint-red;
+                        toggled => { TiltVideoExportModel.metric_extinction = !TiltVideoExportModel.metric_extinction; }
                     }
-                    Rectangle {
+                    ChipToggle {
+                        text: "Tilt Brilliance";
+                        hint: "Write the tilt brilliance score of the whole sweep on each frame.";
                         height: 22px;
-                        border-radius: Theme.radius-sm;
-                        background: TiltVideoExportModel.metric_tilt_brilliance ? #a855f733 : #131b2e;
-                        border-width: 1px;
-                        border-color: TiltVideoExportModel.metric_tilt_brilliance ? Theme.accent-purple : Theme.border-dialog;
-                        TouchArea { clicked => { TiltVideoExportModel.metric_tilt_brilliance = !TiltVideoExportModel.metric_tilt_brilliance; } }
-                        HorizontalLayout {
-                            padding-left: 6px; padding-right: 6px; alignment: center;
-                            Text { text: "Tilt Brilliance"; font-size: 10px; font-weight: 600; color: TiltVideoExportModel.metric_tilt_brilliance ? Theme.accent-purple : Theme.text-muted; }
-                        }
+                        active: TiltVideoExportModel.metric_tilt_brilliance;
+                        accent: Theme.accent-purple;
+                        fill: Theme.tint-purple;
+                        toggled => { TiltVideoExportModel.metric_tilt_brilliance = !TiltVideoExportModel.metric_tilt_brilliance; }
                     }
-                    Rectangle {
+                    ChipToggle {
+                        text: "Angle";
+                        hint: "Write the tilt angle on each frame.";
                         height: 22px;
-                        border-radius: Theme.radius-sm;
-                        background: TiltVideoExportModel.metric_angle ? #33415577 : #131b2e;
-                        border-width: 1px;
-                        border-color: TiltVideoExportModel.metric_angle ? Theme.text-primary : Theme.border-dialog;
-                        TouchArea { clicked => { TiltVideoExportModel.metric_angle = !TiltVideoExportModel.metric_angle; } }
-                        HorizontalLayout {
-                            padding-left: 6px; padding-right: 6px; alignment: center;
-                            Text { text: "Angle"; font-size: 10px; font-weight: 600; color: TiltVideoExportModel.metric_angle ? Theme.text-primary : Theme.text-muted; }
-                        }
+                        active: TiltVideoExportModel.metric_angle;
+                        accent: Theme.text-primary;
+                        fill: Theme.tint-neutral;
+                        toggled => { TiltVideoExportModel.metric_angle = !TiltVideoExportModel.metric_angle; }
                     }
                 }
 
-                HorizontalLayout {
-                    alignment: space-between;
-                    Text { text: "Keep PNG Frames After Muxing"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; vertical-alignment: center; }
-                    Rectangle {
-                        width: 36px;
-                        height: 20px;
-                        border-radius: 10px;
-                        background: TiltVideoExportModel.keep_frames ? Theme.accent-cyan : Theme.border-dialog;
-
-                        TouchArea { clicked => { TiltVideoExportModel.keep_frames = !TiltVideoExportModel.keep_frames; } }
-
-                        Rectangle {
-                            width: 16px;
-                            height: 16px;
-                            border-radius: 8px;
-                            background: white;
-                            y: 2px;
-                            x: TiltVideoExportModel.keep_frames ? parent.width - self.width - 2px : 2px;
-                            animate x { duration: 100ms; }
-                        }
-                    }
+                ToggleRow {
+                    text: "Keep PNG Frames After Muxing";
+                    hint: "Keep the numbered picture files in the video's folder after the video is made. Off deletes them and keeps only the video.";
+                    label_color: Theme.text-secondary;
+                    checked: TiltVideoExportModel.keep_frames;
+                    toggled => { TiltVideoExportModel.keep_frames = !TiltVideoExportModel.keep_frames; }
                 }
             }
 
@@ -502,10 +471,10 @@ export component TiltVideoExportSection inherits Rectangle {
             // label changes to prompt a second click (see below).
             if video_content.needs_confirmation && !TiltVideoExportModel.is_exporting: Rectangle {
                 height: 40px;
-                background: #7c2d1233;
+                background: Theme.notice-surface;
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
-                border-color: #ea580c;
+                border-color: Theme.notice-accent;
                 HorizontalLayout {
                     padding-left: 10px;
                     padding-right: 10px;
@@ -514,7 +483,7 @@ export component TiltVideoExportSection inherits Rectangle {
                         text: "This will render " + video_content.computed_frame_count + " frames -- click Start again to confirm.";
                         font-size: 10px;
                         font-weight: 600;
-                        color: #fdba74;
+                        color: Theme.notice-text;
                         wrap: word-wrap;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -538,10 +507,13 @@ export component TiltVideoExportSection inherits Rectangle {
                 Rectangle {
                     height: 8px;
                     border-radius: 4px;
-                    background: #131b2e;
+                    background: Theme.surface-chip;
                     border-width: 1px;
                     border-color: Theme.border-dialog;
                     clip: true;
+                    accessible-role: AccessibleRole.progress-indicator;
+                    accessible-label: "Video export progress";
+                    accessible-value: Math.round(TiltVideoExportModel.progress * 100) + " percent";
                     Rectangle {
                         x: 0;
                         y: 0;
@@ -563,42 +535,50 @@ export component TiltVideoExportSection inherits Rectangle {
             HorizontalLayout {
                 spacing: 8px;
 
-                if TiltVideoExportModel.is_exporting: Rectangle {
+                if TiltVideoExportModel.is_exporting: ActionButton {
                     horizontal-stretch: 1;
-                    height: 30px;
-                    border-radius: Theme.radius-sm;
-                    background: video_cancel_touch.has-hover ? Theme.danger-surface-hover : Theme.danger-surface;
-                    border-width: 1px;
-                    border-color: Theme.danger-border;
-
-                    video_cancel_touch := TouchArea { clicked => { TiltVideoExportModel.cancel_video_export(); } }
-
-                    Text { text: "Cancel"; font-size: 11px; font-weight: 600; color: Theme.danger; horizontal-alignment: center; vertical-alignment: center; }
+                    text: "Cancel";
+                    hint: "Stop the video export.";
+                    fill: Theme.danger-surface;
+                    hover_fill: Theme.danger-surface-hover;
+                    edge: Theme.danger-border;
+                    ink: Theme.danger;
+                    clicked => { TiltVideoExportModel.cancel_video_export(); }
                 }
 
-                if !TiltVideoExportModel.is_exporting: Rectangle {
-                    horizontal-stretch: 1;
-                    height: 30px;
-                    border-radius: Theme.radius-sm;
-                    background: video_start_touch.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan;
-
-                    video_start_touch := TouchArea {
-                        clicked => {
-                            if video_content.needs_confirmation {
-                                root.confirmed_large_run = true;
-                            } else {
-                                TiltVideoExportModel.start_video_export(root.selected_axis_index);
-                            }
+                // Saves this video as a render job (`gui::render_jobs`), with the same
+                // large-run confirmation as Start Video Export below.
+                if !TiltVideoExportModel.is_exporting: ActionButton {
+                    width: 130px;
+                    text: "Add to Queue";
+                    hint: "Save this video as a render job instead of rendering now.";
+                    ink: Theme.text-secondary;
+                    clicked => {
+                        if video_content.needs_confirmation {
+                            root.confirmed_large_run = true;
+                        } else {
+                            RenderJobsModel.add_tilt_video_job(root.selected_axis_index);
                         }
                     }
+                }
 
-                    Text {
-                        text: video_content.needs_confirmation ? "Review " + video_content.computed_frame_count + " Frames" : "Start Video Export";
-                        font-size: 11px;
-                        font-weight: 700;
-                        color: Theme.text-on-accent;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                if !TiltVideoExportModel.is_exporting: ActionButton {
+                    horizontal-stretch: 1;
+                    text: video_content.needs_confirmation ? "Review " + video_content.computed_frame_count + " Frames" : "Start Video Export";
+                    hint: video_content.needs_confirmation
+                        ? "This is a long run. Press once to confirm the number of frames, then press again to start."
+                        : "Render every frame of the sweep and join them into a video.";
+                    fill: Theme.accent-cyan;
+                    hover_fill: Theme.accent-cyan-hover;
+                    edge: Theme.accent-cyan;
+                    ink: Theme.text-on-accent;
+                    weight: 700;
+                    clicked => {
+                        if video_content.needs_confirmation {
+                            root.confirmed_large_run = true;
+                        } else {
+                            TiltVideoExportModel.start_video_export(root.selected_axis_index);
+                        }
                     }
                 }
             }

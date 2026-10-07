@@ -184,7 +184,8 @@ mod tests {
             environment: indicatrix_net::scene::SceneEnvironment::Studio,
             surface_glare: 1.0,
             tools: Vec::new(),
-            fluorescence: Default::default(),
+            fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
+            head_shadow_deg: 16.0,
         };
         let path = dir.join("scene.json");
         std::fs::write(&path, serde_json::to_string(&scene).unwrap()).unwrap();
@@ -210,6 +211,33 @@ mod tests {
         value["surface_glare"] = serde_json::json!(0.25);
         let loaded: SceneState = serde_json::from_value(value).unwrap();
         assert_eq!(loaded.surface_glare.to_bits(), 0.25f32.to_bits());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `scene.json` written before `head_shadow_deg` existed loads with the 16 degree
+    /// default, and a written value survives.
+    #[test]
+    fn a_scene_json_without_head_shadow_loads_as_sixteen_degrees() {
+        let dir = std::env::temp_dir().join(format!(
+            "indicatrix-worker-head-shadow-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = std::fs::read_to_string(write_tiny_scene_json(&dir)).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(
+            value
+                .as_object_mut()
+                .unwrap()
+                .remove("head_shadow_deg")
+                .is_some()
+        );
+        let loaded: SceneState = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(loaded.head_shadow_deg.to_bits(), 16.0f32.to_bits());
+
+        value["head_shadow_deg"] = serde_json::json!(0.0);
+        let loaded: SceneState = serde_json::from_value(value).unwrap();
+        assert_eq!(loaded.head_shadow_deg.to_bits(), 0.0f32.to_bits());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -287,7 +315,8 @@ mod tests {
             environment: indicatrix_net::scene::SceneEnvironment::Studio,
             surface_glare: 1.0,
             tools: Vec::new(),
-            fluorescence: Default::default(),
+            fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
+            head_shadow_deg: 16.0,
         };
         scene.environment =
             indicatrix_net::scene::SceneEnvironment::Hdr(indicatrix_net::scene::HdrEnvironment {
@@ -343,7 +372,8 @@ mod tests {
             environment: indicatrix_net::scene::SceneEnvironment::Studio,
             surface_glare: 1.0,
             tools: Vec::new(),
-            fluorescence: Default::default(),
+            fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
+            head_shadow_deg: 16.0,
         };
         scene.planes[0].normal = [0.0, 0.0, 0.0];
         let scene_path = dir.join("scene.json");

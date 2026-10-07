@@ -22,11 +22,14 @@
 
 mod apply;
 mod apply_concave;
+mod apply_shift;
 mod edit_type;
 mod history;
+mod schedule_state;
 #[cfg(test)]
 mod tests;
 
 pub use apply::remap_ratio;
 pub use edit_type::{Edit, EditError, RemapRounding};
-pub use history::History;
+pub use history::{History, HistoryEntry, JumpError};
+pub use schedule_state::ScheduleState;

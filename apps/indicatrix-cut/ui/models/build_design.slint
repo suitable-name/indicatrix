@@ -1,0 +1,23 @@
+// "Build this design": turns a library design into a step-by-step lesson that rebuilds it from
+// an empty design (Rust: `gui::editor::guide::build_design`).
+//
+// The lesson itself is data in `crates/indicatrix-editor/src/guide/build_this_design.rs`; the
+// running lesson is shown by `GuideModel` (`models/guide.slint`) and, once finished, listed under
+// "Built from the library" in the tutorial browser. This global only starts the work: the library
+// list's context menu, the detail header's steps button and the command palette all call it.
+
+import { LibraryModel } from "library.slint";
+
+export global BuildDesignModel {
+    // True while a lesson is being prepared. Reading the design and checking its depths can take a
+    // few seconds for a large one, so the buttons that start a lesson are disabled meanwhile.
+    in-out property <bool> busy: false;
+
+    // Builds and starts the lesson for the library entry with this id (the list row's `id`). A
+    // design that cannot be rebuilt (no cutting data, does not solve) says why in a toast.
+    callback start(int);
+
+    // The same for the library entry that is selected now.
+    callback start_selected();
+    start_selected => { root.start(LibraryModel.selected_entry_id); }
+}

@@ -40,10 +40,11 @@ mod types;
 mod vertices;
 
 pub use caliper::{CaliperFrame, caliper_frame};
+pub use concave::ToolBounds;
 pub use measure::{measure_solid, measure_solid_with_vertices};
 pub use mesh::{
     TOOL_ICOSPHERE_LEVEL, TOOL_SEGMENTS, build_solid_mesh, build_solid_mesh_geom, mesh_volume,
-    tessellate_tool,
+    tessellate_tool, tool_bounds,
 };
 pub use proportions::StoneProportions;
 pub use types::{ExternalProportions, SolidMesh, SolidMetrics, SolidStatus};

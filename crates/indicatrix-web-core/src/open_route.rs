@@ -34,13 +34,14 @@ pub fn design_file_name_for_asc(asc_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use indicatrix_formats::native::design::DESIGN_VERSION_CONCAVE;
+    use indicatrix_formats::native::design::DESIGN_VERSION_RELATIONS;
 
     #[test]
     fn a_file_from_a_newer_version_is_refused_with_a_clear_message() {
+        // One past the newest version this build reads (the one with tier relations).
         let text = format!(
             "format = \"indicatrix-design\"\nversion = {}\n",
-            DESIGN_VERSION_CONCAVE + 1
+            DESIGN_VERSION_RELATIONS + 1
         );
         assert_eq!(
             indicatrix_editor::files::InputFileKind::classify("future.indicatrix", text.as_bytes()),

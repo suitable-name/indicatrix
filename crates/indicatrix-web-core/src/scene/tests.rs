@@ -111,7 +111,14 @@ fn web_spec(s: &DesktopSettings, planes: &[GpuFacetPlane], custom: Vec<GemMateri
             pitch: s.pitch,
             distance: s.distance,
         },
-        lighting: LightingSpec::new(s.preset, s.exposure, s.light_yaw, s.light_pitch, s.backdrop),
+        lighting: LightingSpec::new(
+            s.preset,
+            s.exposure,
+            s.light_yaw,
+            s.light_pitch,
+            s.backdrop,
+            16.0,
+        ),
         max_bounces: 6,
         width: 12,
         height: 8,
@@ -282,6 +289,7 @@ fn a_custom_material_wins_over_the_catalogue_like_the_desktop() {
         birefringence_delta: 0.0,
         absorption_rgb: None,
         color_recipe: None,
+        absorption_bands: Vec::new(),
     };
     let desktop_custom = vec![spec.to_gem_material()];
     let web_custom = desktop_custom.clone();
@@ -338,7 +346,14 @@ fn an_hdr_scene_shares_the_map_and_needs_it() {
             pitch: 0.35,
             distance: 4.2,
         },
-        lighting: LightingSpec::new(LightingPreset::LightTent, 1.0, 0.4, 0.35, Backdrop::Grey),
+        lighting: LightingSpec::new(
+            LightingPreset::LightTent,
+            1.0,
+            0.4,
+            0.35,
+            Backdrop::Grey,
+            16.0,
+        ),
         max_bounces: 4,
         width: 4,
         height: 4,
@@ -375,7 +390,14 @@ fn bad_specs_are_errors_not_substitutions() {
             pitch: 0.0,
             distance: 4.0,
         },
-        lighting: LightingSpec::new(LightingPreset::LightTent, 1.0, 0.0, 0.0, Backdrop::Grey),
+        lighting: LightingSpec::new(
+            LightingPreset::LightTent,
+            1.0,
+            0.0,
+            0.0,
+            Backdrop::Grey,
+            16.0,
+        ),
         max_bounces: 4,
         width: 4,
         height: 4,
@@ -425,4 +447,54 @@ fn planes_survive_the_plain_data_round_trip_bit_for_bit() {
         .map(Into::into)
         .collect();
     assert_eq!(back, planes);
+}
+
+#[test]
+fn a_linked_designs_bands_reach_the_traced_material() {
+    let selection = MaterialSelection::none().with_body_color_bands(
+        Some([0.2, 0.4, 0.6]),
+        Some(vec![[460.0, 45.0, 0.25]]),
+        Some(2.0),
+    );
+    let linked = DesignMaterialOverrides::from_selection(&selection);
+    assert_eq!(linked.body_color_bands, vec![[460.0, 45.0, 0.25]]);
+    let spec = MaterialSpec {
+        name: "Quartz".to_string(),
+        custom_materials: Vec::new(),
+        linked_design: Some(linked.clone()),
+        overrides: MaterialOverridesSpec::default(),
+    };
+    let traced = resolve_scene_material(&spec, &[]).expect("resolves");
+    assert!((traced.absorption_path_scale - 2.0).abs() < 1e-6);
+
+    // The same design without its bands is coloured by the triple alone.
+    let triple_only = MaterialSpec {
+        linked_design: Some(DesignMaterialOverrides {
+            body_color_bands: Vec::new(),
+            ..linked
+        }),
+        ..spec
+    };
+    let plain = resolve_scene_material(&triple_only, &[]).expect("resolves");
+    assert_ne!(traced.absorption, plain.absorption);
+}
+
+#[test]
+fn a_custom_materials_bands_colour_the_restored_material() {
+    let spec = CustomMaterialSpec {
+        name: "Banded".to_string(),
+        mean_ri: 1.74,
+        dispersion_delta: 0.024,
+        birefringence_delta: 0.0,
+        absorption_rgb: Some([0.25, 0.5, 1.5]),
+        color_recipe: None,
+        absorption_bands: vec![[460.0, 45.0, 0.25]],
+    };
+    let banded = spec.to_gem_material();
+    let triple_only = CustomMaterialSpec {
+        absorption_bands: Vec::new(),
+        ..spec
+    }
+    .to_gem_material();
+    assert_ne!(banded.absorption, triple_only.absorption);
 }

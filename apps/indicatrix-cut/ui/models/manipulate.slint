@@ -6,14 +6,29 @@
 // Every position here is in the viewport's LOGICAL coordinates (the same space the
 // pointer events use): Rust converts from the raster's pick frame with
 // `logical = (pick + letterbox_margin) / scale_factor`.
+//
+// The Diagram view zooms and pans its picture inside `SolidViewportView`, which Rust does
+// not see: there every position (the tips, and the pointer coordinates the callbacks
+// below carry) is UNZOOMED -- where the point would be at zoom 1 and no pan -- and
+// `ManipulateOverlay` maps the tips to the screen when it draws. `view_zoom` is the one
+// number Rust needs from the zoom: a marker keeps its size on screen, so its hit radius
+// in the unzoomed space shrinks as the picture zooms in.
 export global ManipulateModel {
     // Whether the handle overlay is drawn and can be grabbed. Hidden by Rust when
-    // nothing is selected, the view is the Diagram, the design is not solved, or the
-    // selected tier's centroid is off screen.
+    // nothing is selected, the design is not solved, the selected tier's centroid is off
+    // screen, or (Diagram view) no panel offers a handle for the selected tier.
     in property <bool> handles_visible: false;
+    // `false` when the Diagram panel the handles sit on offers no depth handle for the
+    // facet (a table seen from above has nothing to push along). Always `true` in the 3D
+    // views.
+    in property <bool> depth_visible: true;
     // `false` for a tier with no index-wheel positions: turning nothing is
     // meaningless, so its index handle is neither drawn nor grabbable.
     in property <bool> index_visible: true;
+    // `false` for a tier whose angle follows a relation (`P2 = P1 - 2`): its angle is set
+    // by the tiers it follows, so its angle handle is neither drawn nor grabbable. The depth
+    // and index handles stay.
+    in property <bool> angle_visible: true;
     // The selected facet's centroid, where the three handles fan out from.
     in property <length> anchor_x;
     in property <length> anchor_y;
@@ -34,8 +49,17 @@ export global ManipulateModel {
     // The one-line hint under the toolbar; empty hides the strip.
     in property <string> hint_text: "";
     // The toolbar's Snap pill: `true` turns angle and depth snapping off (the index
-    // handle always moves in whole teeth). Not persisted.
+    // handle always moves in whole teeth). Remembered in `AppSettings::manipulate_snap_off`
+    // (Rust seeds it at start-up and saves it from `snap_toggled`); the Preferences dialog's
+    // "Snap to gear steps" switch is the same setting, inverted.
     in-out property <bool> snap_off: false;
+    // How much larger than normal the handle markers, strokes and hit areas are: `1.0`
+    // normally, `1.6` with the "Larger handles" preference (touch screens and pens). Rust
+    // writes it (`gui::preferences`) and multiplies the hit radius by the same factor.
+    in property <float> handle_scale: 1.0;
+    // The Diagram view's current zoom (`1.0` unzoomed), mirrored from `SolidViewportView`.
+    // Slint writes it; Rust reads it for the handle hit radius.
+    in-out property <float> view_zoom: 1.0;
 
     // Which handle tip, if any, lies under the pointer: `-1` none, `0` angle,
     // `1` depth, `2` index.
@@ -74,7 +98,8 @@ export global ManipulateModel {
     // The provisional tier's name ("C3"), for the Keep button.
     in property <string> provisional_label: "";
     // Whether a new facet gets the whole symmetric orbit of the snapped index (the
-    // default) or a single index.
+    // default) or a single index. Remembered in `AppSettings::slice_symmetric`; the Slice
+    // mode itself is not (it changes what a left-drag does).
     in-out property <bool> slice_symmetric: true;
 
     // The Slice pill or S was used (`slice_mode` already holds its new value).

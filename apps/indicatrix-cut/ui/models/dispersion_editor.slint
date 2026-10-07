@@ -1,0 +1,68 @@
+// State and callbacks of the material editor's Dispersion section: a custom material's
+// refractive-index curve typed as Sellmeier or Cauchy coefficients instead of a refractive
+// index and one dispersion number. Everything the section shows is computed in Rust
+// (`gui::optics::dispersion_editor`): this global is the view's data, so the dialog keeps no
+// numeric logic of its own.
+
+// What the section shows for one model kind and one set of typed coefficients. Rebuilt by
+// `DispersionEditorModel.evaluate` whenever a field changes.
+export struct DispersionView {
+    // Every field is a number and the curve passes the engine's checks: the model can be saved.
+    valid: bool,
+    // One label per coefficient field, with its unit ("B1", "C1 (µm²)"), and one example value.
+    labels: [string],
+    placeholders: [string],
+    // One message per field, "" when the field is fine.
+    field_errors: [string],
+    // A neutral hint, shown while nothing has been typed.
+    hint: string,
+    // A problem with the curve as a whole (a resonance inside the visible range, an index
+    // below 1), "" when there is none.
+    model_error: string,
+    // Things worth a second look in a usable model: an index that rises with wavelength, an
+    // Abbe number outside 5-120, no fire at all.
+    warnings: [string],
+    // The live readout, as text. "—" while the model is not usable.
+    n_d: string,
+    n_f: string,
+    n_c: string,
+    delta: string,
+    abbe: string,
+    // `n_d` and `n_F - n_C` as numbers (0 while the model is not usable).
+    n_d_value: float,
+    delta_value: float,
+    // The curve n(wavelength), 380-780 nm, as path commands in a 0..100 square (highest index
+    // at the top), and the index at the top and bottom edges of that square.
+    curve: string,
+    curve_top: string,
+    curve_bottom: string,
+    // The model as the JSON the material database stores; "" while it is not usable.
+    model_json: string,
+}
+
+export global DispersionEditorModel {
+    // ---- prefill: the stored material the editor opens on ----
+    // Pushed by Rust (`gui::optics::custom_materials`) whenever the selected material changes:
+    // 0 = Simple (refractive index and dispersion sliders), 1 = Coefficients; the model combo
+    // index (0 = Sellmeier 1 term, 1 = Sellmeier 3 terms, 2 = Cauchy); the six field texts.
+    in property <int> prefill_mode: 0;
+    in property <int> prefill_kind: 2;
+    in property <[string]> prefill_texts: [];
+
+    // ---- the save hand-off ----
+    // The dialog writes the model JSON here ("" for the Simple mode) right before it calls
+    // `ViewportModel.save_custom_material`; Rust reads and clears it in that handler.
+    in-out property <string> save_json: "";
+
+    // ---- pure helpers, answered by Rust ----
+    // The live view for a model kind (combo index) and the six field texts.
+    pure callback evaluate(int, [string]) -> DispersionView;
+    // The "Copy from" entries for a model kind: a prompt first, then each built-in material
+    // with that kind of model. Empty when there is none, which hides the combo.
+    pure callback copy_options(int) -> [string];
+    // The text of field `index` for the built-in material `name` (kind, name, index).
+    pure callback coefficient(int, string, int) -> string;
+    // The text of Cauchy field `index` that reproduces a refractive index and dispersion
+    // (n_d, n_F - n_C, index): the starting point when switching from the Simple mode.
+    pure callback cauchy_seed(float, float, int) -> string;
+}

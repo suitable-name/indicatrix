@@ -53,6 +53,8 @@ fn gate_1_yield_and_carat_weight_match_a_hand_calculation() {
             specific_gravity_override: None,
             refractive_index_override: None,
             body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
         },
     );
     let solved = design.solve().expect("single anchored tier must solve");
@@ -92,6 +94,8 @@ fn gate_2_volumetric_yield_is_independent_of_specific_gravity() {
             specific_gravity_override: None,
             refractive_index_override: None,
             body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
         },
     );
     let heavy_override = box_design(
@@ -101,6 +105,8 @@ fn gate_2_volumetric_yield_is_independent_of_specific_gravity() {
             specific_gravity_override: Some(19.3), // arbitrary, e.g. gold-like
             refractive_index_override: None,
             body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
         },
     );
 

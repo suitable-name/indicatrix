@@ -1,7 +1,10 @@
 //! Tests for the builder-style opt-in constructors: the per-species scattering
 //! arm coverage and [`GemMaterial::new_custom`]'s dispersion-delta convention.
 
-use crate::optics::materials::GemMaterial;
+use crate::optics::{
+    dispersion::DispersionModel,
+    materials::{CrystalSystem, GemMaterial, OpticalCharacter},
+};
 
 /// Every built-in material must have its OWN explicit `recommended_scattering` arm,
 /// keyed by its exact `all_materials()` name -- falling through to the generic
@@ -61,12 +64,70 @@ fn new_custom_preserves_mean_ri_at_sodium_d_line_regardless_of_dispersion_delta(
     }
 }
 
+/// A custom material built from a model keeps that model exactly (a Sellmeier curve is
+/// not flattened to the Cauchy fit `new_custom` builds), reports the model's `n_d`, and
+/// differs from `new_custom` in nothing else.
+#[test]
+fn new_custom_with_dispersion_keeps_the_model_and_its_n_d() {
+    let model = GemMaterial::by_name("Glass (N-BK7)")
+        .expect("N-BK7 is a built-in")
+        .dispersion;
+    assert!(
+        matches!(model, DispersionModel::Sellmeier3 { .. }),
+        "test premise: N-BK7 is a three-term Sellmeier"
+    );
+    let material = GemMaterial::new_custom_with_dispersion("BK7 copy", model, 0.0, [0.0; 3]);
+    assert_eq!(material.dispersion, model);
+    assert_eq!(
+        material.dispersion.evaluate(589.3).to_bits(),
+        model.n_d().to_bits()
+    );
+    assert!((model.n_d() - 1.5168).abs() < 0.002, "{}", model.n_d());
+
+    let mut expected = GemMaterial::new_custom("BK7 copy", model.n_d(), 0.0, 0.0, [0.0; 3]);
+    expected.dispersion = model;
+    assert_eq!(material, expected);
+}
+
+/// The crystal system, optical character and colour come from the same rules as
+/// `new_custom`; the Cauchy curve `new_custom` builds is reproduced by passing it back in.
+#[test]
+fn new_custom_with_dispersion_derives_the_rest_like_new_custom() {
+    let model = DispersionModel::Cauchy {
+        a: 1.7,
+        b: 0.006,
+        c: 0.0,
+    };
+    let uniaxial = GemMaterial::new_custom_with_dispersion("Probe", model, -0.008, [0.2, 0.4, 2.8]);
+    assert_eq!(uniaxial.crystal_system, CrystalSystem::Trigonal);
+    assert_eq!(
+        uniaxial.optical_character,
+        OpticalCharacter::UniaxialNegative
+    );
+    assert_eq!(
+        uniaxial.birefringence_delta.to_bits(),
+        (-0.008_f32).to_bits()
+    );
+    assert_ne!(
+        uniaxial.absorption,
+        GemMaterial::new_custom("Probe", 1.7, 0.0, 0.0, [0.0; 3]).absorption,
+        "the colour reaches the absorption"
+    );
+
+    let simple = GemMaterial::new_custom("Same", 1.62, 0.02, 0.0, [0.0; 3]);
+    let rebuilt = GemMaterial::new_custom_with_dispersion("Same", simple.dispersion, 0.0, [0.0; 3]);
+    assert_eq!(
+        rebuilt, simple,
+        "a Cauchy fit passed back in changes nothing"
+    );
+}
+
 /// A body-color variant changes ONLY the absorption: a yellow sapphire keeps
 /// sapphire's own name, dispersion, birefringence and c-axis bit for bit, and its
 /// absorption becomes exactly the isotropic band set the yellow preset expands to.
 #[test]
 fn with_body_color_changes_only_the_absorption() {
-    let yellow = crate::optics::materials::body_color::BODY_color_PRESETS[5];
+    let yellow = crate::optics::materials::body_color::BODY_COLOR_PRESETS[5];
     assert_eq!(
         yellow.key, "yellow",
         "test premise: index 5 is the yellow preset"

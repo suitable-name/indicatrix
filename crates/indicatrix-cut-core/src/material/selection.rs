@@ -35,12 +35,22 @@ pub struct MaterialSelection {
     pub refractive_index_override: Option<f64>,
     /// A per-design body color: the `[R, G, B]` absorption triple
     /// `GemMaterial::with_body_color` applies on top of whatever `name` resolves to
-    /// (see `indicatrix::optics::materials::body_color::BODY_color_PRESETS` for the
+    /// (see `indicatrix::optics::materials::body_color::BODY_COLOR_PRESETS` for the
     /// fixed presets). `None` means "the material's own color". Lets a cutter try a
     /// design as, say, a yellow instead of a blue sapphire without authoring a new
     /// custom material; the variant is isotropic (the base material's pleochroism
     /// is not modelled while this is set).
     pub body_color_override: Option<[f32; 3]>,
+    /// The N-band form of the per-design body color (path-aware L*C*h editor): one
+    /// `[centre_nm, width_nm, amplitude_per_mm]` row per non-zero band
+    /// (`indicatrix::optics::absorption::body_color_bands`). Written NEXT TO the nearest
+    /// `body_color_override` triple so an older build still shows a close colour; when
+    /// present (and non-empty) the bands win over the triple in [`Self::apply_overrides`].
+    pub body_color_bands_override: Option<Vec<[f32; 3]>>,
+    /// Millimetres per model unit the bands' amplitudes were solved for
+    /// (`GemMaterial::absorption_path_scale`); only meaningful with
+    /// [`Self::body_color_bands_override`]. `None` keeps the material's own scale.
+    pub absorption_path_scale_override: Option<f32>,
 }
 
 /// Hand-written rather than derived so a selection WITHOUT a body-color override
@@ -54,6 +64,12 @@ impl std::fmt::Debug for MaterialSelection {
             .field("refractive_index_override", &self.refractive_index_override);
         if let Some(rgb) = &self.body_color_override {
             out.field("body_color_override", rgb);
+        }
+        if let Some(bands) = &self.body_color_bands_override {
+            out.field("body_color_bands_override", bands);
+        }
+        if let Some(scale) = &self.absorption_path_scale_override {
+            out.field("absorption_path_scale_override", scale);
         }
         out.finish()
     }
@@ -72,15 +88,37 @@ impl MaterialSelection {
             specific_gravity_override: None,
             refractive_index_override: None,
             body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
         }
     }
 
     /// Returns this selection with `body_color_override` replaced by `rgb` -- every
-    /// other field carries through unchanged. `None` restores the material's own
-    /// color.
+    /// other field carries through unchanged, EXCEPT the N-band form (bands and path
+    /// scale), which is dropped: it would win over the new triple. `None` restores the
+    /// material's own color.
     #[must_use]
-    pub const fn with_body_color(mut self, rgb: Option<[f32; 3]>) -> Self {
+    pub fn with_body_color(mut self, rgb: Option<[f32; 3]>) -> Self {
         self.body_color_override = rgb;
+        self.body_color_bands_override = None;
+        self.absorption_path_scale_override = None;
+        self
+    }
+
+    /// Returns this selection with the N-band colour set: the nearest triple in
+    /// `body_color_override` (for older builds), the band rows and the path scale they
+    /// were solved for. `bands = None` clears both band fields (the triple is left to the
+    /// caller, see [`Self::with_body_color`]).
+    #[must_use]
+    pub fn with_body_color_bands(
+        mut self,
+        triple: Option<[f32; 3]>,
+        bands: Option<Vec<[f32; 3]>>,
+        path_scale: Option<f32>,
+    ) -> Self {
+        self.body_color_override = triple;
+        self.absorption_path_scale_override = bands.as_ref().and(path_scale);
+        self.body_color_bands_override = bands;
         self
     }
 
@@ -122,7 +160,18 @@ impl MaterialSelection {
                 c: 0.0,
             };
         }
-        if let Some(rgb) = self.body_color_override {
+        if let Some(bands) = self
+            .body_color_bands_override
+            .as_deref()
+            .filter(|b| !b.is_empty())
+        {
+            // The N-band form wins over the triple stored next to it (the triple is only
+            // there so an older build still shows a close colour).
+            let scale = self
+                .absorption_path_scale_override
+                .unwrap_or(gem.absorption_path_scale);
+            gem = gem.with_body_color_bands(bands, scale);
+        } else if let Some(rgb) = self.body_color_override {
             // Note: with_body_color replaces the entire absorption tensor with 3 isotropic
             // legacy bands, which replaces any physics chromophore absorption. The desktop
             // therefore greys the override control out for a physics material

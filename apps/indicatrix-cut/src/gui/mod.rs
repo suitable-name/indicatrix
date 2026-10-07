@@ -2,6 +2,9 @@
 // sync-complete handler (see `search::refresh_diagram_list`'s doc comment). The rest
 // are wiring `build_main_window` uses internally.
 mod batch;
+// The command palette (Ctrl+K): one table of every action with a fuzzy search and
+// availability rules -- see the module's own doc comment.
+mod commands;
 // Converting a startup custom-materials row read into the render context's
 // material/specific-gravity lists -- see the module's own doc comment.
 mod custom_material_startup;
@@ -14,6 +17,10 @@ mod editor_layout;
 // Opening the bundled user manual and revealing the Edit tab's last-saved folder --
 // see the module's own doc comment.
 mod external_links;
+// The in-app help: the manual compiled into the program and shown in its own window, the
+// glossary dialog, and the topic ids a panel's "?" button opens -- see the module's own doc
+// comment.
+pub mod help;
 pub(crate) mod latest_worker;
 mod library;
 // Building/wiring the `MainWindow` and its `MainWindowHandle` RAII guard -- see the
@@ -21,6 +28,10 @@ mod library;
 // further.
 mod main_window;
 mod optics;
+// App-wide preferences (Simple/Advanced, UI scale, high contrast, larger handles, the
+// remembered Snap/Slice pills) -- see the module's own doc comment. `pub` only for
+// `saved_ui_scale_factor`, which `main` calls before the first window exists.
+pub mod preferences;
 // Resolving a native picker's starting directory from a text field's current value --
 // see the module's own doc comment.
 mod picker_field;
@@ -37,6 +48,10 @@ pub(in crate::gui) use indicatrix_solid::pixel_font;
 mod pickers;
 mod remote;
 pub(crate) mod render;
+// Render jobs: the frozen job <-> scene conversion, the one executor that renders a job
+// (the app's queue and `indicatrix-cli render`/`tilt-video` both call it) and the public
+// headless entry point -- see the module's own doc comment.
+pub mod render_jobs;
 // The Library menu's "Plan Rough..." dialog: up to K stones of library designs out of
 // one rough block -- see the module's own doc comment.
 mod rough_plan;
@@ -55,6 +70,9 @@ mod startup_settings;
 // program with it as the argument) -- see the module's own doc comment.
 pub mod startup_file;
 mod tilt;
+// Reports what happens on screen (a facet picked, a file exported, ...) to the open tutorial --
+// see the module's own doc comment.
+pub(crate) mod tutorial_events;
 // Fits the main window to its monitor on first show -- see the module doc for why the
 // .slint preferred size alone is not enough on Full HD displays.
 mod window_sizing;

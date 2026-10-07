@@ -315,7 +315,7 @@ pub fn run_image_comparison_light_tent(
     )
 }
 
-/// Tier 3 statistical image comparison under the Daylight sky + sun model.
+/// Tier 3 statistical image comparison under the sky-only Daylight dome model.
 ///
 /// Diamond on the standard 57-facet Round Brilliant.
 ///
@@ -333,6 +333,76 @@ pub fn run_image_comparison_daylight_dome(
         &material,
         &[],
         LightingPreset::DaylightDome,
+        (BACKDROP_GREY, 1.0),
+    )
+}
+
+/// Tier 3 statistical image comparison under the Daylight sky + direct sun model.
+///
+/// A polished Diamond, where the 0.27 degree disc is met only by exit directions (deterministic facet
+/// flashes, no NEE possible at a specular interface).
+///
+/// # Panics
+///
+/// Panics if `"Diamond"` is ever removed from `GemMaterial::all_materials()`.
+#[must_use]
+pub fn run_image_comparison_daylight_sun(
+    ctx: &crate::renderer::gpu::GpuContext,
+) -> ImageComparisonResult {
+    let material = GemMaterial::by_name("Diamond")
+        .expect("\"Diamond\" is a built-in material in GemMaterial::all_materials()");
+    run_image_comparison_with_backdrop(
+        ctx,
+        &material,
+        &[],
+        LightingPreset::DaylightSun,
+        (BACKDROP_GREY, 1.0),
+    )
+}
+
+/// Tier 3 statistical image comparison under the Daylight sky + direct sun model, frosted girdle.
+///
+/// A bruted (frosted) girdle: the frosted-exterior next-event-estimation toward the sun disc
+/// and its MIS-weighted escape (`nee_contribution_frosted_exterior`, CPU and WGSL twin) are
+/// both exercised, which a polished stone cannot do.
+///
+/// # Panics
+///
+/// Panics if `"Diamond"` is ever removed from `GemMaterial::all_materials()`.
+#[must_use]
+pub fn run_image_comparison_daylight_sun_frosted_girdle(
+    ctx: &crate::renderer::gpu::GpuContext,
+) -> ImageComparisonResult {
+    let material = GemMaterial::by_name("Diamond")
+        .expect("\"Diamond\" is a built-in material in GemMaterial::all_materials()");
+    let num_planes = round_brilliant_planes().len();
+    let finishes = bruted_girdle_finishes(num_planes);
+    run_image_comparison_with_backdrop(
+        ctx,
+        &material,
+        &finishes,
+        LightingPreset::DaylightSun,
+        (BACKDROP_GREY, 1.0),
+    )
+}
+
+/// Tier 3 statistical image comparison under the ASET-style contrast view (narrow zone
+/// bands, read from the wavelength inside the model).
+///
+/// Diamond on the standard 57-facet Round Brilliant.
+///
+/// # Panics
+///
+/// Panics if `"Diamond"` is ever removed from `GemMaterial::all_materials()`.
+#[must_use]
+pub fn run_image_comparison_aset(ctx: &crate::renderer::gpu::GpuContext) -> ImageComparisonResult {
+    let material = GemMaterial::by_name("Diamond")
+        .expect("\"Diamond\" is a built-in material in GemMaterial::all_materials()");
+    run_image_comparison_with_backdrop(
+        ctx,
+        &material,
+        &[],
+        LightingPreset::Aset,
         (BACKDROP_GREY, 1.0),
     )
 }
@@ -441,6 +511,7 @@ fn run_image_comparison_with_backdrop(
     // dispatch must match or this comparison reintroduces CPU/GPU divergence.
     .with_studio_use_d65(preset.uses_d65())
     .with_studio_model(preset.model().gpu_id())
+    .with_tent(preset.params().tent)
     .with_backdrop(backdrop)
     .with_surface_glare(surface_glare);
     let total_gpu = (width * height * gpu_samples_per_pixel) as usize;
@@ -683,6 +754,7 @@ pub fn run_specialisation_image_comparison(
         )
         .with_studio_use_d65(preset.uses_d65())
         .with_studio_model(preset.model().gpu_id())
+        .with_tent(preset.params().tent)
     };
 
     // GENERIC pipeline: samples [0, samples_per_pixel).

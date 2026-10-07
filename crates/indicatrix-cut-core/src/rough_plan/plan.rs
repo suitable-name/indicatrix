@@ -13,8 +13,8 @@ use super::{
     refine::{final_ranking, own_pool},
     shape::RoughBase,
     shaped::{
-        BuildClipParams, ShapedAltParams, ShapedCtx, build_clipped_table, choose_shaped_grid_at,
-        plan_shaped_alternatives, plan_shaped_for_order, refine_shaped, shaped_uniform_layouts,
+        BuildClipParams, ShapedAltParams, ShapedCtx, build_clipped_table, plan_shaped_alternatives,
+        plan_shaped_for_order, refine_shaped, shaped_uniform_layouts,
     },
 };
 
@@ -243,7 +243,7 @@ fn run_shaped_dp(
     on_progress: &mut dyn FnMut(PlanProgress) -> bool,
 ) -> Option<Vec<LayoutGroup>> {
     let settings = input.settings;
-    let grid = choose_shaped_grid_at(ctx.bbox_min, ctx.bbox_extents, settings);
+    let grid = ctx.choose_grid(settings);
     let size_table = grid.size_table(settings, front, on_progress)?;
 
     let clip_params = BuildClipParams {
@@ -396,4 +396,16 @@ fn finish_shaped(
         ctx.model_volume,
     ));
     Some(final_ranking(refined, &flat, &ranked))
+}
+
+/// The layouts to show when a plan was stopped before its refinement ran.
+///
+/// Every layout of `groups` and of `extra` (single-stone and uniform layouts), unrefined,
+/// ranked and cut to [`FINAL_LAYOUTS`] by [`merge_and_rank`]. Empty when none has a stone.
+#[must_use]
+pub fn partial_ranking(groups: &[LayoutGroup], extra: Vec<RoughLayout>) -> Vec<RoughLayout> {
+    let (flat, _) = flatten_groups(groups);
+    let mut all: Vec<RoughLayout> = flat.into_iter().cloned().collect();
+    all.extend(extra);
+    merge_and_rank(all, FINAL_LAYOUTS)
 }

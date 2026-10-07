@@ -4,9 +4,18 @@
 //! instead of trusting the `done` figure of any single one, and the bar never moves back.
 
 use super::Reporter;
-use crate::gui::rough_plan::format::group_thousands;
+use crate::{
+    gui::rough_plan::format::group_thousands,
+    plan_limit::{PlanDeadline, remaining_text},
+};
 use indicatrix_cut_core::rough_plan::{CutOrder, FitStage, PlanPath, PlanProgress, REFINE_TOP};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::{
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+    },
+    time::Instant,
+};
 
 /// How many cut orders the plan runs.
 pub(super) const ORDER_COUNT: usize = CutOrder::ALL.len();
@@ -35,6 +44,17 @@ pub(super) trait Progress: Sync {
     /// Makes every later [`Progress::event`] return `false`, so sibling lanes stop once
     /// one lane has panicked and the plan is lost.
     fn abort(&self);
+
+    /// Starts the clock of the scan plan time limit. The driver calls it once, for a mesh
+    /// rough only, so a convex or hull rough never has a deadline. A sink without a limit
+    /// ignores it.
+    fn arm_deadline(&self) {}
+
+    /// Whether the time limit (and not the user) stopped the plan: some [`Progress::event`]
+    /// returned `false` because the deadline had passed.
+    fn time_stopped(&self) -> bool {
+        false
+    }
 }
 
 /// A stretch of the progress bar: `start + len * t` for `t` in `0..=1`.
@@ -145,6 +165,12 @@ pub(super) struct Tracker<'a> {
     /// The highest fraction pushed so far, as `f32` bits (non-negative floats order like
     /// their bits), so parallel lanes can never make the bar step back.
     high: AtomicU32,
+    /// The scan plan time limit in seconds, `0` for none. It only runs once armed.
+    limit_secs: u32,
+    /// The deadline, set by [`Progress::arm_deadline`] (a mesh rough only).
+    deadline: OnceLock<PlanDeadline>,
+    /// Set by the first event that found the deadline passed; every later event is refused.
+    stopped: AtomicBool,
 }
 
 impl<'a> Tracker<'a> {
@@ -166,7 +192,17 @@ impl<'a> Tracker<'a> {
             fit_total: [1, 1, 1].map(AtomicUsize::new),
             fit_done: [0, 0, 0].map(AtomicUsize::new),
             high: AtomicU32::new(0),
+            limit_secs: 0,
+            deadline: OnceLock::new(),
+            stopped: AtomicBool::new(false),
         }
+    }
+
+    /// The same tracker with the scan plan time limit `secs` (`0` for none), which starts
+    /// to run when the driver arms it.
+    pub(super) const fn with_limit(mut self, secs: u32) -> Self {
+        self.limit_secs = secs;
+        self
     }
 
     /// The stage line and the position inside the planning share (`0..=1`) of `event`.
@@ -263,8 +299,20 @@ impl Progress for Tracker<'_> {
     fn event(&self, event: PlanProgress) -> bool {
         let (stage, within) = self.describe(event);
         let fraction = self.monotone_fraction(within);
+        let stage = match self.deadline.get() {
+            Some(deadline) => {
+                let now = Instant::now();
+                if deadline.expired(now) {
+                    self.stopped.store(true, Ordering::Relaxed);
+                    "Stopping at the time limit...".to_string()
+                } else {
+                    format!("{stage} - {} left", remaining_text(deadline.remaining(now)))
+                }
+            }
+            None => stage,
+        };
         self.reporter.report(&stage, fraction, false);
-        !self.reporter.cancelled()
+        !self.reporter.cancelled() && !self.stopped.load(Ordering::Relaxed)
     }
 
     fn note(&self, note: Note) {
@@ -282,6 +330,16 @@ impl Progress for Tracker<'_> {
 
     fn abort(&self) {
         self.reporter.abort();
+    }
+
+    fn arm_deadline(&self) {
+        if let Some(deadline) = PlanDeadline::new(Instant::now(), self.limit_secs) {
+            let _ = self.deadline.set(deadline);
+        }
+    }
+
+    fn time_stopped(&self) -> bool {
+        self.stopped.load(Ordering::Relaxed) && !self.reporter.cancelled()
     }
 }
 

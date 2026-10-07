@@ -1,0 +1,147 @@
+import { Theme } from "../../theme.slint";
+import { ScrollView } from "std-widgets.slint";
+
+// Shared by the "Locate inclusion from photos" window and the "Edit rig" window: a photo
+// scaled to fit, with markers and paths drawn over it, zoomable, and clickable.
+
+// A marker on the photo. `fx`/`fy` are fractions of the picture's width and height (0 to 1), so
+// the canvas never needs the photo's own size. `kind`: 0 mark, 1 predicted ghost image (hollow),
+// 2 re-projected solution (hollow), 3 vertex, 4 the cube's corner dot, 5 outline vertex.
+export struct CanvasMarker {
+    fx: float,
+    fy: float,
+    kind: int,
+    label: string,
+}
+
+// A path over the photo, as SVG commands in the photo's own pixels. `kind`: 0 the stone's
+// outline, 1 a marked line or polygon, 2 an edge of the cube, 3 the solution re-projected.
+export struct CanvasPath {
+    commands: string,
+    kind: int,
+}
+
+// One photo slot of a window's list: the view's name, the photo's file name, what is marked in
+// it, and whether it is the view on the canvas.
+export struct PhotoSlot {
+    name: string,
+    file: string,
+    status: string,
+    active: bool,
+    loaded: bool,
+}
+
+// One line of a report; `warn` shows it in amber.
+export struct ReportRow {
+    text: string,
+    warn: bool,
+}
+
+export component PhotoCanvas inherits Rectangle {
+    in property <image> photo;
+    // The photo's own size in pixels (the shape of the picture; the marks use its pixels).
+    in property <int> image_w: 1;
+    in property <int> image_h: 1;
+    in property <bool> has_photo: false;
+    in property <[CanvasMarker]> markers;
+    in property <[CanvasPath]> paths;
+    in property <string> empty_text: "No photo loaded for this view.";
+    in property <int> zoom: 1;
+    // A click: the fractions of the picture's width and height (0 to 1).
+    callback clicked(float, float);
+
+    // Screen pixels per photo pixel when the whole photo fits the area.
+    property <float> fit: min(root.width / 1px / max(root.image_w, 1), root.height / 1px / max(root.image_h, 1));
+    property <length> shown_w: root.image_w * root.fit * root.zoom * 1px;
+    property <length> shown_h: root.image_h * root.fit * root.zoom * 1px;
+
+    background: Theme.bg-input;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    clip: true;
+
+    if !root.has_photo: Text {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        text: root.empty_text;
+        font-size: 12px;
+        color: Theme.text-muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    if root.has_photo: ScrollView {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        content-width: root.shown_w;
+        content-height: root.shown_h;
+
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: root.shown_w;
+            height: root.shown_h;
+
+            Image {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
+                source: root.photo;
+                image-fit: fill;
+            }
+
+            for line in root.paths: Path {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
+                viewbox-x: 0;
+                viewbox-y: 0;
+                viewbox-width: root.image_w;
+                viewbox-height: root.image_h;
+                commands: line.commands;
+                stroke: line.kind == 0 ? Theme.text-primary
+                    : (line.kind == 1 ? Theme.accent-cyan
+                    : (line.kind == 2 ? Theme.accent-emerald : Theme.success));
+                stroke-width: 1.5px;
+            }
+
+            TouchArea {
+                clicked => {
+                    root.clicked(self.mouse-x / parent.width, self.mouse-y / parent.height);
+                }
+            }
+
+            for marker in root.markers: Rectangle {
+                x: marker.fx * root.shown_w - 6px;
+                y: marker.fy * root.shown_h - 6px;
+                width: 12px;
+                height: 12px;
+                border-radius: 6px;
+                border-width: 2px;
+                border-color: marker.kind == 1 ? Theme.accent-amber
+                    : (marker.kind == 2 ? Theme.success
+                    : (marker.kind == 4 ? Theme.danger
+                    : (marker.kind == 5 ? Theme.text-primary : Theme.accent-cyan)));
+                background: (marker.kind == 1 || marker.kind == 2) ? transparent
+                    : (marker.kind == 5 ? Theme.text-primary.with-alpha(0.35) : Theme.accent-cyan.with-alpha(0.35));
+
+                Text {
+                    x: 14px;
+                    y: -3px;
+                    text: marker.label;
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: marker.kind == 1 ? Theme.accent-amber
+                        : (marker.kind == 2 ? Theme.success : Theme.text-primary);
+                }
+            }
+        }
+    }
+}

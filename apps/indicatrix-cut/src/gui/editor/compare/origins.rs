@@ -2,7 +2,7 @@
 //! you compared?" check "Keep after" runs before handing over to the originating
 //! feature's own Apply handler.
 
-use super::session::{CompareOrigin, SideInput, resolve_side_material};
+use super::session::{CompareOrigin, SideInput, resolve_metrics_material, resolve_side_material};
 use crate::{
     MainWindow,
     bridge::render_thread::RenderContext,
@@ -34,10 +34,71 @@ pub(super) enum KeepGuard {
     },
     /// A snapshot comparison -- nothing to keep.
     Snapshot,
+    /// A comparison of saved variants -- nothing to keep.
+    Variants,
+}
+
+/// One side of a variants comparison, handed over by the Variants view.
+pub(in crate::gui::editor) struct VariantSide {
+    /// The design to show.
+    pub(in crate::gui::editor) design: Design,
+    /// The words over its picture.
+    pub(in crate::gui::editor) label: String,
+}
+
+/// What the Optimize comparison's before side is measured against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum Reference {
+    /// The live design (today's behaviour, the default).
+    #[default]
+    Current,
+    /// The original held before the last Retarget Apply.
+    Original,
+}
+
+impl Reference {
+    /// The picker's entry index.
+    pub(super) const fn index(self) -> i32 {
+        match self {
+            Self::Current => 0,
+            Self::Original => 1,
+        }
+    }
+
+    /// The reference a picker index names (anything but 1 is the current design).
+    pub(super) const fn from_index(index: i32) -> Self {
+        if index == 1 {
+            Self::Original
+        } else {
+            Self::Current
+        }
+    }
+}
+
+/// The "Compare against" picker's state for one request: which entry is chosen, and the
+/// original's label when the picker is offered at all (`None` hides it).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct ReferenceOffer {
+    /// The chosen entry.
+    pub(super) selected: Reference,
+    /// The held original's label; `Some` only for Optimize with an original held.
+    pub(super) original_label: Option<String>,
+}
+
+/// The picker's entries: always "Current design", plus the original when one is held.
+#[must_use]
+pub(super) fn reference_options(offer: &ReferenceOffer) -> Vec<String> {
+    let mut options = vec!["Current design".to_string()];
+    if let Some(label) = &offer.original_label {
+        options.push(format!("Original ({label})"));
+    }
+    options
 }
 
 /// Everything `super::wiring::open_compare` needs to open a session.
 pub(super) struct OpenRequest {
+    /// The "Compare against" picker (hidden for every origin but Optimize).
+    pub(super) reference: ReferenceOffer,
     /// Which feature asked.
     pub(super) origin: CompareOrigin,
     /// What Keep would commit.
@@ -61,10 +122,12 @@ fn custom_materials(render_ctx: &Arc<Mutex<RenderContext>>) -> Vec<GemMaterial> 
 /// One side's inputs, its traced material resolved against `custom`.
 fn side(design: Design, label: String, custom: &[GemMaterial]) -> SideInput {
     let material = resolve_side_material(&design, custom);
+    let metrics_material = resolve_metrics_material(&design, custom);
     SideInput {
         design,
         label,
         material,
+        metrics_material,
     }
 }
 
@@ -82,6 +145,7 @@ pub(super) fn retarget_request(
     let inputs: RetargetCompareInputs = callbacks::retarget_compare_inputs(ui, st, render_ctx)?;
     let custom = custom_materials(render_ctx);
     Ok(OpenRequest {
+        reference: ReferenceOffer::default(),
         origin: CompareOrigin::Retarget,
         guard: KeepGuard::Retarget(Box::new(inputs.guard)),
         before: side(inputs.current, "Current design".to_string(), &custom),
@@ -89,8 +153,37 @@ pub(super) fn retarget_request(
     })
 }
 
-/// Optimize: before = the live design, after = `build_optimize_preview_design` of
-/// the held outcome -- the same candidate the Optimize tab's own Preview shows.
+/// The before side's design and words, and the picker state: the live design for
+/// [`Reference::Current`], the held original for [`Reference::Original`] -- which falls
+/// back to the live design when no original is held (`original` is `None`). The picker is
+/// offered iff an original is held.
+pub(super) fn pick_before(
+    current: &Design,
+    original: Option<(Design, String)>,
+    wanted: Reference,
+) -> (Design, String, ReferenceOffer) {
+    match original {
+        Some((design, label)) => {
+            let offer = ReferenceOffer {
+                selected: wanted,
+                original_label: Some(label.clone()),
+            };
+            match wanted {
+                Reference::Original => (design, format!("Original \"{label}\""), offer),
+                Reference::Current => (current.clone(), "Current design".to_string(), offer),
+            }
+        }
+        None => (
+            current.clone(),
+            "Current design".to_string(),
+            ReferenceOffer::default(),
+        ),
+    }
+}
+
+/// Optimize: before = the live design (or, when picked and held, the original kept by the
+/// last Retarget Apply), after = `build_optimize_preview_design` of the held outcome --
+/// the same candidate the Optimize tab's own Preview shows.
 ///
 /// # Errors
 ///
@@ -99,6 +192,7 @@ pub(super) fn retarget_request(
 pub(super) fn optimize_request(
     st: &EditorState,
     render_ctx: &Arc<Mutex<RenderContext>>,
+    reference: Reference,
 ) -> Result<OpenRequest, String> {
     let pending = st
         .pending_optimize
@@ -112,13 +206,16 @@ pub(super) fn optimize_request(
     }
     let candidate = build_optimize_preview_design(&st.design, &outcome);
     let custom = custom_materials(render_ctx);
+    let (before_design, before_label, offer) =
+        pick_before(&st.design, callbacks::original_for_compare(), reference);
     Ok(OpenRequest {
+        reference: offer,
         origin: CompareOrigin::Optimize,
         guard: KeepGuard::Optimize {
             outcome: Box::new(outcome),
             generation,
         },
-        before: side(st.design.clone(), "Current design".to_string(), &custom),
+        before: side(before_design, before_label, &custom),
         after: side(candidate, "Optimize candidate".to_string(), &custom),
     })
 }
@@ -136,11 +233,28 @@ pub(super) fn snapshot_request(
         .ok_or_else(|| "No snapshot taken yet -- use Snapshot Design first.".to_string())?;
     let custom = custom_materials(render_ctx);
     Ok(OpenRequest {
+        reference: ReferenceOffer::default(),
         origin: CompareOrigin::Snapshot,
         guard: KeepGuard::Snapshot,
         before: side(snapshot, format!("Snapshot \"{label}\""), &custom),
         after: side(st.design.clone(), "Current design".to_string(), &custom),
     })
+}
+
+/// Variants: `first` on the before side and `second` on the after side. View only.
+pub(super) fn variants_request(
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    first: VariantSide,
+    second: VariantSide,
+) -> OpenRequest {
+    let custom = custom_materials(render_ctx);
+    OpenRequest {
+        reference: ReferenceOffer::default(),
+        origin: CompareOrigin::Variants,
+        guard: KeepGuard::Variants,
+        before: side(first.design, first.label, &custom),
+        after: side(second.design, second.label, &custom),
+    }
 }
 
 /// Whether the originating feature's Apply would still commit exactly what the
@@ -170,6 +284,6 @@ pub(super) fn guard_still_matches(
                 held == **outcome && held_generation == *generation
             })
         }
-        KeepGuard::Snapshot => false,
+        KeepGuard::Snapshot | KeepGuard::Variants => false,
     }
 }

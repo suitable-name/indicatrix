@@ -111,7 +111,8 @@ mod types;
 
 pub use controller::SolidPreviewState;
 pub use request::ReplanRequest;
-pub use sink::{DEFAULT_MESH_BOUNDING_RADIUS, PreviewFrame, PreviewSink};
+pub use sink::{DEFAULT_MESH_BOUNDING_RADIUS, LateFindings, PreviewFrame, PreviewSink};
 pub use types::{
-    CameraPose, FacetOverlay, FrameGeometry, PickBuffer, SolidLastSolved, SolidPickState,
+    CameraPose, FacetOverlay, FacetOwners, FrameGeometry, PickBuffer, SolidLastSolved,
+    SolidPickState,
 };

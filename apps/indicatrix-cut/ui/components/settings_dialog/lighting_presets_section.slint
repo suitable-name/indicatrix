@@ -1,10 +1,15 @@
 import { LineEdit } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { ViewportModel } from "../../models/viewport.slint";
+import { IconButton } from "../icon_button.slint";
+import { DesignLightingSection } from "design_lighting_section.slint";
+import { SettingLabel } from "setting_label.slint";
 
 // Named Lighting Presets. A preset bundles light yaw/pitch, exposure, the
 // lighting-rig selection, and camera distance -- deliberately NOT camera
 // yaw/pitch, so applying one never spins the gem out from under the user.
+// Ends with the "Lighting for this design" group (`DesignLightingSection`): the
+// lighting a design remembers for itself, kept apart from this list of named presets.
 export component LightingPresetsSection inherits VerticalLayout {
     property <bool> adding_preset: false;
     property <string> new_preset_name: "";
@@ -14,32 +19,21 @@ export component LightingPresetsSection inherits VerticalLayout {
     spacing: 6px;
     HorizontalLayout {
         alignment: space-between;
-        Rectangle {
-            height: lighting_presets_lbl.preferred-height;
-            Tooltip { text: @markdown("Save the current lighting and camera as a preset; \"export-usable\" lists it in the export fan-out."); }
-            lighting_presets_lbl := Text { text: "Lighting Presets"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+        spacing: 6px;
+        SettingLabel {
+            text: "Lighting Presets";
+            hint: "Lighting Presets: named lightings you can bring back with one click. A preset keeps the light direction, the exposure, the lighting choice and the camera distance, but not the way you are turned around the stone. Use the save button to add the current lighting.";
         }
 
-        Rectangle {
-            width: 20px;
-            height: 20px;
-            border-radius: 4px;
-            background: root.adding_preset ? Theme.accent-cyan : (add_preset_touch.has-hover ? Theme.surface-raised : transparent);
-
-            add_preset_touch := TouchArea {
-                clicked => {
-                    root.adding_preset = !root.adding_preset;
-                    root.new_preset_name = "";
-                }
-            }
-
-            Image {
-                source: @image-url("../../icons/save.svg");
-                colorize: root.adding_preset ? Theme.text-on-accent : Theme.accent-cyan;
-                width: 11px;
-                height: 11px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+        IconButton {
+            icon: @image-url("../../icons/save.svg");
+            hint: root.adding_preset ? "Cancel saving a new preset" : "Save the current lighting as a new preset";
+            checkable: true;
+            lit: root.adding_preset;
+            tint: Theme.accent-cyan;
+            clicked => {
+                root.adding_preset = !root.adding_preset;
+                root.new_preset_name = "";
             }
         }
     }
@@ -61,26 +55,27 @@ export component LightingPresetsSection inherits VerticalLayout {
                 height: 100%;
                 text <=> root.new_preset_name;
                 placeholder-text: "New preset name...";
+                accessible-label: "New lighting preset name";
             }
         }
 
-        Rectangle {
+        IconButton {
             width: 26px;
             height: 26px;
-            border-radius: Theme.radius-sm;
-            background: confirm_new_touch.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan;
-
-            confirm_new_touch := TouchArea {
-                clicked => {
-                    if (root.new_preset_name != "") {
-                        ViewportModel.save_lighting_preset(root.new_preset_name);
-                        root.adding_preset = false;
-                        root.new_preset_name = "";
-                    }
+            icon: @image-url("../../icons/check.svg");
+            hint: root.new_preset_name == "" ? "Type a name first" : "Save the preset under this name";
+            enabled: root.new_preset_name != "";
+            tint: Theme.text-on-accent;
+            hover_fill: Theme.accent-cyan-hover;
+            lit: true;
+            lit_tint: Theme.text-on-accent;
+            clicked => {
+                if (root.new_preset_name != "") {
+                    ViewportModel.save_lighting_preset(root.new_preset_name);
+                    root.adding_preset = false;
+                    root.new_preset_name = "";
                 }
             }
-
-            Image { source: @image-url("../../icons/check.svg"); colorize: Theme.text-on-accent; width: 12px; height: 12px; horizontal-alignment: center; vertical-alignment: center; }
         }
     }
 
@@ -97,14 +92,36 @@ export component LightingPresetsSection inherits VerticalLayout {
 
         HorizontalLayout {
             padding-left: 8px;
-            padding-right: 6px;
-            spacing: 6px;
+            padding-right: 4px;
+            spacing: 4px;
 
             Rectangle {
                 horizontal-stretch: 1;
+                accessible-role: AccessibleRole.button;
+                accessible-label: "Apply lighting preset " + preset.name;
+                accessible-enabled: root.renaming_index != idx;
+                accessible-action-default => {
+                    if root.renaming_index != idx {
+                        ViewportModel.apply_lighting_preset(idx);
+                    }
+                }
+
+                Tooltip { text: @markdown("Apply this preset: the light, the exposure and the camera distance it saved."); }
+
+                apply_focus := FocusScope {
+                    enabled: root.renaming_index != idx;
+                    key-pressed(event) => {
+                        if event.text == Key.Space || event.text == Key.Return {
+                            ViewportModel.apply_lighting_preset(idx);
+                            return accept;
+                        }
+                        return reject;
+                    }
+                }
 
                 apply_touch := TouchArea {
                     enabled: root.renaming_index != idx;
+                    mouse-cursor: pointer;
                     clicked => { ViewportModel.apply_lighting_preset(idx); }
                 }
 
@@ -116,7 +133,7 @@ export component LightingPresetsSection inherits VerticalLayout {
                     text: preset.name;
                     font-size: 11px;
                     font-weight: 600;
-                    color: apply_touch.has-hover ? Theme.accent-cyan : (preset.built_in ? Theme.text-secondary : Theme.text-primary);
+                    color: apply_touch.has-hover || apply_focus.has-focus ? Theme.accent-cyan : (preset.built_in ? Theme.text-secondary : Theme.text-primary);
                     vertical-alignment: center;
                 }
 
@@ -131,6 +148,7 @@ export component LightingPresetsSection inherits VerticalLayout {
                         width: 100%;
                         height: 100%;
                         text <=> root.rename_text;
+                        accessible-label: "New name for lighting preset " + preset.name;
                     }
                 }
             }
@@ -138,72 +156,63 @@ export component LightingPresetsSection inherits VerticalLayout {
             // "Usable for export" toggle. Shown for EVERY preset, built-ins
             // included (unlike rename/delete below): whether a lighting mood
             // is worth re-rendering under is a matter of taste, not identity.
-            Rectangle {
-                width: 18px;
-                height: 18px;
-                border-radius: 3px;
-                background: preset.export_usable ? Theme.accent-cyan : (export_usable_touch.has-hover ? Theme.border-dialog : transparent);
+            IconButton {
+                width: 20px;
+                height: 20px;
+                icon: @image-url("../../icons/save.svg");
+                glyph: 10px;
+                hint: preset.export_usable
+                    ? "In the export dialog's list of lightings. Click to take it out."
+                    : "Add this preset to the export dialog's list of lightings.";
+                checkable: true;
+                lit: preset.export_usable;
+                tint: Theme.text-muted;
+                hover_fill: Theme.border-dialog;
+                clicked => { ViewportModel.toggle_preset_export_usable(idx, !preset.export_usable); }
+            }
 
-                export_usable_touch := TouchArea {
-                    clicked => { ViewportModel.toggle_preset_export_usable(idx, !preset.export_usable); }
-                }
-
-                Image {
-                    source: @image-url("../../icons/save.svg");
-                    colorize: preset.export_usable ? Theme.text-on-accent : Theme.text-muted;
-                    width: 9px;
-                    height: 9px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+            if !preset.built_in && root.renaming_index != idx: IconButton {
+                width: 20px;
+                height: 20px;
+                icon: @image-url("../../icons/pencil.svg");
+                glyph: 10px;
+                hint: "Rename this preset";
+                tint: Theme.text-muted;
+                hover_fill: Theme.border-dialog;
+                clicked => {
+                    root.renaming_index = idx;
+                    root.rename_text = preset.name;
                 }
             }
 
-            if !preset.built_in && root.renaming_index != idx: Rectangle {
-                width: 18px;
-                height: 18px;
-                border-radius: 3px;
-                background: rename_touch.has-hover ? Theme.border-dialog : transparent;
-
-                rename_touch := TouchArea {
-                    clicked => {
-                        root.renaming_index = idx;
-                        root.rename_text = preset.name;
+            if root.renaming_index == idx: IconButton {
+                width: 20px;
+                height: 20px;
+                icon: @image-url("../../icons/check.svg");
+                glyph: 10px;
+                hint: "Keep the new name";
+                tint: Theme.accent-emerald;
+                hover_fill: Theme.border-dialog;
+                clicked => {
+                    if (root.rename_text != "") {
+                        ViewportModel.rename_lighting_preset(idx, root.rename_text);
                     }
+                    root.renaming_index = -1;
                 }
-
-                Image { source: @image-url("../../icons/pencil.svg"); colorize: Theme.text-muted; width: 10px; height: 10px; horizontal-alignment: center; vertical-alignment: center; }
             }
 
-            if root.renaming_index == idx: Rectangle {
-                width: 18px;
-                height: 18px;
-                border-radius: 3px;
-                background: confirm_rename_touch.has-hover ? Theme.border-dialog : transparent;
-
-                confirm_rename_touch := TouchArea {
-                    clicked => {
-                        if (root.rename_text != "") {
-                            ViewportModel.rename_lighting_preset(idx, root.rename_text);
-                        }
-                        root.renaming_index = -1;
-                    }
-                }
-
-                Image { source: @image-url("../../icons/check.svg"); colorize: Theme.accent-emerald; width: 10px; height: 10px; horizontal-alignment: center; vertical-alignment: center; }
-            }
-
-            if !preset.built_in && root.renaming_index != idx: Rectangle {
-                width: 18px;
-                height: 18px;
-                border-radius: 3px;
-                background: delete_touch.has-hover ? Theme.danger-surface-hover : transparent;
-
-                delete_touch := TouchArea {
-                    clicked => { ViewportModel.delete_lighting_preset(idx); }
-                }
-
-                Image { source: @image-url("../../icons/trash.svg"); colorize: Theme.danger; width: 10px; height: 10px; horizontal-alignment: center; vertical-alignment: center; }
+            if !preset.built_in && root.renaming_index != idx: IconButton {
+                width: 20px;
+                height: 20px;
+                icon: @image-url("../../icons/trash.svg");
+                glyph: 10px;
+                hint: "Delete this preset";
+                tint: Theme.danger;
+                hover_fill: Theme.danger-surface-hover;
+                clicked => { ViewportModel.delete_lighting_preset(idx); }
             }
         }
     }
+
+    DesignLightingSection { }
 }

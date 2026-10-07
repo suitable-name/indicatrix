@@ -11,7 +11,6 @@ pub mod chromophore;
 /// Refractive-index dispersion curves (Sellmeier and Cauchy fits) evaluated by
 /// wavelength.
 pub mod dispersion;
-/// CPU-only fluorescence: emitter data and the in-medium fluorescence vertex sampling.
 pub mod fluorescence;
 /// [`GemMaterial`] and the built-in gemstone material table.
 ///

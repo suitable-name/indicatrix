@@ -67,8 +67,8 @@ mod tests;
 
 pub(super) use dispatch::{cancel_in_flight_solve, dispatch_background_solve, solve_cancellably};
 pub(super) use replan::{
-    design_to_gpu_planes_from_solved, design_to_gpu_tools_from_solved,
-    schedule_idle_replan_if_stale, stash_current_design, take_matching_design,
+    design_to_gpu_planes_from_solved, schedule_idle_replan_if_stale, stash_current_design,
+    take_matching_design,
 };
 pub(super) use runtime::{
     activity, editor_state, init, preview_state, render_ctx, solid_last_solved, stash_editor_state,

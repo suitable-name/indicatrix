@@ -24,10 +24,11 @@ fn run_export_produces_a_valid_png_for_a_tiny_scene() {
         backdrop: 0.0,
         active_planes: StandardGemCuts::standard_round_brilliant(),
         tools: Vec::new(),
-        fluorescence: Default::default(),
+        fluorescence: std::sync::Arc::default(),
         facet_finishes: Vec::new(),
         env_map: None,
         surface_glare: 1.0,
+        head_shadow_deg: 16.0,
     };
     let params = ExportParams {
         width: 8,
@@ -93,12 +94,13 @@ fn run_export_with_an_hdr_environment_map_still_produces_a_valid_png() {
         backdrop: 0.0,
         active_planes: StandardGemCuts::standard_round_brilliant(),
         tools: Vec::new(),
-        fluorescence: Default::default(),
+        fluorescence: std::sync::Arc::default(),
         facet_finishes: Vec::new(),
         env_map: Some(std::sync::Arc::new(
             indicatrix::renderer::env_map::EnvironmentMap::uniform(4, 4, [0.5, 0.5, 0.5]),
         )),
         surface_glare: 1.0,
+        head_shadow_deg: 16.0,
     };
     let params = ExportParams {
         width: 8,
@@ -150,10 +152,11 @@ fn run_export_honors_pre_set_cancellation_and_writes_no_file() {
         backdrop: 0.0,
         active_planes: StandardGemCuts::standard_round_brilliant(),
         tools: Vec::new(),
-        fluorescence: Default::default(),
+        fluorescence: std::sync::Arc::default(),
         facet_finishes: Vec::new(),
         env_map: None,
         surface_glare: 1.0,
+        head_shadow_deg: 16.0,
     };
     let params = ExportParams {
         width: 8,
@@ -201,10 +204,11 @@ fn tiny_scene() -> SceneSnapshot {
         backdrop: 0.0,
         active_planes: StandardGemCuts::standard_round_brilliant(),
         tools: Vec::new(),
-        fluorescence: Default::default(),
+        fluorescence: std::sync::Arc::default(),
         facet_finishes: Vec::new(),
         env_map: None,
         surface_glare: 1.0,
+        head_shadow_deg: 16.0,
     }
 }
 

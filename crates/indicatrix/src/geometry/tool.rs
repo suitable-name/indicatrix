@@ -26,21 +26,16 @@
 use crate::{geometry::plane::GpuFacetPlane, optics::raytracer::camera::Ray};
 use glam::Vec3;
 
+mod interval;
+
+use interval::{ball_interval, frustum_interval, wedge_interval};
+
 /// Upper bound on tool primitives in one stone.
 ///
 /// One `pub const` so every validator and the shader loop bound agree. Each
 /// index is one placement, not one tier; it also sizes the fixed boundary array
 /// in `intersect_stone`, which is why that function never allocates.
 pub const MAX_TOOL_PRIMITIVES: usize = 128;
-
-/// Disc/quadratic guard: a ray whose discriminant is within this (relative)
-/// distance of zero is tangent to the tool and reports no interval. Same guard
-/// class as the slab loop's `denom`; the missed boundary is a measure-zero set
-/// and the choice is deterministic.
-const TANGENT_EPS: f32 = 1e-7;
-
-/// `|denom|` below this treats a ray as parallel to a slab or plane.
-const PARALLEL_EPS: f32 = 1e-7;
 
 /// Shape of a tool.
 #[repr(u32)]
@@ -295,6 +290,11 @@ impl Piece {
     /// larger in magnitude than the true distance for a point inside, and the
     /// correct sign everywhere) and the outward unit normal of the face that
     /// attains it.
+    #[expect(
+        clippy::manual_midpoint,
+        clippy::suboptimal_flops,
+        reason = "pinned reference arithmetic: plain f32 `0.5 * (a + b)` (`f32::midpoint` widens through f64) and unfused products (`mul_add` rounds once and moves the last bit)"
+    )]
     fn sd_normal(&self, p: Vec3) -> (f32, Vec3) {
         match *self {
             Self::Ball { c, r } => {
@@ -360,138 +360,6 @@ impl Piece {
     }
 }
 
-/// Roots of `a t^2 + 2 b t + c = 0` as `(lo, hi)`, or `None` when the ray is
-/// tangent (relative discriminant within [`TANGENT_EPS`]).
-///
-/// Uses the cancellation-free form so a small tool hit from far away keeps its
-/// precision. Requires `a != 0`.
-fn quadratic_roots(a: f32, b: f32, c: f32) -> Option<(f32, f32)> {
-    let disc = b.mul_add(b, -(a * c));
-    if disc <= TANGENT_EPS * b.mul_add(b, (a * c).abs()) {
-        return None;
-    }
-    let sq = disc.sqrt();
-    let q = -(b + sq.copysign(b));
-    let r1 = q / a;
-    let r2 = c / q;
-    Some(if r1 <= r2 { (r1, r2) } else { (r2, r1) })
-}
-
-fn ball_interval(ray: Ray, c: Vec3, r: f32) -> Option<(f32, f32)> {
-    let o = ray.origin - c;
-    let a = ray.dir.dot(ray.dir);
-    let b = o.dot(ray.dir);
-    let cc = r.mul_add(-r, o.dot(o));
-    quadratic_roots(a, b, cc)
-}
-
-/// Parameter range of `ray` inside the slab `|axial| <= hl`, `None` when the
-/// ray is parallel to the caps and outside them.
-fn cap_range(z0: f32, dz: f32, hl: f32) -> Option<(f32, f32)> {
-    if dz.abs() > PARALLEL_EPS {
-        let t1 = (-hl - z0) / dz;
-        let t2 = (hl - z0) / dz;
-        Some(if t1 <= t2 { (t1, t2) } else { (t2, t1) })
-    } else if z0.abs() <= hl {
-        Some((-1e30, 1e30))
-    } else {
-        None
-    }
-}
-
-fn clip(lo: f32, hi: f32, s0: f32, s1: f32) -> Option<(f32, f32)> {
-    let l = lo.max(s0);
-    let h = hi.min(s1);
-    (l <= h).then_some((l, h))
-}
-
-fn frustum_interval(ray: Ray, c: Vec3, a: Vec3, hl: f32, r0: f32, r1: f32) -> Option<(f32, f32)> {
-    let o = ray.origin - c;
-    let z0 = o.dot(a);
-    let dz = ray.dir.dot(a);
-    let (s0, s1) = cap_range(z0, dz, hl)?;
-    let rm = 0.5 * (r0 + r1);
-    let k = (r1 - r0) / (2.0 * hl);
-    let p = o - a * z0;
-    let q = ray.dir - a * dz;
-    let rz0 = k.mul_add(z0, rm);
-    let rate = k * dz;
-    let qa = rate.mul_add(-rate, q.dot(q));
-    let qb = (-rate).mul_add(rz0, p.dot(q));
-    let qc = rz0.mul_add(-rz0, p.dot(p));
-    if qa.abs() <= PARALLEL_EPS {
-        // Ray parallel to a generator: the radius condition is linear in t.
-        if qb.abs() <= PARALLEL_EPS {
-            return (qc <= 0.0).then_some((s0, s1));
-        }
-        let t = -qc / (2.0 * qb);
-        return if qb > 0.0 {
-            clip(-1e30, t, s0, s1)
-        } else {
-            clip(t, 1e30, s0, s1)
-        };
-    }
-    let (lo, hi) = quadratic_roots(qa, qb, qc)?;
-    if qa > 0.0 {
-        clip(lo, hi, s0, s1)
-    } else {
-        // Steeper than the cone: `Q <= 0` outside the roots. The mirror nappe
-        // lies beyond the caps, so at most one side survives clipping; the hull
-        // keeps the result an interval if rounding lets both through.
-        match (clip(-1e30, lo, s0, s1), clip(hi, 1e30, s0, s1)) {
-            (Some(x), Some(y)) => Some((x.0.min(y.0), x.1.max(y.1))),
-            (x, y) => x.or(y),
-        }
-    }
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "a wedge is fully described by its frame and two radii; a struct would only rename them"
-)]
-fn wedge_interval(
-    ray: Ray,
-    c: Vec3,
-    a: Vec3,
-    d: Vec3,
-    hl: f32,
-    s: f32,
-    r0: f32,
-    r1: f32,
-) -> Option<(f32, f32)> {
-    let w = a.cross(d);
-    let k = (r1 - r0) / (2.0 * hl);
-    let rm = 0.5 * (r0 + r1);
-    // `(normal, offset)` with `normal . (x - c) + offset <= 0` inside; normals
-    // are deliberately not normalised, the slab method only needs ratios.
-    let faces = [
-        (a, -hl),
-        (-a, -hl),
-        (d, -s),
-        (-d, -s),
-        (w - a * k, -rm),
-        (-w - a * k, -rm),
-    ];
-    let o = ray.origin - c;
-    let mut t_near = -1e30f32;
-    let mut t_far = 1e30f32;
-    for (n, e) in faces {
-        let denom = n.dot(ray.dir);
-        let side = n.dot(o) + e;
-        if denom.abs() > PARALLEL_EPS {
-            let t = -side / denom;
-            if denom < 0.0 {
-                t_near = t_near.max(t);
-            } else {
-                t_far = t_far.min(t);
-            }
-        } else if side > 0.0 {
-            return None;
-        }
-    }
-    (t_near <= t_far).then_some((t_near, t_far))
-}
-
 impl ToolPrimitive {
     const fn base(
         kind: ToolKind,
@@ -541,6 +409,10 @@ impl ToolPrimitive {
     /// A cone frustum with radius `r_neg` at `-half_length` and `r_pos` at
     /// `+half_length`.
     #[must_use]
+    #[expect(
+        clippy::manual_midpoint,
+        reason = "pinned reference arithmetic: plain f32 `0.5 * (r_neg + r_pos)`; `f32::midpoint` widens through f64"
+    )]
     pub fn frustum(centre: Vec3, axis: Vec3, r_neg: f32, r_pos: f32, half_length: f32) -> Self {
         Self::base(
             ToolKind::Frustum,
@@ -694,6 +566,10 @@ impl ToolPrimitive {
     /// half-length `stroke` on the peak. Across-axis: every cross-section
     /// circle becomes a stadium, i.e. two shifted copies plus the wedge between
     /// them.
+    #[expect(
+        clippy::manual_midpoint,
+        reason = "pinned reference arithmetic: plain f32 `0.5 * (z_lo + z_hi)`; `f32::midpoint` widens through f64"
+    )]
     fn pieces(&self) -> Option<Pieces> {
         let kind = self.kind()?;
         let sweep = self.sweep()?;
@@ -835,192 +711,4 @@ impl ToolPrimitive {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// xorshift32, as in the other seeded generators in this workspace.
-    struct Rng(u32);
-
-    impl Rng {
-        fn next_u32(&mut self) -> u32 {
-            let mut x = self.0;
-            x ^= x << 13;
-            x ^= x >> 17;
-            x ^= x << 5;
-            self.0 = x;
-            x
-        }
-
-        /// Uniform in `[-1, 1)`.
-        fn signed(&mut self) -> f32 {
-            (self.next_u32() >> 8) as f32 / (1u32 << 23) as f32 - 1.0
-        }
-
-        fn unit_vec(&mut self) -> Vec3 {
-            loop {
-                let v = Vec3::new(self.signed(), self.signed(), self.signed());
-                let l = v.length();
-                if (0.1..=1.0).contains(&l) {
-                    return v / l;
-                }
-            }
-        }
-    }
-
-    fn base_tool(kind: ToolKind) -> ToolPrimitive {
-        let centre = Vec3::new(0.1, -0.2, 0.15);
-        let axis = Vec3::new(0.3, 0.5, 0.8).normalize();
-        match kind {
-            ToolKind::Ball => ToolPrimitive::ball(centre, 0.4),
-            ToolKind::Cylinder => ToolPrimitive::cylinder(centre, axis, 0.3, 0.5),
-            ToolKind::Frustum => ToolPrimitive::frustum(centre, axis, 0.2, 0.45, 0.5),
-            ToolKind::Bicone => ToolPrimitive::bicone(centre, axis, 0.45, 0.5),
-        }
-    }
-
-    fn with_sweep_kind(t: ToolPrimitive, sweep: ToolSweep) -> ToolPrimitive {
-        let axis = t.axis_vec();
-        let dir = axis.any_orthonormal_vector();
-        t.with_sweep(sweep, 0.3, dir)
-    }
-
-    #[test]
-    fn tool_primitive_layout_is_80_bytes_and_16_aligned() {
-        assert_eq!(std::mem::size_of::<ToolPrimitive>(), 80);
-        assert_eq!(std::mem::align_of::<ToolPrimitive>(), 16);
-    }
-
-    #[test]
-    fn tool_kind_and_sweep_round_trip_through_u32_and_reject_unknown_values() {
-        for k in [
-            ToolKind::Ball,
-            ToolKind::Cylinder,
-            ToolKind::Frustum,
-            ToolKind::Bicone,
-        ] {
-            assert_eq!(ToolKind::try_from(k as u32), Ok(k));
-        }
-        for s in [ToolSweep::None, ToolSweep::AlongAxis, ToolSweep::AcrossAxis] {
-            assert_eq!(ToolSweep::try_from(s as u32), Ok(s));
-        }
-        assert_eq!(ToolKind::try_from(4), Err(4));
-        assert_eq!(ToolSweep::try_from(9), Err(9));
-    }
-
-    #[test]
-    fn tool_primitive_validate_rejects_each_bad_field() {
-        let good = base_tool(ToolKind::Cylinder);
-        assert_eq!(good.validate(), Ok(()));
-        for sweep in [ToolSweep::AlongAxis, ToolSweep::AcrossAxis] {
-            assert_eq!(with_sweep_kind(good, sweep).validate(), Ok(()));
-        }
-
-        let mut t = good;
-        t.origin[1] = f32::NAN;
-        assert_eq!(t.validate(), Err(ToolPrimitiveError::NonFinite));
-        let mut t = good;
-        t.axis[3] = f32::INFINITY;
-        assert_eq!(t.validate(), Err(ToolPrimitiveError::NonFinite));
-
-        let mut t = good;
-        t.origin[3] = -0.1;
-        assert_eq!(t.validate(), Err(ToolPrimitiveError::NonPositiveRadius));
-        let mut t = good;
-        t.origin[3] = 0.0;
-        t.profile[0] = 0.0;
-        t.profile[1] = 0.0;
-        assert_eq!(t.validate(), Err(ToolPrimitiveError::NonPositiveRadius));
-        let mut t = good;
-        t.axis[3] = 0.0;
-        assert_eq!(t.validate(), Err(ToolPrimitiveError::NonPositiveRadius));
-        let mut t = good;
-        t.profile[2] = -1.0;
-        assert_eq!(t.validate(), Err(ToolPrimitiveError::NonPositiveRadius));
-
-        let mut t = good;
-        t.axis[0] *= 1.5;
-        assert_eq!(t.validate(), Err(ToolPrimitiveError::AxisNotUnit));
-        let across = with_sweep_kind(good, ToolSweep::AcrossAxis);
-        let mut t = across;
-        t.sweep_dir = [t.axis[0], t.axis[1], t.axis[2], 0.0];
-        assert_eq!(t.validate(), Err(ToolPrimitiveError::AxisNotUnit));
-
-        let mut t = good;
-        t.kind = 7;
-        assert_eq!(t.validate(), Err(ToolPrimitiveError::UnknownKind(7)));
-        let mut t = good;
-        t.sweep_kind = 5;
-        assert_eq!(t.validate(), Err(ToolPrimitiveError::UnknownSweep(5)));
-
-        let mut t = good;
-        t._pad[1] = 1;
-        assert_eq!(t.validate(), Err(ToolPrimitiveError::PaddingNotZero));
-        let mut t = good;
-        t.profile[3] = 1.0;
-        assert_eq!(t.validate(), Err(ToolPrimitiveError::PaddingNotZero));
-        let mut t = good;
-        t.sweep_dir[3] = 1.0;
-        assert_eq!(t.validate(), Err(ToolPrimitiveError::PaddingNotZero));
-    }
-
-    #[test]
-    fn tool_interval_agrees_with_point_classification_on_seeded_rays() {
-        let mut rng = Rng(0x9E37_79B9);
-        for kind in [
-            ToolKind::Ball,
-            ToolKind::Cylinder,
-            ToolKind::Frustum,
-            ToolKind::Bicone,
-        ] {
-            for sweep in [ToolSweep::None, ToolSweep::AlongAxis, ToolSweep::AcrossAxis] {
-                let tool = with_sweep_kind(base_tool(kind), sweep);
-                assert_eq!(tool.validate(), Ok(()), "{kind:?} {sweep:?}");
-                let centre = tool.centre();
-                let scale = tool.origin[3].max(tool.profile[0]).max(tool.profile[1]);
-                let mut hit_rays = 0usize;
-                for _ in 0..10_000 {
-                    let from = centre + rng.unit_vec() * 3.0;
-                    let aim = centre + rng.unit_vec() * (0.9 * rng.signed().abs());
-                    let ray = Ray {
-                        origin: from,
-                        dir: (aim - from).normalize(),
-                    };
-                    let interval = tool.ray_interval(ray);
-                    hit_rays += usize::from(interval.is_some());
-                    for i in 0..64u32 {
-                        let t = 1.0 + 4.0 * (i as f32 + 0.5) / 64.0;
-                        let p = ray.origin + ray.dir * t;
-                        if tool.boundary_gap(p) < 1e-4 * scale {
-                            continue;
-                        }
-                        let in_interval = interval.is_some_and(|(c, d)| t >= c && t <= d);
-                        assert_eq!(
-                            in_interval,
-                            tool.contains(p),
-                            "{kind:?} {sweep:?} t={t} interval={interval:?}"
-                        );
-                    }
-                }
-                assert!(
-                    hit_rays > 500,
-                    "{kind:?} {sweep:?}: only {hit_rays} rays hit, the test would be vacuous"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn stone_geometry_counts_planes_and_tools_and_reports_convexity() {
-        let planes = [GpuFacetPlane::new(Vec3::X, -1.0)];
-        let tools = [ToolPrimitive::ball(Vec3::ZERO, 0.1)];
-        let convex = StoneGeometry::planes_only(&planes);
-        assert!(convex.is_convex());
-        assert_eq!(convex.facet_count(), 1);
-        let carved = StoneGeometry {
-            planes: &planes,
-            tools: &tools,
-        };
-        assert!(!carved.is_convex());
-        assert_eq!(carved.facet_count(), 2);
-    }
-}
+mod tests;

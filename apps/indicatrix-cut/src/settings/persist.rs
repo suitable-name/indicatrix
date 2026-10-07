@@ -11,7 +11,9 @@
 //! write of the settings file goes through [`SettingsPersister::update`], because
 //! [`SettingsPersister::flush`] (called on every close path) writes that snapshot over
 //! whatever is on disk. A writer that edits the file behind the persister's back would
-//! have its change erased on exit.
+//! have its change erased on exit. The one thing between the snapshot and the file is the
+//! optional [`DiskOverride`] ([`SettingsPersister::set_disk_override`]): values that are
+//! only on loan are replaced by the real ones on their way to disk.
 
 use super::{model::SettingsFile, store};
 use std::{
@@ -47,6 +49,10 @@ thread_local! {
     static INSTALLED: RefCell<Weak<SettingsPersister>> = const { RefCell::new(Weak::new()) };
 }
 
+/// A rewrite every snapshot goes through on its way to the disk, see
+/// [`SettingsPersister::set_disk_override`].
+pub type DiskOverride = Arc<dyn Fn(&mut SettingsFile) + Send + Sync>;
+
 /// Handle to the background settings writer. Held in an `Arc` so it can be captured
 /// into every UI callback that changes a persisted setting. Dropping a handle asks the
 /// worker to shut down after it has written any pending change, so a clone must not
@@ -55,6 +61,8 @@ thread_local! {
 pub struct SettingsPersister {
     sender: mpsc::Sender<Msg>,
     current: Arc<Mutex<SettingsFile>>,
+    /// See [`Self::set_disk_override`]. Shared by every clone, like `current`.
+    disk_override: Arc<Mutex<Option<DiskOverride>>>,
 }
 
 impl SettingsPersister {
@@ -65,7 +73,11 @@ impl SettingsPersister {
         let (sender, receiver) = mpsc::channel::<Msg>();
         let current = Arc::new(Mutex::new(initial));
         thread::spawn(move || worker_loop(&path, &receiver));
-        Self { sender, current }
+        Self {
+            sender,
+            current,
+            disk_override: Arc::new(Mutex::new(None)),
+        }
     }
 
     /// Mutates the in-memory settings under `f` and schedules a debounced save. The
@@ -79,7 +91,44 @@ impl SettingsPersister {
         f(&mut guard);
         let snapshot = guard.clone();
         drop(guard);
-        let _ = self.sender.send(Msg::Changed(snapshot));
+        let _ = self.sender.send(Msg::Changed(self.on_disk(snapshot)));
+    }
+
+    /// Makes every write to the disk, from now until `rewrite` is replaced or cleared with
+    /// `None`, hold `rewrite`'s values instead of the in-memory ones for the fields it sets.
+    /// The in-memory settings ([`Self::snapshot`]) are not touched.
+    ///
+    /// This is how a value that is only on loan stays out of the settings file: a design's
+    /// own lighting is shown while the light controls (which write the settings as they are
+    /// moved) stay wired to the settings, and a change made then, followed by closing the
+    /// app, must not leave the design's values in the file as the cutter's normal lighting.
+    /// With the rewrite installed the file keeps the normal values whatever the controls do,
+    /// also when the app is killed instead of closed.
+    ///
+    /// The file is rewritten at once (after the usual debounce) with the new rule, so
+    /// clearing the override lets the in-memory values reach the disk.
+    pub fn set_disk_override(&self, rewrite: Option<DiskOverride>) {
+        *self
+            .disk_override
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = rewrite;
+        let _ = self
+            .sender
+            .send(Msg::Changed(self.on_disk(self.snapshot())));
+    }
+
+    /// `snapshot` as it goes to the disk: through the override, if one is installed.
+    fn on_disk(&self, mut snapshot: SettingsFile) -> SettingsFile {
+        // The rule is cloned out so it runs without the lock held.
+        let rewrite = self
+            .disk_override
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(rewrite) = rewrite {
+            rewrite(&mut snapshot);
+        }
+        snapshot
     }
 
     /// A copy of the current in-memory settings -- what the next write will contain.
@@ -97,7 +146,7 @@ impl SettingsPersister {
     /// last `DEBOUNCE` window before quitting isn't lost -- returning only after the
     /// write is what keeps the process from exiting with the write still queued.
     pub fn flush(&self) {
-        let snapshot = self.snapshot();
+        let snapshot = self.on_disk(self.snapshot());
         let (ack_sender, ack_receiver) = mpsc::channel();
         if self
             .sender
@@ -221,6 +270,77 @@ mod tests {
         let persister = SettingsPersister::spawn(path, SettingsFile::default());
         persister.update(|s| s.settings.max_bounces = 42);
         assert_eq!(persister.snapshot().settings.max_bounces, 42);
+    }
+
+    /// A design's own lighting is shown while the light controls still write the settings.
+    /// With the normal values installed as the override, closing the app (a flush) leaves the
+    /// file holding them; the in-memory settings hold what the controls set; clearing the
+    /// override lets the in-memory values reach the disk.
+    #[test]
+    fn a_disk_override_keeps_loaned_values_out_of_the_file_but_not_out_of_memory() {
+        let path = temp_settings_path("disk-override");
+        let persister = SettingsPersister::spawn(path.clone(), SettingsFile::default());
+        // 1.5, 2.5 and 3.5 are exactly representable, see the flush test.
+        persister.update(|s| s.settings.exposure = 1.5);
+        persister.flush();
+        assert_eq!(store::load_or_default(&path).settings.exposure, 1.5);
+
+        // The normal exposure is pinned; the design's lighting then moves the control.
+        persister.set_disk_override(Some(Arc::new(|file: &mut SettingsFile| {
+            file.settings.exposure = 1.5;
+        })));
+        persister.update(|s| {
+            s.settings.exposure = 2.5;
+            s.settings.max_bounces = 42;
+        });
+        assert_eq!(
+            persister.snapshot().settings.exposure,
+            2.5,
+            "the controls still read what they set"
+        );
+
+        // Closing the app writes the snapshot through the override.
+        persister.flush();
+        let on_disk = store::load_or_default(&path).settings;
+        assert_eq!(
+            on_disk.exposure, 1.5,
+            "the normal exposure is what the file keeps"
+        );
+        assert_eq!(
+            on_disk.max_bounces, 42,
+            "a setting the override does not name is saved"
+        );
+
+        // Letting go of the override writes the in-memory values.
+        persister.set_disk_override(None);
+        persister.update(|s| s.settings.exposure = 3.5);
+        persister.flush();
+        assert_eq!(store::load_or_default(&path).settings.exposure, 3.5);
+    }
+
+    /// The override reaches the debounced write too, so an app that is killed (not closed)
+    /// while a design's lighting shows does not leave it in the file either.
+    #[test]
+    fn a_disk_override_also_applies_to_the_debounced_write() {
+        let path = temp_settings_path("disk-override-debounced");
+        let persister = SettingsPersister::spawn(path.clone(), SettingsFile::default());
+        persister.set_disk_override(Some(Arc::new(|file: &mut SettingsFile| {
+            file.settings.exposure = 1.5;
+        })));
+        persister.update(|s| s.settings.exposure = 2.5);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let written = loop {
+            if let Ok(contents) = std::fs::read_to_string(&path)
+                && contents.contains("exposure = ")
+            {
+                break contents;
+            }
+            assert!(Instant::now() < deadline, "the debounced write never came");
+            thread::sleep(Duration::from_millis(50));
+        };
+        assert!(written.contains("exposure = 1.5"), "{written}");
+        assert!(!written.contains("exposure = 2.5"), "{written}");
     }
 
     /// A recent file recorded through the persister is what `flush` writes on exit.

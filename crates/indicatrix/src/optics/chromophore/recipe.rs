@@ -6,7 +6,7 @@ use crate::optics::absorption::{AbsorptionBand, AbsorptionTensor};
 
 /// A physical chromophore recipe specifying host, concentration entries, treatments and scale.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct colorRecipe {
+pub struct ColorRecipe {
     /// Host crystal identifier (e.g. `"corundum"`).
     pub host: String,
     /// Catalogue data version this recipe was built with.
@@ -25,7 +25,7 @@ pub struct colorRecipe {
     pub resolved_bands: ResolvedBands,
 }
 
-impl colorRecipe {
+impl ColorRecipe {
     /// Builds a new recipe with defaults (strength = 1.0, `reference_path_mm` = 5.0).
     #[must_use]
     pub fn new(host: impl Into<String>, data_version: u32) -> Self {

@@ -659,6 +659,10 @@ pub(super) fn build_fit_scene(inputs: &FitInputs<'_>, meshes: &dyn MeshSource) -
 
 /// What the render worker draws.
 #[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a scene lives once inside an `Arc<Scene>` and is never moved by value in a loop; boxing `ModelScene` would touch every construction and match site"
+)]
 pub(super) enum SceneKind {
     /// The rough being modelled.
     Model(ModelScene),

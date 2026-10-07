@@ -1,5 +1,6 @@
 //! The migrations that create a whole side table (`diagram_previews`, tilt curves, solid
-//! extents and hull, saved rough plans, planner exclusions, tags) for a database that
+//! extents and hull, saved rough plans, planner exclusions, per-design variants, cutting
+//! progress and lighting, render jobs, tags) for a database that
 //! predates it, plus the one that prunes the first-draft tilt-curve columns. Each is idempotent and its SQL
 //! text lives in [`super::schema`], shared verbatim with `create_tables_if_not_exist`.
 
@@ -7,11 +8,12 @@ use super::{
     super::Database,
     helpers::sql_identifier,
     schema::{
+        DESIGN_CUT_PROGRESS_TABLE_SQL, DESIGN_LIGHTING_TABLE_SQL, DESIGN_VARIANTS_TABLE_SQL,
         DIAGRAM_PLANNER_EXCLUSIONS_TABLE_SQL, DIAGRAM_PREVIEWS_REORDERED_TABLE_SQL,
         DIAGRAM_PREVIEWS_TABLE_SQL, DIAGRAM_SOLID_EXTENTS_TABLE_SQL, DIAGRAM_SOLID_HULL_TABLE_SQL,
-        OBSOLETE_TILT_CURVE_AGGREGATE_COLUMNS, SAVED_ROUGH_PLANS_SUMMARY_COLUMN,
-        SAVED_ROUGH_PLANS_TABLE_SQL, TAG_TABLES_SQL, diagram_tilt_curves_reordered_table_sql,
-        diagram_tilt_curves_table_sql,
+        OBSOLETE_TILT_CURVE_AGGREGATE_COLUMNS, RENDER_JOBS_TABLE_SQL,
+        SAVED_ROUGH_PLANS_SUMMARY_COLUMN, SAVED_ROUGH_PLANS_TABLE_SQL, TAG_TABLES_SQL,
+        diagram_tilt_curves_reordered_table_sql, diagram_tilt_curves_table_sql,
     },
 };
 use crate::model::performance::{
@@ -305,6 +307,97 @@ impl Database {
         self.conn
             .execute_batch(DIAGRAM_PLANNER_EXCLUSIONS_TABLE_SQL)
             .context("Failed to create diagram_planner_exclusions table")?;
+        Ok(())
+    }
+
+    /// Creates `design_variants` (and its `design_uuid` index) for a database created
+    /// before a design could keep saved variants -- see
+    /// [`Self::save_variant`](Database::save_variant)/
+    /// [`Self::list_variants`](Database::list_variants)/
+    /// [`Self::load_variant`](Database::load_variant).
+    ///
+    /// Keyed by the design's UUID, not by `entry_id`, and with no `FOREIGN KEY` to
+    /// `diagram_entries`: a design opened from a file that was never catalogued still
+    /// has a UUID and must be able to keep variants, and deleting a catalogue entry does
+    /// not delete the design file those variants belong to. The only constraint is the
+    /// table's own `parent_variant_id ... ON DELETE SET NULL`.
+    ///
+    /// Adds nothing to an existing table, so every pre-existing design starts with no
+    /// variants. Naturally idempotent via `CREATE ... IF NOT EXISTS`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if creating the table or its index fails.
+    pub(in crate::db::sqlite) fn migrate_design_variants_table(&self) -> Result<()> {
+        self.conn
+            .execute_batch(DESIGN_VARIANTS_TABLE_SQL)
+            .context("Failed to create design_variants table")?;
+        Ok(())
+    }
+
+    /// Creates `design_cut_progress` for a database created before a design could keep
+    /// cutting progress -- see [`Self::mark_step_done`](Database::mark_step_done)/
+    /// [`Self::cut_progress`](Database::cut_progress).
+    ///
+    /// Keyed by the design's UUID and the step key, with no `FOREIGN KEY` to
+    /// `diagram_entries`, for the reasons given on [`Self::migrate_design_variants_table`].
+    /// Every pre-existing design starts with nothing marked done. Naturally idempotent via
+    /// `CREATE TABLE IF NOT EXISTS`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if creating the table fails.
+    pub(in crate::db::sqlite) fn migrate_design_cut_progress_table(&self) -> Result<()> {
+        self.conn
+            .execute_batch(DESIGN_CUT_PROGRESS_TABLE_SQL)
+            .context("Failed to create design_cut_progress table")?;
+        Ok(())
+    }
+
+    /// Creates `design_lighting` for a database created before a design could keep its
+    /// own lighting choice -- see
+    /// [`Self::set_design_lighting`](Database::set_design_lighting)/
+    /// [`Self::design_lighting`](Database::design_lighting).
+    ///
+    /// Keyed by the design's UUID, with no `FOREIGN KEY` to `diagram_entries`, for the
+    /// reasons given on [`Self::migrate_design_variants_table`]. Every pre-existing
+    /// design starts with no stored choice, which readers treat as "use the global
+    /// lighting". Naturally idempotent via `CREATE TABLE IF NOT EXISTS`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if creating the table fails.
+    pub(in crate::db::sqlite) fn migrate_design_lighting_table(&self) -> Result<()> {
+        self.conn
+            .execute_batch(DESIGN_LIGHTING_TABLE_SQL)
+            .context("Failed to create design_lighting table")?;
+        Ok(())
+    }
+
+    /// Creates `render_jobs` (and its queue-order index) for a database created before
+    /// the desktop app could keep a render queue -- see
+    /// [`Self::add_render_job`](Database::add_render_job)/
+    /// [`Self::list_render_jobs`](Database::list_render_jobs)/
+    /// [`Self::get_render_job`](Database::get_render_job).
+    ///
+    /// A side table with no `FOREIGN KEY` to `diagram_entries`: a job is a frozen copy of
+    /// what to render and must outlive the design it was made from. The snapshot is
+    /// opaque JSON text (the vault never parses it, like `design_lighting.settings_json`)
+    /// and is declared last, because it is the large column and a list must not walk its
+    /// overflow pages.
+    ///
+    /// Idempotent via `CREATE ... IF NOT EXISTS`. A future column is added behind a
+    /// [`Self::column_exists`] gate, the way `saved_rough_plans.summary` is in
+    /// [`Self::migrate_saved_rough_plans_table`]. Never touches `PRAGMA user_version`,
+    /// which is the library identity stamp, not a schema version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if creating the table or its index fails.
+    pub(in crate::db::sqlite) fn migrate_render_jobs_table(&self) -> Result<()> {
+        self.conn
+            .execute_batch(RENDER_JOBS_TABLE_SQL)
+            .context("Failed to create render_jobs table")?;
         Ok(())
     }
 

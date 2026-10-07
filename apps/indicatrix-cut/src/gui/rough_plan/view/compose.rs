@@ -18,7 +18,9 @@ pub(super) const ROUGH_EDGE: [u8; 3] = [190, 205, 235];
 /// How much of the rough's edge color an edge pixel takes, in percent.
 pub(super) const ROUGH_EDGE_PERCENT: u32 = 70;
 
-/// The color of the saw pieces' edges (`Theme.accent-amber`).
+/// The color of the saw pieces' edges (`Theme.accent-amber` of the normal palette). Drawn
+/// into the picture as a data color, so it does not change in high contrast: it reads
+/// on the dark frame in both palettes.
 pub(super) const SAW_EDGE: [u8; 3] = [245, 158, 11];
 
 /// How much of the saw color an edge pixel takes, in percent.

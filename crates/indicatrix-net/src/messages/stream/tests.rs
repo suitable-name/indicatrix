@@ -181,7 +181,8 @@ fn client_message_render_request_round_trips() {
         environment: crate::scene::SceneEnvironment::Studio,
         surface_glare: 1.0,
         tools: Vec::new(),
-        fluorescence: Default::default(),
+        fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
+        head_shadow_deg: 16.0,
     };
     let msg = ClientMessage::RenderRequest(Box::new(super::super::render::RenderRequest {
         request_id: 8,
@@ -228,7 +229,8 @@ fn client_message_tilt_curves_request_round_trips() {
         environment: crate::scene::SceneEnvironment::Studio,
         surface_glare: 1.0,
         tools: Vec::new(),
-        fluorescence: Default::default(),
+        fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
+        head_shadow_deg: 16.0,
     };
     let msg = ClientMessage::TiltCurvesRequest(Box::new(super::super::tilt::TiltCurvesRequest {
         request_id: 11,
@@ -288,7 +290,8 @@ fn render_gated_variants_are_appended_in_order_after_cancel_and_library() {
         environment: crate::scene::SceneEnvironment::Studio,
         surface_glare: 1.0,
         tools: Vec::new(),
-        fluorescence: Default::default(),
+        fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
+        head_shadow_deg: 16.0,
     };
 
     let render_request =
@@ -632,7 +635,8 @@ fn ping_and_final_image_request_round_trip_at_discriminants_4_and_5() {
         environment: crate::scene::SceneEnvironment::Studio,
         surface_glare: 1.0,
         tools: Vec::new(),
-        fluorescence: Default::default(),
+        fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
+        head_shadow_deg: 16.0,
     };
     let request = ClientMessage::FinalImageRequest(Box::new(FinalImageRequest {
         request_id: 9,

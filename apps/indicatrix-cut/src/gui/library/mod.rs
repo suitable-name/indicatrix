@@ -13,3 +13,4 @@ pub mod diagram_list;
 pub mod local;
 pub mod remote;
 pub mod search;
+pub mod tutorial_state;

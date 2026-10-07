@@ -149,7 +149,9 @@ pub fn shapes_match(saved: &DesignShape, current: &DesignShape) -> bool {
 
 /// Whether the saved figures came from the measuring rule the library uses now (or from
 /// one the file does not name, which is taken as the current one). Figures of another
-/// rule cannot be compared: they may differ without the design having changed.
+/// rule cannot be compared: they may differ without the design having changed. (Version 4
+/// measures a concave design on its carved outline, so every plan saved under version 3
+/// is incomparable: it counts as unchanged and gets the note below, never "changed".)
 const fn comparable(saved: &DesignShape) -> bool {
     saved.extents_version == 0 || saved.extents_version == SOLID_EXTENTS_VERSION
 }
@@ -304,7 +306,7 @@ impl Notes {
         }
         if !self.incomparable.is_empty() {
             lines.push(format!(
-                "The plan measured {} with an earlier version of the measuring rule, so {} could not be compared with the library now.",
+                "The plan measured {} with an earlier version of the measuring rule (designs with concave tiers used to be measured on their flat outline, and now are on their carved one), so {} could not be compared with the library now. The saved placements stay valid; plan again to use the carved outline.",
                 name_list(&self.incomparable),
                 if self.incomparable.len() == 1 { "it" } else { "they" }
             ));

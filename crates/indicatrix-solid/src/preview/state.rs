@@ -12,7 +12,7 @@ use super::{
 };
 use crate::{
     diagram2d::{DiagramStyle, PanelKind},
-    facet_map::FacetMap,
+    facet_map::{FacetKind, FacetMap},
     mesh_cache::MeshCache,
     raster::SolidStyle,
 };
@@ -71,6 +71,10 @@ pub struct DiagramMemory {
     pub hover_text: Vec<String>,
     /// Facet id -> owning tier index.
     pub facet_tier: Vec<Option<usize>>,
+    /// Facet id -> owning CONCAVE tier (an index into `Design::concave_tiers`, not a
+    /// tier-table position), `Some` only for a concave tool's facet. A parallel table to
+    /// [`Self::facet_tier`], which stays `None` for those facets.
+    pub facet_concave_tier: Vec<Option<usize>>,
 }
 
 impl Default for DiagramMemory {
@@ -87,6 +91,7 @@ impl Default for DiagramMemory {
             style: DiagramStyle::default(),
             hover_text: Vec::new(),
             facet_tier: Vec::new(),
+            facet_concave_tier: Vec::new(),
         }
     }
 }
@@ -136,6 +141,12 @@ pub struct WorkerMemory {
     /// the style of EVERY frame at draw time by [`Self::with_outlines`]. `None` (the
     /// default) leaves the style exactly as the request produced it.
     pub outlines: Option<SharedOutlines>,
+    /// Which flat tiers the last `Planned` frame's planes contain when the stone was only
+    /// partly cut (`None`: the finished stone) -- see [`PlannedFrame::visible_tiers`].
+    /// Carried forward by `Reproject`/`UpdateFacetOverlay` as long as the planes are the
+    /// same, so every frame's [`super::FrameGeometry::visible_tiers`] describes the facet
+    /// ids it holds.
+    pub visible_tiers: Option<Arc<Vec<bool>>>,
 }
 
 impl WorkerMemory {
@@ -219,17 +230,24 @@ fn update_diagram_memory_from_design(
     solid_style: &SolidStyle,
     n_d: f64,
     placements: &[(usize, usize)],
+    visible_tiers: Option<&[bool]>,
 ) {
-    let facet_map = FacetMap::from_design_with_tools(design, solved.unwrap_or(&[]), placements);
+    let facet_map =
+        FacetMap::from_design_cut(design, solved.unwrap_or(&[]), placements, visible_tiers);
     let facet_count = facet_map.facet_count();
     let mut labels = vec![String::new(); facet_count];
     let mut hover_text = vec![String::new(); facet_count];
     let mut facet_tier = vec![None; facet_count];
+    let mut facet_concave_tier = vec![None; facet_count];
     let mut facet_index_on_gear = vec![0u32; facet_count];
     for id in 0..facet_count {
         labels[id] = facet_map.facet_label(id);
         hover_text[id] = facet_map.hover_text(id, n_d);
         facet_tier[id] = facet_map.tier_of(id);
+        facet_concave_tier[id] = match facet_map.kind_of(id) {
+            FacetKind::Concave { tier, .. } => Some(tier),
+            FacetKind::Flat => None,
+        };
         facet_index_on_gear[id] = facet_map.index_on_gear(id);
     }
     last_diagram.style = DiagramStyle {
@@ -247,6 +265,7 @@ fn update_diagram_memory_from_design(
     };
     last_diagram.hover_text = hover_text;
     last_diagram.facet_tier = facet_tier;
+    last_diagram.facet_concave_tier = facet_concave_tier;
 }
 
 /// Applies a [`RedrawRequest::Reproject`] request's optional `gear` override onto
@@ -308,6 +327,7 @@ pub fn resolve_request_state(
             {
                 memory.style = SolidStyle::default();
                 memory.diagram = DiagramMemory::default();
+                memory.visible_tiers = None;
             }
             memory.planes = Some(planes);
             memory.tools.clone_from(&geometry.tools);
@@ -385,6 +405,7 @@ fn resolve_planned_state(
         generation,
         n_d,
         enlarged_panel,
+        visible_tiers,
     } = frame;
     // This frame's arrangement may not close. Name the tier whose facet escapes.
     // Cheap even though it looks like a second mesh build: guaranteed cache hit.
@@ -423,6 +444,7 @@ fn resolve_planned_state(
     };
 
     memory.style = style.clone();
+    memory.visible_tiers = visible_tiers.clone().map(Arc::new);
     if solved.is_some() {
         memory.solved_masts.clone_from(&solved);
     }
@@ -450,6 +472,7 @@ fn resolve_planned_state(
         &style,
         n_d,
         &geometry.placements,
+        visible_tiers.as_deref(),
     );
     (
         geometry,

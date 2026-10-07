@@ -361,6 +361,10 @@ pub(in crate::gui::editor) fn push_proportion_verdicts_from_solved(
     solved: Option<&[SolvedTier]>,
     n_d: f64,
 ) {
+    // The overall Good / Check / Problem verdict follows the same solves these chips do
+    // (see `gui::editor::verdict`): one call here covers the synchronous Solve, a background
+    // solve's completion and a finished solid-preview replan.
+    crate::gui::editor::verdict::on_solved(ui, design, solved, n_d);
     let verdicts = (!design.tiers.is_empty())
         .then(|| solved.and_then(|solved| design.stone_proportions(solved)))
         .flatten()
@@ -501,20 +505,11 @@ pub(super) fn push_tier_list_and_undo_redo(
         .set_can_undo(state.history.can_undo());
     ui.global::<EditorModel>()
         .set_can_redo(state.history.can_redo());
-    ui.global::<UndoRedoLabels>().set_undo_label(
-        state
-            .history
-            .peek_undo()
-            .map_or_else(String::new, |e| e.describe(&state.design))
-            .into(),
-    );
-    ui.global::<UndoRedoLabels>().set_redo_label(
-        state
-            .history
-            .peek_redo()
-            .map_or_else(String::new, |e| e.describe(&state.design))
-            .into(),
-    );
+    // A step with words of its own ("Open variant ...") keeps them in the hints.
+    ui.global::<UndoRedoLabels>()
+        .set_undo_label(state.undo_hint().into());
+    ui.global::<UndoRedoLabels>()
+        .set_redo_label(state.redo_hint().into());
 }
 
 /// Pushes the Yield form's girdle-diameter/material scratch fields from the

@@ -29,4 +29,7 @@ slint::include_modules!();
 mod bridge;
 /// Slint user interface layer.
 pub mod gui;
+mod locate_io;
+mod mesh_io;
+mod plan_limit;
 mod settings;

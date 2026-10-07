@@ -13,8 +13,10 @@
 
 use crate::{
     MainWindow, RetargetModel, SolidPreviewModel, ViewportModel,
-    bridge::render_thread::RenderContext, gui::solid_preview::preview_state::SolidPreviewState,
+    bridge::render_thread::RenderContext,
+    gui::{solid_preview::preview_state::SolidPreviewState, tutorial_events::raise},
 };
+use indicatrix_editor::guide::viewing_events as events;
 use slint::ComponentHandle;
 use std::sync::{Arc, Mutex};
 
@@ -108,9 +110,13 @@ pub(in crate::gui) fn setup_live_render_visibility_callbacks(
     let render_ctx_rv = render_ctx.clone();
     let preview_state_rv = Arc::clone(preview_state);
     let ui_weak_rv = ui.as_weak();
-    ui.on_render_view_tab_changed(move |_idx| {
+    ui.on_render_view_tab_changed(move |idx| {
         if let Some(ui) = ui_weak_rv.upgrade() {
             recompute_tab_visible(&ui, &render_ctx_rv);
+            // A tutorial step may wait for the Live Render tab (0) to be shown.
+            if idx == 0 {
+                raise(&ui, events::LIVE_RENDER_OPENED);
+            }
             // Re-request the right image for the newly selected sub-tab -- e.g.
             // switching Edit -> Live Render while both are in Solid mode must show the
             // Live tab's own (possibly differently sized) solid raster immediately,

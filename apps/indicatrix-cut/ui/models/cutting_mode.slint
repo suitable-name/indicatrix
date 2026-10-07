@@ -1,0 +1,180 @@
+// Cutting mode: the cutting instructions one step per page, full window.
+//
+// Slint owns whether the screen is open and what the keys do; Rust (`gui::editor::cutting_mode`)
+// owns the steps, the done marks (kept in the library, never in the design file) and everything
+// the page shows, and pushes it into the `in` properties below whenever the page changes. The
+// pure model behind the texts is `indicatrix_editor::cutting_mode`.
+//
+// Entry points -- the command bar's "Cut Mode" button, Edit > Cutting Mode... and the command
+// palette -- all call `open_cutting_mode()`. The button and the menu item are disabled while
+// `unavailable_reason()` says why; the palette opens the screen anyway and the screen shows
+// that reason, so the command never fails silently.
+
+import { EditorModel } from "editor.slint";
+
+// One index chip: the position as the cutting sheet prints it, and whether it is ticked.
+export struct CmChip {
+    text: string,
+    ticked: bool,
+}
+
+// One marked index on the wheel: its dot on the ring and its number outside it, as fractions
+// of the wheel's square (0 = left or top, 1 = right or bottom). An empty `label` draws no number.
+export struct CmWheelMark {
+    x: float,
+    y: float,
+    label_x: float,
+    label_y: float,
+    label: string,
+    ticked: bool,
+}
+
+// A tooth number printed inside the ring at a major tick, positioned like a mark.
+export struct CmWheelScale {
+    x: float,
+    y: float,
+    label: string,
+}
+
+export global CuttingModeModel {
+    // Whether the screen is showing.
+    in-out property <bool> open: false;
+    // True from the moment the screen opens until Rust has the first page ready (or an error).
+    in-out property <bool> busy: false;
+    // Why there is nothing to step through: no design, no tiers, a design that does not solve,
+    // or a failure while preparing. The screen shows it instead of a page. Empty when fine.
+    in-out property <string> error: "";
+    // The "Reset progress" question is showing in place of the button.
+    in-out property <bool> confirm_reset: false;
+    // Bumped when the screen closes; the main window takes the keyboard back (`app.slint`).
+    in-out property <int> restore_focus_pulse: 0;
+
+    // The open design's name, as the window title shows it.
+    in property <string> design_name: "";
+    // How many steps, and which one is showing (counting from 0).
+    in property <int> step_count: 0;
+    in property <int> step_index: 0;
+    // `Step 3 of 12`.
+    in property <string> heading: "";
+    // The tier's code, as the cutting sheet labels it: `P1`, `G1`, `C2`, `T`.
+    in property <string> tier_name: "";
+    // Crown, Pavilion or Girdle.
+    in property <string> side_label: "";
+    // The angle, huge: `42.50°`.
+    in property <string> angle_text: "";
+    in property <[CmChip]> chips: [];
+    // The sheet's instruction text: the tier's name, then what the facet closes against.
+    in property <string> meet_text: "";
+    // Depth in millimetres and mast; empty for a concave tier.
+    in property <string> depth_text: "";
+    // `Cheater offset +1.50°`; empty without one.
+    in property <string> cheater_text: "";
+    // The cutter's own note on the tier; empty without one.
+    in property <string> notes_text: "";
+    // A concave tier's tool line; empty for a flat tier.
+    in property <string> tool_text: "";
+    // 0 not done, 1 done, 2 changed since it was marked.
+    in property <int> step_state: 0;
+    // `Done`, `Changed since you marked it`, or empty.
+    in property <string> state_text: "";
+    in property <bool> has_previous: false;
+    in property <bool> has_next: false;
+    // How many steps are done, as a line (`4 of 12 steps done`) and as a fraction of the bar.
+    in property <int> done_count: 0;
+    in property <string> progress_text: "";
+    in property <float> progress_fraction: 0;
+    // The caption under the picture of the stone, and under the index wheel.
+    in property <string> stone_caption: "";
+    in property <string> wheel_caption: "";
+    // The index wheel: SVG path commands in a 200 x 200 box for the minor ticks, the major
+    // ticks and the lines to the marked indices, then the marks and the scale numbers.
+    in property <string> wheel_minor: "";
+    in property <string> wheel_major: "";
+    in property <string> wheel_spokes: "";
+    in property <[CmWheelMark]> wheel_marks: [];
+    in property <[CmWheelScale]> wheel_scale: [];
+
+    // Fired once the screen has opened for a design that can be stepped through; Rust builds
+    // the steps, fills the page and clears `busy`.
+    callback open_requested();
+    // Fired after the screen closed, however it was closed; Rust puts the Cut slider and the
+    // selection back the way they were.
+    callback closed();
+    callback previous();
+    callback next();
+    // The "Mark step done" button: marks the step, or takes the mark back if it is done.
+    callback toggle_done();
+    // Space or D: marks the step done and goes on to the next one.
+    callback mark_done_and_next();
+    // A click on index chip `i` of this step.
+    callback chip_clicked(int);
+    // The answer yes to "Reset progress": every mark of this design is removed.
+    callback reset_confirmed();
+
+    // Why cutting mode cannot open right now, or empty when it can.
+    public pure function unavailable_reason() -> string {
+        if !EditorModel.has_design {
+            return "Open or create a design first.";
+        }
+        if EditorModel.tiers.length == 0 {
+            return "This design has no tiers to cut yet.";
+        }
+        if EditorModel.solve_state == "failed" {
+            return "This design does not solve yet. Fix the problem shown in the status bar first.";
+        }
+        return "";
+    }
+
+    // Opens the screen. Called from the command bar, the Edit menu and the palette. With a
+    // reason to refuse, the screen opens showing it; otherwise Rust is asked for the steps.
+    public function open_cutting_mode() {
+        if root.open {
+            return;
+        }
+        root.confirm_reset = false;
+        root.error = root.unavailable_reason();
+        root.busy = root.error == "";
+        root.open = true;
+        if root.error == "" {
+            root.open_requested();
+        }
+    }
+
+    // Closes the screen.
+    public function close() {
+        if !root.open {
+            return;
+        }
+        root.confirm_reset = false;
+        root.busy = false;
+        root.open = false;
+        root.restore_focus_pulse += 1;
+        root.closed();
+    }
+
+    // What a key does while the screen is open. `command` is true when Ctrl, Alt or Meta is
+    // held: those keys belong to the shortcuts underneath and do nothing here. Called by the
+    // screen's own key handler and by the main window's, whichever has the keyboard.
+    public function handle_key(text: string, command: bool) {
+        if !root.open || command {
+            return;
+        }
+        if root.confirm_reset {
+            if text == Key.Escape {
+                root.confirm_reset = false;
+            }
+            return;
+        }
+        if text == Key.Escape {
+            root.close();
+        } else if root.busy || root.error != "" {
+            return;
+        } else if text == Key.LeftArrow || text == Key.PageUp {
+            root.previous();
+        } else if text == Key.RightArrow || text == Key.PageDown {
+            root.next();
+        } else if text == " " || text == "d" || text == "D" {
+            root.mark_done_and_next();
+        }
+    }
+}

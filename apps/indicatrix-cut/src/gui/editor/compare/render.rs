@@ -10,7 +10,7 @@
 //! instant solid pair that keeps orbiting fluid. Neither ever touches the main
 //! viewport's `SolidPreviewState`, its mesh cache, or `solid_last_solved`: the
 //! solid worker owns two [`MeshCache`]s of its own (one per side), built from the
-//! session's own planes.
+//! session's own stone (planes and concave tools).
 //!
 //! Every request carries the view generation it was issued at; a worker checks the
 //! shared `latest` generation before (and, for the tracer, between) the expensive
@@ -24,10 +24,13 @@
 //! the layer always describes exactly the pair it is delivered with.
 //!
 //! The pure halves -- [`render_solid_rgba`], [`render_traced_rgba`],
-//! [`traced_size`], [`pixel_size`], [`placeholder_rgba`] -- take only planes, pose
+//! [`traced_size`], [`pixel_size`], [`placeholder_rgba`] -- take only the stone, pose
 //! and size, so `super::tests` exercises them without Slint or threads.
 
-use super::{overlay::difference_overlay, session::CompareSide};
+use super::{
+    overlay::difference_overlay,
+    session::{CompareSide, traced_spp_for},
+};
 use crate::{
     bridge::preview_render::render_rgba_at_pose,
     gui::solid_preview::{
@@ -37,18 +40,21 @@ use crate::{
         to_pixel_buffer,
     },
 };
-use glam::Vec3;
 use indicatrix::{
-    geometry::{plane::GpuFacetPlane, stone_metrics::SolidMesh},
+    geometry::stone_metrics::SolidMesh,
     optics::{
         materials::GemMaterial,
         raytracer::{Camera, DEFAULT_FOV_DEG, DEFAULT_MAX_BOUNCES},
     },
 };
+use indicatrix_solid::preview::StoneGeometryBuf;
 use slint::{Rgba8Pixel, SharedPixelBuffer};
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Instant,
 };
 use tracing::error;
 
@@ -69,9 +75,14 @@ const TRACED_MAX_BOUNCES: u32 = DEFAULT_MAX_BOUNCES;
 /// high-DPI window allocating an absurd raster, far above any real window.
 const MAX_SOLID_EDGE: u32 = 4096;
 
-/// The solid raster's opaque background, `Theme.bg-input` (`#12141c`). Opaque on
-/// purpose: the split view overlays the two images, and a transparent background
-/// would let the other side show through around the stone.
+/// The solid raster's opaque background, `Theme.bg-input` (`#12141c`) in the normal
+/// palette. Opaque on purpose: the split view overlays the two images, and a
+/// transparent background would let the other side show through around the stone.
+///
+/// It stays this colour in high contrast, where `Theme.bg-input` is black: the colour
+/// is baked into the pixels on a worker thread, so a theme switch would not repaint the
+/// frames already delivered, and the picture is content (like the Live Render
+/// viewport's own backdrop). The frame the picture sits in follows the theme.
 const SOLID_BACKGROUND: [u8; 4] = [0x12, 0x14, 0x1c, 0xff];
 
 /// The placeholder hatch's two colors and stripe period (pixels), for a side with
@@ -101,8 +112,8 @@ fn camera_for(pose: CameraPose) -> Camera {
     Camera::new(pose.yaw, pose.pitch, pose.distance, DEFAULT_FOV_DEG)
 }
 
-/// One side's solid renderer: its own mesh cache (rebuilt only when the planes
-/// change, i.e. never within a session) and rasterizer (resized per request).
+/// One side's solid renderer: its own mesh cache (rebuilt only when the stone
+/// changes, i.e. never within a session) and rasterizer (resized per request).
 pub(super) struct SolidSideRenderer {
     cache: MeshCache,
     raster: SolidRasterizer,
@@ -118,11 +129,12 @@ impl Default for SolidSideRenderer {
 }
 
 impl SolidSideRenderer {
-    /// Rasterizes `planes` at `pose` into a `size` frame; returns whether the
-    /// planes closed into a solid (when not, the frame is background only).
+    /// Rasterizes `stone` (planes and concave tools) at `pose` into a `size` frame;
+    /// returns whether the stone closed into a solid (when not, the frame is background
+    /// only).
     pub(super) fn render(
         &mut self,
-        planes: &[(Vec3, f32)],
+        stone: &StoneGeometryBuf,
         preform_planes: usize,
         pose: CameraPose,
         size: (u32, u32),
@@ -130,7 +142,7 @@ impl SolidSideRenderer {
         self.raster.resize(size.0.max(1), size.1.max(1));
         let camera = camera_for(pose);
         let style = solid_style(preform_planes);
-        if let Some(cached) = self.cache.get_or_build(planes) {
+        if let Some(cached) = self.cache.get_or_build_geometry(stone) {
             self.raster.render_prepared(cached, &camera, &style);
             true
         } else {
@@ -141,18 +153,18 @@ impl SolidSideRenderer {
 }
 
 /// [`SolidSideRenderer::render`] on a fresh renderer, returning the RGBA8 buffer --
-/// the pure planes + pose + size -> pixels form the tests pin (the worker keeps its
+/// the pure stone + pose + size -> pixels form the tests pin (the worker keeps its
 /// renderers across requests instead, so the mesh is built once per session).
 #[cfg(test)]
 #[must_use]
 pub(super) fn render_solid_rgba(
-    planes: &[(Vec3, f32)],
+    stone: &StoneGeometryBuf,
     preform_planes: usize,
     pose: CameraPose,
     size: (u32, u32),
 ) -> Vec<u8> {
     let mut renderer = SolidSideRenderer::default();
-    renderer.render(planes, preform_planes, pose, size);
+    renderer.render(stone, preform_planes, pose, size);
     renderer.raster.color
 }
 
@@ -161,13 +173,13 @@ pub(super) fn render_solid_rgba(
 #[cfg(test)]
 #[must_use]
 pub(super) fn render_solid_pick(
-    planes: &[(Vec3, f32)],
+    stone: &StoneGeometryBuf,
     preform_planes: usize,
     pose: CameraPose,
     size: (u32, u32),
 ) -> Vec<u32> {
     let mut renderer = SolidSideRenderer::default();
-    renderer.render(planes, preform_planes, pose, size);
+    renderer.render(stone, preform_planes, pose, size);
     renderer.raster.pick
 }
 
@@ -203,28 +215,26 @@ pub(super) fn pixel_size(width: f32, height: f32, scale_factor: f32) -> (u32, u3
     (edge(width), edge(height))
 }
 
-/// Traces `planes` in `material` at `pose` into a `size` frame through
-/// `bridge::preview_render`'s CPU path (the catalogue previews' own lighting,
-/// backdrop and tone-mapping), at [`TRACED_SPP`].
+/// Traces `stone` (planes and concave tools) in `material` at `pose` into a `size`
+/// frame through `bridge::preview_render`'s CPU path (the catalogue previews' own
+/// lighting, backdrop and tone-mapping), at `spp` samples per pixel
+/// ([`TRACED_SPP`] unless the side is a slow concave one, see
+/// [`super::session::traced_spp_for`]).
 #[must_use]
 pub(super) fn render_traced_rgba(
-    planes: &[(Vec3, f32)],
+    stone: &StoneGeometryBuf,
     material: &GemMaterial,
     pose: CameraPose,
     size: (u32, u32),
+    spp: u32,
 ) -> Vec<u8> {
-    // `(n, m)` with `n . x <= m` back to `GpuFacetPlane`'s `n . x + d = 0`, `d = -m`
-    // -- the inverse of the conversion `CompareSide::build` made.
-    let gpu_planes: Vec<GpuFacetPlane> = planes
-        .iter()
-        .map(|&(normal, offset)| GpuFacetPlane::new(normal, -offset))
-        .collect();
     render_rgba_at_pose(
-        &gpu_planes,
+        &stone.planes,
+        &stone.tools,
         material,
         (pose.yaw, pose.pitch, pose.distance),
         size,
-        TRACED_SPP,
+        spp,
         TRACED_MAX_BOUNCES,
     )
 }
@@ -269,18 +279,18 @@ fn rgba_to_pixels(rgba: &[u8], size: (u32, u32)) -> Pixels {
 /// when the session is ready.
 #[derive(Clone)]
 pub(super) struct SideGeometry {
-    planes: Vec<(Vec3, f32)>,
+    stone: StoneGeometryBuf,
     preform_planes: usize,
     material: Option<GemMaterial>,
 }
 
 impl SideGeometry {
-    /// The render-relevant part of `side`: empty planes for a side that does not
+    /// The render-relevant part of `side`: an empty stone for a side that does not
     /// solve, `None` material for one whose material does not resolve.
     #[must_use]
     pub(super) fn from_side(side: &CompareSide) -> Self {
         Self {
-            planes: side.planes.clone(),
+            stone: side.stone.clone(),
             preform_planes: side.preform_planes,
             material: side.material.as_ref().ok().cloned(),
         }
@@ -323,6 +333,9 @@ pub(super) enum FrameEvent {
         before: Pixels,
         /// The after side.
         after: Pixels,
+        /// The samples per pixel each side was traced at (before, after): below
+        /// [`TRACED_SPP`] only for a slow concave side.
+        spp: [u32; 2],
     },
     /// A worker panicked on a request; its thread keeps serving later views, but the
     /// request it was on produced no frame.
@@ -368,18 +381,13 @@ fn solid_side_pixels(
     side: &SideGeometry,
     request: ViewRequest,
 ) -> (Pixels, bool) {
-    if side.planes.is_empty() {
+    if side.stone.planes.is_empty() {
         return (
             rgba_to_pixels(&placeholder_rgba(request.size), request.size),
             false,
         );
     }
-    let closed = renderer.render(
-        &side.planes,
-        side.preform_planes,
-        request.pose,
-        request.size,
-    );
+    let closed = renderer.render(&side.stone, side.preform_planes, request.pose, request.size);
     (to_pixel_buffer(&renderer.raster), closed)
 }
 
@@ -398,15 +406,43 @@ fn solid_overlay(
     }
 }
 
+/// How one traced side went: the pixels, the samples per pixel it was traced at, and an
+/// estimate of the seconds it would take at [`TRACED_SPP`] (`None` for a placeholder).
+struct TracedSide {
+    pixels: Pixels,
+    spp: u32,
+    full_estimate_secs: Option<f64>,
+}
+
 /// One side's traced pixels at `size`, or the placeholder when there is no
 /// geometry or no resolved material to trace.
-fn traced_side_pixels(side: &SideGeometry, pose: CameraPose, size: (u32, u32)) -> Pixels {
+///
+/// `last_full_estimate` is the previous frame's estimate of this side's time at full
+/// quality: a concave side that was slow gets fewer samples this time (see
+/// [`traced_spp_for`]). A planar side always gets [`TRACED_SPP`].
+fn traced_side_pixels(
+    side: &SideGeometry,
+    pose: CameraPose,
+    size: (u32, u32),
+    last_full_estimate: Option<f64>,
+) -> TracedSide {
     match &side.material {
-        Some(material) if !side.planes.is_empty() => rgba_to_pixels(
-            &render_traced_rgba(&side.planes, material, pose, size),
-            size,
-        ),
-        _ => rgba_to_pixels(&placeholder_rgba(size), size),
+        Some(material) if !side.stone.planes.is_empty() => {
+            let spp = traced_spp_for(TRACED_SPP, !side.stone.tools.is_empty(), last_full_estimate);
+            let started = Instant::now();
+            let rgba = render_traced_rgba(&side.stone, material, pose, size, spp);
+            let secs = started.elapsed().as_secs_f64();
+            TracedSide {
+                pixels: rgba_to_pixels(&rgba, size),
+                spp,
+                full_estimate_secs: Some(secs * f64::from(TRACED_SPP) / f64::from(spp.max(1))),
+            }
+        }
+        _ => TracedSide {
+            pixels: rgba_to_pixels(&placeholder_rgba(size), size),
+            spp: TRACED_SPP,
+            full_estimate_secs: None,
+        },
     }
 }
 
@@ -466,6 +502,9 @@ pub(super) fn spawn_traced_worker(
     post: fn(FrameMsg),
 ) -> LatestWorker<ViewRequest> {
     let (before_side, after_side) = sides;
+    // Each side's last estimate of its full-quality time, kept across requests so a slow
+    // concave side stays at its reduced sample count instead of flipping back and forth.
+    let mut estimates: [Option<f64>; 2] = [None, None];
     LatestWorker::spawn_with_panic_hook(
         "compare-traced",
         move |request: ViewRequest| {
@@ -473,7 +512,8 @@ pub(super) fn spawn_traced_worker(
                 return;
             }
             let size = traced_size(request.size);
-            let before = traced_side_pixels(&before_side, request.pose, size);
+            let before = traced_side_pixels(&before_side, request.pose, size, estimates[0]);
+            estimates[0] = before.full_estimate_secs.or(estimates[0]);
             if !is_current(&latest, request.generation) {
                 return;
             }
@@ -482,14 +522,19 @@ pub(super) fn spawn_traced_worker(
                 generation: request.generation,
                 event: FrameEvent::TracedProgress { side: 2 },
             });
-            let after = traced_side_pixels(&after_side, request.pose, size);
+            let after = traced_side_pixels(&after_side, request.pose, size, estimates[1]);
+            estimates[1] = after.full_estimate_secs.or(estimates[1]);
             if !is_current(&latest, request.generation) {
                 return;
             }
             post(FrameMsg {
                 session_id,
                 generation: request.generation,
-                event: FrameEvent::Traced { before, after },
+                event: FrameEvent::Traced {
+                    spp: [before.spp, after.spp],
+                    before: before.pixels,
+                    after: after.pixels,
+                },
             });
         },
         move || {

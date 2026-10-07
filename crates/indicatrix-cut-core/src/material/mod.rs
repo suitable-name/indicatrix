@@ -53,6 +53,7 @@
 
 mod catalogue;
 pub mod color;
+mod library_row;
 mod selection;
 mod specific_gravity;
 
@@ -60,7 +61,12 @@ mod specific_gravity;
 mod tests;
 
 pub use catalogue::{MaterialCatalogue, MaterialEntry, MaterialKind};
-pub use color::{Activecolor, RecipeHistory, colorMode};
+pub use color::{ActiveColor, ColorMode, RecipeHistory};
+pub use library_row::{
+    LibraryMaterial, absorption_bands_from_json, absorption_bands_to_json,
+    crystal_system_from_name, crystal_system_name, optical_character_from_name,
+    optical_character_name, with_library_bands,
+};
 pub use selection::{
     BuiltinMaterials, MaterialLookup, MaterialSelection, ResolvedMaterial,
     built_in_material_by_exact_name, built_in_refractive_index,

@@ -434,8 +434,9 @@ mod tests {
 
     #[test]
     fn the_hull_volume_follows_the_carved_volume_while_the_outline_stays_the_outer_hull() {
-        // A concave design's cached volume is below its hull's box volume: the
-        // dimples never enlarge the outline, so the fit still places the outer hull.
+        // A concave design's cached volume is below its hull's box volume. The cached hull
+        // is the convex hull of the carved mesh (`run::scan`); a dimple inside the outline
+        // leaves it the flat box, and the fit places that hull.
         let size = [1.0, 0.5, 3.0];
         let carved = extents_of_box(size).volume - 0.0168;
         let mut extents = extents_of_box(size);

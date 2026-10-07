@@ -109,6 +109,19 @@ fn pin_overlay() -> FacetOverlay {
 // The desktop's pins, recorded from its pipeline BEFORE the move
 // (`apps/indicatrix-cut/src/gui/solid_preview/preview_state/tests/pins.rs`):
 // `[solid image, solid pick, edges image, diagram image, diagram pick, tooth]`.
+//
+// Re-pinned 2026-10-05: slot 3 (the diagram's colour image) of both diagram pins moved,
+// and nothing else did (the solid image, every pick buffer and the tooth buffer are the
+// recorded ones, so the geometry and the layout are unchanged). The cause is the
+// canonical facet labelling of 2026-10-04: a facet's on-diagram label is now its tier
+// code plus its index (`C2 0`, `P1 0`, `Table`), no longer the tier's own name
+// (`Crown Main 0`). Only text pixels differ. See
+// `the_diagram_labels_are_the_canonical_tier_codes`, which pins the label text itself.
+//
+// Re-pinned 2026-10-06 (cutting-order lane): the table's code became `T`, so its diagram
+// label is `T` where it was `Table`; slot 3 (the diagram's colour image) of `PIN_DIAGRAM`
+// moved by the pixels of that one label and nothing else did. `PIN_SINGLE_PANEL` is
+// unchanged: its enlarged panel 1 is the pavilion panel, which never draws the table.
 const PIN_SOLID: [u64; 6] = [0x0f10_7ca8_5f93_74bf, 0x5f3d_a2da_7a33_a030, 0, 0, 0, 0];
 const PIN_BOTH: [u64; 6] = [
     0x0f10_7ca8_5f93_74bf,
@@ -122,7 +135,7 @@ const PIN_DIAGRAM: [u64; 6] = [
     0x20dd_549d_dad6_8174,
     0xa8f1_2ee3_d05d_e3be,
     0,
-    0x98f7_6d59_8966_3328,
+    0x3885_c661_6f2d_25a1,
     0xd1a3_9e15_eccb_fb54,
     0xb0c8_4221_f413_1c25,
 ];
@@ -130,7 +143,7 @@ const PIN_SINGLE_PANEL: [u64; 6] = [
     0x61f0_28b7_7429_a350,
     0x2c7a_1a3e_c524_5679,
     0,
-    0xbdeb_c6f9_ce8b_811b,
+    0xcec8_3723_ef1e_4e76,
     0x4cf4_6279_7dc9_2530,
     0x0f8f_adba_ccdc_0009,
 ];
@@ -153,6 +166,7 @@ fn desktop_job(view_mode: u8, size: (u32, u32), enlarged_panel: i32) -> PlanJob 
         show_preform: true,
         enlarged_panel,
         tier_cutoff: None,
+        cut_steps: None,
     }
 }
 
@@ -261,7 +275,71 @@ fn web_plan_job_matches_the_desktop_job_field_by_field() {
     assert_eq!(web.show_preform, desktop.show_preform);
     assert_eq!(web.enlarged_panel, desktop.enlarged_panel);
     assert_eq!(web.tier_cutoff, desktop.tier_cutoff);
+    assert_eq!(web.cut_steps, desktop.cut_steps);
+    assert_eq!(web.cut_limit(), desktop.cut_limit());
     assert_eq!(web.design.tiers, desktop.design.tiers);
+}
+
+/// The desktop's Cut slider: `cut_steps` plans the stone after that many steps, `0`
+/// being the preform alone, and wins over the web's `tier_cutoff`.
+#[test]
+fn a_cut_steps_job_plans_the_stone_after_that_many_steps() {
+    let plan = |steps: Option<usize>, tier_cutoff: Option<usize>| {
+        let mut job = desktop_job(0, (160, 120), -1);
+        job.cut_steps = steps;
+        job.tier_cutoff = tier_cutoff;
+        build_planned_frame(job, live_update::DEFAULT_PREVIEW_BUDGET, &ZeroClock)
+    };
+    let finished = plan(None, None);
+    let preform = finished.design.preform.planes().len();
+    let rough = plan(Some(0), None);
+    assert_eq!(
+        rough.planes.len(),
+        preform,
+        "the rough is the preform alone"
+    );
+    assert_eq!(
+        rough.solved.as_ref().map(Vec::len),
+        Some(finished.design.tiers.len()),
+        "the masts of the whole design are chained forward, not a truncated list"
+    );
+    // The steps follow `Design::cutting_order()`: the pavilion section first, so the first
+    // step of this top-down fixture is the girdle tier (stored index 4), sixteen planes.
+    let girdle_only = plan(Some(1), None);
+    assert_eq!(
+        girdle_only.planes.len(),
+        preform + 16,
+        "step one is the girdle, sixteen planes"
+    );
+    let five = plan(Some(5), None);
+    assert!(five.planes.len() > girdle_only.planes.len());
+    assert!(five.planes.len() < finished.planes.len());
+    let all = plan(Some(finished.design.tiers.len()), None);
+    assert_eq!(all.planes, finished.planes);
+    assert_eq!(
+        plan(Some(0), Some(3)).planes.len(),
+        preform,
+        "cut_steps wins over tier_cutoff"
+    );
+    assert_eq!(
+        plan(None, Some(0)).planes.len(),
+        preform + 1,
+        "the web's tier_cutoff is unchanged"
+    );
+}
+
+/// The rough must still mesh: a preform alone is a closed solid, so the Cut slider's
+/// first position shows a stone, never the finished gem or an empty view.
+#[test]
+fn the_rough_meshes_to_a_closed_solid() {
+    let mut job = desktop_job(0, (160, 120), -1);
+    job.cut_steps = Some(0);
+    let planned = build_planned_frame(job, live_update::DEFAULT_PREVIEW_BUDGET, &ZeroClock);
+    let mut cache = MeshCache::default();
+    assert!(
+        cache.get_or_build(&planned.planes).is_some(),
+        "the preform's own planes close"
+    );
 }
 
 /// The web and the desktop pipeline entry points produce the same frames, and on
@@ -292,6 +370,30 @@ fn web_frames_reproduce_the_desktop_pins() {
             );
         }
     }
+}
+
+/// The text the diagram draws on a facet is its canonical tier code plus the facet's
+/// index (`C2 0`), or the bare code for a tier of one facet (`T`, `Culet`), never the tier's own
+/// name (`Crown Main 0`). The diagram pins above hash the pixels of these labels, so they
+/// moved when the labels changed (2026-10-04, and again when the table's code became `T`);
+/// this pins the text itself. The codes are numbered in cutting order, which for this
+/// fixture (stored top-down, every block in cutting order) gives the same numbers as before.
+#[test]
+fn the_diagram_labels_are_the_canonical_tier_codes() {
+    let design = pin_design();
+    let solved = design.solve().expect("every tier is pinned");
+    let map = FacetMap::from_design(&design, &solved);
+    let first_label = |tier: usize| map.facet_label(map.facets_of_tier(tier)[0] as usize);
+    // `pin_design`'s tiers, in order: Table, Star, Crown Main, Upper Girdle, Girdle,
+    // Pavilion Main, Lower Girdle, Culet.
+    assert_eq!(first_label(0), "T");
+    assert_eq!(first_label(1), "C1 6");
+    assert_eq!(first_label(2), "C2 0");
+    assert_eq!(first_label(3), "C3 95");
+    assert_eq!(first_label(4), "G1 0");
+    assert_eq!(first_label(5), "P1 0");
+    assert_eq!(first_label(6), "P2 95");
+    assert_eq!(first_label(7), "Culet");
 }
 
 #[test]
@@ -693,6 +795,87 @@ fn a_real_diagram_double_click_resolves_its_panel() {
     assert_eq!(view::toggle_enlarged_panel(-1, crown), 0);
 }
 
+/// The Diagram view's panel layout rides on the frame's geometry, so an app places drag
+/// handles on the pixels that were drawn; every other view mode carries none.
+#[test]
+fn a_diagram_frame_carries_the_layout_it_was_drawn_with() {
+    let plan = |view_mode: u8, enlarged: i32| {
+        PreviewPipeline::new()
+            .replan(
+                desktop_job(view_mode, (360, 180), enlarged),
+                live_update::DEFAULT_PREVIEW_BUDGET,
+                &ZeroClock,
+            )
+            .expect("planned")
+    };
+    let solid = plan(0, -1);
+    assert!(
+        solid.geometry.expect("geometry").diagram.is_none(),
+        "only the Diagram view has panels"
+    );
+
+    let three = plan(3, -1);
+    let drawn = three.diagram.expect("the fixture closes");
+    let layout = three
+        .geometry
+        .expect("geometry")
+        .diagram
+        .expect("a Diagram frame carries its panel layout");
+    assert_eq!(*layout, drawn.layout);
+    assert_eq!(layout.panels.len(), 3);
+    assert!(!layout.enlarged);
+    assert_eq!(layout.gear_teeth, 96);
+
+    let enlarged = plan(3, 1);
+    let layout = enlarged
+        .geometry
+        .expect("geometry")
+        .diagram
+        .expect("an enlarged frame carries its layout too");
+    assert!(layout.enlarged);
+    assert_eq!(layout.panels.len(), 1);
+    assert_eq!(layout.panels[0].kind, PanelKind::Pavilion);
+}
+
+/// A partly cut stone's frame says which tiers its facet ids number, so a pick or an
+/// outline built from the frame uses the same facets; the finished stone says nothing.
+#[test]
+fn a_cut_frame_names_the_tiers_its_facet_ids_number() {
+    let tier_count = pin_design().tiers.len();
+    let geometry_at = |steps: Option<usize>| {
+        let mut job = desktop_job(0, (160, 120), -1);
+        job.cut_steps = steps;
+        PreviewPipeline::new()
+            .replan(job, live_update::DEFAULT_PREVIEW_BUDGET, &ZeroClock)
+            .expect("planned")
+            .geometry
+            .expect("a cut stone still meshes")
+    };
+    assert!(geometry_at(None).visible_tiers.is_none());
+
+    let rough = geometry_at(Some(0));
+    let tiers = rough.visible_tiers.expect("the rough names its tiers");
+    assert_eq!(tiers.len(), tier_count);
+    assert!(tiers.iter().all(|&shown| !shown), "no tier is cut yet");
+
+    let three = geometry_at(Some(3));
+    let tiers = three
+        .visible_tiers
+        .expect("a partly cut stone names its tiers");
+    let shown: Vec<usize> = tiers
+        .iter()
+        .enumerate()
+        .filter(|&(_, &shown)| shown)
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(
+        shown,
+        [4, 5, 6],
+        "the first three steps of the cutting order are the girdle, the pavilion mains and \
+         the lower girdles (stored at 4, 5, 6), not the first three stored tiers"
+    );
+}
+
 #[test]
 fn step_selection_follows_the_desktop_rule() {
     assert_eq!(view::step_selection(None, 1, 5), Some(0));
@@ -952,6 +1135,58 @@ fn pick_buffer_ids_on_concave_fixture_resolve_to_tier_and_placement() {
     );
 }
 
+/// A planned frame of a design with concave tiers carries a concave-owner table parallel
+/// to `facet_tier`: `Some(concave index)` for exactly the tool facets, `None` for flat ids,
+/// while `facet_tier` itself still names no tier for a tool facet.
+#[test]
+fn planned_frame_carries_the_concave_owner_of_every_tool_facet() {
+    let design = Design::concave_fixture();
+    let n_d = design.effective_refractive_index();
+    let job = PlanJob {
+        design: Arc::new(design.clone()),
+        dirty: BTreeSet::new(),
+        last_solved: None,
+        camera: PIN_CAMERA,
+        size: (64, 48),
+        selected_tier: None,
+        n_d,
+        view_mode: 3,
+        generation: 1,
+        show_preform: true,
+        enlarged_panel: -1,
+        tier_cutoff: None,
+        cut_steps: None,
+    };
+    let mut pipeline = PreviewPipeline::new();
+    let frame = pipeline
+        .replan(job, live_update::DEFAULT_PREVIEW_BUDGET, &ZeroClock)
+        .expect("a planned request always resolves");
+    let solved = design.solve().expect("the fixture solves");
+    let map = FacetMap::from_design_with_tools(&design, &solved, &frame.stone.placements);
+    assert_eq!(frame.facet_concave_tier.len(), map.facet_count());
+    assert_eq!(frame.facet_tier.len(), map.facet_count());
+    let mut tool_facets = 0;
+    for id in 0..map.facet_count() {
+        match map.kind_of(id) {
+            FacetKind::Concave { tier, .. } => {
+                tool_facets += 1;
+                assert_eq!(frame.facet_concave_tier[id], Some(tier), "facet {id}");
+                assert_eq!(frame.facet_tier[id], None, "facet {id} has no flat tier");
+            }
+            FacetKind::Flat => {
+                assert_eq!(frame.facet_concave_tier[id], None, "facet {id}");
+                assert_eq!(frame.facet_tier[id], map.tier_of(id), "facet {id}");
+            }
+        }
+    }
+    assert!(tool_facets > 0, "the fixture's tools are placed");
+    assert_eq!(
+        frame.diagram_facet_concave_tier.as_deref(),
+        Some(frame.facet_concave_tier.as_slice()),
+        "a Diagram-mode frame carries the same table"
+    );
+}
+
 #[test]
 fn concave_raster_has_no_hairline_gaps() {
     let stone = concave_fixture();
@@ -990,6 +1225,9 @@ fn a_reproject_with_different_tools_resets_the_remembered_style() {
     assert_eq!(pipeline.memory().tools.len(), 1);
     assert_eq!(pipeline.memory().geometry().as_ref(), Some(&stone));
     let _ = reproject(&mut pipeline, &planar, camera, (64, 48), 0);
-    assert!(pipeline.memory().tools.is_empty());
+    assert!(
+        pipeline.memory().tools.is_empty(),
+        "a planar stone forgets the earlier tools"
+    );
     assert_eq!(pipeline.memory().geometry().as_ref(), Some(&planar));
 }

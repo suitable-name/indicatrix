@@ -1,7 +1,9 @@
 //! The fingerprint stored beside each cached catalogue artefact (previews and tilt
 //! curves), naming what it was computed with.
 
-use super::{PREVIEW_LIGHT_PITCH, PREVIEW_LIGHT_YAW, PREVIEW_LIGHTING_PRESET};
+use super::{
+    BATCH_TILT_LIGHTING_PRESET, PREVIEW_LIGHT_PITCH, PREVIEW_LIGHT_YAW, PREVIEW_LIGHTING_PRESET,
+};
 
 /// Which cached catalogue artefact a [`cache_fingerprint`] describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,8 +39,8 @@ pub enum CacheKind {
 ///
 /// It carries the tracer's [`indicatrix::BUILD_ID`] (bumped with any change to what the
 /// tracer produces), the `kind`'s own parameters (size, samples and bounce cap for a
-/// preview), the lighting (the preset's label for a preview, and the light pose both
-/// artefacts share) and the material the design was rendered in. The same function
+/// preview), the lighting (the preset's label for each artefact -- the preview rig or the
+/// tilt scoring preset -- and the light pose both share) and the material the design was rendered in. The same function
 /// serves both batches, so the two can never drift in which parameters they track; it is
 /// pure and stable across runs, which is what a stored comparison needs.
 ///
@@ -60,13 +62,17 @@ pub fn cache_fingerprint(kind: CacheKind, material_name: Option<&str>) -> String
             PREVIEW_LIGHTING_PRESET.label()
         ),
         CacheKind::SolidDraft { size } => format!("solid-draft;size={size}"),
-        CacheKind::TiltCurves => format!("tilt;tracer={tracer};light={light};material={material}"),
+        CacheKind::TiltCurves => format!(
+            "tilt;tracer={tracer};lighting={};light={light};material={material}",
+            BATCH_TILT_LIGHTING_PRESET.label()
+        ),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indicatrix::optics::raytracer::LightingPreset;
 
     const PREVIEW: CacheKind = CacheKind::Preview {
         size: 160,
@@ -114,6 +120,31 @@ mod tests {
             assert_ne!(changed, base);
         }
         assert!(base.contains(PREVIEW_LIGHTING_PRESET.label()), "{base}");
+    }
+
+    /// The tilt fingerprint names the scoring lighting preset by its stable label, so
+    /// curves stored under another preset (the ring lights before 2026-10-07) are stale.
+    #[test]
+    fn the_tilt_fingerprint_names_the_scoring_lighting_preset() {
+        let fingerprint = cache_fingerprint(CacheKind::TiltCurves, Some("Diamond"));
+        assert_eq!(
+            fingerprint,
+            format!(
+                "tilt;tracer={};lighting={};light={PREVIEW_LIGHT_YAW}/{PREVIEW_LIGHT_PITCH};\
+                 material=Diamond",
+                indicatrix::BUILD_ID,
+                BATCH_TILT_LIGHTING_PRESET.label()
+            )
+        );
+        assert_ne!(
+            BATCH_TILT_LIGHTING_PRESET.label(),
+            LightingPreset::RingLights.label()
+        );
+        let old_ring_lights = fingerprint.replace(
+            BATCH_TILT_LIGHTING_PRESET.label(),
+            LightingPreset::RingLights.label(),
+        );
+        assert_ne!(fingerprint, old_ring_lights);
     }
 
     /// The tilt sweep has no image size or sample budget, so changing the preview

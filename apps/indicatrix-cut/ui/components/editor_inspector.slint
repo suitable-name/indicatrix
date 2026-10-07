@@ -1,9 +1,12 @@
-import { ScrollView, Button } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { EditorModel } from "../models/editor.slint";
 import { CompareModel } from "../models/compare.slint";
 import { GuideModel } from "../models/guide.slint";
+import { HelpTopics } from "../models/help.slint";
 import { GuideLockTip } from "guide_lock.slint";
+import { HelpButton } from "help_button.slint";
+import { TipButton } from "compact_controls.slint";
 // Optical metrics read-only from ViewportModel (brilliance, windowing,
 // extinction). Lets the user judge edit results without leaving the Edit tab.
 import { ViewportModel } from "../models/viewport.slint";
@@ -14,9 +17,14 @@ import { ConcaveFormTab } from "editor_inspector/concave_form_tab.slint";
 import { PreformTab } from "editor_inspector/preform_tab.slint";
 import { OptimizeTab } from "editor_inspector/optimize_tab.slint";
 import { ScheduleTab } from "editor_inspector/schedule_tab.slint";
+import { HistoryTab } from "editor_inspector/history_tab.slint";
 
+// One tab of the Inspector. It takes Tab and answers Space and Enter, shows a ring while it has
+// focus, and is a tab (picked or not) to a screen reader. `hint` says what the tab holds.
 component InspectorTabPill inherits Rectangle {
     in property <string> label;
+    // One plain sentence: what the tab is for. Shown as the tooltip while the tab is usable.
+    in property <string> hint;
     in property <bool> active;
     // `false` while the worked-example guide locks this tab (see `GuideAllow`).
     in property <bool> allowed: true;
@@ -27,10 +35,33 @@ component InspectorTabPill inherits Rectangle {
     height: 26px;
     background: root.active ? Theme.primary : (touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
     border-radius: Theme.radius-sm;
-    border-width: root.highlighted ? 2px : 1px;
-    border-color: (root.active || root.highlighted) ? Theme.accent-cyan : Theme.border-subtle;
+    border-width: (root.highlighted || pill_focus.has-focus) ? 2px : 1px;
+    border-color: pill_focus.has-focus ? Theme.accent-cyan-hover : ((root.active || root.highlighted) ? Theme.accent-cyan : Theme.border-subtle);
     opacity: root.allowed ? 1.0 : 0.4;
 
+    accessible-role: AccessibleRole.tab;
+    accessible-label: root.label;
+    accessible-description: root.hint;
+    accessible-enabled: root.allowed;
+    accessible-checkable: true;
+    accessible-checked: root.active;
+    accessible-action-default => {
+        if root.allowed {
+            root.clicked();
+        }
+    }
+
+    if root.allowed && root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
+    pill_focus := FocusScope {
+        enabled: root.allowed;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
     touch := TouchArea {
         enabled: root.allowed;
         clicked => { root.clicked(); }
@@ -57,7 +88,7 @@ component InspectorTabPill inherits Rectangle {
 // vertical room the old layout gave the toolbar/banners/design settings
 // instead (see `app.slint`'s Edit-mode layout doc comment).
 // `EditorModel.inspector_tab` (0 = Tier, 1 = Preform, 2 = Optimize,
-// 3 = Schedule) tracks which tab is showing. Its own `SectionHeader` (title
+// 3 = Schedule, 4 = History) tracks which tab is showing. Its own `SectionHeader` (title
 // "INSPECTOR") carries the tab pills in its right-side slot, so switching tabs
 // (which also re-expands the section, per each pill's own `clicked` below)
 // stays reachable even while collapsed.
@@ -76,12 +107,42 @@ export component EditorInspector inherits Rectangle {
     // Preform tab (the pill itself is outlined too, see `InspectorTabPill`).
     property <bool> guide_highlighted: GuideModel.highlight_target == "inspector_tier" || GuideModel.highlight_target == "preform_tab";
     // Whether the worked-example guide leaves the CURRENT tab's group usable --
-    // Tier: tier form, Preform: preform tab, Optimize: advanced. The read-only
-    // Schedule tab never locks.
+    // Tier: tier form, Preform: preform tab, Optimize: advanced, History: undo and
+    // redo. The read-only Schedule tab never locks.
     property <bool> tab_unlocked: EditorModel.inspector_tab == 0 ? GuideModel.allows_tier_form()
         : EditorModel.inspector_tab == 1 ? GuideModel.allows_preform_tab()
         : EditorModel.inspector_tab == 2 ? GuideModel.allows_advanced()
+        : EditorModel.inspector_tab == 4 ? GuideModel.allows_history()
         : true;
+    // Whether the Advanced interface shows. The Simple interface leaves out the Schedule tab
+    // (its pill and its body); each other tab hides its own advanced controls.
+    property <bool> advanced: GuideModel.shows_advanced();
+    // The tab being shown, mirrored so a change can be answered here.
+    property <int> tracked_inspector_tab: EditorModel.inspector_tab;
+    // Switching to the Simple interface while the Schedule tab is open (or a command that opens
+    // the Schedule tab while the Simple interface is on) lands on the Tier tab instead of an
+    // empty panel. The Schedule tab itself is never changed.
+    function leave_hidden_tab() {
+        if !root.advanced && EditorModel.inspector_tab == 3 {
+            EditorModel.inspector_tab = 0;
+        }
+    }
+    changed advanced => { root.leave_hidden_tab(); }
+    changed tracked_inspector_tab => { root.leave_hidden_tab(); }
+    // The name of the open tab, for a screen reader.
+    property <string> tab_name: EditorModel.inspector_tab == 0
+        ? (root.concave_loaded ? "Concave tier form" : "Tier form")
+        : EditorModel.inspector_tab == 1 ? "Preform"
+        : EditorModel.inspector_tab == 2 ? "Optimize"
+        : EditorModel.inspector_tab == 3 ? "Schedule"
+        : "History";
+    // The manual page for the open tab's "?" button. History keeps the topic of its own tab.
+    property <string> tab_help_topic: EditorModel.inspector_tab == 0
+        ? (root.concave_loaded ? HelpTopics.concave-tier : HelpTopics.tier-form)
+        : EditorModel.inspector_tab == 1 ? HelpTopics.preform-tab
+        : EditorModel.inspector_tab == 2 ? HelpTopics.optimize-tab
+        : EditorModel.inspector_tab == 3 ? HelpTopics.schedule-tab
+        : HelpTopics.history;
     border-width: root.guide_highlighted ? 2px : 1px;
     border-color: root.guide_highlighted ? Theme.accent-cyan : Theme.border-subtle;
     clip: true;
@@ -280,6 +341,16 @@ export component EditorInspector inherits Rectangle {
             + (data.reciprocating ? "1" : "0");
     }
 
+    // The Angle field's text for the flat tier at `idx`: its full-precision angle, or -- when
+    // the angle follows a relation (`P2 = P1 - 2`) -- "=" and the relation as a cutter reads
+    // it ("=P1 - 2"). Typing a relation back into the field and saving keeps it; typing a
+    // plain number on such a tier is refused with the reason (see `TierFormTab`).
+    function angle_seed(idx: int) -> string {
+        return EditorModel.tiers[idx].relation_text != ""
+            ? "=" + EditorModel.tiers[idx].relation_text
+            : EditorModel.tiers[idx].angle_full;
+    }
+
     // Snapshots the five fields' CURRENT values as the new "clean" baseline --
     // shared tail of `apply_load`/`clear_form`/`save_form`, all of which just
     // assigned (or left unchanged) exactly these fields and want `form_dirty` to
@@ -333,8 +404,9 @@ export component EditorInspector inherits Rectangle {
         // Seeded from the FULL-precision string, not the 2-decimal display
         // `angle_deg` -- see `EditorTierItem.angle_full`'s own doc comment: a
         // Save with nothing retyped must round-trip bit-exact, which a rounded
-        // seed cannot do for an angle like 41.2367.
-        root.tier_angle = EditorModel.tiers[idx].angle_full;
+        // seed cannot do for an angle like 41.2367. A tier whose angle follows a
+        // relation is seeded with the relation instead (`angle_seed`).
+        root.tier_angle = root.angle_seed(idx);
         // `suggested_constraint_kind >= 0` is the tier table's "Add Anchor" action
         // (see that property's own doc comment on `EditorModel`) asking this
         // specific load to open on "Exact scale value" rather than the tier's own
@@ -517,7 +589,7 @@ export component EditorInspector inherits Rectangle {
         if EditorModel.tiers[root.loaded_tier_index].kind == 1 {
             return root.data_signature(EditorModel.concave_form_data(root.loaded_tier_index)) != root.loaded_concave_snapshot;
         }
-        return EditorModel.tiers[root.loaded_tier_index].angle_full != root.loaded_angle_snapshot
+        return root.angle_seed(root.loaded_tier_index) != root.loaded_angle_snapshot
             || EditorModel.tiers[root.loaded_tier_index].constraint_kind != root.loaded_constraint_kind_snapshot
             || EditorModel.tiers[root.loaded_tier_index].constraint_text != root.loaded_constraint_text_snapshot
             || EditorModel.tiers[root.loaded_tier_index].name != root.loaded_name_snapshot
@@ -565,10 +637,9 @@ export component EditorInspector inherits Rectangle {
         root.snapshot_form();
     }
 
-    // `stepped_angle_text` (Up/Down/Shift/Ctrl stepping for the angle field)
-    // now lives on `TierFormTab` itself (`editor_inspector/tier_form_tab.slint`)
-    // -- it is a pure function of its own arguments, so it moved with the
-    // only field that calls it.
+    // Up/Down/Shift/Ctrl stepping for the Angle field is done in Rust
+    // (`SliderModel.stepped_angle_text`, called from `TierFormTab`), so the text keeps
+    // the form's own number format whatever the locale.
 
     VerticalLayout {
         padding: 8px;
@@ -586,6 +657,7 @@ export component EditorInspector inherits Rectangle {
                 // for whenever the section next opens.
                 InspectorTabPill {
                     label: "Tier";
+                    hint: "Add a tier, or edit the one selected in the table: its angle, what it meets, its name and its index positions.";
                     active: EditorModel.inspector_tab == 0;
                     allowed: GuideModel.allows_tier_form();
                     highlighted: GuideModel.highlight_target == "inspector_tier";
@@ -593,6 +665,7 @@ export component EditorInspector inherits Rectangle {
                 }
                 InspectorTabPill {
                     label: "Preform";
+                    hint: "The starting rough: its shape and size, the stone's proportions and how much of the rough is kept. See the glossary.";
                     active: EditorModel.inspector_tab == 1;
                     allowed: GuideModel.allows_preform_tab();
                     highlighted: GuideModel.highlight_target == "preform_tab";
@@ -600,14 +673,38 @@ export component EditorInspector inherits Rectangle {
                 }
                 InspectorTabPill {
                     label: "Optimize";
+                    hint: "Let the program search for angles that give a brighter stone, then preview and apply one of the results. See the glossary.";
                     active: EditorModel.inspector_tab == 2;
                     allowed: GuideModel.allows_advanced();
+                    highlighted: GuideModel.highlight_target == "optimize_tab";
                     clicked => { EditorModel.inspector_tab = 2; EditorModel.inspector_collapsed = false; }
                 }
-                InspectorTabPill {
+                // The Schedule tab is advanced: the Simple interface leaves out its pill and body.
+                if root.advanced: InspectorTabPill {
                     label: "Schedule";
+                    hint: "The cutting order of this design, one line per facet, as the program has it now.";
                     active: EditorModel.inspector_tab == 3;
                     clicked => { EditorModel.inspector_tab = 3; EditorModel.inspector_collapsed = false; }
+                }
+                InspectorTabPill {
+                    label: "History";
+                    hint: "Every edit made to this design, with a picture of each step, and saved variants of it.";
+                    active: EditorModel.inspector_tab == 4;
+                    allowed: GuideModel.allows_history();
+                    highlighted: GuideModel.highlight_target == "history_tab";
+                    clicked => { EditorModel.inspector_tab = 4; EditorModel.inspector_collapsed = false; }
+                }
+                // The manual page for the open tab. The History tab brings its own.
+                if EditorModel.inspector_tab != 4: VerticalLayout {
+                    alignment: center;
+                    HelpButton {
+                        topic: root.tab_help_topic;
+                        hint: EditorModel.inspector_tab == 0
+                            ? (root.concave_loaded ? "Open the manual page on adding a concave tier" : "Open the manual page on the tier form")
+                            : EditorModel.inspector_tab == 1 ? "Open the manual page on the Preform tab"
+                            : EditorModel.inspector_tab == 2 ? "Open the manual page on Optimize"
+                            : "Open the manual page on the Schedule tab";
+                    }
                 }
             }
         }
@@ -625,7 +722,10 @@ export component EditorInspector inherits Rectangle {
             // the numbers would describe some unrelated display override.
             if ViewportModel.viewport_material_linked: Rectangle {
                 height: metrics_row.preferred-height;
-                Tooltip { text: @markdown("Brilliance/windowing/extinction at the current lighting, from the linked Live Render viewport."); }
+                accessible-role: AccessibleRole.text;
+                accessible-label: "Brilliance " + Math.round(ViewportModel.brilliance_pct) + " percent, windowing "
+                    + Math.round(ViewportModel.windowing_pct) + " percent, extinction " + Math.round(ViewportModel.extinction_pct) + " percent";
+                Tooltip { text: @markdown("Brilliance (the light returned to the eye), windowing (the see-through share) and extinction (the dead-dark share) at the current lighting, from the linked Live Render viewport. See the glossary."); }
                 metrics_row := HorizontalLayout {
                     spacing: 10px;
                     Text { text: "Brilliance " + Math.round(ViewportModel.brilliance_pct) + "%"; font-size: 9px; color: Theme.text-muted; }
@@ -642,7 +742,12 @@ export component EditorInspector inherits Rectangle {
             Rectangle {
                 vertical-stretch: 1;
                 opacity: root.tab_unlocked ? 1.0 : 0.55;
+                accessible-role: AccessibleRole.tab-panel;
+                accessible-label: root.tab_name;
+            // The History tab is a list of its own (virtualised, so it scrolls itself):
+            // this scroll view steps aside for it.
             ScrollView {
+                visible: EditorModel.inspector_tab != 4;
                 width: 100%;
                 height: 100%;
                 VerticalLayout {
@@ -718,19 +823,26 @@ export component EditorInspector inherits Rectangle {
                 // row/the whole table is not wired here (that lives behind
                 // `LibraryModel`'s clipboard callbacks) -- Export Edited .asc
                 // is the copyable form for now.
-                if EditorModel.inspector_tab == 3: ScheduleTab { }
+                if EditorModel.inspector_tab == 3 && root.advanced: ScheduleTab { }
                 }
             }
+                if EditorModel.inspector_tab == 4: HistoryTab {
+                    width: 100%;
+                    height: 100%;
+                }
                 GuideLockTip { locked: !root.tab_unlocked; }
             } // tab body wrapper
 
             // Button row pinned outside the scroll view above.
             if EditorModel.inspector_tab == 0: HorizontalLayout {
                 spacing: 6px;
-                Button {
+                TipButton {
                     text: root.concave_loaded
                         ? (root.loaded_tier_index < 0 ? "Add Concave Tier" : "Save Concave Tier")
                         : (root.loaded_tier_index < 0 ? "Add Tier" : "Save Tier");
+                    hint: root.loaded_tier_index < 0
+                        ? "Add the tier in the form to the design. It is one Undo step."
+                        : "Write the changes in the form onto the selected tier. It is one Undo step; the table's mast and solve columns go stale until you Solve.";
                     // Save button gated on angle_field_invalid (also covers
                     // Rust-reported angle rejection). Other fields validated after save attempt.
                     enabled: root.concave_loaded
@@ -738,7 +850,7 @@ export component EditorInspector inherits Rectangle {
                         : (!root.angle_field_invalid && GuideModel.allows_tier_form());
                     clicked => { root.save_form(); }
                 }
-                Button {
+                TipButton {
                     // Named "New Tier" -- identical
                     // to the command bar's "New Design..." button/menu item that
                     // discards the WHOLE design, although this one only clears
@@ -746,6 +858,7 @@ export component EditorInspector inherits Rectangle {
                     // arms the form for the next Add Tier, matching the command
                     // bar's own "+ Add Tier" affordance more than a plain reset.
                     text: "New Tier";
+                    hint: "Clear the form for a new tier. The design is not changed.";
                     enabled: GuideModel.allows_tier_form();
                     clicked => {
                         // The flat form is what "New Tier" arms, even from the concave one.

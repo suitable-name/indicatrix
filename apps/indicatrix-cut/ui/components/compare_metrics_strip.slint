@@ -1,0 +1,155 @@
+// The optical-figures strip under the images of the pop-out compare window.
+//
+// Left: a small table with the five table-up figures of the "before" and the "after"
+// stone, the change between them and a word for it (better / worse / same), coloured
+// with the theme's success and danger tokens. Right: a few plain sentences about what
+// changed, and the "Tilt average" button, which adds three rows with the means over four
+// axes and 181 tilts (a few seconds on a worker thread, with a Cancel while it runs).
+//
+// Everything comes from the `CompareModel` global of the window it is placed in; Rust
+// fills it (`gui::editor::compare::metrics`). The strip sizes itself from its rows, and
+// is hung in `CompareView`'s x/y-positioned layout, so nothing in here reaches the
+// window's size limits.
+import { Theme } from "../theme.slint";
+import { CompareModel } from "../models/compare.slint";
+import { ActionButton } from "chip_toggle.slint";
+
+// A column heading of the figures table, with its plain-language tooltip.
+component StripHeading inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+
+    height: strip_heading.preferred-height;
+    Tooltip { text: @markdown("\{root.hint}"); }
+    strip_heading := Text {
+        text: root.text;
+        font-size: 10px;
+        font-weight: 700;
+        color: Theme.text-muted;
+        width: 100%;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+}
+
+export component CompareMetricsStrip inherits Rectangle {
+    property <length> row_height: 18px;
+    property <bool> has_rows: CompareModel.metric_rows.length > 0;
+    // The header row and one row per figure, plus the strip's padding.
+    property <length> table_height: (CompareModel.metric_rows.length + 1) * root.row_height + 16px;
+
+    // With no figures only the dimmed note shows.
+    height: root.has_rows ? max(root.table_height, 136px) : 64px;
+    border-radius: Theme.radius-sm;
+    background: Theme.bg-card;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    clip: true;
+
+    HorizontalLayout {
+        padding: 8px;
+        spacing: 16px;
+
+        if root.has_rows: VerticalLayout {
+            width: 340px;
+            alignment: start;
+
+            HorizontalLayout {
+                height: root.row_height;
+                spacing: 6px;
+                Rectangle { horizontal-stretch: 1; }
+                StripHeading { width: 58px; text: "Before"; hint: "The figure for the current design."; }
+                StripHeading { width: 58px; text: "After"; hint: "The figure for the changed design."; }
+                StripHeading { width: 62px; text: "Change"; hint: "How far the figure moved, and whether that is better or worse for the stone. Less windowing and more brilliance are better. See the glossary."; }
+                Rectangle { width: 44px; }
+            }
+
+            for row in CompareModel.metric_rows: Rectangle {
+                height: root.row_height;
+
+                accessible-role: AccessibleRole.list-item;
+                accessible-label: row.label + ": " + row.before + " before, " + row.after + " after, change " + row.change + ", " + row.verdict;
+
+                Tooltip { text: @markdown("\{row.label}: \{row.before} before, \{row.after} after. \{row.verdict}. The figures are a table-up estimate. See the glossary."); }
+
+                HorizontalLayout {
+                    spacing: 6px;
+                    Text { horizontal-stretch: 1; text: row.label; font-size: 11px; color: Theme.text-primary; vertical-alignment: center; overflow: elide; }
+                    Text { width: 58px; text: row.before; font-size: 11px; color: Theme.text-secondary; horizontal-alignment: right; vertical-alignment: center; }
+                    Text { width: 58px; text: row.after; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; horizontal-alignment: right; vertical-alignment: center; }
+                    Text {
+                        width: 62px;
+                        text: row.change;
+                        font-size: 11px;
+                        font-weight: 700;
+                        color: row.tone == 1 ? Theme.success : (row.tone == 2 ? Theme.danger : Theme.text-secondary);
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        width: 44px;
+                        text: row.verdict;
+                        font-size: 10px;
+                        color: row.tone == 1 ? Theme.success : (row.tone == 2 ? Theme.danger : Theme.text-muted);
+                        horizontal-alignment: left;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: start;
+            spacing: 6px;
+
+            if CompareModel.metric_summary != "": Text {
+                text: CompareModel.metric_summary;
+                font-size: 12px;
+                color: Theme.text-primary;
+                wrap: word-wrap;
+            }
+
+            if CompareModel.metric_note != "": Text {
+                text: CompareModel.metric_note;
+                font-size: 11px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+
+            if root.has_rows && !CompareModel.tilt_done: HorizontalLayout {
+                alignment: start;
+
+                if CompareModel.tilt_running: ActionButton {
+                    width: 220px;
+                    height: 24px;
+                    text: "Cancel tilt average · " + Math.round(CompareModel.tilt_progress * 100) + " %";
+                    hint: "Stop measuring the tilt average. The table-up figures stay.";
+                    fill: Theme.surface-control;
+                    hover_fill: Theme.surface-control-hover;
+                    clicked => { CompareModel.tilt_cancelled(); }
+                }
+
+                if !CompareModel.tilt_running: ActionButton {
+                    width: 120px;
+                    height: 24px;
+                    text: "Tilt average";
+                    hint: "Measure both stones over four tilt axes and 181 tilts. It takes a few seconds on a background thread and adds three rows to the table.";
+                    fill: Theme.surface-control;
+                    hover_fill: Theme.surface-control-hover;
+                    enabled: CompareModel.tilt_available;
+                    clicked => { CompareModel.tilt_requested(); }
+                }
+            }
+
+            if root.has_rows: Text {
+                text: CompareModel.tilt_done
+                    ? "Table up under the viewport lighting. Tilt rows are means over four axes and 181 tilts."
+                    : "Table up under the viewport lighting, each side in its own material.";
+                font-size: 10px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+        }
+    }
+}

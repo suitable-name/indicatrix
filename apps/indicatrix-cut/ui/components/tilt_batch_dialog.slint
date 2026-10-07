@@ -1,6 +1,9 @@
 import { Theme } from "../theme.slint";
-import { Button, ScrollView } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { BatchModel } from "../models/batch.slint";
+import { HelpTopics } from "../models/help.slint";
+import { HelpButton } from "help_button.slint";
+import { TipButton } from "compact_controls.slint";
 
 // Batch tilt-performance-curve computation. One component, two states, the
 // exact same shape `preview_batch_dialog.slint` already established for the preview
@@ -81,6 +84,35 @@ export component TiltBatchDialog inherits Rectangle {
     // asked directly or via a layout, so the card stayed too short either way. The
     // actual fix is on the card itself: a stated height plus a scrollable body between
     // a fixed title and fixed buttons. See the `height` binding below.
+    //
+    // The keyboard stays inside the card: Tab moves between its buttons, Enter takes the
+    // main button, Escape declines the offer (or closes the finished summary), and every
+    // other key is swallowed so a shortcut cannot fire on the design behind. A batch that is
+    // running ignores Escape: stopping it is the Cancel button's job.
+    FocusScope {
+        width: 100%;
+        height: 100%;
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Tab {
+                return reject;
+            }
+            if event.text == Key.Escape {
+                if root.confirming {
+                    root.dismiss_offer();
+                } else if root.done {
+                    root.close();
+                }
+            } else if event.text == Key.Return {
+                if root.confirming {
+                    root.generate_confirmed();
+                } else if root.done {
+                    root.close();
+                }
+            }
+            return accept;
+        }
+
     VerticalLayout {
         alignment: center;
         HorizontalLayout {
@@ -125,11 +157,24 @@ export component TiltBatchDialog inherits Rectangle {
                     if root.confirming: VerticalLayout {
                         spacing: 12px;
 
-                        Text {
-                            text: "Compute tilt-performance curves?";
-                            font-size: 14px;
-                            font-weight: 700;
-                            color: Theme.text-primary;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                horizontal-stretch: 1;
+                                text: "Compute tilt-performance curves?";
+                                font-size: 14px;
+                                font-weight: 700;
+                                color: Theme.text-primary;
+                                vertical-alignment: center;
+                                accessible-role: AccessibleRole.text;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                HelpButton {
+                                    topic: HelpTopics.tilt-curves;
+                                    hint: "Open the manual page on the tilt-performance graph";
+                                }
+                            }
                         }
                         // Body between the fixed title above and the fixed buttons
                         // below -- see the card's `height` comment for why the buttons
@@ -163,12 +208,14 @@ export component TiltBatchDialog inherits Rectangle {
                             spacing: 8px;
                             alignment: end;
 
-                            Button {
+                            TipButton {
                                 text: "Not now";
+                                hint: "Do not compute any curves now.";
                                 clicked => { root.dismiss_offer(); }
                             }
-                            Button {
+                            TipButton {
                                 text: "Compute";
+                                hint: "Compute the tilt curves in the background. Enter does the same.";
                                 primary: true;
                                 clicked => { root.generate_confirmed(); }
                             }
@@ -185,6 +232,7 @@ export component TiltBatchDialog inherits Rectangle {
                             font-size: 14px;
                             font-weight: 700;
                             color: Theme.text-primary;
+                            accessible-role: AccessibleRole.text;
                         }
 
                         if !root.done: VerticalLayout {
@@ -248,6 +296,9 @@ export component TiltBatchDialog inherits Rectangle {
                                     border-width: 1px;
                                     border-color: Theme.border-dialog;
                                     clip: true;
+                                    accessible-role: AccessibleRole.progress-indicator;
+                                    accessible-label: "Tilt curves completed";
+                                    accessible-value: Math.round(root.design_fraction * 100) + " percent";
                                     Rectangle {
                                         x: 0;
                                         y: 0;
@@ -304,12 +355,14 @@ export component TiltBatchDialog inherits Rectangle {
                             spacing: 8px;
                             alignment: end;
 
-                            if !root.done: Button {
+                            if !root.done: TipButton {
                                 text: "Cancel";
+                                hint: "Stop computing. The curves already finished are kept.";
                                 clicked => { root.cancel(); }
                             }
-                            if root.done: Button {
+                            if root.done: TipButton {
                                 text: "Close";
+                                hint: "Close this summary.";
                                 primary: true;
                                 clicked => { root.close(); }
                             }
@@ -318,5 +371,6 @@ export component TiltBatchDialog inherits Rectangle {
                 }
             }
         }
+    }
     }
 }

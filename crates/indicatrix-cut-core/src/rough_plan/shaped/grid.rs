@@ -19,6 +19,13 @@ pub const SHAPED_MAX_CELLS: usize = 20;
 /// Maximum total piece table entries across all axis ranges (`2,600,000`).
 pub const SHAPED_PIECE_CAP: usize = 2_600_000;
 
+/// Maximum total piece table entries for a mesh rough: `325,000`.
+///
+/// An eighth of [`SHAPED_PIECE_CAP`]. Every entry of a mesh rough's clipped table costs
+/// a classification against the whole mesh, so the table is the stage that takes minutes;
+/// an eighth of the entries is 11 cells per axis for a cube at K = 10 instead of 16.
+pub const SHAPED_MESH_PIECE_CAP: usize = SHAPED_PIECE_CAP / 8;
+
 /// Maximum estimated DP operations summed over all 6 cut orders (`3.0e9`): the plain
 /// planner's cap.
 pub const SHAPED_OP_CAP: f64 = OP_CAP;
@@ -241,6 +248,20 @@ pub fn choose_shaped_grid_at(
     extents: [f64; 3],
     settings: &PlanSettings,
 ) -> ShapedGrid {
+    choose_shaped_grid_capped(min_corner, extents, settings, SHAPED_PIECE_CAP)
+}
+
+/// [`choose_shaped_grid_at`] with another piece-table entry cap.
+///
+/// `piece_cap` replaces [`SHAPED_PIECE_CAP`] (the op cap [`SHAPED_OP_CAP`] is unchanged). With
+/// `piece_cap == SHAPED_PIECE_CAP` the result is exactly that of the plain chooser.
+#[must_use]
+pub fn choose_shaped_grid_capped(
+    min_corner: [f64; 3],
+    extents: [f64; 3],
+    settings: &PlanSettings,
+    piece_cap: usize,
+) -> ShapedGrid {
     let k = settings.count_usize();
     let block = RoughBlock {
         x_mm: extents[0],
@@ -253,7 +274,7 @@ pub fn choose_shaped_grid_at(
     loop {
         let pieces = piece_count(cells);
         let ops = shaped_op_estimate(cells, k);
-        if pieces <= SHAPED_PIECE_CAP && ops <= SHAPED_OP_CAP {
+        if pieces <= piece_cap && ops <= SHAPED_OP_CAP {
             break;
         }
         let next = cells.map(|g| (g * 19 / 20).max(2));

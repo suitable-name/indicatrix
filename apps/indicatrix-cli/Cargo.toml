@@ -1,0 +1,57 @@
+[package]
+name = "indicatrix-cli"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+authors = { workspace = true }
+description = "Headless command-line tool for Indicatrix faceting designs: info, solve, metrics, validate, optimize, retarget, sweep and export from scripts, with no window. Reads .indicatrix, .asc, .gem and .gcs; uses the same solver, retarget gate and optimizer as the desktop editor."
+license = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+documentation = "https://docs.rs/indicatrix-cli"
+keywords = ["gemstone", "faceting", "cli", "optimizer", "gemcad"]
+categories = ["command-line-utilities", "science"]
+publish = { workspace = true }
+
+[lib]
+name = "indicatrix_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "indicatrix-cli"
+path = "src/main.rs"
+
+[dependencies]
+# `GemMaterial`, `LightingPreset`, the solid mesh and the optical metrics the commands print.
+indicatrix = { workspace = true }
+# `Design`, the solver, the optimizer, the native `.indicatrix` codec, manufacturability checks.
+indicatrix-cut-core = { workspace = true }
+# The GUI-free editor session and view models both front ends share: the retarget engine and
+# its validity gate, the sweep engine, the verdict, the cut sheet and the `.asc` text export.
+indicatrix-editor = { workspace = true }
+# `.asc` decoding and `.gcs` writing.
+indicatrix-formats = { workspace = true }
+# The custom-material table of a design library, opened read-only (`--db`).
+indicatrix-vault = { workspace = true }
+# `--json` output. Object keys come out sorted, so the text is deterministic.
+serde_json = { workspace = true }
+# `render` / `tilt-video`: the desktop app's own render core and remote client, so a job renders exactly
+# as it would in the app's render queue (spec C:\temp\mcp2\render_jobs_spec_2026-10-06.md §5.1).
+indicatrix-cut = { workspace = true }
+# The render job file, its codec and the progress line format.
+indicatrix-render-jobs = { workspace = true }
+
+[dev-dependencies]
+# The scene a test job is built from (`SceneState`); `render` is the feature the app already enables.
+indicatrix-net = { workspace = true, features = ["render"] }
+
+[features]
+# No optional features by default: every `--local` choice renders on the processor.
+default = []
+# Render on the graphics card too (`--local gpu` and `--local cpu+gpu`); the app's own GPU backend.
+gpu = ["indicatrix-cut/gpu"]
+# Offer the two UV lamps (`--lighting uv365` and `uv395`), as the desktop app's feature of the same name does.
+physical-color = ["indicatrix-cut/physical-color"]
+
+[lints]
+workspace = true

@@ -5,7 +5,7 @@
 use super::{
     super::{
         FacetMap, MeshCache, SolidRasterizer, live_update,
-        plan_worker::build_planned_frame,
+        plan_worker::{build_planned_frame, survive_panic},
         render::render_request,
         request::{PlanJob, RedrawRequest},
         state::{WorkerMemory, escaping_tier_label},
@@ -13,7 +13,7 @@ use super::{
     *,
 };
 use glam::Vec3;
-use indicatrix::geometry::meet_solver::MeetConstraint;
+use indicatrix::geometry::meet_solver::{MeetConstraint, SolveStrategy, SolvedTier};
 use indicatrix_cut_core::{ConstraintTier, Design, PreformSpec, ScheduleMeta};
 use indicatrix_solid::preview::StoneGeometryBuf;
 use std::{
@@ -140,6 +140,7 @@ fn plan_job(design: Design) -> PlanJob {
         show_preform: true,
         enlarged_panel: -1,
         tier_cutoff: None,
+        cut_steps: None,
     }
 }
 
@@ -237,6 +238,50 @@ fn a_zero_budget_forces_stale_and_marks_the_dirty_tier_pending() {
     );
 }
 
+/// Two tiers that meet nothing: the design does not solve.
+fn unsolvable_design() -> Design {
+    Design::new(
+        PreformSpec::block(2.0, 1.0, 2.0),
+        ScheduleMeta {
+            gear_teeth: 96,
+            ..ScheduleMeta::default()
+        },
+        vec![
+            tier("C1", 30.0, MeetConstraint::MeetExisting),
+            tier("C2", 40.0, MeetConstraint::MeetExisting),
+        ],
+    )
+}
+
+/// F4-8: an unsolvable plan carries NO masts. It used to chain the previous list forward,
+/// and the sink filed that list under the plan's NEW generation, so an export asking for the
+/// masts "of exactly this generation" got the new angles on the old masts.
+#[test]
+fn an_unsolvable_plan_carries_no_masts_not_the_previous_ones() {
+    let previous = vec![SolvedTier {
+        mast: 0.5,
+        strategy: SolveStrategy::ScaleReference,
+        detail: "the design before the edit".to_string(),
+    }];
+    let frame = build_planned_frame(
+        PlanJob {
+            last_solved: Some(previous),
+            generation: 9,
+            ..plan_job(unsolvable_design())
+        },
+        live_update::DEFAULT_PREVIEW_BUDGET,
+    );
+    assert!(
+        frame.unsolvable_status.is_some(),
+        "the premise: the design does not solve"
+    );
+    assert!(
+        frame.solved.is_none(),
+        "the previous masts do not describe this design, whatever its generation"
+    );
+    assert_eq!(frame.generation, 9);
+}
+
 /// The `Unbounded` banner must name the escaping plane's owning tier,
 /// not the raw index.
 #[test]
@@ -296,6 +341,50 @@ fn selected_tier_flags_reach_solid_style_selected() {
     );
 }
 
+/// Selecting a concave row (table position `tiers.len() + concave index`) tints exactly that
+/// tier's tool facets in the solid style, and a flat selection tints none of them.
+#[test]
+fn a_selected_concave_row_tints_its_tool_facets_in_the_solid_style() {
+    let design = Design::concave_fixture();
+    let flat_count = design.tiers.len();
+    let concave_row = |selected_tier: Option<usize>| {
+        let frame = build_planned_frame(
+            PlanJob {
+                selected_tier,
+                ..plan_job(design.clone())
+            },
+            live_update::DEFAULT_PREVIEW_BUDGET,
+        );
+        let solved = design.solve().expect("the fixture solves");
+        let map = FacetMap::from_design_cut(&design, &solved, &frame.placements, None);
+        (frame.style.selected, map)
+    };
+    let (selected, map) = concave_row(Some(flat_count));
+    let first_tool_facets: Vec<usize> = (0..map.facet_count())
+        .filter(|&id| {
+            matches!(
+                map.kind_of(id),
+                indicatrix_solid::facet_map::FacetKind::Concave { tier: 0, .. }
+            )
+        })
+        .collect();
+    assert!(!first_tool_facets.is_empty(), "the fixture has tool facets");
+    for id in 0..map.facet_count() {
+        assert_eq!(
+            selected.get(id).copied().unwrap_or(false),
+            first_tool_facets.contains(&id),
+            "facet {id}"
+        );
+    }
+    let (flat_selected, _) = concave_row(Some(0));
+    assert!(
+        first_tool_facets
+            .iter()
+            .all(|&id| !flat_selected.get(id).copied().unwrap_or(false)),
+        "a flat selection leaves the tool facets alone"
+    );
+}
+
 /// A `tier_cutoff` of `Some(0)` truncates planes to the first tier only.
 #[test]
 fn tier_cutoff_truncates_the_planned_frame() {
@@ -340,6 +429,167 @@ fn set_tier_cutoff_round_trips_through_the_cache() {
     assert_eq!(cached(), Some(3));
     state.set_tier_cutoff(None);
     assert_eq!(cached(), None);
+}
+
+/// The Cut slider's `cut_steps` through the planner: `k` steps draw the preform plus the
+/// planes of the first `k` tiers of the cutting order, `0` is the preform alone, and the last
+/// step is the finished stone. `cut_steps` also wins over the web's `tier_cutoff`.
+#[test]
+fn cut_steps_truncate_the_planned_frame_and_zero_is_the_preform_alone() {
+    let design = closed_design();
+    let preform = design.preform.planes().len();
+    let plan = |cut_steps: Option<usize>, tier_cutoff: Option<usize>| {
+        build_planned_frame(
+            PlanJob {
+                cut_steps,
+                tier_cutoff,
+                ..plan_job(design.clone())
+            },
+            live_update::DEFAULT_PREVIEW_BUDGET,
+        )
+    };
+    let finished = plan(None, None);
+    assert_eq!(plan(Some(0), None).planes.len(), preform, "the rough");
+    // The steps follow the cutting order (pavilion section first), so the first step of this
+    // top-down fixture is the girdle tier: sixteen planes, not the table's one.
+    assert_eq!(
+        plan(Some(1), None).planes.len(),
+        preform + 16,
+        "step one is the girdle, sixteen planes"
+    );
+    let mut previous = preform;
+    for steps in 1..=design.tiers.len() {
+        let now = plan(Some(steps), None).planes.len();
+        assert!(now >= previous, "step {steps} must not remove planes");
+        previous = now;
+    }
+    assert_eq!(plan(Some(design.tiers.len()), None).planes, finished.planes);
+    assert_eq!(
+        plan(Some(0), Some(3)).planes.len(),
+        preform,
+        "cut_steps wins over tier_cutoff"
+    );
+}
+
+/// A replan that was already queued when the slider moved must still see the latest cut:
+/// `set_cut_steps` is read at `request_replan` time -- the entry the slider's drain
+/// uses -- and reaches the frame that lands on the sink.
+#[test]
+fn the_controller_hands_the_cut_to_the_replan_it_submits() {
+    let sink = FakeSink::new();
+    let state = SolidPreviewState::new(sink.clone());
+    let design = Arc::new(closed_design());
+    let preform = design.preform.planes().len();
+
+    state.set_cut_steps(Some(0));
+    state.request_replan(replan_request(&design, 1));
+    let calls = sink.wait_until("the rough", DEADLINE, |c| !c.is_empty());
+    assert!(calls[0].0, "the preform alone is a closed stone");
+    assert_eq!(sink.plane_counts()[0], preform);
+
+    state.set_cut_steps(None);
+    state.request_replan(replan_request(&design, 2));
+    sink.wait_until("the finished stone", DEADLINE, |c| c.len() >= 2);
+    assert!(sink.plane_counts()[1] > preform + 8);
+}
+
+/// The freeze behind "the Cut slider stopped following": an unsolvable design planned
+/// against masts left over from before an add or remove used to panic inside the plan
+/// worker, which then ignored every later replan. The next replan must still land.
+#[test]
+fn a_stale_mast_list_on_an_unsolvable_design_does_not_kill_the_plan_worker() {
+    let sink = FakeSink::new();
+    let state = SolidPreviewState::new(sink.clone());
+    let unsolvable = Arc::new(Design::new(
+        PreformSpec::block(2.0, 1.0, 2.0),
+        ScheduleMeta {
+            gear_teeth: 96,
+            ..ScheduleMeta::default()
+        },
+        vec![
+            tier("C1", 30.0, MeetConstraint::MeetExisting),
+            tier("C2", 40.0, MeetConstraint::MeetExisting),
+        ],
+    ));
+    let stale = vec![SolvedTier {
+        mast: 0.5,
+        strategy: SolveStrategy::ScaleReference,
+        detail: "from before the edit".to_string(),
+    }];
+
+    state.set_cut_steps(Some(1));
+    state.request_replan(ReplanRequest {
+        last_solved: Some(stale),
+        ..replan_request(&unsolvable, 1)
+    });
+    sink.wait_until("the unsolvable frame", DEADLINE, |c| !c.is_empty());
+
+    state.set_cut_steps(None);
+    state.request_replan(replan_request(&Arc::new(closed_design()), 2));
+    let calls = sink.wait_until("the frame after it", DEADLINE, |c| c.len() >= 2);
+    assert!(calls[1].0, "the worker is alive and draws the next design");
+}
+
+/// A request for [`state.request_replan`](SolidPreviewState::request_replan) with
+/// everything defaulted: a full solve of `design` at `generation`.
+fn replan_request(design: &Arc<Design>, generation: u64) -> ReplanRequest {
+    ReplanRequest {
+        design: Arc::clone(design),
+        dirty: std::collections::BTreeSet::new(),
+        last_solved: None,
+        camera: CAMERA,
+        size: (16, 16),
+        selected_tier: None,
+        n_d: design.effective_refractive_index(),
+        view_mode: 0,
+        generation,
+        show_preform: true,
+        enlarged_panel: -1,
+    }
+}
+
+/// A worker loop wraps its work in [`survive_panic`]: a panic is a `None`, not a dead
+/// thread.
+#[test]
+fn survive_panic_turns_a_panic_into_none() {
+    assert_eq!(survive_panic("a test", || 7), Some(7));
+    assert_eq!(
+        survive_panic("a test", || -> u8 { panic!("expected") }),
+        None
+    );
+}
+
+/// The Live Render tab's redraw is the committed design only: the Slice tool's planes
+/// override applies to the editor's redraws and not to this one.
+#[test]
+fn a_committed_redraw_ignores_the_slice_override() {
+    let sink = FakeSink::new();
+    let state = SolidPreviewState::new(sink.clone());
+    // An override that does not close, so which planes were drawn shows in the status.
+    state.set_planes_override(Some(unbounded_planes()));
+
+    state.request_redraw_committed_geometry(
+        StoneGeometryBuf::from_halfspaces(&box_planes(0.6)),
+        CAMERA,
+        (16, 16),
+        0,
+        None,
+    );
+    let calls = sink.wait_until("the committed frame", DEADLINE, |c| !c.is_empty());
+    assert!(calls[0].0);
+    assert!(
+        !calls[0].1.contains("Unbounded"),
+        "the committed box was drawn, not the override: {}",
+        calls[0].1
+    );
+
+    state.request_redraw(&box_planes(0.6), CAMERA, (16, 16), 0);
+    let calls = sink.wait_until("the editor frame", DEADLINE, |c| c.len() >= 2);
+    assert!(
+        calls[1].1.contains("Unbounded"),
+        "the editor's redraw still shows the override: {}",
+        calls[1].1
+    );
 }
 
 /// Builds a `RedrawRequest::Planned` request: [`build_planned_frame`] on
@@ -508,7 +758,12 @@ fn view_mode_diagram_produces_the_diagram_image_and_its_side_tables() {
         .expect("view_mode 3 must produce a facet-id-indexed hover-text table");
     assert_eq!(
         hover_text.len(),
-        frame.diagram_facet_tier.as_ref().unwrap().len()
+        frame.diagram_facet_owners.as_ref().unwrap().flat.len()
+    );
+    assert_eq!(
+        frame.diagram_facet_owners.as_ref().unwrap().concave.len(),
+        hover_text.len(),
+        "the concave table is parallel to the flat one"
     );
     // The Table tier's facet (id 0, right after the preform's own planes on
     // this fixture -- see `facet_map.rs`'s own doc comment) must have a

@@ -1,9 +1,11 @@
 //! Off-UI-thread solving: one persistent worker thread owning a request queue with
 //! last-wins coalescing, real mid-solve cancellation, throttled progress, and
-//! generation-tagged results a caller can drop when stale. Replaces the ad-hoc
-//! `thread::spawn` bodies in `auto_solve::dispatch_background_solve`,
-//! `deep_solve::spawn_deep_solve` and `optimize_solve::spawn_optimize_solve`.
-//! The UI thread never solves, never blocks.
+//! generation-tagged results a caller can drop when stale. Serves Deep Solve
+//! (`deep_solve::spawn_deep_solve`), the save/export solves (`native_io::solve`) and the
+//! candidate-preview solves, in place of an ad-hoc `thread::spawn` per call.
+//! `auto_solve::dispatch_background_solve` (see [`SolveKind::Full`]) and the Optimize
+//! search (`optimize_solve::spawn_optimize_run`) keep workers of their own. The UI thread
+//! never solves, never blocks.
 //!
 //! # Shape
 //!
@@ -395,7 +397,7 @@ impl SolveService {
     /// UI/event-loop thread via `Weak::upgrade_in_event_loop` -- both silently do
     /// nothing once `ui_weak` no longer upgrades (window closed while a solve was
     /// in flight), the same convention `deep_solve::spawn_deep_solve`/
-    /// `optimize_solve::spawn_optimize_solve` already follow.
+    /// `optimize_solve::spawn_optimize_run` already follow.
     pub fn new<T, P, D>(ui_weak: Weak<T>, on_progress: P, on_result: D) -> Self
     where
         T: ComponentHandle + 'static,

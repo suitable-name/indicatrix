@@ -125,12 +125,21 @@ pub const BAD_CUT_FIELD_MESSAGE: &str = "A cut field does not hold a number yet.
 /// Shown when no material with a known specific gravity is picked.
 pub const PICK_MATERIAL_MESSAGE: &str = "Pick a material with a known specific gravity.";
 
+/// Starts the message of a Fit to weight that could not scale the model.
+pub const FIT_FAILED_PREFIX: &str = "Fit to weight failed:";
+
+/// Shown when the model was edited while a mesh rough was being scaled for Fit to weight.
+pub const MODEL_CHANGED_MESSAGE: &str =
+    "The model changed while it was being scaled. Press Fit to weight again.";
+
 /// Whether `text` is a message about the inputs (the rough size, a cut field, the plan
-/// form, the material) as opposed to one about a run or the library. Such a message is
-/// out of date as soon as an input changes; the others are not.
+/// form, the material, a Fit to weight that did not go through) as opposed to one about a
+/// run or the library. Such a message is out of date as soon as an input changes; the
+/// others are not.
 #[must_use]
 pub fn is_input_message(text: &str) -> bool {
-    const FIELD_PREFIXES: [&str; 6] = [
+    const FIELD_PREFIXES: [&str; 7] = [
+        "Scan plan time limit",
         "Kerf",
         "Allowance",
         "Skin",
@@ -140,8 +149,9 @@ pub fn is_input_message(text: &str) -> bool {
     ];
     matches!(
         text,
-        NO_SIZE_MESSAGE | BAD_CUT_FIELD_MESSAGE | PICK_MATERIAL_MESSAGE
-    ) || FIELD_PREFIXES.iter().any(|prefix| text.starts_with(prefix))
+        NO_SIZE_MESSAGE | BAD_CUT_FIELD_MESSAGE | PICK_MATERIAL_MESSAGE | MODEL_CHANGED_MESSAGE
+    ) || text.starts_with(FIT_FAILED_PREFIX)
+        || FIELD_PREFIXES.iter().any(|prefix| text.starts_with(prefix))
 }
 
 /// The plan form as typed: everything [`PlanForm::parse`] needs, readable off the window.
@@ -190,18 +200,29 @@ pub struct PlanForm {
     pub weighed_ct: Option<f64>,
 }
 
-/// Parses one millimetre field ("4,5" and "4.5" both read as 4.5).
-pub fn parse_mm(text: &str, label: &str) -> Result<f64, String> {
+/// Parses one number typed into a field that is measured in `unit` ("mm", "degrees"):
+/// "4,5" and "4.5" both read as 4.5. The unit is named in the message for text that is
+/// not a number, so a field of angles never asks for millimetres.
+///
+/// # Errors
+///
+/// Returns the message for `label`'s field when the text is not a finite number.
+pub fn parse_with_unit(text: &str, label: &str, unit: &str) -> Result<f64, String> {
     let value: f64 = text
         .trim()
         .replace(',', ".")
         .parse()
-        .map_err(|_| format!("{label} must be a number in mm."))?;
+        .map_err(|_| format!("{label} must be a number in {unit}."))?;
     if value.is_finite() {
         Ok(value)
     } else {
         Err(format!("{label} must be a finite number."))
     }
+}
+
+/// Parses one millimetre field ("4,5" and "4.5" both read as 4.5).
+pub fn parse_mm(text: &str, label: &str) -> Result<f64, String> {
+    parse_with_unit(text, label, "mm")
 }
 
 /// Parses the weighed carat field: empty is "not weighed".
@@ -693,6 +714,8 @@ mod tests {
             "The skin allowance leaves nothing of the rough.",
             "Minimum width must be greater than 0 mm.",
             "Weighed carat must be a number in ct.",
+            MODEL_CHANGED_MESSAGE,
+            "Fit to weight failed: Dimensions must not exceed 2000 mm.",
         ] {
             assert!(is_input_message(message), "{message}");
         }

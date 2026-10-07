@@ -5,7 +5,7 @@
 use crate::{
     BatchModel,
     bridge::{
-        preview_render::{PREVIEW_LIGHT_PITCH, PREVIEW_LIGHT_YAW},
+        preview_render::{BATCH_TILT_LIGHTING_PRESET, PREVIEW_LIGHT_PITCH, PREVIEW_LIGHT_YAW},
         remote::remote_render,
     },
     gui::batch::{
@@ -23,8 +23,9 @@ use indicatrix::{
     },
     geometry::plane::GpuFacetPlane,
     optics::{
+        fluorescence::Fluorescence,
         materials::GemMaterial,
-        raytracer::{DEFAULT_MAX_BOUNCES, EnvironmentSource, LightingPreset},
+        raytracer::{DEFAULT_MAX_BOUNCES, EnvironmentSource},
     },
 };
 use indicatrix_net::{
@@ -62,11 +63,6 @@ pub use save::save_tilt_curves_for_entry;
 /// raytracer's [`DEFAULT_MAX_BOUNCES`] purely for familiarity -- no render this batch
 /// performs ever actually bounces a ray, so the specific value is otherwise arbitrary.
 const REMOTE_SCENE_MAX_BOUNCES: u32 = DEFAULT_MAX_BOUNCES;
-
-/// The lighting preset every stored tilt-curve set is scored under, locally and (in the
-/// [`SceneState`] a remote worker receives) remotely, so both lanes describe the same
-/// lighting. The editor's default rig, at the preview light pose.
-const BATCH_TILT_LIGHTING_PRESET: LightingPreset = LightingPreset::RingLights;
 
 /// The environment the batch's tilt curves are scored under: [`BATCH_TILT_LIGHTING_PRESET`]
 /// at the preview light pose.
@@ -258,7 +254,8 @@ fn fetch_tilt_curves_remote(
         environment: indicatrix_net::scene::SceneEnvironment::Studio,
         surface_glare: 1.0,
         tools: Vec::new(),
-        fluorescence: Default::default(),
+        fluorescence: Fluorescence::default(),
+        head_shadow_deg: 16.0,
     };
     let (mut stream, welcome) = remote_render::connect_and_handshake(worker).ok()?;
     if !welcome.tilt_curves {

@@ -49,7 +49,7 @@ fn preview_scale_from_parts(idx: i32, pct: i32) -> PreviewScale {
     }
 }
 
-fn to_worker_item(endpoint: &RemoteEndpoint) -> WorkerItem {
+pub(super) fn to_worker_item(endpoint: &RemoteEndpoint) -> WorkerItem {
     let w = &endpoint.connection;
     let (preview_scale_index, preview_scale_percent) = preview_scale_parts(w.preview_scale);
     WorkerItem {

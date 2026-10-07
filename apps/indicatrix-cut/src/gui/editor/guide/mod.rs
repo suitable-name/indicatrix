@@ -1,88 +1,70 @@
-//! The worked-example walkthrough: pushing its step content
-//! (`indicatrix_editor::guide::STEPS`, shared with the web app) into
-//! `ui/models/guide.slint`'s `GuideModel` once at startup ([`setup_guide`]), and
-//! advancing it automatically once the design reaches the current step's goal
-//! ([`progress`], over `indicatrix_editor::guide::goal_reached`).
+//! Guided tutorials on the desktop: the worked example, the welcome tour and every other
+//! guide in `indicatrix_editor::guide`'s catalogue, shown by the step panel
+//! (`ui/models/guide.slint`'s `GuideModel`) and listed in the tutorial browser
+//! (`ui/models/tutorials.slint`'s `TutorialsModel`).
 //!
-//! The Slint side owns navigation (`start`/`next`/`back`/`close`, the short "Done"
-//! moment before an automatic advance) and every lock: each control ANDs a
-//! `GuideModel.allows_*()` helper into its own `enabled:`, driven by the current
-//! step's `allow` flags this module pushes. Rust's jobs are the content, and
-//! reporting reached goals through `GuideModel.notify` -- see
-//! [`progress::check_progress`] for where that is called from.
+//! The guides are data in the editor crate. The Slint side owns navigation
+//! (`start_guide`/`next`/`back`/`close`, the short "Done" moment before an automatic
+//! advance) and every lock: each control ANDs a `GuideModel.allows_*()` helper into its own
+//! `enabled:`, driven by the current step's `allow` flags. This module tree is the Rust half:
+//!
+//! - `launch`: starts a guide -- arranges the design it starts from (a new one, a library
+//!   one, the open one), pushes its steps into `GuideModel` and opens the first.
+//! - `progress`: decides, from STATE, whether the current step's goal is met and reports it
+//!   through `GuideModel.notify`; also takes UI events (`progress::guide_event`, the handler
+//!   of `GuideModel.event`; other desktop code reports an event with `gui::tutorial_events::raise`).
+//! - `browser`: the tutorial browser's list, the welcome dialog and the "finished" marks.
+//! - `build_design`: "Build this design" -- reads a library design, generates its rebuild
+//!   lesson off the UI thread, registers it ([`register_generated_guide`]) and starts it.
+//! - `runtime`: what is remembered between steps (the catalogue, the events seen, the
+//!   launch in progress).
+//!
+//! [`check_progress`] is called wherever the design or its solve state can have changed (see
+//! its module); a UI event reaches the guide through `GuideModel.event(name)`, which Rust
+//! callers use too.
 
+mod browser;
+mod build_design;
+mod launch;
 mod progress;
+mod runtime;
 
 pub(in crate::gui::editor) use indicatrix_editor::guide::NEW_DESIGN_CREATED;
 pub(in crate::gui::editor) use progress::{check_design_progress, check_progress, notify};
 
 use super::state::EditorState;
-use crate::{GuideAllow, GuideModel, GuideStepData, MainWindow};
-use indicatrix_editor::guide::{Group, STEPS, Step};
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
-use std::{cell::RefCell, rc::Rc};
+use crate::{MainWindow, bridge::library::source::LibrarySource};
+use indicatrix_editor::guide::Guide;
+use indicatrix_vault::db::sqlite::Database;
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::{Arc, Mutex},
+};
 
-/// `allow`'s groups as the Slint `GuideAllow` struct: a group not listed is locked.
-fn guide_allow(allow: &[Group]) -> GuideAllow {
-    GuideAllow {
-        new_design: allow.contains(&Group::NewDesign),
-        tier_form: allow.contains(&Group::TierForm),
-        tier_table: allow.contains(&Group::TierTable),
-        design_settings: allow.contains(&Group::DesignSettings),
-        solve: allow.contains(&Group::Solve),
-        preform_tab: allow.contains(&Group::PreformTab),
-        advanced: allow.contains(&Group::Advanced),
-        view_tabs: allow.contains(&Group::ViewTabs),
-        file_ops: allow.contains(&Group::FileOps),
-        history: allow.contains(&Group::History),
-        // Concave tiers are not part of the worked example: authoring one edits both
-        // the tier form and the tier table, so a step leaves it open only when it
-        // leaves both of those open (the closing step, which blocks nothing).
-        concave_tier: allow.contains(&Group::TierForm) && allow.contains(&Group::TierTable),
-    }
+/// Wires every tutorial callback (`GuideModel`, `TutorialsModel`, `BuildDesignModel`) and
+/// remembers the editor state, so a UI event can re-check the current step. `db` and
+/// `source` are the library "Build this design" reads the design to rebuild from. Called
+/// from `gui::editor::setup_editor_callbacks`.
+pub(in crate::gui::editor) fn setup_guide(
+    ui: &MainWindow,
+    state: &Rc<RefCell<EditorState>>,
+    db: &Arc<Mutex<Database>>,
+    source: &Arc<Mutex<LibrarySource>>,
+) {
+    browser::setup(ui, state);
+    build_design::setup(ui, db, source);
 }
 
-/// One [`Step`] as the Slint `GuideStepData` the panel renders.
-fn step_data(step: &Step) -> GuideStepData {
-    let actions: Vec<SharedString> = step
-        .actions
-        .iter()
-        .map(|a| SharedString::from(*a))
-        .collect();
-    GuideStepData {
-        title: step.title.into(),
-        intro: step.intro.into(),
-        actions: ModelRc::new(VecModel::from(actions)),
-        check: step.check.into(),
-        why: step.why.into(),
-        waiting: step.waiting.into(),
-        highlight_target: step.highlight_target.into(),
-        completion: step.completion.into(),
-        allow: guide_allow(step.allow),
-    }
-}
-
-/// Pushes [`STEPS`] into `GuideModel.steps` once, at startup, and registers
-/// `GuideModel.step_entered`: every time a step is entered going forward, its goal
-/// is checked straight away against the current design, so a goal that is already
-/// met (auto-solve finished before the user got there, say) completes without
-/// waiting for another edit. Called from `gui::editor::setup_editor_callbacks`.
-pub(in crate::gui::editor) fn setup_guide(ui: &MainWindow, state: &Rc<RefCell<EditorState>>) {
-    let steps: Vec<GuideStepData> = STEPS.iter().map(step_data).collect();
-    ui.global::<GuideModel>()
-        .set_steps(ModelRc::new(VecModel::from(steps)));
-
-    let state = Rc::clone(state);
-    let ui_weak = ui.as_weak();
-    ui.global::<GuideModel>().on_step_entered(move || {
-        let Some(ui) = ui_weak.upgrade() else {
-            return;
-        };
-        // A writer already holding the state refreshes on its way out, and every
-        // refresh ends in `check_progress` -- skipping here loses nothing.
-        let Ok(st) = state.try_borrow() else {
-            return;
-        };
-        check_progress(&ui, &st);
-    });
+/// Adds a guide generated at run time -- the lesson that rebuilds a library design, say --
+/// to the catalogue, so the tutorial browser lists it and `GuideModel.start_guide(id)` can
+/// start it. A second guide with the same id replaces the first.
+///
+/// # Errors
+///
+/// A guide that is not fit to run (a typo in a highlight target or an event name, a step
+/// that never says what it waits for) or that takes a built-in guide's id is refused with
+/// the reason.
+pub(in crate::gui::editor) fn register_generated_guide(guide: Guide) -> Result<(), String> {
+    runtime::register_generated(guide)
 }

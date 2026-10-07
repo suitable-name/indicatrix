@@ -418,7 +418,17 @@ pub fn run_transport_params(ctx: &crate::renderer::gpu::GpuContext) -> LayoutChe
     // A distinct, non-zero backdrop, same rationale.
     .with_backdrop(0.23)
     // A distinct value below one, same rationale.
-    .with_surface_glare(0.37);
+    .with_surface_glare(0.37)
+    // A distinct head-shadow cone (22 degrees), same rationale.
+    .with_head_shadow(crate::optics::raytracer::head_shadow_cosines(22.0))
+    // Four distinct non-default tent values, same rationale.
+    .with_tent(crate::optics::raytracer::TentParams {
+        walls: 0.31,
+        cards: 0.62,
+        spark: 0.93,
+        ground: 0.74,
+        flat: 0.55,
+    });
     let input_bytes = bytemuck::bytes_of(&sample).to_vec();
 
     let pipeline = compute::create_compute_pipeline(

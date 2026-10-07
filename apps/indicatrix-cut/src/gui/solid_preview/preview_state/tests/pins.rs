@@ -110,6 +110,7 @@ fn pin_job(view_mode: u8, size: (u32, u32), enlarged_panel: i32) -> PlanJob {
         show_preform: true,
         enlarged_panel,
         tier_cutoff: None,
+        cut_steps: None,
     }
 }
 
@@ -219,11 +220,23 @@ const PIN_BOTH: [u64; 6] = [
     0,
     0,
 ];
+// Slot 3 (the diagram's colour image) of both diagram pins was re-recorded 2026-10-05: since
+// 2026-10-04 the diagram labels its facets with the canonical tier codes
+// (`indicatrix_cut_core::design::labelling`, "Pavilion Main 0" is now "P1 0"), which changes
+// text pixels only. The solid image, both pick buffers and the tooth buffers did not move
+// (slots 0, 1, 2, 4 and 5 equal the pins recorded 2026-09-29). The same values are pinned in
+// `indicatrix_solid::preview`'s identity test.
+//
+// Re-pinned 2026-10-06 (cutting-order lane): the table's code became `T`, so its diagram
+// label is `T` where it was `Table`. Slot 3 (the diagram's colour image) of `PIN_DIAGRAM`
+// moved by the pixels of that one label and nothing else did; `PIN_SINGLE_PANEL` is
+// unchanged because its enlarged panel is the pavilion panel, which never draws the table.
+// The same constants live in `indicatrix_solid::preview`'s identity test (lane F1 updates it).
 const PIN_DIAGRAM: [u64; 6] = [
     0x20dd_549d_dad6_8174,
     0xa8f1_2ee3_d05d_e3be,
     0,
-    0x98f7_6d59_8966_3328,
+    0x3885_c661_6f2d_25a1,
     0xd1a3_9e15_eccb_fb54,
     0xb0c8_4221_f413_1c25,
 ];
@@ -231,7 +244,7 @@ const PIN_SINGLE_PANEL: [u64; 6] = [
     0x61f0_28b7_7429_a350,
     0x2c7a_1a3e_c524_5679,
     0,
-    0xbdeb_c6f9_ce8b_811b,
+    0xcec8_3723_ef1e_4e76,
     0x4cf4_6279_7dc9_2530,
     0x0f8f_adba_ccdc_0009,
 ];

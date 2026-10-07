@@ -7,11 +7,15 @@ use slint::{ComponentHandle, Model};
 use super::facet_overlay::{facet_map_from_aligned_solve, resubmit_facet_overlay};
 use crate::{
     EditorModel, EditorTierItem, MainWindow,
-    gui::editor::{
-        auto_solve,
-        state::{EditorState, apply_multi_selection, push_multi_selected_count, push_tiers},
+    gui::{
+        editor::{
+            auto_solve,
+            state::{EditorState, apply_multi_selection, push_multi_selected_count, push_tiers},
+        },
+        tutorial_events::raise,
     },
 };
+use indicatrix_editor::guide::TIERS_MULTI_SELECTED;
 
 /// The tier list's Ctrl+click: toggles one row into/out of
 /// [`EditorState::multi_selected`], then patches `EditorTierItem::multi_selected`
@@ -67,7 +71,18 @@ pub(in crate::gui::editor) fn setup_toggle_multi_select_callback(
                     overlay.multi_selected = facet_ids;
                 });
             }
+            drop(st);
+            report_group(&ui, multi_selected.len());
         });
+}
+
+/// Tells the running guide that a group of `count` tiers is now ticked, once it holds two or
+/// more (the multi-select tutorial waits for that). Called with the editor state released, so
+/// the guide can re-check its step straight away.
+fn report_group(ui: &MainWindow, count: usize) {
+    if count >= 2 {
+        raise(ui, TIERS_MULTI_SELECTED);
+    }
 }
 
 /// The tier list's Shift+click: replaces
@@ -133,5 +148,7 @@ fn setup_select_tier_range_callback(ui: &MainWindow, state: &Rc<RefCell<EditorSt
                     overlay.multi_selected = facet_ids;
                 });
             }
+            drop(st);
+            report_group(&ui, multi_selected.len());
         });
 }

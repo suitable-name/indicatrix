@@ -1,0 +1,215 @@
+import { Theme } from "../theme.slint";
+
+// The small text buttons of the viewport toolbars and of the render settings dialog, drawn by
+// hand but built once, so every one of them has the same hover, the same tooltip, the same
+// keyboard reach (Tab, then Space or Enter) and the same screen-reader wording:
+//
+//   * `PillButton`  -- a button that does something (Fit, Reset) or switches something on and
+//                      off (Snap, Preform, Tilt Curve). `lit` is the "on" look; `checkable`
+//                      tells a screen reader it is a toggle.
+//   * `ModePill`    -- one of a group where exactly one is chosen (Solid, Path-traced, Both,
+//                      Diagram). Announced as a radio button.
+//   * `SegmentPill` -- the same idea for the stretching segments of the settings dialog
+//                      (Render Resolution, Ray Bounces, ...), in the dialog's cyan.
+//
+// A tooltip (`hint`) is required of every caller: one plain sentence saying what the button
+// does. The hint is also what a screen reader reads after the label.
+//
+// The pills are not sized here. A caller sets `width` (the toolbar's pills each have their own,
+// tuned so the toolbar's re-flow thresholds hold) or lets a layout stretch them.
+
+// A button or toggle button on a toolbar.
+export component PillButton inherits Rectangle {
+    in property <string> text;
+    // One plain sentence: what the button does. Shown as the tooltip.
+    in property <string> hint;
+    // The "on" look (a toggle that is on, or the panel the button opens being open).
+    in property <bool> lit: false;
+    // A toggle: a screen reader says whether it is on. Leave off for a plain action.
+    in property <bool> checkable: false;
+    // The open tutorial step is about this button: it gets a cyan outline.
+    in property <bool> highlighted: false;
+    in property <bool> enabled: true;
+    in property <length> font_size: 12px;
+    callback clicked();
+
+    height: 28px;
+    border-radius: Theme.radius-sm;
+    opacity: root.enabled ? 1.0 : 0.45;
+    background: root.lit ? Theme.primary : (pill_touch.has-hover && root.enabled ? Theme.bg-elevated : Theme.bg-input);
+    border-width: pill_focus.has-focus ? 2px : 1px;
+    border-color: pill_focus.has-focus ? Theme.accent-cyan-hover : (root.lit ? Theme.accent-cyan : Theme.border-subtle);
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.text;
+    accessible-description: root.hint;
+    accessible-checkable: root.checkable;
+    accessible-checked: root.lit;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    pill_focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    Text {
+        text: root.text;
+        font-size: root.font_size;
+        font-weight: 600;
+        color: root.lit ? Theme.text-on-primary : Theme.text-secondary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    pill_touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
+    }
+
+    if root.highlighted: Rectangle {
+        border-width: 2px;
+        border-color: Theme.accent-cyan;
+        border-radius: Theme.radius-sm;
+    }
+}
+
+// One choice out of a group on a toolbar: `selected` is the chosen one.
+export component ModePill inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <bool> selected: false;
+    // The open tutorial step is about this choice: it gets a cyan outline.
+    in property <bool> highlighted: false;
+    in property <bool> enabled: true;
+    in property <length> font_size: 12px;
+    callback picked();
+
+    height: 28px;
+    border-radius: Theme.radius-sm;
+    opacity: root.enabled ? 1.0 : 0.45;
+    background: root.selected ? Theme.primary : (mode_touch.has-hover && root.enabled ? Theme.bg-elevated : Theme.bg-input);
+    border-width: mode_focus.has-focus ? 2px : 1px;
+    border-color: mode_focus.has-focus ? Theme.accent-cyan-hover : (root.selected ? Theme.accent-cyan : Theme.border-subtle);
+
+    accessible-role: AccessibleRole.radio-button;
+    accessible-label: root.text;
+    accessible-description: root.hint;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.picked();
+        }
+    }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    mode_focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.picked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    Text {
+        text: root.text;
+        font-size: root.font_size;
+        font-weight: 600;
+        color: root.selected ? Theme.text-on-primary : Theme.text-secondary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    mode_touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.picked(); }
+    }
+
+    if root.highlighted: Rectangle {
+        border-width: 2px;
+        border-color: Theme.accent-cyan;
+        border-radius: Theme.radius-sm;
+    }
+}
+
+// One segment of a row of equal choices in the render settings dialog. Stretches to share the
+// row with its neighbours (`horizontal-stretch`); `selected` fills it with the dialog's cyan.
+export component SegmentPill inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <bool> selected: false;
+    // A segment that cannot be picked right now (no remote worker, say) stays visible but dimmed.
+    in property <bool> enabled: true;
+    callback picked();
+
+    horizontal-stretch: 1;
+    height: 28px;
+    border-radius: Theme.radius-sm;
+    opacity: root.enabled ? 1.0 : 0.45;
+    background: root.selected ? Theme.accent-cyan : (segment_touch.has-hover && root.enabled ? Theme.surface-raised : Theme.surface-sunken);
+    border-width: segment_focus.has-focus ? 2px : 1px;
+    border-color: segment_focus.has-focus ? Theme.accent-cyan-hover : (root.selected ? Theme.accent-cyan : Theme.border-dialog);
+
+    accessible-role: AccessibleRole.radio-button;
+    accessible-label: root.text;
+    accessible-description: root.hint;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.picked();
+        }
+    }
+
+    Tooltip { text: @markdown("\{root.hint}"); }
+
+    segment_focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.picked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    Text {
+        text: root.text;
+        font-size: 11px;
+        font-weight: 600;
+        color: root.selected ? Theme.text-on-accent : Theme.text-secondary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    segment_touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.picked(); }
+    }
+}

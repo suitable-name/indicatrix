@@ -36,8 +36,9 @@ and girdle section, and at the end of the crown, directly above the table.
 
 ## Adding a concave tier
 
-Press **+ Add Concave Tier** in the tier table's toolbar, or **+ Concave** in the
-command bar. The inspector opens on the Tier tab with the concave form, blank. Fill
+Press **+ Add Concave Tier** in the tier table's toolbar. The Advanced interface
+also has **+ Concave** in the command bar; the Simple interface leaves that button
+out and keeps the one in the tier table. The inspector opens on the Tier tab with the concave form, blank. Fill
 in:
 
 - **Name**, **Angle (deg)**, **Indices** and **Instructions** — the facet line.
@@ -83,8 +84,13 @@ from a flat row in a few ways:
 Clicking a concave row loads it into the concave form. Selecting a flat row
 returns the inspector to the flat form.
 
-Selecting a tool facet by clicking it in the solid view is not wired yet: hovering
-it shows its name, tool code, θ and D/W, but the click selects nothing.
+Clicking a tool facet in the solid view or the 2D diagram selects its concave
+tier: the row is selected, the concave form opens, and every tool facet of that tier
+is tinted in both views. Selecting a concave row in the table tints its tool facets
+the same way. Hovering a tool facet shows its name, tool code, θ and D/W. A click
+with Ctrl or Shift on a tool facet selects the concave row alone, like a click on its
+row. While the Slice tool holds an unconfirmed tier, a click selects nothing until
+you keep or discard it.
 
 ## The cutting sheet and the schedule
 
@@ -136,13 +142,22 @@ footnotes) and needs no question: nothing is lost.
 ## Limitations
 
 - **The GPU does not trace tools.** A concave stone renders on the CPU; see above.
-- **The Rough Planner fits the flat outline.** It honours a design's concave tiers
-  in its volume, carat and yield and draws the tool cuts (Chapter 15), but places
-  the flat stone's outer hull in the rough, which a cut never enlarges. Concave
-  tiers do not enter the catalogue's vault search as geometry, only as a count.
-- **The Compare window** (Chapter 14) draws a design's flat stone: it does not take
-  the tools into account.
-- **Clicking a tool facet** in the solid or diagram view does not select its tier.
+- **The Rough Planner fits the carved outline.** It measures a design with concave
+  tiers from its carved stone (Chapter 15): the volume, carat and yield, the width,
+  length and height, and the outline it places in the rough all come from the
+  convex hull of the stone after the tools have cut it, and it draws the tool cuts.
+  A tool only removes material, so this outline is never larger than the flat
+  stone's. It is smaller only where a tool removes a vertex that sets the outline
+  (the "tool removes a hull vertex" warning in the manufacturability check); a
+  groove or dimple inside the outline changes nothing, and a design without concave
+  tiers is measured as before. The measuring rule changed when the planner moved
+  from the flat to the carved outline, so the library is measured once more the
+  next time you plan, and a plan saved earlier shows a note that its designs were
+  measured under an earlier rule. Concave tiers do not enter the catalogue's vault
+  search as geometry, only as a count.
+- **The Compare window** (Chapter 14) draws, traces and measures a concave stone
+  with its tools. Tracing is on the CPU, so a slow concave side may be traced at a
+  lower sample count; the status line says so.
 - **One tool, one cut.** A tier's tool is placed once per index and each cut is
   taken from the flat stone's measured width; concave edits never move the stone's
   width, length or height, which come from the flat tiers.

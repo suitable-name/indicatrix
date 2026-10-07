@@ -3,18 +3,50 @@
 
 use super::{
     diagram::render_cut_diagram,
-    html::{base64_encode, cutting_sheet_html, html_escape, material_header_text},
+    html::{base64_encode, cutting_sheet_html, html_escape},
+    layout::material_label,
 };
 use indicatrix::{
     geometry::meet_solver::{Block, classify_blocks},
     optics::materials::GemMaterial,
 };
-use indicatrix_cut_core::{ConstraintTier, Design, MaterialSelection, PreformSpec, ScheduleMeta};
+use indicatrix_cut_core::{
+    ConstraintTier, Design, MaterialSelection, PreformSpec, ScheduleMeta, design::TierRef,
+};
+
+/// The label cell (the second cell) of every row of the sheet's tier tables (the Pavilion
+/// section, then the Crown section), in printed order. A concave tier's tool line is a
+/// `<tr class="tool">` and is not a row here.
+pub(super) fn label_cells(html: &str) -> Vec<String> {
+    html.split("<table class=\"tiers\">")
+        .skip(1)
+        .flat_map(|table| {
+            table.split("<tr>").skip(1).filter_map(|row| {
+                let mut cells = row.split("<td").skip(1);
+                let _sequence = cells.next()?;
+                let label = cells.next()?;
+                let text = label.strip_prefix('>')?.split("</td>").next()?;
+                Some(text.to_string())
+            })
+        })
+        .collect()
+}
+
+/// The HTML of the section headed `heading` (`Pavilion` or `Crown`): from its `<section>` tag
+/// to the closing `</section>`.
+pub(super) fn section_html<'a>(html: &'a str, heading: &str) -> &'a str {
+    let opener = format!("<section class=\"cut-section\">\n<h2>{heading}</h2>");
+    let start = html
+        .find(&opener)
+        .unwrap_or_else(|| panic!("no {heading} section in the sheet"));
+    let rest = &html[start..];
+    &rest[..rest.find("</section>").expect("the section closes")]
+}
 
 /// The same round-brilliant fixture `indicatrix_cut_core::cutting_sheet`'s
 /// own tests use: 8 tiers, all `ScaleReference`, always solves and closes --
 /// see that crate's `design/tier.rs::standard_round_brilliant_template_solves_and_closes`.
-fn round_brilliant_design() -> Design {
+pub(super) fn round_brilliant_design() -> Design {
     Design::new(
         PreformSpec::block(2.0, 1.0, 2.0),
         ScheduleMeta::standard_round_brilliant(),
@@ -46,74 +78,97 @@ fn cutting_sheet_html_prints_a_custom_materials_own_refractive_index() {
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let solved = design.solve().expect("every tier is pinned");
     let custom = [custom_garnet(1.9)];
 
     let with_catalogue = cutting_sheet_html(&design, &solved, None, &custom);
     assert!(
-        with_catalogue.contains("<td>1.9000</td>"),
+        with_catalogue.contains("<td>1.900 (My Garnet)</td>"),
         "{with_catalogue}"
     );
 
     let without_catalogue = cutting_sheet_html(&design, &solved, None, &[]);
     assert!(
-        without_catalogue.contains(&format!("<td>{:.4}</td>", design.meta.refractive_index)),
+        without_catalogue.contains(&format!(
+            "<td>{:.3} (My Garnet)</td>",
+            design.meta.refractive_index
+        )),
         "{without_catalogue}"
     );
 }
 
 /// An unnamed design (every untouched import) whose effective RI sits at
-/// sapphire's own must print the guess label "Sapphire? (from RI 1.76)",
-/// never a bare number passed off as fact.
+/// sapphire's own must print the guess "Sapphire?", never the bare name passed
+/// off as fact.
 #[test]
-fn material_header_text_shows_a_guess_for_an_unnamed_design_near_a_builtin() {
+fn material_label_shows_a_guess_for_an_unnamed_design_near_a_builtin() {
     let mut design = round_brilliant_design();
     design.meta.refractive_index = 1.76;
     design.material = MaterialSelection::none();
     let n_d = design.effective_refractive_index_with(&[]);
-    assert_eq!(
-        material_header_text(&design, n_d),
-        "Sapphire? (from RI 1.76)"
-    );
+    assert_eq!(material_label(&design, n_d).as_deref(), Some("Sapphire?"));
 }
 
-/// Once a material name IS set, the header must print it plainly -- no
+/// Once a material name IS set, the line prints it plainly -- no
 /// guess wording once something is a stated fact.
 #[test]
-fn material_header_text_prints_the_name_plainly_once_set() {
+fn material_label_prints_the_name_plainly_once_set() {
     let mut design = round_brilliant_design();
     design.material = MaterialSelection {
         name: Some("Sapphire".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     let n_d = design.effective_refractive_index_with(&[]);
-    assert_eq!(material_header_text(&design, n_d), "Sapphire");
+    assert_eq!(material_label(&design, n_d).as_deref(), Some("Sapphire"));
+}
+
+/// An unnamed design whose index is close to no built-in prints no material at all: the line
+/// is the bare index, not an invented species.
+#[test]
+fn material_label_is_absent_when_nothing_is_close() {
+    let mut design = round_brilliant_design();
+    design.meta.refractive_index = 1.90;
+    design.material = MaterialSelection::none();
+    let n_d = design.effective_refractive_index_with(&[]);
+    assert_eq!(material_label(&design, n_d), None);
 }
 
 /// The generated sheet must carry one row per tier, in cutting order, with
-/// the step number, tier name and formatted mast all present -- a basic
-/// "does the known schedule show up" check before the more targeted tests
-/// below.
+/// the step number, tier code, tier name (in the instruction text) and formatted mast all
+/// present -- a basic "does the known schedule show up" check before the more targeted
+/// tests below.
 #[test]
 fn cutting_sheet_html_contains_expected_rows() {
     let design = round_brilliant_design();
     let solved = design.solve().expect("every tier is pinned");
     let html = cutting_sheet_html(&design, &solved, None, &[]);
 
-    assert!(html.contains("<h1>Cutting Sheet</h1>"));
-    assert!(html.contains("Table"));
-    assert!(html.contains("Crown Main"));
-    assert!(html.contains("Pavilion Main"));
-    assert!(html.contains("Culet"));
-    // One row per tier: count `<tr>` tags inside `<tbody>...</tbody>` only,
-    // so the meta table's own rows and the tier table's `<thead>` row
-    // (which also opens with `<tr>`) are never counted.
-    let tbody_start = html.find("<tbody>").expect("tbody present") + "<tbody>".len();
-    let tbody_end = html.find("</tbody>").expect("tbody closes");
-    let tr_count = html[tbody_start..tbody_end].matches("<tr>").count();
+    // No title on the fixture: the heading is "Cutting instructions".
+    assert!(html.contains("<h1>Cutting instructions</h1>"));
+    assert!(html.contains("<td>T</td>"), "the table's code is T");
+    assert!(html.contains("Table: Set to mast depth 0.3200"));
+    assert!(html.contains("Crown Main: Set to mast depth 0.5900"));
+    assert!(html.contains("Pavilion Main: Set to mast depth 0.6700"));
+    assert!(html.contains("<td>Culet</td>"));
+    // One row per tier: count `<tr>` tags inside the `<tbody>...</tbody>` blocks only
+    // (the Pavilion and the Crown section), so the data tables' own rows and the section
+    // tables' `<thead>` rows (which also open with `<tr>`) are never counted.
+    let tr_count: usize = html
+        .split("<tbody>")
+        .skip(1)
+        .map(|body| {
+            body.split("</tbody>")
+                .next()
+                .map_or(0, |rows| rows.matches("<tr>").count())
+        })
+        .sum();
     assert_eq!(tr_count, design.tiers.len());
 }
 
@@ -171,15 +226,14 @@ fn mm_column_appears_only_when_girdle_diameter_is_set() {
     assert!(html_with_mm.contains("Girdle diameter"));
 }
 
-/// Crown/Pavilion/Girdle labels must come from the solver's own
-/// `classify_blocks`, not the sign of the printed angle -- the mistake this
-/// codebase already made once. `standard_round_brilliant`'s own tiers give
-/// a known split: Table/Star/Crown Main/Upper Girdle are Crown, the 90-degree
-/// `Girdle` tier is Girdle, and Pavilion Main/Lower Girdle/Culet (the last at
-/// a sign-negative zero angle, which is the pavilion side) are
-/// Pavilion.
+/// The section a row is in must come from the solver's own `classify_blocks`, not the sign
+/// of the printed angle -- the mistake this codebase already made once.
+/// `standard_round_brilliant`'s own tiers give a known split: Table/Star/Crown Main/Upper
+/// Girdle are Crown, the 90-degree `Girdle` tier is Girdle (printed in the Pavilion
+/// section), and Pavilion Main/Lower Girdle/Culet (the last at a sign-negative zero angle,
+/// which is the pavilion side) are Pavilion.
 #[test]
-fn block_labels_match_classify_blocks_not_angle_sign() {
+fn sections_match_classify_blocks_not_angle_sign() {
     let design = round_brilliant_design();
     let solved = design.solve().expect("every tier is pinned");
     let blocks = classify_blocks(&design.meet_tier_inputs());
@@ -201,14 +255,19 @@ fn block_labels_match_classify_blocks_not_angle_sign() {
     // "Culet" sits at angle `-0.0` -- a naive sign-of-the-formatted-string
     // check would call that Crown (`-0.0` formats with no visible sign in
     // some locales, or as positive zero); `classify_blocks` reads the sign of
-    // the zero and puts it on the pavilion, and that is what the printed label
-    // must say.
-    let culet_row_start = html.find("Culet").expect("Culet row present");
-    let row_html = &html[culet_row_start..culet_row_start + 400.min(html.len() - culet_row_start)];
+    // the zero and puts it on the pavilion, and that is the section it must print in.
+    let pavilion = section_html(&html, "Pavilion");
+    let crown = section_html(&html, "Crown");
     assert!(
-        row_html.contains("block-pavilion"),
-        "Culet's row must be labelled Pavilion, got: {row_html}"
+        pavilion.contains("<td>Culet</td>"),
+        "Culet belongs to the Pavilion section: {pavilion}"
     );
+    assert!(!crown.contains("<td>Culet</td>"), "{crown}");
+    assert!(
+        pavilion.contains("<td>G1</td>"),
+        "the girdle is part of the Pavilion section: {pavilion}"
+    );
+    assert!(!crown.contains("<td>G1</td>"), "{crown}");
 }
 
 /// `render_cut_diagram` must produce a non-empty PNG for a design that
@@ -296,8 +355,11 @@ fn html_sheet_groups_each_concave_pair_in_one_tbody() {
         .collect();
     assert_eq!(with_tool.len(), design.concave_tiers.len());
     for body in with_tool {
-        assert_eq!(body.matches("<tr").count(), 2, "facet line and tool line");
-        assert_eq!(body.matches("class=\"tool\"").count(), 1);
+        // A chunk runs to the next `<tbody`, so the last tier of a section drags the next
+        // section's `<thead><tr>` along: count the rows inside the body only.
+        let inside = body.split("</tbody>").next().unwrap_or(body);
+        assert_eq!(inside.matches("<tr").count(), 2, "facet line and tool line");
+        assert_eq!(inside.matches("class=\"tool\"").count(), 1);
     }
     for tier in &design.concave_tiers {
         for field in tier.second_line_fields() {
@@ -308,14 +370,181 @@ fn html_sheet_groups_each_concave_pair_in_one_tbody() {
     assert!(html.contains("class=\"mm\""));
 }
 
-/// A planar sheet keeps its single `<tbody>` and gains no banding rules.
+/// A planar sheet keeps one plain `<tbody>` per section (Pavilion, Crown) and gains no
+/// banding rules.
 #[test]
 fn html_sheet_for_a_planar_design_has_no_banding() {
     let design = round_brilliant_design();
     let solved = design.solve().expect("every tier is pinned");
     let html = cutting_sheet_html(&design, &solved, None, &[]);
-    assert_eq!(html.matches("<tbody").count(), 1);
+    assert_eq!(html.matches("<tbody").count(), 2);
     assert!(!html.contains("band-a") && !html.contains("tr.tool"));
+}
+
+/// A planar design is no longer printed in its stored order: the fixture is stored top-down
+/// (table first), the sheet lists the pavilion and girdle tiers first (the Pavilion
+/// section), the crown next and the table last (the Crown section), each row labelled with
+/// its code. The step numbers run on across the two sections.
+#[test]
+fn html_rows_of_a_planar_design_follow_the_cutting_order() {
+    let design = round_brilliant_design();
+    let solved = design.solve().expect("every tier is pinned");
+    let html = cutting_sheet_html(&design, &solved, None, &[]);
+
+    assert_eq!(
+        label_cells(&html),
+        ["G1", "P1", "P2", "Culet", "C1", "C2", "C3", "T"]
+    );
+    assert_eq!(
+        label_cells(section_html(&html, "Pavilion")),
+        ["G1", "P1", "P2", "Culet"],
+        "the girdle is cut with the pavilion"
+    );
+    let crown = section_html(&html, "Crown");
+    assert_eq!(label_cells(crown), ["C1", "C2", "C3", "T"]);
+    assert!(
+        section_html(&html, "Pavilion").contains("<td>1</td><td>G1</td>"),
+        "step 1 opens the Pavilion section"
+    );
+    assert!(
+        crown.contains("<td>8</td><td>T</td>"),
+        "step 8, the table, is a Crown row"
+    );
+    // The tier's own name opens the instruction text, the code owns the label column.
+    assert!(html.contains("Pavilion Main: Set to mast depth 0.6700"));
+    assert!(!html.contains("<td>Pavilion Main</td>"));
+}
+
+/// The stored order still decides the order inside a section: the fixture stored bottom-up
+/// (culet first, table last) prints the pavilion and girdle tiers in that stored order, then
+/// the crown tiers in theirs, the table last, and the codes are numbered along the rows.
+#[test]
+fn html_rows_keep_the_stored_order_inside_a_section() {
+    let mut design = round_brilliant_design();
+    design.tiers.reverse();
+    let solved = design.solve().expect("every tier is pinned");
+    let html = cutting_sheet_html(&design, &solved, None, &[]);
+    assert_eq!(
+        label_cells(&html),
+        ["Culet", "P1", "P2", "G1", "C1", "C2", "C3", "T"]
+    );
+    assert_eq!(
+        label_cells(section_html(&html, "Pavilion")),
+        ["Culet", "P1", "P2", "G1"]
+    );
+    assert_eq!(
+        label_cells(section_html(&html, "Crown")),
+        ["C1", "C2", "C3", "T"]
+    );
+}
+
+/// A concave design's rows are the cutting order too, labelled with `tier_codes()` (a concave
+/// tier continues the P/C counts), and a concave row's block cell is the side its angle is on.
+#[test]
+fn html_rows_of_a_concave_design_follow_the_cutting_order_with_codes() {
+    let design = Design::concave_fixture();
+    let solved = design.solve().expect("the fixture's flat tiers solve");
+    let html = cutting_sheet_html(&design, &solved, None, &[]);
+
+    let codes = design.tier_codes();
+    let order = design.cutting_order();
+    let expected_codes: Vec<String> = order
+        .iter()
+        .map(|tier| match *tier {
+            TierRef::Flat(i) => codes.flat[i].code.clone(),
+            TierRef::Concave(i) => codes.concave[i].code.clone(),
+        })
+        .collect();
+    assert_eq!(label_cells(&html), expected_codes);
+
+    // A row is in the Crown section when its tier is on the crown side; a girdle (90 degrees)
+    // and everything on the pavilion side is in the Pavilion section.
+    let is_crown: Vec<bool> = order
+        .iter()
+        .map(|tier| match *tier {
+            TierRef::Flat(i) => {
+                let angle = design.tiers[i].angle_deg;
+                angle.abs() < 90.0 && angle >= 0.0
+            }
+            TierRef::Concave(i) => design.concave_tiers[i].is_crown_side(),
+        })
+        .collect();
+    let section_of = |wanted: bool| -> Vec<String> {
+        expected_codes
+            .iter()
+            .zip(&is_crown)
+            .filter(|&(_, &crown)| crown == wanted)
+            .map(|(code, _)| code.clone())
+            .collect()
+    };
+    assert_eq!(
+        label_cells(section_html(&html, "Pavilion")),
+        section_of(false)
+    );
+    assert_eq!(label_cells(section_html(&html, "Crown")), section_of(true));
+}
+
+/// A concave tier has no mast: its mast cells read `-` (as the text sheet's do), its tool
+/// line keeps the code, theta and displacement under the facet line's columns, and the
+/// details cell spans the rest (instruction, mast, mm: three cells here, since the fixture
+/// sets a girdle diameter).
+#[test]
+fn html_concave_rows_print_a_dash_for_the_mast_and_keep_their_tool_line() {
+    let design = Design::concave_fixture();
+    let solved = design.solve().expect("the fixture's flat tiers solve");
+    let html = cutting_sheet_html(&design, &solved, None, &[]);
+    let groove_body = html
+        .split("<tbody")
+        .find(|body| body.contains("Groove:"))
+        .expect("the groove's own body");
+    assert!(
+        groove_body.contains("<td>-</td><td>-</td></tr>"),
+        "mast and mast (mm) of a concave facet line: {groove_body}"
+    );
+    assert!(
+        groove_body.contains("<tr class=\"tool\"><td></td>"),
+        "{groove_body}"
+    );
+    assert!(groove_body.contains("colspan=\"3\""), "{groove_body}");
+}
+
+/// The index column is the text sheet's: dash-separated, two digits per position, `-` for a
+/// tier with no list.
+#[test]
+fn html_index_cells_are_dash_separated_and_zero_padded() {
+    let design = round_brilliant_design();
+    let solved = design.solve().expect("every tier is pinned");
+    let html = cutting_sheet_html(&design, &solved, None, &[]);
+    assert!(html.contains("<td>00-12-24-36-48-60-72-84</td>"), "{html}");
+    assert!(html.contains("<td>06-18-30-42-54-66-78-90</td>"), "{html}");
+    assert!(
+        html.contains("<td>95-01-11-13-23-25-35-37-47-49-59-61-71-73-83-85</td>"),
+        "{html}"
+    );
+    assert!(html.contains("<td>-</td>"), "an empty list prints a dash");
+    assert!(!html.contains("<td>0, 12"), "no comma lists any more");
+}
+
+/// A Meet instruction names its targets by code, and the name in front of it is the tier's own.
+#[test]
+fn html_meet_cells_use_codes_and_lead_with_the_tier_name() {
+    let mut design = round_brilliant_design();
+    // The sheet only needs one solved entry per tier, so the pinned fixture's own masts stand
+    // in while the girdle (stored 4) is changed to meet the two main tiers by their names.
+    let solved = design.solve().expect("every tier is pinned");
+    design.tiers[4].constraint =
+        indicatrix::geometry::meet_solver::MeetConstraint::MeetNamed(vec![
+            "Pavilion Main".to_string(),
+            "Crown Main".to_string(),
+        ]);
+    let html = cutting_sheet_html(&design, &solved, None, &[]);
+    let codes = design.tier_codes();
+    let pavilion = &codes.flat[5].code;
+    let crown = &codes.flat[2].code;
+    assert!(
+        html.contains(&format!("Girdle: Meet {pavilion}, {crown}")),
+        "{html}"
+    );
 }
 
 /// The millimetre figures beside a concave tool line are the resolver's width-relative

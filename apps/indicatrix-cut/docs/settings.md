@@ -48,10 +48,10 @@ target_samples = 256
 max_bounces = 12
 exposure = 1.0
 light_yaw_deg = 48.0
-light_pitch_deg = 54.0
-lighting_rig = "Gem Studio Ring Lights"
-camera_yaw = 0.6
-camera_pitch = 0.45
+light_pitch_deg = 72.0
+lighting_rig = "Light tent + black cards"
+camera_yaw = 0.35
+camera_pitch = 1.15
 camera_distance = 2.4
 selected_material = "Diamond"
 denoise_enabled = true
@@ -117,6 +117,20 @@ previews never read it. The key is optional (a file without it loads `1.0`) and 
 hand-edited value outside the range loads as the nearest valid one (NaN as `1.0`).
 It is not part of a saved lighting preset.
 
+### Head shadow
+
+`head_shadow_deg` (`0.0..=30.0`, default `16.0`) is the angular radius, in degrees, of
+the viewer's head shadow on the lit lighting presets (light tent and its variants, grading
+tray, daylight sky); `0.0` turns it off. The dialog's "Head shadow" slider drags it in whole
+degrees. The Studio rigs, the UV lamps and an HDR map ignore it. It follows into the
+live view, remote workers and exports (it rides `SceneState::head_shadow_deg`, protocol
+v22, and `RenderContext::head_shadow_deg` into the scene identity, so a change restarts
+accumulation). The key is optional (a file without it loads `16.0`) and a hand-edited
+value outside the range loads as the nearest valid one (NaN as `16.0`). The on-screen
+brilliance, windowing and extinction figures follow the slider under the lit presets;
+the Optimize and Retarget searches always score with the default 16 degrees. It is not
+part of a saved lighting preset or a design's stored lighting.
+
 ### Bounce cap
 
 `max_bounces` is independent of the sample count. Default 12; the dialog offers
@@ -133,6 +147,40 @@ as written for rendering; only the highlighted pill snaps to the nearest rung.
 
 Render resolution is its own setting (`render_width`/`render_height`), not part
 of either control.
+
+### Interface preferences
+
+Edit > Preferences... (Ctrl+Comma) writes these top-level keys; the
+[manual chapter](manual/17-preferences-and-accessibility.md) explains what each one does.
+
+| Key | Values | Default |
+|---|---|---|
+| `ui_mode` | `"simple"` or `"advanced"` | `"advanced"` for a file without the key; `"simple"` on a brand-new install |
+| `first_run_tour_done` | `true` / `false` | `true` for a file without the key; `false` on a brand-new install |
+| `tutorials_completed` | list of tutorial ids | empty |
+| `ui_scale_percent` | `0` (Automatic) or one of 75, 90, 100, 110, 125, 150, 175, 200 | `0` |
+| `high_contrast` | `true` / `false` | `false` |
+| `large_handles` | `true` / `false` | `false` |
+| `manipulate_snap_off` | `true` / `false` | `false` |
+| `slice_symmetric` | `true` / `false` | `true` |
+
+**New install versus existing install.** Only an *absent* settings file is a brand-new
+install: it starts in the Simple interface with the welcome tour still to come. A file
+that exists but lacks these keys (an install from before the switch), and a file that
+could not be read, belong to someone who already uses the app, so they load `"advanced"`
+with the tour marked done -- nobody loses controls or gets a tour they did not ask for.
+An unfamiliar `ui_mode` word loads as `"advanced"`.
+
+**UI scale.** `ui_scale_percent` is read once, at the very start of the program
+(`settings::store::peek_ui_scale_percent`), and handed to the windowing layer as
+`SLINT_SCALE_FACTOR` (for example `1.25`) before the first window exists, so a change
+needs a restart. If you set `SLINT_SCALE_FACTOR` yourself, your value wins. A value that is
+not offered (a hand-edited `133`, say) loads as `0`, Automatic.
+
+**Snap and Slice.** `manipulate_snap_off` is the Solid viewport's Snap pill and
+`slice_symmetric` is the Slice tool's Symmetric pill; both are remembered. Whether the
+Slice tool itself is on (`slice_mode`) is deliberately not saved: it changes what a
+left-drag does, so every session starts with it off.
 
 ### Remote endpoint (`RemoteEndpoint`)
 

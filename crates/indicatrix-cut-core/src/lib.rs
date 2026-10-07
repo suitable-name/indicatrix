@@ -147,14 +147,16 @@ pub mod yield_metrics;
 
 pub use cutting_sheet::{
     ConcaveRowInfo, ConcaveTierDelta, CutSheetRow, CuttingSheet, SHEET_NAME_WIDTH, TierDelta,
-    diff_concave_tiers, diff_tiers,
+    diff_concave_tiers, diff_tiers, format_sheet_index, format_sheet_indices,
 };
 pub use design::{
-    ConstraintTier, Design, DesignSolveError, FreshDesignSpec, MissingAnchor, ScheduleMeta,
-    SolveMismatch, TargetResolveError, TierId, TierLabelInfo, TierTarget, compute_tier_labels,
-    convert_legacy_facet_name, is_legacy_123_abc, name_indicates_pavilion,
+    ConstraintTier, Design, DesignSolveError, DesignTierCodes, FreshDesignSpec, MissingAnchor,
+    ScheduleMeta, SolveMismatch, TargetResolveError, TierId, TierLabelInfo, TierTarget,
+    compute_tier_labels, convert_legacy_facet_name, is_legacy_123_abc, name_indicates_pavilion,
 };
-pub use edit::{Edit, EditError, History, RemapRounding, remap_ratio};
+pub use edit::{
+    Edit, EditError, History, HistoryEntry, JumpError, RemapRounding, ScheduleState, remap_ratio,
+};
 pub use manufacturability::{
     DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, ManufacturabilityWarning, check_manufacturability,
     degenerate_suspects,
@@ -174,9 +176,12 @@ pub use optics_hints::{
     tier_margin_deg, windowing_risk,
 };
 pub use optimize::{
-    AngleChange, CANONICAL_LIGHTING_PRESET, ObjectiveComponents, ObjectiveFidelity,
-    ObjectiveWeights, OptimizeConfig, OptimizeOutcome, SearchHooks, apply_optimize_outcome,
-    evaluate_objective, evaluate_objective_under, free_tier_indices, optimize_design,
+    AngleChange, CANONICAL_LIGHTING_PRESET, FaceUpTone, MastChange, ObjectiveComponents,
+    ObjectiveFidelity, ObjectivePreset, ObjectiveWeights, OptimizeCandidate, OptimizeConfig,
+    OptimizeOptions, OptimizeOutcome, OptimizeResult, SearchHooks, ShapeTarget, ToneGoal,
+    apply_optimize_candidate, apply_optimize_outcome, apply_optimize_result, evaluate_objective,
+    evaluate_objective_under, evaluate_objective_with_tone, evaluate_objective_with_tone_under,
+    free_tier_indices, free_tier_indices_with, optimize_design, optimize_design_with,
 };
 pub use orbit::{OrbitUnit, expected_orbit, mirror_indices, orbit_units, rotate_indices};
 pub use preform::{PreformShape, PreformSpec};

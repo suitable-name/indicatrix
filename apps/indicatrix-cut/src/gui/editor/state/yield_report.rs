@@ -23,6 +23,8 @@ pub(in crate::gui::editor) fn cutting_instructions_rows(
         .map(|row| AngleItem {
             order_idx: row.order_idx,
             side: row.side,
+            // A design's own rows already carry the label the tier table shows.
+            code: row.facet.clone().into(),
             facet: row.facet.into(),
             angle: row.angle.into(),
             index_val: row.index_val.into(),

@@ -2,21 +2,31 @@
 //! that also lives behind this dialog's own shell (`RetargetModel.compare_open`).
 
 use crate::{
-    EditorModel, MainWindow, RetargetModel, RetargetRowItem,
+    EditorModel, MainWindow, RetargetModel, RetargetRowItem, ViewportModel,
+    bridge::render_thread::RenderContext,
     gui::{
         editor::{
+            compare::snapshot_summary,
             native_io,
             state::{EditorState, design_label_text},
             view,
         },
         show_toast,
+        tutorial_events::raise,
     },
 };
-use indicatrix::geometry::meet_solver::SolvedTier;
+use indicatrix::{geometry::meet_solver::SolvedTier, optics::LightingPreset};
 use indicatrix_cut_core::{Design, TierDelta, diff_tiers};
-use indicatrix_editor::snapshot::DesignSnapshot;
+use indicatrix_editor::{
+    guide::solving_events::{COMPARE_OPENED, SNAPSHOT_TAKEN},
+    snapshot::DesignSnapshot,
+};
 use slint::{Color, ComponentHandle, ModelRc, VecModel};
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::{Arc, Mutex, PoisonError},
+};
 
 thread_local! {
     /// A design plus its solved masts,
@@ -39,6 +49,66 @@ pub(in crate::gui::editor) fn snapshot_for_compare() -> Option<(Design, String)>
             .as_ref()
             .map(|snapshot| (snapshot.design.clone(), snapshot.label.clone()))
     })
+}
+
+/// Holds `design`, solved to `solved`, as the snapshot "Compare to Snapshot" and "Compare
+/// visually..." measure against -- what Snapshot Design does for the open design, without its
+/// toast. A guide's "Build this design" lesson holds the library design it rebuilds this way
+/// while its last step is open, so the learner's stone can be compared with the original.
+pub(in crate::gui::editor) fn hold_reference_snapshot(
+    ui: &MainWindow,
+    design: Design,
+    solved: Vec<SolvedTier>,
+    label: &str,
+) {
+    DESIGN_SNAPSHOT.with(|cell| {
+        *cell.borrow_mut() = Some(DesignSnapshot {
+            design,
+            solved: Some(solved),
+            label: label.to_string(),
+            from_retarget_apply: false,
+        });
+    });
+    ui.global::<EditorModel>().set_has_snapshot(true);
+}
+
+/// The label of the snapshot held on Retarget Apply, e.g. `Before retarget to Sapphire`.
+/// Display only: whether a snapshot is the original is [`DesignSnapshot::from_retarget_apply`].
+#[must_use]
+pub(in crate::gui::editor) fn original_snapshot_label(target: &str) -> String {
+    format!("Before retarget to {target}")
+}
+
+/// The held snapshot's design and label, only when it is the original kept by a Retarget
+/// Apply -- `None` for no snapshot or one the cutter took themselves.
+#[must_use]
+pub(in crate::gui::editor) fn original_for_compare() -> Option<(Design, String)> {
+    DESIGN_SNAPSHOT.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .filter(|snapshot| snapshot.from_retarget_apply)
+            .map(|snapshot| (snapshot.design.clone(), snapshot.label.clone()))
+    })
+}
+
+/// Holds the design as it was before a Retarget Apply as the reference snapshot, replacing any
+/// earlier one (no database write). `solved` is the cached solve of that design when one is
+/// at hand; without it the snapshot's mast diff simply has no old masts.
+pub(in crate::gui::editor) fn hold_original_before_retarget(
+    ui: &MainWindow,
+    design: Design,
+    solved: Option<Vec<SolvedTier>>,
+    label: &str,
+) {
+    DESIGN_SNAPSHOT.with(|cell| {
+        *cell.borrow_mut() = Some(DesignSnapshot {
+            design,
+            solved,
+            label: label.to_string(),
+            from_retarget_apply: true,
+        });
+    });
+    ui.global::<EditorModel>().set_has_snapshot(true);
 }
 
 // The pure diff-row view (the status badge, the signed mast delta, the angle texts) moved
@@ -90,6 +160,7 @@ fn store_design_snapshot(
             design: design.clone(),
             solved,
             label: label.to_string(),
+            from_retarget_apply: false,
         });
     });
     // "Compare to Snapshot" is
@@ -97,6 +168,7 @@ fn store_design_snapshot(
     // within a session, so this only ever goes `true`.
     ui.global::<EditorModel>().set_has_snapshot(true);
     show_toast(ui, &format!("Snapshot taken: \"{label}\"."), "success");
+    raise(ui, SNAPSHOT_TAKEN);
 }
 
 /// [`setup_snapshot_callbacks`]'s `compare_to_snapshot` tail -- diffs `snapshot`
@@ -105,8 +177,13 @@ fn store_design_snapshot(
 /// (`RetargetModel.compare_open`) -- see `retarget_dialog.slint`'s own `if
 /// compare_open` branch. Shared by that callback's own cache-hit/cache-miss
 /// paths, the same reasoning [`store_design_snapshot`] documents on itself.
+///
+/// The label carries a second line, in words, about how the stone differs optically
+/// (`gui::editor::compare::snapshot_summary`): the table-up figures of both designs take a
+/// few milliseconds, under the viewport's lighting.
 fn show_compare_to_snapshot(
     ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
     snapshot: &DesignSnapshot,
     design: &Design,
     current_label: &str,
@@ -119,12 +196,33 @@ fn show_compare_to_snapshot(
         current_solved,
     );
     let rows = diff_rows_from_deltas(&deltas);
+    let custom = render_ctx
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .custom_materials
+        .as_ref()
+        .clone();
+    let lighting =
+        LightingPreset::from_index(ui.global::<ViewportModel>().get_selected_lighting_index());
+    let optical = snapshot_summary(
+        &snapshot.design,
+        snapshot.solved.as_deref(),
+        design,
+        current_solved,
+        &custom,
+        lighting,
+    );
     ui.global::<RetargetModel>()
         .set_compare_rows(ModelRc::new(VecModel::from(rows)));
     ui.global::<RetargetModel>().set_compare_label(
-        format!("\"{}\" vs. current (\"{current_label}\")", snapshot.label).into(),
+        format!(
+            "\"{}\" vs. current (\"{current_label}\")\n{optical}",
+            snapshot.label
+        )
+        .into(),
     );
     ui.global::<RetargetModel>().set_compare_open(true);
+    raise(ui, COMPARE_OPENED);
 }
 
 /// "Snapshot Design"/"Compare to Snapshot": registers both
@@ -144,6 +242,7 @@ fn show_compare_to_snapshot(
 pub(in crate::gui::editor) fn setup_snapshot_callbacks(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
+    render_ctx: &Arc<Mutex<RenderContext>>,
     solid_last_solved: &view::SolidLastSolved,
 ) {
     {
@@ -186,6 +285,7 @@ pub(in crate::gui::editor) fn setup_snapshot_callbacks(
 
     {
         let state = Rc::clone(state);
+        let render_ctx = Arc::clone(render_ctx);
         let solid_last_solved = Arc::clone(solid_last_solved);
         let ui_weak = ui.as_weak();
         ui.global::<EditorModel>().on_compare_to_snapshot(move || {
@@ -222,6 +322,7 @@ pub(in crate::gui::editor) fn setup_snapshot_callbacks(
             if let Some(current_solved) = &cached {
                 show_compare_to_snapshot(
                     &ui,
+                    &render_ctx,
                     &snapshot,
                     &design,
                     &current_label,
@@ -229,9 +330,11 @@ pub(in crate::gui::editor) fn setup_snapshot_callbacks(
                 );
                 return;
             }
+            let render_ctx = Arc::clone(&render_ctx);
             native_io::resolve_solved_then(&ui, design, move |ui, design, solved| {
                 show_compare_to_snapshot(
                     ui,
+                    &render_ctx,
                     &snapshot,
                     &design,
                     &current_label,

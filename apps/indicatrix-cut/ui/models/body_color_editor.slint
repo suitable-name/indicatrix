@@ -1,0 +1,36 @@
+// State of the path-aware L*C*h body-colour editor (`components/material_editor/lch_editor.slint`).
+//
+// Tone, Saturation and Hue are the sliders' values (CIE L*, C*, h at D65). Rust solves the
+// colour for the design's reference path on a background thread
+// (`gui::editor::render_color`, `gui::editor::lch_color`) and pushes the swatches of the
+// solved colour at 3 mm / 5 mm / 10 mm / "this stone", the reachability badge and `busy`.
+// Nothing is stored in the design until `apply_requested` (one undoable edit).
+export global BodyColorEditorModel {
+    in-out property <float> tone: 55.0;
+    in-out property <float> chroma: 40.0;
+    in-out property <float> hue: 260.0;
+    // The solved colour as it looks at each reference path, with its caption.
+    in property <[color]> swatches: [];
+    in property <[string]> swatch_labels: [];
+    // "Reachable (Delta E 0.8)" or the distance of the closest reachable colour.
+    in property <string> badge_text: "";
+    in property <bool> reachable: true;
+    // A solve is running.
+    in property <bool> busy: false;
+    // At least one solve has finished since the editor opened, so "Apply colour" has something.
+    in property <bool> has_solution: false;
+
+    // Where "Apply colour" stores the solve: 0 = the open design's material (Design settings and
+    // the Live Render popup of a linked design), 1 = the material editor dialog's colour (kept
+    // in the dialog until Save). The caller sets it just before `open_requested()`.
+    in-out property <int> target: 0;
+
+    // The editor opened: seed the sliders from the `target`'s stored colour and solve.
+    callback open_requested();
+    // A slider moved (tone, chroma, hue): solve again (the newest request wins).
+    callback lch_edited(float, float, float);
+    // The hue/saturation/brightness picker's colour: converted to L*C*h, set on the sliders, solved.
+    callback picker_picked(color);
+    // Apply colour: store the last solved colour in the design as ONE undoable edit.
+    callback apply_requested();
+}

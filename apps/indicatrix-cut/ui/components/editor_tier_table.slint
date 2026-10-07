@@ -68,7 +68,8 @@ export component EditorTierTable inherits Rectangle {
     // A narrow badge column for this tier's `ManufacturabilityWarning`(s), so
     // warnings appear on the offending row instead of only in the Log popup.
     property <length> col_warn_width: 18px;
-    property <length> col_block_width: 26px;
+    // Wide enough for the longest code (`Culet`, `PF12`).
+    property <length> col_block_width: 40px;
     // Widened to fit the proposed-angle ghost alongside the real value without
     // eliding either.
     property <length> col_angle_width: 104px;
@@ -85,7 +86,8 @@ export component EditorTierTable inherits Rectangle {
     property <length> col_pin_width: 34px;
     property <length> col_detach_width: 54px;
     property <length> col_anchor_width: 60px;
-    property <length> col_move_width: 20px;
+    // Two 20 px buttons (move up, move down) side by side.
+    property <length> col_move_width: 40px;
     property <length> col_dup_width: 20px;
     property <length> col_remove_width: 20px;
 
@@ -222,6 +224,9 @@ export component EditorTierTable inherits Rectangle {
             // Empty design: do not take focus, so Tab/arrows cannot select a
             // non-existent row 0.
             enabled: EditorModel.tiers.length > 0;
+            accessible-role: AccessibleRole.list;
+            accessible-label: "Tiers";
+            accessible-description: "Up and Down move through the tiers, Home and End jump to the first and last, Space adds the tier to the selection, F2 edits its angle and Delete removes it. Tab then walks the buttons of the tier you are on.";
             // Mirrors `root.keyboard_focus_index` so scrolling the cursor into view
             // is driven from ONE place regardless of what moved it (arrow keys/F2
             // below, an in-list click, or `focus_row` called from outside this
@@ -331,6 +336,14 @@ export component EditorTierTable inherits Rectangle {
                         root.inline_edit_target = root.keyboard_focus_index;
                         root.inline_edit_pulse += 1;
                         tier_scroll.content-y = root.scrolled_to_show(root.keyboard_focus_index, tier_scroll.content-y, tier_scroll.visible-height, tier_scroll.content-height);
+                    }
+                    return accept;
+                } else if event.text == Key.Space {
+                    // Space ticks the cursor row into the multi-select group: the keyboard
+                    // twin of Ctrl+click and of the Select-mode tick box. A concave row
+                    // never joins the group.
+                    if root.keyboard_focus_index >= 0 && root.keyboard_focus_index < EditorModel.tiers.length && EditorModel.tiers[root.keyboard_focus_index].kind == 0 {
+                        EditorModel.toggle_multi_select(root.keyboard_focus_index);
                     }
                     return accept;
                 } else if event.text == Key.Escape {

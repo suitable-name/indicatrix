@@ -443,6 +443,7 @@ fn cpu_frosted_bounce(case: &FrostedBounceCase, material: &GemMaterial) -> Frost
             light_pitch: 0.0,
             backdrop: 0.0,
             surface_glare: 1.0,
+            head_shadow_deg: crate::optics::raytracer::DEFAULT_HEAD_SHADOW_DEG,
         },
         plane_soa: &plane_soa,
         tools: &[],

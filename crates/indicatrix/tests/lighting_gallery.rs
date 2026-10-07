@@ -325,8 +325,10 @@ rendered on the GPU by crates/indicatrix/tests/lighting_gallery.rs. Look for:
   * Light tent + black cards: grey-to-white gradation across the facets, black card
     reflections for contrast, one hard spark; Rutile keeps a saturated yellow body
     color with dark facets instead of a pale wash; Sapphire stays deep blue.
-  * Daylight sky + sun: grey sky facets, white sun flashes with rainbow fringes,
-    dark head shadow, dark ground.
+  * Daylight sky (no sun): grey sky facets and a soft glow, no flashes; dark head
+    shadow, dark ground.
+  * Daylight sky + direct sun: the same sky plus a 0.27 degree sun (about 82 % of the
+    light): a facet that mirrors the sun flashes white with rainbow fringes.
 The exposure and key-light elevation variants show how far the light tent moves with
 the two controls the editor exposes.
 
@@ -354,6 +356,7 @@ the two controls the editor exposes.
             LightingPreset::IsoHemisphere,
             LightingPreset::LightTent,
             LightingPreset::DaylightDome,
+            LightingPreset::DaylightSun,
         ];
         let mut shots = Vec::new();
         for material in ["Diamond", "Rutile"] {

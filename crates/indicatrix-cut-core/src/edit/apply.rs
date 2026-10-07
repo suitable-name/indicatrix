@@ -48,8 +48,56 @@ impl Design {
     ///
     /// Returns [`EditError`] (without modifying `self`) when `edit` names a
     /// tier index the current schedule doesn't have -- `SetPreform` can
-    /// never fail, since it names no index.
+    /// never fail, since it names no index. A [`Edit::SetSchedule`] or an
+    /// [`Edit::ReplaceSchedule`] that shrinks the index gear below a concave tier's
+    /// index is refused the same way (naming that concave tier), as is a [`Edit::Batch`]
+    /// that ends on such a state: the remap ([`Edit::RemapIndices`]) that brings the
+    /// concave indices onto the smaller wheel must come first or be in the same batch.
+    /// Growing the gear never fails on this account, so the inverse of any such edit
+    /// always applies.
     pub fn apply_edit(&mut self, edit: Edit) -> Result<Edit, EditError> {
+        let new_gear = match &edit {
+            Edit::SetSchedule { gear_teeth, .. } => Some(*gear_teeth),
+            Edit::ReplaceSchedule(state) => Some(state.meta.gear_teeth),
+            _ => None,
+        };
+        if let Some(gear_teeth) = new_gear {
+            self.check_concave_indices_fit(self.meta.gear_teeth, gear_teeth)?;
+        }
+        self.apply_edit_unchecked(edit)
+    }
+
+    /// For a change of the index gear from `from_gear` to `to_gear` teeth, refuses a
+    /// smaller wheel when a concave tier of `self` holds an index off it
+    /// (`index > |to_gear|`; the ring's last position equals 0, so `|to_gear|` itself is
+    /// accepted, exactly like [`crate::design::ConcaveTier::validate`]). Keeping or
+    /// growing the gear passes without a look: every index that fitted the old wheel
+    /// fits the new one, and a design that is already invalid is not made to fail
+    /// unrelated edits.
+    ///
+    /// # Errors
+    ///
+    /// [`EditError`] naming the first offending concave tier.
+    fn check_concave_indices_fit(&self, from_gear: i32, to_gear: i32) -> Result<(), EditError> {
+        let gear = f64::from(to_gear.unsigned_abs());
+        if gear >= f64::from(from_gear.unsigned_abs()) {
+            return Ok(());
+        }
+        self.concave_tiers
+            .iter()
+            .position(|tier| tier.indices.iter().any(|&index| index > gear))
+            .map_or(Ok(()), |index| {
+                Err(EditError {
+                    index,
+                    tier_count: self.concave_tiers.len(),
+                })
+            })
+    }
+
+    /// [`Self::apply_edit`] without the schedule's concave check, which a batch runs once
+    /// on its final state instead of on each of its edits (an inverse batch undoes the
+    /// remap after the gear, and the order within a batch is the caller's).
+    fn apply_edit_unchecked(&mut self, edit: Edit) -> Result<Edit, EditError> {
         let tier_count = self.tiers.len();
         match edit {
             Edit::AddTier { index, tier } => self.apply_add_tier(index, tier, tier_count),
@@ -69,14 +117,7 @@ impl Design {
                 })
             }
             Edit::SetConstraint { index, constraint } => {
-                let Some(slot) = self.tiers.get_mut(index) else {
-                    return Err(EditError { index, tier_count });
-                };
-                let previous = std::mem::replace(&mut slot.constraint, constraint);
-                Ok(Edit::SetConstraint {
-                    index,
-                    constraint: previous,
-                })
+                self.apply_set_constraint(index, constraint, tier_count)
             }
             Edit::SetIndices {
                 index,
@@ -139,6 +180,9 @@ impl Design {
             Edit::SetTierTarget { index, target } => {
                 self.apply_set_tier_target(index, target, tier_count)
             }
+            Edit::SetTierRelation { index, relation } => {
+                self.apply_set_tier_relation(index, relation, tier_count)
+            }
             Edit::RestoreTierId { index, id } => self.apply_restore_tier_id(index, id, tier_count),
             Edit::AddConcaveTier { index, tier } => self.apply_add_concave_tier(index, tier),
             Edit::RemoveConcaveTier { index } => self.apply_remove_concave_tier(index),
@@ -149,6 +193,7 @@ impl Design {
             }
             Edit::RestoreConcaveIndices { tiers } => self.apply_restore_concave_indices(tiers),
             Edit::Batch(edits) => self.apply_batch(edits),
+            Edit::ReplaceSchedule(state) => self.apply_replace_schedule(*state),
         }
     }
 
@@ -216,6 +261,24 @@ impl Design {
         Ok(Edit::RemoveTier { index })
     }
 
+    /// [`Edit::SetConstraint`]'s own apply/inverse half, split out of
+    /// [`Self::apply_edit`] purely to stay under clippy's `too_many_lines`.
+    fn apply_set_constraint(
+        &mut self,
+        index: usize,
+        constraint: indicatrix::geometry::meet_solver::MeetConstraint,
+        tier_count: usize,
+    ) -> Result<Edit, EditError> {
+        let Some(slot) = self.tiers.get_mut(index) else {
+            return Err(EditError { index, tier_count });
+        };
+        let previous = std::mem::replace(&mut slot.constraint, constraint);
+        Ok(Edit::SetConstraint {
+            index,
+            constraint: previous,
+        })
+    }
+
     /// [`Edit::RestoreTierId`]'s own apply/inverse half, split out of
     /// [`Self::apply_edit`] purely to stay under clippy's `too_many_lines`. See
     /// that variant's own doc comment -- never constructed by a caller directly.
@@ -253,6 +316,11 @@ impl Design {
         let removed = self.tiers.remove(index);
         let removed_id = self.tier_ids.remove(index);
         let removed_target = self.tier_targets.remove(&removed_id);
+        // A tier that is driven by a relation takes the relation with it; undo puts
+        // it back. Relations of OTHER tiers that read the removed one are left
+        // alone here (they would dangle): an editor session clears them in the same
+        // undo step, see `indicatrix_editor::session`.
+        let removed_relation = self.tier_relations.remove(&removed_id);
         let removed_offset = self.shift_cheater_offsets_for_remove(index);
         let removed_note = self.shift_tier_notes_for_remove(index);
         let mut steps = vec![
@@ -297,6 +365,12 @@ impl Design {
             steps.push(Edit::SetTierTarget {
                 index,
                 target: Some(target),
+            });
+        }
+        if let Some(relation) = removed_relation {
+            steps.push(Edit::SetTierRelation {
+                index,
+                relation: Some(relation),
             });
         }
         // Always at least `[AddTier, RestoreTierId]` now, so this is always a
@@ -393,113 +467,35 @@ impl Design {
         })
     }
 
-    /// Renumbers [`Design::cheater_offsets_deg`] for a tier just INSERTED at
-    /// `index`: every entry at `index` or later moves up one position, exactly
-    /// matching `self.tiers.insert(index, ..)`'s own effect on positions.
-    /// Iterates from the highest key down so no entry overwrites another
-    /// before it is itself moved.
-    fn shift_cheater_offsets_for_insert(&mut self, index: usize) {
-        let to_shift: Vec<usize> = self
-            .cheater_offsets_deg
-            .range(index..)
-            .map(|(&k, _)| k)
-            .rev()
-            .collect();
-        for key in to_shift {
-            if let Some(value) = self.cheater_offsets_deg.remove(&key) {
-                self.cheater_offsets_deg.insert(key + 1, value);
-            }
+    /// [`Edit::SetTierRelation`]'s own apply/inverse half, split out of
+    /// [`Self::apply_edit`] purely to stay under clippy's `too_many_lines`. Keyed by
+    /// the current occupant's [`crate::design::TierId`], so -- like
+    /// [`Self::apply_set_tier_target`] -- it never needs renumbering on
+    /// `AddTier`/`RemoveTier`/`MoveTier`. Changes only the relation map: the angle
+    /// follows when relations are evaluated (see the variant's doc comment).
+    fn apply_set_tier_relation(
+        &mut self,
+        index: usize,
+        relation: Option<crate::design::TierRelation>,
+        tier_count: usize,
+    ) -> Result<Edit, EditError> {
+        if index >= tier_count {
+            return Err(EditError { index, tier_count });
         }
-    }
-
-    /// Renumbers [`Design::cheater_offsets_deg`] for a tier just REMOVED from
-    /// `index`: takes that entry out (returning it) and shifts every later
-    /// entry down one position, exactly matching `self.tiers.remove(index)`'s
-    /// own effect on positions.
-    fn shift_cheater_offsets_for_remove(&mut self, index: usize) -> Option<f64> {
-        let removed = self.cheater_offsets_deg.remove(&index);
-        let to_shift: Vec<usize> = self
-            .cheater_offsets_deg
-            .range(index + 1..)
-            .map(|(&k, _)| k)
-            .collect();
-        for key in to_shift {
-            if let Some(value) = self.cheater_offsets_deg.remove(&key) {
-                self.cheater_offsets_deg.insert(key - 1, value);
-            }
-        }
-        removed
-    }
-
-    /// Renumbers [`Design::cheater_offsets_deg`] for a tier moved from `from`
-    /// to `to`, matching `Vec::remove(from)` then `Vec::insert(to, ..)`'s
-    /// combined effect on every position -- including relocating `from`'s own
-    /// entry (if any) to `to`, not just shifting everyone else. Used for both
-    /// [`Edit::MoveTier`] and its own exact inverse (`from`/`to` swapped),
-    /// since that reindexing is its own inverse the same way the tier-vector
-    /// move already is.
-    fn shift_cheater_offsets_for_move(&mut self, from: usize, to: usize) {
-        let moved = self.cheater_offsets_deg.remove(&from);
-        let remainder = std::mem::take(&mut self.cheater_offsets_deg);
-        self.cheater_offsets_deg = remainder
-            .into_iter()
-            .map(|(k, v)| (if k > from { k - 1 } else { k }, v))
-            .map(|(k, v)| (if k >= to { k + 1 } else { k }, v))
-            .collect();
-        if let Some(value) = moved {
-            self.cheater_offsets_deg.insert(to, value);
-        }
-    }
-
-    /// Renumbers [`Design::tier_notes`] for a tier just INSERTED at `index` --
-    /// exactly [`Self::shift_cheater_offsets_for_insert`]'s own logic, over the
-    /// note map instead of the cheater-offset one.
-    fn shift_tier_notes_for_insert(&mut self, index: usize) {
-        let to_shift: Vec<usize> = self
-            .tier_notes
-            .range(index..)
-            .map(|(&k, _)| k)
-            .rev()
-            .collect();
-        for key in to_shift {
-            if let Some(value) = self.tier_notes.remove(&key) {
-                self.tier_notes.insert(key + 1, value);
-            }
-        }
-    }
-
-    /// Renumbers [`Design::tier_notes`] for a tier just REMOVED from `index` --
-    /// exactly [`Self::shift_cheater_offsets_for_remove`]'s own logic, over the
-    /// note map instead of the cheater-offset one.
-    fn shift_tier_notes_for_remove(&mut self, index: usize) -> Option<String> {
-        let removed = self.tier_notes.remove(&index);
-        let to_shift: Vec<usize> = self
-            .tier_notes
-            .range(index + 1..)
-            .map(|(&k, _)| k)
-            .collect();
-        for key in to_shift {
-            if let Some(value) = self.tier_notes.remove(&key) {
-                self.tier_notes.insert(key - 1, value);
-            }
-        }
-        removed
-    }
-
-    /// Renumbers [`Design::tier_notes`] for a tier moved from `from` to `to` --
-    /// exactly [`Self::shift_cheater_offsets_for_move`]'s own logic, over the note
-    /// map instead of the cheater-offset one.
-    fn shift_tier_notes_for_move(&mut self, from: usize, to: usize) {
-        let moved = self.tier_notes.remove(&from);
-        let remainder = std::mem::take(&mut self.tier_notes);
-        self.tier_notes = remainder
-            .into_iter()
-            .map(|(k, v)| (if k > from { k - 1 } else { k }, v))
-            .map(|(k, v)| (if k >= to { k + 1 } else { k }, v))
-            .collect();
-        if let Some(value) = moved {
-            self.tier_notes.insert(to, value);
-        }
+        // Self-heals `tier_ids`, only after the bounds check -- see
+        // `Self::sync_tier_ids`'s own doc comment.
+        self.sync_tier_ids();
+        let Some(id) = self.tier_id_at(index) else {
+            return Err(EditError { index, tier_count });
+        };
+        let previous = match relation {
+            Some(r) => self.tier_relations.insert(id, r),
+            None => self.tier_relations.remove(&id),
+        };
+        Ok(Edit::SetTierRelation {
+            index,
+            relation: previous,
+        })
     }
 
     /// [`Edit::Batch`]'s own apply/inverse half. Validates the WHOLE batch against a
@@ -514,8 +510,12 @@ impl Design {
         let mut trial = self.clone();
         let mut inverses = Vec::with_capacity(edits.len());
         for edit in edits {
-            inverses.push(trial.apply_edit(edit)?);
+            inverses.push(trial.apply_edit_unchecked(edit)?);
         }
+        // The schedule's concave check runs once, on where the batch ends: a batch that
+        // shrinks the gear must also have brought the concave indices onto the smaller
+        // wheel, in whatever order its edits are written.
+        trial.check_concave_indices_fit(self.meta.gear_teeth, trial.meta.gear_teeth)?;
         *self = trial;
         inverses.reverse();
         Ok(Edit::Batch(inverses))

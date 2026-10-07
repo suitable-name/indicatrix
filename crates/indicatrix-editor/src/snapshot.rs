@@ -6,9 +6,7 @@
 //! `indicatrix_cut_core::diff_tiers`.
 
 use indicatrix::geometry::meet_solver::SolvedTier;
-use indicatrix_cut_core::{
-    ConcaveTierDelta, Design, TierDelta, design::ConcaveTier, diff_concave_tiers, diff_tiers,
-};
+use indicatrix_cut_core::{ConcaveTierDelta, Design, TierDelta, diff_concave_tiers, diff_tiers};
 
 /// A tier position where NEITHER the angle, the indices, nor the mast (beyond this
 /// tolerance) moved is shown as "Same" rather than "Changed", so a long, mostly-untouched
@@ -28,6 +26,10 @@ pub struct DesignSnapshot {
     /// The design's own label at snapshot time, shown in the compare header so two
     /// different snapshots across one session are never mistaken for each other.
     pub label: String,
+    /// `true` only for the "Before retarget" snapshot a Retarget Apply holds; the Optimize
+    /// comparison offers "Original" only for such a snapshot. Never set for a snapshot the
+    /// cutter took themselves, whatever its label says.
+    pub from_retarget_apply: bool,
 }
 
 /// One [`TierDelta`] as a pure, toolkit-free view -- see [`diff_row_view`] for how each
@@ -72,12 +74,17 @@ fn diff_status_label_and_rgb(delta: &TierDelta) -> (&'static str, (u8, u8, u8)) 
     }
 }
 
-/// The view of one [`TierDelta`]: angles as `"41.20\u{b0}"` (or `"-"`), the mast difference
-/// as a signed figure, and the change-status badge.
+/// An angle as the compare window shows it: `"41.20\u{b0}"`, or `"-"` for a side that has
+/// no such tier. Always the magnitude, because a person reads positive angles and the
+/// block (crown, pavilion, girdle) names the side; the stored sign stays inside the file.
+fn angle_text(angle_deg: Option<f64>) -> String {
+    angle_deg.map_or_else(|| "-".to_string(), |v| format!("{:.2}\u{b0}", v.abs()))
+}
+
+/// The view of one [`TierDelta`]: angles as `"41.20\u{b0}"` (or `"-"`, always positive),
+/// the mast difference as a signed figure, and the change-status badge.
 #[must_use]
 pub fn diff_row_view(delta: &TierDelta) -> DiffRowView {
-    let angle_text =
-        |a: Option<f64>| a.map_or_else(|| "-".to_string(), |v| format!("{v:.2}\u{b0}"));
     let mast_delta = match (delta.mast_before, delta.mast_after) {
         (Some(before), Some(after)) => format!("{:+.4}", after - before),
         _ => "-".to_string(),
@@ -103,9 +110,6 @@ pub fn diff_row_view(delta: &TierDelta) -> DiffRowView {
 /// angle, motion, indices) is a change.
 #[must_use]
 pub fn concave_diff_row_view(delta: &ConcaveTierDelta) -> DiffRowView {
-    let angle_text = |t: Option<&ConcaveTier>| {
-        t.map_or_else(|| "-".to_string(), |t| format!("{:.2}\u{b0}", t.angle_deg))
-    };
     let (status_label, status_rgb) = match (&delta.before, &delta.after) {
         (None, _) => ("Added", (0x38, 0xbd, 0xf8)),
         (_, None) => ("Removed", (0xf4, 0x3f, 0x5e)),
@@ -125,8 +129,8 @@ pub fn concave_diff_row_view(delta: &ConcaveTierDelta) -> DiffRowView {
             .as_ref()
             .or(delta.before.as_ref())
             .map_or_else(String::new, |t| t.name.clone()),
-        old_angle: angle_text(delta.before.as_ref()),
-        new_angle: angle_text(delta.after.as_ref()),
+        old_angle: angle_text(delta.before.as_ref().map(|t| t.angle_deg)),
+        new_angle: angle_text(delta.after.as_ref().map(|t| t.angle_deg)),
         mast_delta: "-".to_string(),
         status_label,
         status_rgb,
@@ -189,6 +193,7 @@ mod tests {
             design: session.design.clone(),
             solved: solved.clone(),
             label: "before".to_string(),
+            from_retarget_apply: false,
         };
         let same = compare_rows(&snapshot, &session.design, solved.as_deref());
         assert_eq!(same.len(), session.design.tiers.len());
@@ -213,6 +218,7 @@ mod tests {
             design: design.clone(),
             solved: solved.clone(),
             label: "before".to_string(),
+            from_retarget_apply: false,
         };
         let same = compare_rows(&snapshot, &design, solved.as_deref());
         assert_eq!(same.len(), design.tiers.len(), "no concave row when equal");
@@ -231,5 +237,60 @@ mod tests {
         assert_eq!(concave[1].status_label, "Removed");
         assert_eq!(concave[1].badge, "SPH");
         assert_eq!(concave[1].new_angle, "-");
+    }
+
+    #[test]
+    fn compare_angles_read_as_positive_numbers_and_a_missing_side_stays_a_dash() {
+        let delta = TierDelta {
+            index: 3,
+            name: "P1".to_string(),
+            angle_before: Some(-40.3),
+            angle_after: Some(-41.0),
+            indices_before: None,
+            indices_after: None,
+            mast_before: None,
+            mast_after: None,
+        };
+        let row = diff_row_view(&delta);
+        assert_eq!(row.old_angle, "40.30\u{b0}");
+        assert_eq!(row.new_angle, "41.00\u{b0}");
+
+        let added = TierDelta {
+            angle_before: None,
+            angle_after: Some(-39.0),
+            ..delta.clone()
+        };
+        let row = diff_row_view(&added);
+        assert_eq!(row.old_angle, "-");
+        assert_eq!(row.new_angle, "39.00\u{b0}");
+
+        let crown = TierDelta {
+            angle_before: Some(34.5),
+            angle_after: Some(35.0),
+            ..delta
+        };
+        let row = diff_row_view(&crown);
+        assert_eq!(row.old_angle, "34.50\u{b0}");
+        assert_eq!(row.new_angle, "35.00\u{b0}");
+    }
+
+    #[test]
+    fn a_concave_compare_row_shows_the_facet_angle_as_a_magnitude() {
+        let design = Design::concave_fixture();
+        let snapshot = DesignSnapshot {
+            design: design.clone(),
+            solved: None,
+            label: "before".to_string(),
+            from_retarget_apply: false,
+        };
+        let mut edited = design;
+        edited.concave_tiers[0].angle_deg = -35.0;
+        let rows = compare_rows(&snapshot, &edited, None);
+        let concave: Vec<&DiffRowView> = rows.iter().filter(|r| !r.badge.is_empty()).collect();
+        assert_eq!(
+            concave[0].old_angle, "42.00\u{b0}",
+            "the fixture's Groove is -42"
+        );
+        assert_eq!(concave[0].new_angle, "35.00\u{b0}");
     }
 }

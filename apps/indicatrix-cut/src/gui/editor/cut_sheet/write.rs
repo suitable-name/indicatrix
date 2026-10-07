@@ -4,23 +4,24 @@
 
 use indicatrix::{geometry::meet_solver::SolvedTier, optics::materials::GemMaterial};
 use indicatrix_cut_core::Design;
-use indicatrix_editor::cut_sheet::{cutting_sheet_document, diagram_export_png};
+#[cfg(test)]
+use indicatrix_editor::cut_sheet::cutting_sheet_document;
+use indicatrix_editor::cut_sheet::{SheetDetails, cutting_sheet_document_with, diagram_export_png};
 use std::path::Path;
 
-/// Builds `design`/`solved`'s cutting sheet (with an embedded diagram, when the
+/// Builds `design`/`solved`'s cutting sheet (with its four views, when the
 /// design currently closes -- see `indicatrix_editor::cut_sheet::
-/// cutting_sheet_document`) and writes it to `dest`.
+/// cutting_sheet_document`) with the header words the design carries on its own
+/// ([`SheetDetails::from_design`]) and writes it to `dest`.
 ///
-/// The save-as file-picker dialog is handled by `native_io`'s own job
-/// (`native_io::pick_file`, on a background thread), so this stays callable with
-/// no `EditorState`/UI dependency at all, and safely callable from a background
-/// thread itself. The actual `std::fs::write` also belongs on a background thread.
-///
-/// `custom` is threaded straight through to the sheet's "Refractive index" row.
+/// Only the tests and identity pins write a sheet without the open design's file details;
+/// the Export callback goes through [`write_cutting_sheet_html_with`]. `custom` is threaded
+/// straight through to the sheet's "RI" line.
 ///
 /// # Errors
 ///
 /// The write failure, ready to show as a toast.
+#[cfg(test)]
 pub fn write_cutting_sheet_html(
     design: &Design,
     solved: &[SolvedTier],
@@ -28,7 +29,33 @@ pub fn write_cutting_sheet_html(
     custom: &[GemMaterial],
 ) -> Result<(), String> {
     let html = cutting_sheet_document(design, solved, custom);
+    write_text(dest, html)
+}
 
+/// Builds the cutting sheet as above, but with explicit header `details` (the open design's
+/// title, designer, shape and notes, and the export date), and writes it to `dest`.
+///
+/// The save-as file-picker dialog is handled by `native_io`'s own job
+/// (`native_io::pick_file`, on a background thread), so this stays callable with
+/// no `EditorState`/UI dependency at all, and safely callable from a background
+/// thread itself. The actual `std::fs::write` also belongs on a background thread.
+///
+/// # Errors
+///
+/// The write failure, ready to show as a toast.
+pub fn write_cutting_sheet_html_with(
+    design: &Design,
+    solved: &[SolvedTier],
+    dest: &Path,
+    custom: &[GemMaterial],
+    details: &SheetDetails,
+) -> Result<(), String> {
+    let html = cutting_sheet_document_with(design, solved, custom, details);
+    write_text(dest, html)
+}
+
+/// Writes `html` to `dest`, creating its folder first.
+fn write_text(dest: &Path, html: String) -> Result<(), String> {
     if let Some(parent) = dest.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -40,7 +67,7 @@ pub fn write_cutting_sheet_html(
 /// written to `dest`.
 ///
 /// The save-as file-picker is handled by `native_io`, not by this function --
-/// see [`write_cutting_sheet_html`]'s own doc comment.
+/// see [`write_cutting_sheet_html_with`]'s own doc comment.
 ///
 /// # Errors
 ///

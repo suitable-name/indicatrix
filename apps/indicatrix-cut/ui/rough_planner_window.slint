@@ -44,6 +44,7 @@ component ConfirmReplaceRow inherits Rectangle {
 
             RoughPill {
                 text: "Keep";
+                hint: "Do not replace anything, so you can save the unsaved layouts first. Escape does the same.";
                 clicked => {
                     RoughPlanModel.confirm_replace(false);
                     RoughPlanModel.confirm_replace_open = false;
@@ -52,6 +53,7 @@ component ConfirmReplaceRow inherits Rectangle {
 
             RoughPill {
                 text: "Replace";
+                hint: "Throw the unsaved layouts away and go on.";
                 active: true;
                 clicked => {
                     RoughPlanModel.confirm_replace(true);
@@ -94,6 +96,9 @@ component ResultsColumn inherits VerticalLayout {
                 alignment: center;
                 RoughPill {
                     text: "Re-plan";
+                    hint: RoughPlanModel.running
+                        ? "Wait for the running plan to finish."
+                        : "Plan again with the rough, the cuts and the settings of this saved plan, against the library as it is now.";
                     active: true;
                     enabled: !RoughPlanModel.running;
                     clicked => { RoughPlanModel.replan_loaded(); }
@@ -190,6 +195,9 @@ component ResultsColumn inherits VerticalLayout {
 
         RoughPill {
             text: "Show all in library";
+            hint: RoughPlanModel.links_enabled
+                ? "Show every design these results use in the library list."
+                : "Switch to the local library first: the results link to designs there.";
             enabled: RoughPlanModel.links_enabled;
             clicked => { RoughPlanModel.show_all_in_library(); }
         }
@@ -202,6 +210,9 @@ component ResultsColumn inherits VerticalLayout {
 
         RoughPill {
             text: "Save selected (" + RoughPlanModel.keep_count + ")";
+            hint: RoughPlanModel.running ? "Wait for the plan to finish: saving reads the results it is producing."
+                : (RoughPlanModel.keep_count == 0 ? "Tick the box on one or more result cards first, then save them."
+                : "Save the layouts you ticked under a name. Ctrl+S does the same.");
             active: RoughPlanModel.keep_count > 0 && !RoughPlanModel.running;
             enabled: RoughPlanModel.keep_count > 0 && !RoughPlanModel.running;
             clicked => {
@@ -212,6 +223,8 @@ component ResultsColumn inherits VerticalLayout {
 
         RoughPill {
             text: "Save all";
+            hint: RoughPlanModel.running ? "Wait for the plan to finish: saving reads the results it is producing."
+                : "Save every layout in the results under a name.";
             enabled: !RoughPlanModel.running;
             clicked => {
                 RoughPlanModel.save_selected_only = false;
@@ -231,7 +244,7 @@ component ResultsColumn inherits VerticalLayout {
     }
 
     if RoughPlanModel.results.length > 0: Text {
-        text: "Estimate for clean, inclusion-free rough after your kerf and allowance; real yield also depends on inclusions and on how closely you follow the plan.";
+        text: "Estimate after your kerf and allowance. Inclusions you added to a mesh rough are kept clear of stones and count as material in the yield; a flaw you did not add is not known to the planner. Real yield also depends on how closely you follow the plan.";
         font-size: 10px;
         color: Theme.text-muted;
         wrap: word-wrap;
@@ -279,7 +292,7 @@ export component RoughPlannerWindow inherits Window {
                 return accept;
             }
             if (event.modifiers.control || event.modifiers.meta) && event.text == Key.Return {
-                if !RoughPlanModel.running && RoughPlanModel.materials.length > 0 && RoughPlanModel.model_error == "" {
+                if !RoughPlanModel.running && !RoughPlanModel.mesh_busy && RoughPlanModel.materials.length > 0 && RoughPlanModel.model_error == "" {
                     RoughPlanModel.plan();
                 }
                 return accept;
@@ -372,6 +385,7 @@ export component RoughPlannerWindow inherits Window {
                             font-weight: 700;
                             color: Theme.text-primary;
                             vertical-alignment: center;
+                            accessible-role: AccessibleRole.text;
                         }
 
                         if RoughPlanModel.view_busy: Text {
@@ -385,18 +399,26 @@ export component RoughPlannerWindow inherits Window {
 
                         RoughPill {
                             text: "New";
+                            hint: RoughPlanModel.running ? "Not while a plan is running. Wait for it to finish, or cancel it."
+                                : "Start again with an empty rough model and no cuts. If there are unsaved layouts you are asked first.";
                             enabled: !RoughPlanModel.running;
                             clicked => { RoughPlanModel.new_model(); }
                         }
 
                         RoughPill {
                             text: RoughPlanModel.saved_open ? "Close Saved" : "Saved plans";
+                            hint: RoughPlanModel.saved_open
+                                ? "Go back from the saved plans to the results."
+                                : "Show the plans you saved earlier, to open, rename, export or delete them. Ctrl+O does the same.";
                             active: RoughPlanModel.saved_open;
                             clicked => { RoughPlanModel.saved_open = !RoughPlanModel.saved_open; }
                         }
 
                         RoughPill {
                             text: "Save selected (" + RoughPlanModel.keep_count + ")";
+                            hint: RoughPlanModel.running ? "Wait for the plan to finish: saving reads the results it is producing."
+                                : (RoughPlanModel.keep_count == 0 ? "Tick the box on one or more result cards first, then save them."
+                                : "Save the layouts you ticked under a name. Ctrl+S does the same.");
                             active: RoughPlanModel.keep_count > 0 && !RoughPlanModel.running;
                             enabled: RoughPlanModel.keep_count > 0 && !RoughPlanModel.running;
                             clicked => {
@@ -412,11 +434,14 @@ export component RoughPlannerWindow inherits Window {
                             border-radius: 10px;
                             background: help_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
                             border-width: help_focus.has-focus ? 2px : 1px;
-                            border-color: help_focus.has-focus ? Theme.accent-cyan : Theme.border-control;
+                            border-color: help_focus.has-focus ? Theme.accent-cyan-hover : Theme.border-control;
 
-                            accessible-role: button;
+                            accessible-role: AccessibleRole.button;
                             accessible-label: "Help";
+                            accessible-description: "Open the manual page on planning a rough.";
                             accessible-action-default => { RoughPlanModel.open_help(); }
+
+                            Tooltip { text: @markdown("Open the manual page on planning a rough."); }
 
                             help_focus := FocusScope {
                                 key-pressed(event) => {

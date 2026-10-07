@@ -1,4 +1,5 @@
 import { Theme } from "../theme.slint";
+import { IconButton } from "icon_button.slint";
 
 export component Toast inherits Rectangle {
     in property <string> text: "";
@@ -55,28 +56,18 @@ export component Toast inherits Rectangle {
                 font-weight: 600;
                 color: Theme.text-primary;
                 wrap: word-wrap;
+                accessible-role: AccessibleRole.text;
             }
         }
 
-        // Close '✕' Button
-        Rectangle {
-            width: 24px;
-            height: 24px;
-            border-radius: Theme.radius-sm;
-            background: close_touch.has-hover ? Theme.overlay-hover : transparent;
-
-            close_touch := TouchArea {
-                clicked => { root.dismiss(); }
-            }
-
-            Image {
-                source: @image-url("../icons/close.svg");
-                colorize: Theme.text-secondary;
-                width: 11px;
-                height: 11px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
+        // Close (cross icon) button: Tab reaches it, Space and Enter press it.
+        IconButton {
+            icon: @image-url("../icons/close.svg");
+            hint: "Dismiss this message";
+            tint: Theme.text-secondary;
+            hover_fill: Theme.overlay-hover;
+            glyph: 11px;
+            clicked => { root.dismiss(); }
         }
     }
 }

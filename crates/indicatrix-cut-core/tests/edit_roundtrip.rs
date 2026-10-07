@@ -32,7 +32,7 @@ use indicatrix::geometry::meet_solver::MeetConstraint;
 use indicatrix_cut_core::{
     ConstraintTier, Design, Edit, History, MaterialSelection, PreformSpec, RemapRounding,
     TierTarget,
-    design::{ConcaveTier, ConcaveTool, ToolMotion},
+    design::{ConcaveTier, ConcaveTool, RelationExpr, TierRelation, ToolMotion},
 };
 
 /// A tiny, dependency-free seeded PRNG (xorshift64*) -- enough to drive this
@@ -108,6 +108,8 @@ fn round_brilliant_fixture() -> Design {
         specific_gravity_override: None,
         refractive_index_override: Some(1.54),
         body_color_override: None,
+        body_color_bands_override: None,
+        absorption_path_scale_override: None,
     };
     design
 }
@@ -466,6 +468,8 @@ fn set_material_round_trips() {
             specific_gravity_override: None,
             refractive_index_override: Some(rng.range_f64(1.5, 1.9)),
             body_color_override: None,
+            body_color_bands_override: None,
+            absorption_path_scale_override: None,
         };
         assert_round_trips(design, &Edit::SetMaterial { material }, "SetMaterial");
     }
@@ -529,6 +533,107 @@ fn set_tier_target_round_trips() {
             &Edit::SetTierTarget { index, target },
             "SetTierTarget",
         );
+    }
+}
+
+/// A relation that makes the tier at `index` follow another tier of `design` by a
+/// generated offset, for the [`Edit::SetTierRelation`] tests.
+fn generated_relation(design: &Design, index: usize, rng: &mut Lcg) -> TierRelation {
+    let count = design.tiers.len();
+    // Always a DIFFERENT tier, so the relation never reads its own tier.
+    let reader = (index + 1 + rng.index(count - 1)) % count;
+    let reference = design
+        .tier_id_at(reader)
+        .expect("a design imported from .asc gives every tier an id");
+    TierRelation::new(RelationExpr::offset_from(
+        reference,
+        rng.range_f64(-5.0, 5.0),
+    ))
+}
+
+/// [`Edit::SetTierRelation`] -- setting a relation and undoing it.
+#[test]
+fn set_tier_relation_round_trips() {
+    for &seed in &SEEDS {
+        let mut rng = Lcg::new(seed);
+        let design = round_brilliant_fixture();
+        let index = rng.index(design.tiers.len());
+        let relation = Some(generated_relation(&design, index, &mut rng));
+        assert_round_trips(
+            design,
+            &Edit::SetTierRelation { index, relation },
+            "SetTierRelation",
+        );
+    }
+}
+
+/// Replacing a relation, and clearing one, each undo back to the previous relation.
+#[test]
+fn replacing_and_clearing_a_tier_relation_round_trips() {
+    for &seed in &SEEDS {
+        let mut rng = Lcg::new(seed);
+        let mut design = round_brilliant_fixture();
+        let index = rng.index(design.tiers.len());
+        let first = generated_relation(&design, index, &mut rng);
+        design
+            .apply_edit(Edit::SetTierRelation {
+                index,
+                relation: Some(first),
+            })
+            .expect("the index is in range");
+        let second = generated_relation(&design, index, &mut rng);
+        assert_round_trips(
+            design.clone(),
+            &Edit::SetTierRelation {
+                index,
+                relation: Some(second),
+            },
+            "SetTierRelation (replace)",
+        );
+        assert_round_trips(
+            design,
+            &Edit::SetTierRelation {
+                index,
+                relation: None,
+            },
+            "SetTierRelation (clear)",
+        );
+    }
+}
+
+/// Removing a tier that follows a relation takes the relation with it, and undoing
+/// the removal puts both back -- the relation stays attached to the same `TierId`.
+#[test]
+fn removing_a_driven_tier_round_trips_with_its_relation() {
+    for &seed in &SEEDS {
+        let mut rng = Lcg::new(seed);
+        let mut design = round_brilliant_fixture();
+        let index = rng.index(design.tiers.len());
+        let relation = generated_relation(&design, index, &mut rng);
+        design
+            .apply_edit(Edit::SetTierRelation {
+                index,
+                relation: Some(relation.clone()),
+            })
+            .expect("the index is in range");
+        let driven_id = design.tier_id_at(index).expect("the tier has an id");
+
+        let mut removed = design.clone();
+        let inverse = removed
+            .apply_edit(Edit::RemoveTier { index })
+            .expect("the index is in range");
+        assert!(
+            removed.tier_relation_for_id(driven_id).is_none(),
+            "seed {seed}: the removed tier's relation leaves with it"
+        );
+        removed.apply_edit(inverse).expect("undo of a removal");
+        assert_eq!(removed, design, "seed {seed}: undo restores the design");
+        assert_eq!(
+            removed.tier_relation_for_id(driven_id),
+            Some(&relation),
+            "seed {seed}: the relation is attached to the same tier again"
+        );
+        assert_round_trips(design, &Edit::RemoveTier { index }, "RemoveTier (driven)");
     }
 }
 
@@ -686,6 +791,8 @@ fn batch_retarget_and_material_round_trips() {
                     specific_gravity_override: None,
                     refractive_index_override: None,
                     body_color_override: None,
+                    body_color_bands_override: None,
+                    absorption_path_scale_override: None,
                 },
             },
         ]);

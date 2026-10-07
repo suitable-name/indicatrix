@@ -133,9 +133,13 @@ pub fn target_for(
         |id| centroid_of(centroids, id).is_some(),
     )?;
     let centroid = centroid_of(centroids, facet_id)?;
-    let frame = FacetFrame::from_tier(
+    // The facet map places a facet at `2 pi (index + reference) / teeth`: the frame needs the
+    // design's gear reference angle too, or its handles sit on a different azimuth than the
+    // facet (the same rule as the Diagram view's `diagram2d::facet_frame`).
+    let frame = FacetFrame::from_tier_with_reference(
         tier_data,
         f64::from(map.index_on_gear(facet_id as usize)),
+        design.meta.gear_reference_angle as f32,
         design.meta.gear_teeth_abs(),
         centroid,
     );

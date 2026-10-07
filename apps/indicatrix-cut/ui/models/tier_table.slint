@@ -1,0 +1,23 @@
+// The small callbacks the tier table and the Tier form need from Rust that are not part of the
+// design edits in `EditorModel`: reading a typed number the way every other number field does
+// (a plain number or a small calculation, with a plain-English message when it cannot be read),
+// and one question about the table's rows for the Simple interface. The Rust side is
+// `gui::editor::tier_table_model`.
+import { EditorTierItem } from "../types.slint";
+
+export global TierTableModel {
+    // The multi-select bar's Offset box: the tier the keyboard cursor is on, and the text in
+    // the box. Moves every selected tier by that many degrees (one Undo step) and returns
+    // `true`; returns `false` after a toast when the text is not a number or a calculation.
+    callback offset_selected(int, string) -> bool;
+    // The Tier form's "+ Add" box: the tier's position in the table and the position typed.
+    // `true` once the facet is added, `false` after a toast when the text cannot be read.
+    callback add_facet(int, string) -> bool;
+    // The Tier form's Rotate buttons: the tier, the number of teeth typed, and the direction
+    // (1 moves the facets to higher index numbers, -1 to lower ones). `false` after a toast
+    // when the teeth cannot be read.
+    callback rotate_tier(int, string, int) -> bool;
+    // Whether any row of the table is detached from its symmetric family: the Simple
+    // interface hides the Detach column, so it says so instead.
+    pure callback any_detached([EditorTierItem]) -> bool;
+}

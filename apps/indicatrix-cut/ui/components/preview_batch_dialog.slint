@@ -1,6 +1,10 @@
 import { Theme } from "../theme.slint";
-import { Button, CheckBox, ScrollView } from "std-widgets.slint";
+import { CheckBox, ScrollView } from "std-widgets.slint";
 import { BatchModel } from "../models/batch.slint";
+import { HelpTopics } from "../models/help.slint";
+import { HelpButton } from "help_button.slint";
+import { TipButton } from "compact_controls.slint";
+import { TipBox } from "tip_box.slint";
 
 // Batch design-preview generation (Task: rendered design previews, batch generation
 // with two-level progress). One component, two states:
@@ -85,6 +89,35 @@ export component PreviewBatchDialog inherits Rectangle {
     // asked directly or via a layout, so the card stayed too short either way. The
     // actual fix is on the card itself: a stated height plus a scrollable body between
     // a fixed title and fixed buttons. See the `height` binding below.
+    //
+    // The keyboard stays inside the card: Tab moves between its buttons, Enter takes the
+    // main button, Escape declines the offer (or closes the finished summary), and every
+    // other key is swallowed so a shortcut cannot fire on the design behind. A batch that is
+    // running ignores Escape: stopping it is the Cancel button's job.
+    FocusScope {
+        width: 100%;
+        height: 100%;
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Tab {
+                return reject;
+            }
+            if event.text == Key.Escape {
+                if root.confirming {
+                    root.dismiss_offer();
+                } else if root.done {
+                    root.close();
+                }
+            } else if event.text == Key.Return {
+                if root.confirming {
+                    root.generate_confirmed();
+                } else if root.done {
+                    root.close();
+                }
+            }
+            return accept;
+        }
+
     VerticalLayout {
         alignment: center;
         HorizontalLayout {
@@ -121,11 +154,24 @@ export component PreviewBatchDialog inherits Rectangle {
                     if root.confirming: VerticalLayout {
                         spacing: 12px;
 
-                        Text {
-                            text: "Generate preview images?";
-                            font-size: 14px;
-                            font-weight: 700;
-                            color: Theme.text-primary;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                horizontal-stretch: 1;
+                                text: "Generate preview images?";
+                                font-size: 14px;
+                                font-weight: 700;
+                                color: Theme.text-primary;
+                                vertical-alignment: center;
+                                accessible-role: AccessibleRole.text;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                HelpButton {
+                                    topic: HelpTopics.library-details;
+                                    hint: "Open the manual page on previews and tilt curves";
+                                }
+                            }
                         }
                         // Body between the fixed title above and the fixed buttons
                         // below -- see the card's `height` comment for why the buttons
@@ -161,25 +207,33 @@ export component PreviewBatchDialog inherits Rectangle {
                             color: Theme.text-muted;
                             wrap: word-wrap;
                         }
-                        if root.from_import: CheckBox {
-                            text: "Remember my choice";
-                            checked <=> BatchModel.preview_remember_choice;
+                        if root.from_import: TipBox {
+                            hint: "Tick to skip this question after future imports and use the button you press now.";
+                            CheckBox {
+                                text: "Remember my choice";
+                                checked <=> BatchModel.preview_remember_choice;
+                            }
                         }
 
                         HorizontalLayout {
                             spacing: 8px;
                             alignment: end;
 
-                            Button {
+                            TipButton {
                                 text: root.from_import ? "Skip" : "Not now";
+                                hint: root.from_import
+                                    ? "Import without pictures. You can make them later from the library."
+                                    : "Do not make previews now.";
                                 clicked => { root.dismiss_offer(); }
                             }
-                            if root.from_import: Button {
+                            if root.from_import: TipButton {
                                 text: "Quick (solid)";
+                                hint: "Draw a fast solid picture of each design in moments. Fully rendered ones can follow later.";
                                 clicked => { root.generate_solid_confirmed(); }
                             }
-                            Button {
+                            TipButton {
                                 text: root.from_import ? "Full render" : "Generate";
+                                hint: "Render a front and a top picture of each design. This takes longer but looks best. Enter does the same.";
                                 primary: true;
                                 clicked => { root.generate_confirmed(); }
                             }
@@ -194,6 +248,7 @@ export component PreviewBatchDialog inherits Rectangle {
                             font-size: 14px;
                             font-weight: 700;
                             color: Theme.text-primary;
+                            accessible-role: AccessibleRole.text;
                         }
 
                         if !root.done: VerticalLayout {
@@ -255,6 +310,9 @@ export component PreviewBatchDialog inherits Rectangle {
                                     border-width: 1px;
                                     border-color: Theme.border-dialog;
                                     clip: true;
+                                    accessible-role: AccessibleRole.progress-indicator;
+                                    accessible-label: "Designs completed";
+                                    accessible-value: Math.round(root.design_fraction * 100) + " percent";
                                     Rectangle {
                                         x: 0;
                                         y: 0;
@@ -311,12 +369,14 @@ export component PreviewBatchDialog inherits Rectangle {
                             spacing: 8px;
                             alignment: end;
 
-                            if !root.done: Button {
+                            if !root.done: TipButton {
                                 text: "Cancel";
+                                hint: "Stop making previews. The ones already made are kept.";
                                 clicked => { root.cancel(); }
                             }
-                            if root.done: Button {
+                            if root.done: TipButton {
                                 text: "Close";
+                                hint: "Close this summary.";
                                 primary: true;
                                 clicked => { root.close(); }
                             }
@@ -325,5 +385,6 @@ export component PreviewBatchDialog inherits Rectangle {
                 }
             }
         }
+    }
     }
 }

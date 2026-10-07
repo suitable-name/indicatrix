@@ -1,14 +1,17 @@
 //! Opening the dialog, and rebuilding the proposal when the mode/crown/target
-//! controls change -- Shift mode's own synchronous rebuild, and the hand-off into
-//! [`super::optimize_run`] for `RetargetMode::Optimize`.
+//! controls change -- Shift mode's own synchronous rebuild with its validity check, and
+//! Optimize mode's list of the Shift angles the search starts from. The search itself, its
+//! options and the pick of one are [`super::optimize_run`]'s.
 
 use super::{
     RETARGET_ASYNC, apply_ghost_preview_or_revert,
+    check_run::{begin_check, reset_check},
     material::{initial_target_index, resolve_target_selection, resolved_material_from_selection},
-    optimize_run::start_optimize_run,
-    proposal_view::{
-        RetargetView, push_retarget_view, push_target_error, push_target_readout, retarget_view,
+    optimize_run::{
+        cancel_optimize_run, prepare_for_plan, push_options, refresh_estimate, reset_search_ui,
+        select_candidate, start_search,
     },
+    proposal_view::{plan_view, push_retarget_view, push_target_error, push_target_readout},
     sync_embedded_comparison,
 };
 use crate::{
@@ -17,7 +20,7 @@ use crate::{
     gui::{
         editor::{
             edit_intent::{EditIntent, EditIntentQueue},
-            retarget::{CrownShift, RetargetMode, RetargetProposal},
+            retarget::{CrownShift, RetargetPlan, RetargetProposal, build_plan},
             stale::{self, ResultKind},
             stall_guard::stall_guard,
             state::{EditorState, design_material_options},
@@ -27,6 +30,7 @@ use crate::{
         solid_preview::preview_state::SolidPreviewState,
     },
 };
+use indicatrix::optics::materials::GemMaterial;
 use indicatrix_cut_core::Design;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::{
@@ -36,19 +40,24 @@ use std::{
     sync::{Arc, Mutex, atomic::Ordering as AtomicOrdering},
 };
 
-/// Reads `render_ctx`'s current custom materials, resolves the target against them
-/// plus `RetargetModel`'s own target picker fields, then rebuilds and pushes a full
-/// [`RetargetView`] -- the common body [`setup_retarget_open_callback`] and Shift
-/// mode's branch of [`setup_retarget_proposal_changed_callback`] both need. Only
-/// ever called with [`RetargetMode::Shift`] since `RetargetMode::Optimize` moved
-/// off-thread -- see this group's own `mod.rs` doc comment.
-pub(super) fn rebuild_and_push(
+/// Shown in place of the table when no tier has a slope the retarget could change.
+const NOTHING_TO_RETARGET: &str =
+    "Nothing to retarget: no crown or pavilion facet has a slope to shift.";
+
+/// The first note of Optimize mode before a search has run: the table lists the Shift angles
+/// the search would start from, not a result.
+const SEED_NOTE: &str = "These are the Shift angles the search starts from. Press Search to look for better ones; the options it finds are listed below.";
+
+/// Reads `render_ctx`'s current custom materials, resolves the target against them plus
+/// `RetargetModel`'s own target picker fields, then builds the Shift plan. Shows the target
+/// readout, or the error and `None` when the picker text cannot be used. The common first
+/// half of the Shift and Optimize rebuilds below.
+fn resolve_plan(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
     design: &Design,
     crown: CrownShift,
-    mode: RetargetMode,
-) -> Option<RetargetProposal> {
+) -> Option<(RetargetPlan, Vec<GemMaterial>)> {
     let combo_index = ui.global::<RetargetModel>().get_target_material_index();
     let ri_text = ui.global::<RetargetModel>().get_target_ri_override_text();
     // Cloned out of the lock alongside the resolution below, rather than re-locking
@@ -76,22 +85,79 @@ pub(super) fn rebuild_and_push(
         }
     };
     push_target_readout(ui, &selection, &target);
-    let (view, proposal) = retarget_view(design, &target, crown, mode, &custom_materials);
+    let plan = build_plan(design, &target, crown, &custom_materials);
+    Some((plan, custom_materials))
+}
+
+/// Shift mode: builds the plan, pushes its rows and notes and starts the off-thread validity
+/// check ([`begin_check`], `generation` is the design generation the plan is built against).
+/// The common body [`setup_retarget_open_callback`] and Shift mode's branch of
+/// [`setup_retarget_proposal_changed_callback`] both need.
+///
+/// The returned proposal holds only the rows that move; the table and culet are listed in
+/// the dialog (greyed, "Not changed") but never travel with it. `None` when the target
+/// text is unusable or nothing would move.
+pub(super) fn rebuild_and_push(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    design: &Design,
+    generation: u64,
+    crown: CrownShift,
+) -> Option<RetargetProposal> {
+    let (plan, custom_materials) = resolve_plan(ui, render_ctx, design, crown)?;
+    let mut view = plan_view(&plan).with_tier_names(design);
+    if plan.is_empty() {
+        view.rows.clear();
+        view.notes.push(NOTHING_TO_RETARGET.to_string());
+        push_retarget_view(ui, view);
+        reset_check(ui);
+        return None;
+    }
     push_retarget_view(ui, view);
-    proposal
+    let proposal = plan.proposal();
+    begin_check(ui, design, plan, &custom_materials, generation);
+    Some(proposal)
+}
+
+/// Optimize mode: lists the Shift angles the search starts from (no check, no proposal --
+/// nothing can be applied until the cutter picks one of the options a search finds) and
+/// prepares the time estimate.
+fn rebuild_seed(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    design: &Design,
+    generation: u64,
+    crown: CrownShift,
+) {
+    let Some((plan, _)) = resolve_plan(ui, render_ctx, design, crown) else {
+        return;
+    };
+    reset_check(ui);
+    let mut view = plan_view(&plan).with_tier_names(design);
+    if plan.is_empty() {
+        view.rows.clear();
+        view.notes.push(NOTHING_TO_RETARGET.to_string());
+        push_retarget_view(ui, view);
+        return;
+    }
+    view.notes.insert(0, SEED_NOTE.to_string());
+    push_retarget_view(ui, view);
+    prepare_for_plan(ui, design, &plan, generation);
 }
 
 /// "Retarget for material...": opens the dialog and builds the first proposal
 /// (Shift mode, default crown settings -- reset here even if a previous session left
 /// the dialog's `in-out` properties on Optimize/a nonzero crown fraction). Also
 /// seeds the target picker (see this group's own `mod.rs` doc comment, "Where the
-/// target material comes from") from `design`'s own current material, and drops
-/// whatever a previous session's async Optimize run left in [`super::RETARGET_ASYNC`].
+/// target material comes from") from `design`'s own current material, fills the Optimize
+/// tab's option lists, and drops whatever a previous session's search left in
+/// [`super::RETARGET_ASYNC`].
 pub(in crate::gui::editor) fn setup_retarget_open_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
     render_ctx: &Arc<Mutex<RenderContext>>,
 ) {
+    super::advanced_in_use::setup_advanced_in_use_callback(ui);
     let state = Rc::clone(state);
     let render_ctx = Arc::clone(render_ctx);
     let ui_weak = ui.as_weak();
@@ -106,9 +172,13 @@ pub(in crate::gui::editor) fn setup_retarget_open_callback(
         ui.global::<RetargetModel>().set_mode_index(0);
         ui.global::<RetargetModel>().set_crown_fraction(0.0);
         ui.global::<RetargetModel>().set_scale_crown_by_ratio(false);
-        ui.global::<RetargetModel>().set_is_busy(false);
-        ui.global::<RetargetModel>().set_optimize_evaluations(0);
-        ui.global::<RetargetModel>().set_optimize_max_evaluations(0);
+        ui.global::<RetargetModel>()
+            .set_crown_follows_pavilion(true);
+        ui.global::<RetargetModel>().set_keep_look(true);
+        ui.global::<RetargetModel>().set_girdle_allowance(true);
+        reset_search_ui(&ui);
+        ui.global::<RetargetModel>().set_free_tier_count(0);
+        push_options(&ui);
         // The viewport ghost preview is never used while the dialog is open (the
         // viewport is paused behind the modal and the embedded comparison pane shows
         // the proposal), so it is forced off: a previous session's value must not
@@ -144,8 +214,8 @@ pub(in crate::gui::editor) fn setup_retarget_open_callback(
             &ui,
             &render_ctx,
             &st.design,
+            generation,
             CrownShift::default(),
-            RetargetMode::Shift,
         );
         let solved = proposal.is_some();
         if let Some(proposal) = proposal {
@@ -166,18 +236,17 @@ pub(in crate::gui::editor) fn setup_retarget_open_callback(
 }
 
 /// The mode/crown/target controls changed: rebuilds the proposal from their current
-/// values. Shift mode stays synchronous (pure angle arithmetic); `RetargetMode::
-/// Optimize` hands off to [`start_optimize_run`] instead -- see this group's own
-/// `mod.rs` doc comment ("`RetargetMode::Optimize` runs off the UI thread").
+/// values. Shift mode rebuilds the plan and starts its validity check; Optimize mode lists
+/// the Shift angles a search would start from and waits for the Search button.
 ///
-/// Also registers [`RetargetModel::cancel_optimize`]'s handler: both callbacks are
-/// wired from this one `setup_*` function (rather than a separate one) so this
-/// group's async run tracking stays entirely inside this function's own closures,
-/// with no new `setup_retarget_*` call site needed in `gui::editor::mod` (owned
-/// elsewhere) to wire it up.
+/// Also registers the Optimize tab's callbacks -- `cancel_optimize`, `search`,
+/// `select_candidate` and `settings_changed`: all are wired from this one `setup_*` function
+/// (rather than separate ones) so this group's async run tracking stays entirely inside this
+/// file's and [`super::optimize_run`]'s closures, with no new `setup_retarget_*` call site
+/// needed in `gui::editor::mod` (owned elsewhere) to wire them up.
 ///
 /// `preview_state`/`solid_last_solved` (added beyond this function's original
-/// signature): every rebuild here also shows or reverts the live ghost preview via
+/// signature): every Shift rebuild here also shows or reverts the live ghost preview via
 /// [`apply_ghost_preview_or_revert`], matching `RetargetModel.preview_enabled`'s
 /// current value.
 ///
@@ -186,12 +255,9 @@ pub(in crate::gui::editor) fn setup_retarget_open_callback(
 /// (`ui/components/retarget_dialog.slint`'s own `crown_slider`), so calling
 /// `RetargetModel.proposal_changed()` straight into a synchronous `rebuild_and_push`
 /// plus ghost-preview/replan resubmit on every tick would rebuild the WHOLE
-/// proposal once per pixel dragged. The SHIFT-mode branch (the one a crown-slider
-/// drag actually takes) instead posts an [`EditIntent::RetargetCrown`] into a
-/// queue this function builds once, draining at most once per 16ms tick -- see
-/// [`EditIntentQueue`]'s own doc comment. The OPTIMIZE-mode branch is
-/// unaffected: it already hands off to an off-thread, cancellable search
-/// ([`start_optimize_run`]), so there is nothing to coalesce there.
+/// proposal once per pixel dragged. Both modes instead post an [`EditIntent::RetargetCrown`]
+/// into a queue this function builds once, draining at most once per 16ms tick -- see
+/// [`EditIntentQueue`]'s own doc comment.
 pub(in crate::gui::editor) fn setup_retarget_proposal_changed_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -210,59 +276,20 @@ pub(in crate::gui::editor) fn setup_retarget_proposal_changed_callback(
                 let Some(ui) = ui_weak.upgrade() else {
                     return;
                 };
-                apply_retarget_shift_intent(
-                    &ui,
-                    &state,
-                    &render_ctx,
-                    &preview_state,
-                    &solid_last_solved,
-                );
+                apply_retarget_intent(&ui, &state, &render_ctx, &preview_state, &solid_last_solved);
             })
         };
-        let state = Rc::clone(state);
-        let render_ctx = Arc::clone(render_ctx);
-        let preview_state = Arc::clone(preview_state);
-        let solid_last_solved = Arc::clone(solid_last_solved);
         let ui_weak = ui.as_weak();
         ui.global::<RetargetModel>().on_proposal_changed(move || {
             stall_guard("retarget_on_proposal_changed", || {
                 let Some(ui) = ui_weak.upgrade() else {
                     return;
                 };
-                // A new request always supersedes whatever Optimize run was in flight.
+                // A new request always supersedes whatever search was in flight, and the
+                // options a finished one offered were computed from the old inputs.
                 RETARGET_ASYNC.with(|cell| cell.borrow_mut().cancel_and_supersede());
-
-                if ui.global::<RetargetModel>().get_mode_index() == 1 {
-                    let mut st = state.borrow_mut();
-                    let crown = CrownShift {
-                        fraction: f64::from(ui.global::<RetargetModel>().get_crown_fraction()),
-                        scale_by_ratio: ui.global::<RetargetModel>().get_scale_crown_by_ratio(),
-                    };
-                    // An Optimize run "intentionally receives no
-                    // further update" to `st.pending_retarget` on success
-                    // (`start_optimize_run`'s own doc comment) -- the result instead
-                    // reaches `RETARGET_ASYNC::pending`, which `setup_apply_callback`
-                    // prefers. But a STALE Shift proposal left in `pending_retarget`
-                    // from before the user switched modes was never cleared by that
-                    // path, so switching Shift -> Optimize and clicking Apply before
-                    // the search finished silently applied the old Shift angles
-                    // instead of refusing (there is nothing yet to apply) or waiting.
-                    // Cleared here, unconditionally, so Apply can only ever take an
-                    // Optimize result from `RETARGET_ASYNC::pending` once this branch
-                    // has run -- the Shift branch below is untouched, it still writes
-                    // its own proposal into this same field.
-                    st.pending_retarget = None;
-                    start_optimize_run(
-                        &ui,
-                        &render_ctx,
-                        &preview_state,
-                        &solid_last_solved,
-                        &mut st,
-                        crown,
-                    );
-                } else {
-                    intent_queue.post(EditIntent::RetargetCrown);
-                }
+                reset_search_ui(&ui);
+                intent_queue.post(EditIntent::RetargetCrown);
             });
         });
     }
@@ -274,56 +301,60 @@ pub(in crate::gui::editor) fn setup_retarget_proposal_changed_callback(
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            // A stray Shift-mode `pending_retarget` cannot actually be present here
-            // (this button only matters `while is_busy`, which only Optimize mode
-            // sets, and that branch already clears `pending_retarget` before
-            // dispatching -- see `on_proposal_changed`'s own comment on why),
-            // but cleared defensively anyway since it costs nothing.
+            // Optimize mode never holds a Shift proposal, but cleared defensively anyway
+            // since it costs nothing.
             state.borrow_mut().pending_retarget = None;
             cancel_optimize_run(&ui);
         });
     }
+
+    {
+        let state = Rc::clone(state);
+        let render_ctx = Arc::clone(render_ctx);
+        let ui_weak = ui.as_weak();
+        ui.global::<RetargetModel>().on_search(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            start_search(&ui, &state, &render_ctx);
+        });
+    }
+
+    {
+        let ui_weak = ui.as_weak();
+        ui.global::<RetargetModel>()
+            .on_select_candidate(move |index| {
+                let Some(ui) = ui_weak.upgrade() else {
+                    return;
+                };
+                if let Ok(index) = usize::try_from(index) {
+                    select_candidate(&ui, index);
+                }
+            });
+    }
+
+    {
+        let ui_weak = ui.as_weak();
+        ui.global::<RetargetModel>().on_settings_changed(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            refresh_estimate(&ui);
+        });
+    }
 }
 
-/// The shared body of "cancel the in-flight `RetargetMode::Optimize` search":
-/// [`setup_retarget_proposal_changed_callback`]'s `on_cancel_optimize` handler (the
-/// dialog's own Cancel button while busy) and
-/// [`super::optimize_run::start_optimize_run`]'s own `ActivityRegistry` cancel
-/// closure (the status strip's `ActivityChip`, which has no `Rc<RefCell<EditorState>>`
-/// to reach `state.pending_retarget` with -- see
-/// [`super::RetargetAsyncRun::cancel_and_supersede`]'s own doc comment for why that
-/// alone is sufficient: `RETARGET_ASYNC::pending`, not `state.pending_retarget`, is
-/// what actually holds an Optimize-mode proposal). Both reach the exact same effect
-/// through this one function.
-pub(super) fn cancel_optimize_run(ui: &MainWindow) {
-    RETARGET_ASYNC.with(|cell| cell.borrow_mut().cancel_and_supersede());
-    stale::clear(ResultKind::Retarget);
-    ui.global::<RetargetModel>().set_is_busy(false);
-    push_retarget_view(
-        ui,
-        RetargetView {
-            rows: Vec::new(),
-            notes: vec!["Optimize cancelled.".to_string()],
-            anchored_errors: Vec::new(),
-            solve_error: String::new(),
-        },
-    );
-    // No proposal is held any more, so the comparison pane must not keep showing
-    // the one it had.
-    sync_embedded_comparison(ui, false);
-}
-
-/// [`setup_retarget_proposal_changed_callback`]'s Shift-mode body, run once per
-/// drained [`EditIntent::RetargetCrown`] instead of once per crown-slider tick --
-/// see that function's own doc comment. Reads `RetargetModel.crown_fraction`/
-/// `scale_crown_by_ratio` fresh (exactly as the original per-tick call did), so a
-/// coalesced burst always rebuilds against the LATEST slider position, not
-/// whatever it was when the first tick of the burst posted.
+/// [`setup_retarget_proposal_changed_callback`]'s body, run once per drained
+/// [`EditIntent::RetargetCrown`] instead of once per crown-slider tick -- see that function's
+/// own doc comment. Reads `RetargetModel.crown_fraction`/`scale_crown_by_ratio`/
+/// `crown_follows_pavilion` fresh, so a
+/// coalesced burst always rebuilds against the LATEST slider position, not whatever it was
+/// when the first tick of the burst posted.
 ///
 /// Never solves: the ghost overlay's candidate is queued on the ghost preview's
 /// background worker ([`view::submit_design_ghost_preview`]), so a slider drag stays
 /// responsive however slow the candidate is to solve.
-fn apply_retarget_shift_intent(
+fn apply_retarget_intent(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
     render_ctx: &Arc<Mutex<RenderContext>>,
@@ -334,10 +365,23 @@ fn apply_retarget_shift_intent(
     let crown = CrownShift {
         fraction: f64::from(ui.global::<RetargetModel>().get_crown_fraction()),
         scale_by_ratio: ui.global::<RetargetModel>().get_scale_crown_by_ratio(),
+        follow_pavilion: ui.global::<RetargetModel>().get_crown_follows_pavilion(),
     };
     ui.global::<RetargetModel>().set_is_busy(false);
     let generation = st.generation.load(AtomicOrdering::Relaxed);
-    let proposal = rebuild_and_push(ui, render_ctx, &st.design, crown, RetargetMode::Shift);
+    if ui.global::<RetargetModel>().get_mode_index() == 1 {
+        // Optimize mode holds no Shift proposal: Apply can only ever take an option the
+        // search found, from `RETARGET_ASYNC::pending`. A stale Shift proposal left from
+        // before the cutter switched modes must not be applied instead.
+        st.pending_retarget = None;
+        stale::clear(ResultKind::Retarget);
+        rebuild_seed(ui, render_ctx, &st.design, generation, crown);
+        // Released first: the embedded comparison's handler reads the editor state.
+        drop(st);
+        sync_embedded_comparison(ui, false);
+        return;
+    }
+    let proposal = rebuild_and_push(ui, render_ctx, &st.design, generation, crown);
     // `true`: the ghost is queued and draws when its solve lands (a later tick
     // supersedes it), so the real design is not replanned over it. `false`: no ghost
     // is wanted, and the replan puts the real design back, which also drops a ghost
@@ -354,9 +398,7 @@ fn apply_retarget_shift_intent(
             false,
         );
     }
-    // Same stamping as the Optimize
-    // completion path (`optimize_run::finish_optimize_run`) -- see
-    // `stale::ResultKind::Retarget`'s own doc comment.
+    // See `stale::ResultKind::Retarget`'s own doc comment.
     let solved = proposal.is_some();
     if let Some(proposal) = proposal {
         stale::stamp(ResultKind::Retarget, generation);

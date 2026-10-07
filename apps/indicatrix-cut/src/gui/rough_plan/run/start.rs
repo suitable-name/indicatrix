@@ -14,10 +14,12 @@ use crate::{
         inputs::{
             BAD_CUT_FIELD_MESSAGE, FilterSnapshot, NO_SIZE_MESSAGE, check_skin, current_settings,
         },
+        mesh_task::{self, MESH_BUSY_MESSAGE},
         saved::convert::CandidateSource,
         session::REMOTE_MESSAGE,
         view,
     },
+    plan_limit::{parse_limit, store_limit_secs, stored_limit_secs},
 };
 use indicatrix_cut_core::rough_plan::{PlanSettings, RoughModel};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
@@ -56,6 +58,22 @@ struct Request {
     settings: PlanSettings,
     material_name: String,
     weighed_ct: Option<f64>,
+    /// The scan plan time limit in seconds, `0` for none.
+    time_limit_secs: u32,
+}
+
+/// The scan plan time limit the form holds: parsed when the rough has a mesh (the field is
+/// shown then), the stored one otherwise, so a field that is hidden never refuses a plan.
+///
+/// # Errors
+///
+/// Returns the message for `error_text` when the shown field is not whole seconds.
+fn read_time_limit(model: &RoughPlanModel<'_>) -> Result<u32, String> {
+    if model.get_locate_possible() {
+        parse_limit(model.get_time_limit_secs().as_str())
+    } else {
+        Ok(stored_limit_secs())
+    }
 }
 
 /// Fails when one kerf plus the allowance on both sides of a stone is more than the
@@ -100,11 +118,13 @@ fn read_request(host: &Rc<Host>) -> Result<Request, String> {
     let extents = model.base.bounding_box_extents();
     check_skin(&settings, extents)?;
     check_kerf_and_allowance(&settings, extents)?;
+    let time_limit_secs = read_time_limit(&host.window.global::<RoughPlanModel>())?;
     Ok(Request {
         model,
         settings,
         material_name,
         weighed_ct,
+        time_limit_secs,
     })
 }
 
@@ -179,6 +199,11 @@ fn prepare(host: &Rc<Host>) -> Result<Prepared, String> {
 pub(in crate::gui::rough_plan) fn start_plan(host: &Rc<Host>) {
     let model = host.window.global::<RoughPlanModel>();
     if model.get_running() {
+        return;
+    }
+    // The model is not final while a mesh is being read or scaled in the background.
+    if mesh_task::is_busy(host) {
+        model.set_error_text(MESH_BUSY_MESSAGE.into());
         return;
     }
     model.set_error_text("".into());
@@ -266,7 +291,11 @@ fn launch(host: &Rc<Host>, prepared: Prepared) {
         material_name: request.material_name,
         weighed_ct: request.weighed_ct,
         candidate_source: CandidateSource::from_use_filter(use_filter),
+        time_limit_secs: request.time_limit_secs,
     };
+    if stored_limit_secs() != request.time_limit_secs {
+        store_limit_secs(request.time_limit_secs);
+    }
     if let Err(e) = spawn_worker(host.window.as_weak(), Arc::clone(&host.db), job, cancel) {
         warn!("Rough planner: could not start the worker thread: {e}");
         model.set_running(false);

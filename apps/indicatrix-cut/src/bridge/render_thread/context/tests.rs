@@ -389,7 +389,11 @@ fn a_planes_only_claim_clears_the_previous_designs_tools() {
         PlanesOwner::Catalogue { entry_id: 5 },
     ));
     assert!(ctx.active_tools.is_empty());
-    assert!(ctx.active_placements.is_empty());
+    assert_eq!(
+        ctx.active_placements.len(),
+        0,
+        "a new design drops the old placements"
+    );
 }
 
 #[test]

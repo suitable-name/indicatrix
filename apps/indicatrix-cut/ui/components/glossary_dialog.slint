@@ -1,0 +1,213 @@
+import { ScrollView, LineEdit } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { HelpModel, HelpTopics } from "../models/help.slint";
+import { HelpToolButton, HelpButton } from "help_button.slint";
+import { IconButton } from "icon_button.slint";
+
+// The glossary dialog (Help > Glossary, and "More in the glossary" from a tooltip): every
+// term of Appendix A of the manual, with a search box that narrows the list as you type.
+// Mounted by `app.slint` inside an Escape-handling `FocusScope`, like the other modal
+// dialogs. The terms come from `gui::help::glossary`; this dialog only shows
+// `HelpModel.glossary_rows`.
+export component GlossaryDialog inherits Rectangle {
+    background: Theme.overlay-backdrop;
+
+    // The search box takes the keyboard as soon as the dialog opens.
+    init => { glossary_search.focus(); }
+
+    TouchArea {
+        clicked => { HelpModel.glossary_open = false; }
+    }
+
+    Rectangle {
+        width: min(600px, parent.width - 40px);
+        height: min(660px, parent.height - 40px);
+        background: Theme.surface-dialog;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-dialog;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.modal-shadow;
+        clip: true;
+
+        TouchArea {} // Isolates clicks inside the dialog from the backdrop above.
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: "Glossary";
+                    font-size: 15px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: HelpModel.glossary_rows.length == HelpModel.glossary_total
+                        ? HelpModel.glossary_total + " terms"
+                        : HelpModel.glossary_rows.length + " of " + HelpModel.glossary_total + " terms";
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    HelpButton { topic: HelpTopics.glossary; hint: "Open the glossary in the manual"; }
+                }
+
+                IconButton {
+                    icon: @image-url("../icons/close.svg");
+                    hint: "Close the glossary (Esc)";
+                    tint: Theme.text-muted;
+                    clicked => { HelpModel.glossary_open = false; }
+                }
+            }
+
+            Text {
+                text: "The words this manual and the program use for cutting and for optics.";
+                font-size: 11px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+
+            Rectangle {
+                height: 28px;
+                background: Theme.bg-input;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 6px;
+                    alignment: stretch;
+
+                    Image {
+                        source: @image-url("../icons/search.svg");
+                        colorize: Theme.text-muted;
+                        width: 12px;
+                        height: 12px;
+                    }
+
+                    glossary_search := LineEdit {
+                        min-width: 0px;
+                        horizontal-stretch: 1;
+                        text <=> HelpModel.glossary_query;
+                        placeholder-text: "Search the terms";
+                        accessible-label: "Search the terms";
+                        edited => { HelpModel.glossary_search(self.text); }
+                    }
+
+                    if HelpModel.glossary_query != "": Rectangle {
+                        width: 20px;
+                        height: 20px;
+                        border-radius: 10px;
+                        background: clear_touch.has-hover ? Theme.surface-control-hover : Theme.bg-elevated;
+                        border-width: clear_focus.has-focus ? 2px : 0px;
+                        border-color: Theme.accent-cyan-hover;
+
+                        accessible-role: AccessibleRole.button;
+                        accessible-label: "Clear the search";
+                        accessible-action-default => {
+                            HelpModel.glossary_query = "";
+                            HelpModel.glossary_search("");
+                        }
+
+                        Tooltip { text: @markdown("Clear the search and list every term again."); }
+
+                        clear_focus := FocusScope {
+                            key-pressed(event) => {
+                                if event.text == Key.Space || event.text == Key.Return {
+                                    HelpModel.glossary_query = "";
+                                    HelpModel.glossary_search("");
+                                    return accept;
+                                }
+                                return reject;
+                            }
+                        }
+
+                        Text {
+                            text: "\u{00D7}";
+                            font-size: 14px;
+                            color: Theme.text-secondary;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        clear_touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                HelpModel.glossary_query = "";
+                                HelpModel.glossary_search("");
+                            }
+                        }
+                    }
+                }
+            }
+
+            ScrollView {
+                vertical-stretch: 1;
+
+                VerticalLayout {
+                    spacing: 12px;
+                    alignment: start;
+
+                    if HelpModel.glossary_rows.length == 0: Text {
+                        text: "No term matches \"" + HelpModel.glossary_query + "\".";
+                        font-size: 12px;
+                        color: Theme.text-secondary;
+                        wrap: word-wrap;
+                    }
+
+                    for entry in HelpModel.glossary_rows: VerticalLayout {
+                        spacing: 2px;
+
+                        Text {
+                            text: entry.term;
+                            font-size: 12px;
+                            font-weight: 700;
+                            color: Theme.accent-cyan;
+                            wrap: word-wrap;
+                        }
+
+                        StyledText {
+                            text: entry.text;
+                            default-color: Theme.text-secondary;
+                            default-font-size: 12px;
+                            link-color: Theme.accent-cyan;
+                        }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+
+                HelpToolButton {
+                    label: "Open in the manual";
+                    hint: "Open the glossary as a chapter of the manual, with the full explanations and links.";
+                    clicked => {
+                        HelpModel.glossary_open = false;
+                        HelpModel.open_topic(HelpTopics.glossary);
+                    }
+                }
+
+                HelpToolButton {
+                    label: "Close";
+                    hint: "Close the glossary.";
+                    primary: true;
+                    clicked => { HelpModel.glossary_open = false; }
+                }
+            }
+        }
+    }
+}

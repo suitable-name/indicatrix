@@ -412,5 +412,6 @@ pub fn plan_job(inputs: ReplanInputs<'_>) -> PlanJob {
         show_preform: inputs.show_preform,
         enlarged_panel: inputs.enlarged_panel,
         tier_cutoff: usize::try_from(inputs.tier_cutoff).ok(),
+        cut_steps: None,
     }
 }

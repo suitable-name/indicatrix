@@ -1,7 +1,57 @@
 import { Theme } from "../theme.slint";
 import { LineEdit, ComboBox } from "std-widgets.slint";
 import { LibraryModel } from "../models/library.slint";
+import { HelpTopics } from "../models/help.slint";
 import { ConfirmActionDialog } from "confirm_action_dialog.slint";
+import { HelpButton } from "help_button.slint";
+import { IconButton } from "icon_button.slint";
+import { ActionButton } from "chip_toggle.slint";
+
+// A captioned field of the metadata form: the caption (with the field's tooltip), the framed
+// text box, and the red line under it that says why a value will be ignored.
+component MetaField inherits VerticalLayout {
+    in property <string> label;
+    in property <string> hint;
+    in property <string> placeholder;
+    in property <string> error;
+    in-out property <string> value;
+
+    horizontal-stretch: 1;
+    spacing: 4px;
+
+    Rectangle {
+        height: caption.preferred-height;
+        Tooltip { text: @markdown("\{root.hint}"); }
+        caption := Text {
+            text: root.label;
+            font-size: 11px;
+            font-weight: 600;
+            color: Theme.text-secondary;
+            accessible-role: AccessibleRole.text;
+        }
+    }
+    Rectangle {
+        height: 30px;
+        background: Theme.surface-raised;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.border-dialog;
+        Tooltip { text: @markdown("\{root.hint}"); }
+        LineEdit {
+            width: 100%;
+            height: 100%;
+            text <=> root.value;
+            placeholder-text: root.placeholder;
+            accessible-label: root.label;
+        }
+    }
+    if root.error != "": Text {
+        text: root.error;
+        font-size: 9px;
+        color: Theme.danger;
+        accessible-role: AccessibleRole.text;
+    }
+}
 
 // Metadata editor: title, designer, shape, refractive index, index gear, facet
 // count, symmetry order, mirror symmetry, and the five geometry-derived proportion
@@ -146,22 +196,24 @@ export component MetadataEditorDialog inherits Rectangle {
                         font-weight: 700;
                         color: Theme.text-primary;
                         vertical-alignment: center;
+                        accessible-role: AccessibleRole.text;
                     }
                 }
 
-                Rectangle {
-                    width: 24px;
-                    height: 24px;
-                    border-radius: Theme.radius-sm;
-                    background: close_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
-                    close_touch := TouchArea { clicked => { root.request_close(); } }
-                    Image {
-                        source: @image-url("../icons/close.svg");
-                        colorize: Theme.text-muted;
-                        width: 12px;
-                        height: 12px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                HorizontalLayout {
+                    spacing: 6px;
+                    VerticalLayout {
+                        alignment: center;
+                        HelpButton {
+                            topic: HelpTopics.library-details;
+                            hint: "Open the manual page on a design's details";
+                        }
+                    }
+                    IconButton {
+                        icon: @image-url("../icons/close.svg");
+                        hint: "Close without saving";
+                        hover_fill: Theme.surface-control-hover;
+                        clicked => { root.request_close(); }
                     }
                 }
             }
@@ -171,31 +223,17 @@ export component MetadataEditorDialog inherits Rectangle {
             // Title / Designer
             HorizontalLayout {
                 spacing: 10px;
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 4px;
-                    Text { text: "Title:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    Rectangle {
-                        height: 30px;
-                        background: Theme.surface-raised;
-                        border-radius: Theme.radius-sm;
-                        border-width: 1px;
-                        border-color: Theme.border-dialog;
-                        LineEdit { width: 100%; height: 100%; text <=> root.title_draft; placeholder-text: "Design title..."; }
-                    }
+                MetaField {
+                    label: "Title:";
+                    hint: "The name the library shows for this design.";
+                    placeholder: "Design title...";
+                    value <=> root.title_draft;
                 }
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 4px;
-                    Text { text: "Designer:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    Rectangle {
-                        height: 30px;
-                        background: Theme.surface-raised;
-                        border-radius: Theme.radius-sm;
-                        border-width: 1px;
-                        border-color: Theme.border-dialog;
-                        LineEdit { width: 100%; height: 100%; text <=> root.designer_draft; placeholder-text: "Designer name..."; }
-                    }
+                MetaField {
+                    label: "Designer:";
+                    hint: "Who designed this stone. Shown in the library and searchable.";
+                    placeholder: "Designer name...";
+                    value <=> root.designer_draft;
                 }
             }
 
@@ -212,33 +250,38 @@ export component MetadataEditorDialog inherits Rectangle {
                 VerticalLayout {
                     horizontal-stretch: 1;
                     spacing: 4px;
-                    Text { text: "Shape:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                    Rectangle {
+                        height: shape_caption.preferred-height;
+                        Tooltip { text: @markdown("The outline of the stone: round, oval, cushion and so on. Used to group and filter designs in the library."); }
+                        shape_caption := Text {
+                            text: "Shape:";
+                            font-size: 11px;
+                            font-weight: 600;
+                            color: Theme.text-secondary;
+                            accessible-role: AccessibleRole.text;
+                        }
+                    }
                     Rectangle {
                         height: 30px;
                         background: Theme.surface-raised;
                         border-radius: Theme.radius-sm;
                         border-width: 1px;
                         border-color: Theme.border-dialog;
+                        Tooltip { text: @markdown("The outline of the stone. Pick one from the list."); }
                         ComboBox {
                             width: 100%;
                             height: 100%;
+                            accessible-label: "Shape";
                             model: root.shape_options;
                             current-index <=> root.shape_index;
                         }
                     }
                 }
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 4px;
-                    Text { text: "Facet Count:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    Rectangle {
-                        height: 30px;
-                        background: Theme.surface-raised;
-                        border-radius: Theme.radius-sm;
-                        border-width: 1px;
-                        border-color: Theme.border-dialog;
-                        LineEdit { width: 100%; height: 100%; text <=> root.facets_draft; placeholder-text: "57+8..."; }
-                    }
+                MetaField {
+                    label: "Facet Count:";
+                    hint: "How many facets the finished stone has, as the designer counts them (for example 57+8, the 8 being the culet facets).";
+                    placeholder: "57+8...";
+                    value <=> root.facets_draft;
                 }
             }
 
@@ -247,6 +290,7 @@ export component MetadataEditorDialog inherits Rectangle {
                 font-size: 10px;
                 color: Theme.text-muted;
                 wrap: word-wrap;
+                accessible-role: AccessibleRole.text;
             }
 
             Rectangle { height: 1px; background: Theme.surface-raised; }
@@ -256,87 +300,54 @@ export component MetadataEditorDialog inherits Rectangle {
                 font-size: 11px;
                 font-weight: 600;
                 color: Theme.text-secondary;
+                accessible-role: AccessibleRole.text;
             }
 
             // L/W / H/W
             HorizontalLayout {
                 spacing: 10px;
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 4px;
-                    Text { text: "L/W Ratio:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    Rectangle {
-                        height: 30px;
-                        background: Theme.surface-raised;
-                        border-radius: Theme.radius-sm;
-                        border-width: 1px;
-                        border-color: Theme.border-dialog;
-                        LineEdit { width: 100%; height: 100%; text <=> root.lw_ratio_draft; placeholder-text: "1.052..."; }
-                    }
-                    Text { text: root.lw_ratio_valid ? "" : "not a positive number -- ignored"; font-size: 9px; color: Theme.accent-ruby; }
+                MetaField {
+                    label: "L/W Ratio:";
+                    hint: "Length divided by width. 1.0 is round or square; a higher number is a longer stone.";
+                    placeholder: "1.052...";
+                    error: root.lw_ratio_valid ? "" : "Not a positive number, so it is ignored.";
+                    value <=> root.lw_ratio_draft;
                 }
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 4px;
-                    Text { text: "H/W Ratio:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    Rectangle {
-                        height: 30px;
-                        background: Theme.surface-raised;
-                        border-radius: Theme.radius-sm;
-                        border-width: 1px;
-                        border-color: Theme.border-dialog;
-                        LineEdit { width: 100%; height: 100%; text <=> root.hw_ratio_draft; placeholder-text: "0.612..."; }
-                    }
-                    Text { text: root.hw_ratio_valid ? "" : "not a positive number -- ignored"; font-size: 9px; color: Theme.accent-ruby; }
+                MetaField {
+                    label: "H/W Ratio:";
+                    hint: "Total height divided by width.";
+                    placeholder: "0.612...";
+                    error: root.hw_ratio_valid ? "" : "Not a positive number, so it is ignored.";
+                    value <=> root.hw_ratio_draft;
                 }
             }
 
             // C/W / P/W
             HorizontalLayout {
                 spacing: 10px;
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 4px;
-                    Text { text: "C/W Ratio:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    Rectangle {
-                        height: 30px;
-                        background: Theme.surface-raised;
-                        border-radius: Theme.radius-sm;
-                        border-width: 1px;
-                        border-color: Theme.border-dialog;
-                        LineEdit { width: 100%; height: 100%; text <=> root.cw_ratio_draft; placeholder-text: "0.172..."; }
-                    }
-                    Text { text: root.cw_ratio_valid ? "" : "not a positive number -- ignored"; font-size: 9px; color: Theme.accent-ruby; }
+                MetaField {
+                    label: "C/W Ratio:";
+                    hint: "Crown height divided by width.";
+                    placeholder: "0.172...";
+                    error: root.cw_ratio_valid ? "" : "Not a positive number, so it is ignored.";
+                    value <=> root.cw_ratio_draft;
                 }
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 4px;
-                    Text { text: "P/W Ratio:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    Rectangle {
-                        height: 30px;
-                        background: Theme.surface-raised;
-                        border-radius: Theme.radius-sm;
-                        border-width: 1px;
-                        border-color: Theme.border-dialog;
-                        LineEdit { width: 100%; height: 100%; text <=> root.pw_ratio_draft; placeholder-text: "0.440..."; }
-                    }
-                    Text { text: root.pw_ratio_valid ? "" : "not a positive number -- ignored"; font-size: 9px; color: Theme.accent-ruby; }
+                MetaField {
+                    label: "P/W Ratio:";
+                    hint: "Pavilion depth divided by width.";
+                    placeholder: "0.440...";
+                    error: root.pw_ratio_valid ? "" : "Not a positive number, so it is ignored.";
+                    value <=> root.pw_ratio_draft;
                 }
             }
 
             // Volume
-            VerticalLayout {
-                spacing: 4px;
-                Text { text: "Volume (Vol/W\u{b3}):"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                Rectangle {
-                    height: 30px;
-                    background: Theme.surface-raised;
-                    border-radius: Theme.radius-sm;
-                    border-width: 1px;
-                    border-color: Theme.border-dialog;
-                    LineEdit { width: 100%; height: 100%; text <=> root.volume_draft; placeholder-text: "0.420..."; }
-                }
-                Text { text: root.volume_valid ? "" : "not a positive number -- ignored"; font-size: 9px; color: Theme.accent-ruby; }
+            MetaField {
+                label: "Volume (Vol/W\u{b3}):";
+                hint: "The stone's volume divided by its width cubed. A rough guide to how much it weighs for its size.";
+                placeholder: "0.420...";
+                error: root.volume_valid ? "" : "Not a positive number, so it is ignored.";
+                value <=> root.volume_draft;
             }
 
             Rectangle { height: 1px; background: Theme.surface-raised; }
@@ -345,47 +356,46 @@ export component MetadataEditorDialog inherits Rectangle {
             HorizontalLayout {
                 spacing: 8px;
 
-                Rectangle {
+                ActionButton {
                     width: 90px;
                     height: 32px;
-                    border-radius: Theme.radius-sm;
-                    background: cancel_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken;
-                    border-width: 1px;
-                    border-color: Theme.border-dialog;
-                    cancel_touch := TouchArea { clicked => { root.request_close(); } }
-                    Text { text: "Cancel"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    text: "Cancel";
+                    hint: "Close without saving. If you changed anything you are asked first.";
+                    ink: Theme.text-secondary;
+                    clicked => { root.request_close(); }
                 }
 
-                Rectangle {
+                ActionButton {
                     horizontal-stretch: 1;
                     height: 32px;
-                    border-radius: Theme.radius-sm;
-                    background: !root.form_valid ? Theme.border-medium : save_touch.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan;
-                    save_touch := TouchArea {
-                        enabled: root.form_valid;
-                        clicked => {
-                            root.save(
-                                root.title_draft,
-                                root.designer_draft,
-                                root.selected_shape,
-                                root.ri_draft,
-                                root.gear_draft,
-                                root.facets_draft,
-                                root.symmetry_order_draft,
-                                root.mirror_symmetry_draft,
-                                root.lw_ratio_draft,
-                                root.hw_ratio_draft,
-                                root.cw_ratio_draft,
-                                root.pw_ratio_draft,
-                                root.volume_draft
-                            );
-                        }
-                    }
-                    HorizontalLayout {
-                        alignment: center;
-                        spacing: 6px;
-                        Image { source: @image-url("../icons/check.svg"); colorize: root.form_valid ? Theme.text-on-accent : Theme.text-muted; width: 12px; height: 12px; vertical-alignment: center; }
-                        Text { text: "Save Metadata"; font-size: 12px; font-weight: 700; color: root.form_valid ? Theme.text-on-accent : Theme.text-muted; vertical-alignment: center; }
+                    text: "Save Metadata";
+                    hint: root.form_valid
+                        ? "Save these details to the library."
+                        : "Fix the fields marked in red to save.";
+                    icon: @image-url("../icons/check.svg");
+                    weight: 700;
+                    font_size: 12px;
+                    enabled: root.form_valid;
+                    fill: Theme.accent-cyan;
+                    hover_fill: Theme.accent-cyan-hover;
+                    ink: Theme.text-on-accent;
+                    edge: Theme.accent-cyan;
+                    clicked => {
+                        root.save(
+                            root.title_draft,
+                            root.designer_draft,
+                            root.selected_shape,
+                            root.ri_draft,
+                            root.gear_draft,
+                            root.facets_draft,
+                            root.symmetry_order_draft,
+                            root.mirror_symmetry_draft,
+                            root.lw_ratio_draft,
+                            root.hw_ratio_draft,
+                            root.cw_ratio_draft,
+                            root.pw_ratio_draft,
+                            root.volume_draft
+                        );
                     }
                 }
             }
@@ -397,6 +407,7 @@ export component MetadataEditorDialog inherits Rectangle {
         message: "This design's metadata has unsaved edits. Discard them?";
         primary_label: "";
         secondary_label: "Discard";
+        secondary_hint: "Throw the edits away and close the editor.";
         cancel => { root.discard_confirm_open = false; }
         secondary => {
             root.discard_confirm_open = false;

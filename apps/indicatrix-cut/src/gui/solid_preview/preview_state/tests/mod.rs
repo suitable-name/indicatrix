@@ -17,9 +17,12 @@ use std::{
 
 mod pins;
 mod replan;
+mod worker_findings;
 
 struct FakeSink {
     calls: Mutex<Vec<(bool, String)>>,
+    /// The number of planes of each received frame, parallel to `calls`.
+    plane_counts: Mutex<Vec<usize>>,
     /// Signalled by every [`PreviewSink::apply`], so a test blocks on the frame it
     /// expects instead of sleeping and polling.
     arrived: Condvar,
@@ -29,8 +32,17 @@ impl FakeSink {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             calls: Mutex::new(Vec::new()),
+            plane_counts: Mutex::new(Vec::new()),
             arrived: Condvar::new(),
         })
+    }
+
+    /// The plane count of every frame received so far, in arrival order.
+    fn plane_counts(&self) -> Vec<usize> {
+        self.plane_counts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Blocks until `ready` holds for the frames received so far and returns them;
@@ -60,6 +72,11 @@ impl FakeSink {
 
 impl PreviewSink for FakeSink {
     fn apply(&self, frame: PreviewFrame) {
+        // Before `calls`, which the waiting test wakes on: the count is there by then.
+        self.plane_counts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(frame.planes.len());
         let mut calls = self.calls.lock().unwrap_or_else(PoisonError::into_inner);
         calls.push((frame.has_solid, frame.status));
         drop(calls);

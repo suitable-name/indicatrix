@@ -5,7 +5,10 @@
 use super::*;
 use glam::Vec3;
 use indicatrix::{
-    geometry::meet_solver::{MeetConstraint, SolveStrategy, SolvedTier},
+    geometry::{
+        cuts::StandardGemCuts,
+        meet_solver::{MeetConstraint, SolveStrategy, SolvedTier},
+    },
     optics::raytracer::Camera,
 };
 use indicatrix_cut_core::{ConstraintTier, Design, PreformSpec, ScheduleMeta, expected_orbit};
@@ -33,6 +36,28 @@ fn reference_normal(angle_deg: f64, idx: f64, gear_teeth: f32, is_crown: bool) -
     let theta = (angle_deg.abs() as f32).to_radians();
     let (sin_theta, cos_theta) = (theta.sin(), theta.cos());
     let phi = 2.0 * std::f32::consts::PI * (idx as f32) / gear_teeth;
+    let (sin_phi, cos_phi) = (phi.sin(), phi.cos());
+    let normal = if is_crown {
+        Vec3::new(sin_theta * cos_phi, cos_theta, sin_theta * sin_phi)
+    } else {
+        Vec3::new(sin_theta * cos_phi, -cos_theta, sin_theta * sin_phi)
+    };
+    normal.normalize()
+}
+
+/// `facet_map/build.rs`'s per-facet normal for a design with a gear reference angle, copied
+/// line for line: the azimuth is `StandardGemCuts::index_to_azimuth(idx, teeth, reference)`,
+/// the reference angle narrowed to `f32` first.
+fn reference_normal_with_reference(
+    angle_deg: f64,
+    idx: f64,
+    reference: f32,
+    gear_teeth: f32,
+    is_crown: bool,
+) -> Vec3 {
+    let theta = (angle_deg.abs() as f32).to_radians();
+    let (sin_theta, cos_theta) = (theta.sin(), theta.cos());
+    let phi = StandardGemCuts::index_to_azimuth(idx as f32, gear_teeth, reference);
     let (sin_phi, cos_phi) = (phi.sin(), phi.cos());
     let normal = if is_crown {
         Vec3::new(sin_theta * cos_phi, cos_theta, sin_theta * sin_phi)
@@ -83,6 +108,74 @@ fn facet_frame_normal_is_bit_identical_to_the_facet_map_construction() {
             assert_eq!(frame.is_crown(), is_crown);
         }
     }
+}
+
+/// A design with a gear reference angle puts its facets at `2 pi (index + reference) /
+/// teeth`; the frame the 3D handles use must agree to the bit, or they sit on another
+/// azimuth than the facet they edit.
+#[test]
+fn facet_frame_with_a_reference_angle_is_bit_identical_to_the_facet_map_construction() {
+    for reference in [0.0_f32, 1.5, 3.0, -6.0, 2.3] {
+        for (angle, is_crown) in [(34.5, true), (-41.0, false)] {
+            let t = tier("X", angle, &[0.0, 12.0, 95.0], MeetConstraint::MeetExisting);
+            for idx in [0.0, 12.0, 95.0] {
+                let frame =
+                    FacetFrame::from_tier_with_reference(&t, idx, reference, 96, Vec3::ZERO);
+                let expected =
+                    reference_normal_with_reference(angle, idx, reference, 96.0, is_crown);
+                assert_eq!(
+                    bits(frame.normal),
+                    bits(expected),
+                    "reference {reference} angle {angle} idx {idx}"
+                );
+            }
+        }
+    }
+}
+
+/// The reason for the builder above: with a non-zero reference the plain index builder
+/// lands the frame on a different azimuth, by exactly the reference's share of a turn.
+#[test]
+fn facet_frame_from_the_plain_index_misses_a_facet_by_the_reference_angle() {
+    let t = tier("X", 34.5, &[12.0], MeetConstraint::MeetExisting);
+    let plain = FacetFrame::from_tier(&t, 12.0, 96, Vec3::ZERO);
+    let shifted = FacetFrame::from_tier_with_reference(&t, 12.0, 3.0, 96, Vec3::ZERO);
+    assert_ne!(bits(plain.normal), bits(shifted.normal));
+    // Three of 96 teeth is 1/32 of a turn: 11.25 degrees around the stone.
+    let azimuth = |v: Vec3| v.z.atan2(v.x).to_degrees();
+    let turned = azimuth(shifted.normal) - azimuth(plain.normal);
+    assert!((turned - 11.25).abs() < 1e-3, "turned by {turned} degrees");
+    // Reference zero is the plain builder.
+    let zero = FacetFrame::from_tier_with_reference(&t, 12.0, 0.0, 96, Vec3::ZERO);
+    assert_eq!(bits(zero.normal), bits(plain.normal));
+}
+
+/// The tangents follow the same azimuth as the normal, so a drag along the index handle
+/// still turns the normal the way the screen shows.
+#[test]
+fn facet_frame_tangents_follow_the_reference_angle_too() {
+    for reference in [0.0_f32, 1.5, 3.0] {
+        let t = tier("X", 34.5, &[12.0], MeetConstraint::MeetExisting);
+        let frame = FacetFrame::from_tier_with_reference(&t, 12.0, reference, 96, Vec3::ZERO);
+        for tangent in [frame.tangent_theta(), frame.tangent_phi()] {
+            assert!((tangent.length() - 1.0).abs() < 1e-5);
+            assert!(
+                tangent.dot(frame.normal).abs() < 1e-5,
+                "reference {reference}"
+            );
+        }
+    }
+}
+
+/// A tier with no index-wheel positions is placed by the facet map without the wheel at
+/// all, so a reference angle does not move it.
+#[test]
+fn facet_frame_of_an_indexless_tier_ignores_the_reference_angle() {
+    let t = tier("X", 34.5, &[], MeetConstraint::MeetExisting);
+    let plain = FacetFrame::from_tier(&t, 0.0, 96, Vec3::ZERO);
+    let with_reference = FacetFrame::from_tier_with_reference(&t, 0.0, 3.0, 96, Vec3::ZERO);
+    assert_eq!(bits(with_reference.normal), bits(plain.normal));
+    assert!(with_reference.is_indexless());
 }
 
 /// `facet_map/build.rs` places a tier with NO index-wheel positions at
@@ -519,7 +612,8 @@ fn the_live_hint_reads_like_the_spec_example() {
     let hint = text::drag_live_hint(HandleKind::Angle, "P1", &DragValue::AngleDeg(41.3), 3);
     assert_eq!(hint, "P1 -> 41.3 deg, 3 other tiers follow");
     let one = text::drag_live_hint(HandleKind::Angle, "P1", &DragValue::AngleDeg(-41.0), 1);
-    assert_eq!(one, "P1 -> -41.0 deg, 1 other tier follows");
+    // A pavilion tier is dragged at -41 but the hint reads the plain number.
+    assert_eq!(one, "P1 -> 41.0 deg, 1 other tier follows");
     let alone = text::drag_live_hint(HandleKind::Depth, "P1", &DragValue::Mast(0.673), 0);
     assert_eq!(alone, "P1 -> mast 0.673");
     let turned = text::drag_live_hint(HandleKind::Index, "P1", &DragValue::IndexTeeth(-2), 0);
@@ -534,6 +628,15 @@ fn hover_hints_count_the_tiers_that_meet_by_name() {
     assert!(two.contains("2 tiers meet it by name"), "{two}");
     let off = text::handle_hover_hint(HandleKind::Angle, "P1", 0, SnapMode::Off);
     assert!(off.contains("Snapping is off"), "{off}");
+}
+
+#[test]
+fn the_selection_hint_names_the_tier_and_all_three_handles() {
+    let hint = text::handle_select_hint("P1");
+    assert!(hint.starts_with("P1 selected."), "{hint}");
+    for letter in ["Drag A to tilt", "D to move", "I to turn"] {
+        assert!(hint.contains(letter), "{hint}");
+    }
 }
 
 #[test]
@@ -553,6 +656,17 @@ fn every_toast_mentions_undo_and_a_replaced_meet_is_named() {
     );
     let kept = text::slice_kept_toast("C3", 8, 41.0);
     assert!(kept.contains("Undo") && kept.contains("8 facets"), "{kept}");
+    // A pavilion slice (stored at -42.5) reads as 42.5 in the toast and in the live hint.
+    let pavilion_toast =
+        text::drag_done_toast(HandleKind::Angle, "P2", &DragValue::AngleDeg(-42.5), None);
+    assert!(pavilion_toast.contains("to 42.5 deg"), "{pavilion_toast}");
+    let pavilion_kept = text::slice_kept_toast("P2", 8, -42.5);
+    assert!(pavilion_kept.contains("at 42.5 deg"), "{pavilion_kept}");
+    let pavilion_hint = text::slice_provisional_hint("P2", 1, -42.5, 6.0);
+    assert!(
+        pavilion_hint.contains("1 facet at 42.5 deg, index 6.0"),
+        "{pavilion_hint}"
+    );
     assert!(text::slice_mode_hint(true).contains("whole symmetric set"));
     assert!(text::slice_mode_hint(false).contains("single index"));
     let provisional = text::slice_provisional_hint("C3", 1, 41.0, 6.0);

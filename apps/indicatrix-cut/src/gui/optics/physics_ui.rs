@@ -20,7 +20,10 @@ use super::{
         CUSTOM_KEEP_COLOR_INDEX, absorption_rgb_for_color_index, color_index_for_absorption_rgb,
     },
     physics_solver::{SolveOutcome, SolverWorker},
-    physics_state::{ModeSwatches, PhysicsState, PhysicsView, Prefill, SolveJob},
+    physics_state::{
+        ModeSwatches, PHYSICS_COLOR_UI, PhysicsState, PhysicsView, Prefill, SolveJob,
+        color_section_view,
+    },
 };
 use crate::{
     MainWindow, PhysicsAddOption, PhysicsRow, PhysicsTreatment, PhysicscolorModel, ViewportModel,
@@ -141,10 +144,20 @@ fn push_swatches(model: &PhysicscolorModel<'_>, view: &PhysicsView) {
     }
 }
 
+/// Pushes what the dialog's color area shows (toggle, recipe section, Fantasy controls, note).
+fn push_section(model: &PhysicscolorModel<'_>, mode_is_physics: bool) {
+    let section = color_section_view(PHYSICS_COLOR_UI, mode_is_physics);
+    model.set_show_mode_toggle(section.shows_mode_toggle());
+    model.set_show_physics_section(section.shows_physics_section());
+    model.set_show_fantasy_section(section.shows_fantasy_section());
+    model.set_show_recipe_note(section.shows_recipe_note());
+}
+
 /// Pushes `view` (and a pending optics `prefill`) into the Slint model.
 fn push_view(ui: &MainWindow, view: &PhysicsView, prefill: Option<&Prefill>) {
     let model = ui.global::<PhysicscolorModel>();
     model.set_active(view.active);
+    push_section(&model, view.active);
     model.set_dirty(view.dirty);
     model.set_mode_json(view.mode_json.clone().into());
     model.set_host_index(i32::try_from(view.host_index).unwrap_or(0));
@@ -407,6 +420,71 @@ fn fantasy_pick(ctrl: &Ctrl, c: slint::Color) {
     });
 }
 
+/// The L*C*h editor's "Apply colour" in the material editor dialog: the solved colour's nearest
+/// legacy triple becomes the fantasy colour, exactly like a finished [`fantasy_pick`] (the
+/// seven-band rows are held by `dialog_color` until "Save"). Runs on the UI thread.
+fn fixed_color_picked(ctrl: &Ctrl, rgb: [f32; 3]) {
+    let Some(ui) = ctrl.ui.upgrade() else {
+        return;
+    };
+    let view = {
+        let mut s = lock(&ctrl.state);
+        s.set_fantasy_pick(rgb);
+        s.view(ChromophoreCatalogue::global())
+    };
+    push_view(&ui, &view, None);
+    let model = ui.global::<PhysicscolorModel>();
+    model.set_fantasy_idx(idx_for_rgb(rgb));
+    model.set_fantasy_serial(model.get_fantasy_serial() + 1);
+}
+
+/// A preset swatch (or a template's color) was chosen: returns the swatch to select.
+///
+/// Only with the physics editor hidden and a physics recipe in force does this do anything:
+/// the choice replaces the recipe's color with that fixed color (the existing switch-to-Fantasy
+/// path, [`PhysicsState::choose_fixed_color`], which keeps the recipe in the saved JSON). In
+/// every other case -- the editor is shown, or the material is plainly Fantasy -- the swatch is
+/// just the dialog's own selection and this returns it unchanged.
+fn color_preset_chosen(ctrl: &Ctrl, idx: i32) -> i32 {
+    // A preset swatch replaces the L*C*h editor's seven-band colour.
+    super::dialog_color::preset_chosen(preset_rgb_for(idx));
+    let replaces_recipe =
+        color_section_view(PHYSICS_COLOR_UI, lock(&ctrl.state).is_physics()).shows_recipe_note();
+    if !replaces_recipe {
+        return idx;
+    }
+    let mut shown = idx;
+    ctrl.edit(|s, _| {
+        s.choose_fixed_color(preset_rgb_for(idx));
+        if idx == CUSTOM_KEEP_COLOR_INDEX {
+            // "Keep" may have been seeded from the recipe: show the swatch that matches it.
+            shown = idx_for_rgb(s.mode.fantasy_rgb);
+        }
+        None
+    });
+    shown
+}
+
+/// Applies the physics recipe held in `ctx.pending_color_choice`; returns the material's name.
+///
+/// This is the "keep the physics recipe" answer for an opened file whose top-level color an
+/// older build edited: the recipe's material replaces the edited one and the material renders
+/// from its recipe again. `None` when nothing was pending.
+pub(in crate::gui) fn keep_pending_recipe(ctx: &mut RenderContext) -> Option<String> {
+    let (name, recipe_material, recipe_glow) = ctx.pending_color_choice.take()?;
+    let materials = Arc::make_mut(&mut ctx.custom_materials);
+    if let Some(pos) = materials
+        .iter()
+        .position(|m| m.name.eq_ignore_ascii_case(&name))
+    {
+        materials[pos] = recipe_material;
+    }
+    ctx.set_custom_material_physics(&name, true);
+    ctx.set_custom_material_fluorescence(&name, recipe_glow);
+    ctx.dirty = true;
+    Some(name)
+}
+
 fn color_conflict_resolved(ctrl: &Ctrl, keep_recipe: bool) {
     let Some(ui) = ctrl.ui.upgrade() else {
         return;
@@ -417,20 +495,11 @@ fn color_conflict_resolved(ctrl: &Ctrl, keep_recipe: bool) {
         .render_ctx
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some((name, recipe_material, recipe_glow)) = ctx.pending_color_choice.take() else {
-        return;
-    };
     if keep_recipe {
-        let materials = Arc::make_mut(&mut ctx.custom_materials);
-        if let Some(pos) = materials
-            .iter()
-            .position(|m| m.name.eq_ignore_ascii_case(&name))
-        {
-            materials[pos] = recipe_material;
-        }
-        ctx.set_custom_material_physics(&name, true);
-        ctx.set_custom_material_fluorescence(&name, recipe_glow);
-        ctx.dirty = true;
+        keep_pending_recipe(&mut ctx);
+    } else {
+        // "Use the edited color": that color is already in use, so only the held recipe goes.
+        ctx.pending_color_choice = None;
     }
 }
 
@@ -461,6 +530,10 @@ pub(in crate::gui) fn setup_physics_callbacks(
         render_ctx: Arc::clone(render_ctx),
     };
     let m = ui.global::<PhysicscolorModel>();
+    // Whether this build shows the physics editor (the `physical-color` feature). Every
+    // callback below is registered either way: the Fantasy picker's hex helpers and the save
+    // path's `mode_json` depend on them, and skipping them would save a material's recipe away.
+    m.set_ui_enabled(PHYSICS_COLOR_UI);
 
     let c = ctrl.clone();
     m.on_dialog_opened(move || open_dialog(&c));
@@ -468,6 +541,13 @@ pub(in crate::gui) fn setup_physics_callbacks(
     m.on_set_mode(move |physics, idx| set_mode(&c, physics, idx));
     let c = ctrl.clone();
     m.on_host_selected(move |i| host_selected(&c, i));
+    register_recipe_callbacks(&m, &ctrl);
+    register_pick_callbacks(&m, &ctrl);
+}
+
+/// The recipe-editing callbacks: amounts, fractions, view, locks, items, strength, treatments
+/// and path.
+fn register_recipe_callbacks(m: &PhysicscolorModel<'_>, ctrl: &Ctrl) {
     let c = ctrl.clone();
     m.on_amount_changed(move |id, pos| {
         c.edit(|s, cat| {
@@ -552,7 +632,6 @@ pub(in crate::gui) fn setup_physics_callbacks(
             None
         });
     });
-    register_pick_callbacks(&m, &ctrl);
 }
 
 /// The pick/solve, fantasy picker, data-update, undo/redo, template, conflict and hex callbacks.
@@ -561,6 +640,8 @@ fn register_pick_callbacks(m: &PhysicscolorModel<'_>, ctrl: &Ctrl) {
     m.on_pick_solve(move |col| pick_solve(&c, col));
     let c = ctrl.clone();
     m.on_fantasy_pick(move |col| fantasy_pick(&c, col));
+    let c = ctrl.clone();
+    m.on_fixed_color_picked(move |r, g, b| fixed_color_picked(&c, [r, g, b]));
     let c = ctrl.clone();
     m.on_update_data(move || {
         c.edit(|s, cat| {
@@ -585,7 +666,9 @@ fn register_pick_callbacks(m: &PhysicscolorModel<'_>, ctrl: &Ctrl) {
     let c = ctrl.clone();
     m.on_template_selected(move |name| {
         c.edit(|s, cat| {
-            if s.is_physics()
+            // Never with the editor hidden: a new host would replace the recipe it cannot show.
+            if PHYSICS_COLOR_UI
+                && s.is_physics()
                 && let Some(host) = cat.host_for_material(&name)
             {
                 s.select_host(&host.id, cat);
@@ -593,6 +676,8 @@ fn register_pick_callbacks(m: &PhysicscolorModel<'_>, ctrl: &Ctrl) {
             None
         });
     });
+    let c = ctrl.clone();
+    m.on_color_preset_chosen(move |idx| color_preset_chosen(&c, idx));
     let c = ctrl.clone();
     m.on_color_conflict_resolved(move |keep| color_conflict_resolved(&c, keep));
     m.on_format_hex(|c| format_hex(c).into());
@@ -650,6 +735,40 @@ mod tests {
         let physics = capture(true);
         assert!((plain.material.absorption_path_scale - 1.0).abs() < f32::EPSILON);
         assert!((physics.material.absorption_path_scale - 1.0).abs() > 1e-3);
+    }
+
+    /// Without the physics editor an opened file's "edited by an older version" question is
+    /// answered "keep the recipe" on the spot: the recipe's material replaces the edited one and
+    /// renders as physics again.
+    #[test]
+    fn keeping_the_pending_recipe_restores_the_recipe_material() {
+        use indicatrix::optics::{fluorescence::Fluorescence, materials::GemMaterial};
+        let edited = GemMaterial::new_custom("Pure Host", 1.76, 0.018, -0.008, [0.9, 0.1, 0.1]);
+        let from_recipe = GemMaterial::new_custom("Pure Host", 1.76, 0.018, -0.008, [0.0; 3]);
+        assert_ne!(edited.absorption, from_recipe.absorption);
+        let mut ctx = RenderContext {
+            custom_materials: Arc::new(vec![edited]),
+            material_name: "Pure Host".to_string(),
+            dirty: false,
+            pending_color_choice: Some((
+                "Pure Host".to_string(),
+                from_recipe.clone(),
+                Fluorescence::new(Vec::new()),
+            )),
+            ..RenderContext::default()
+        };
+        assert!(
+            !ctx.physics_color(),
+            "the edited color is in use until answered"
+        );
+
+        assert_eq!(keep_pending_recipe(&mut ctx).as_deref(), Some("Pure Host"));
+        assert!(ctx.pending_color_choice.is_none());
+        assert_eq!(ctx.custom_materials[0].absorption, from_recipe.absorption);
+        assert!(ctx.physics_color());
+        assert!(ctx.dirty, "the viewport re-renders with the recipe");
+
+        assert_eq!(keep_pending_recipe(&mut ctx), None, "nothing left to apply");
     }
 
     #[test]

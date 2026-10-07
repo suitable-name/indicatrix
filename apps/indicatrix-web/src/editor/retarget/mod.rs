@@ -93,6 +93,7 @@ fn open(ctx: &Ctx) {
     model.set_mode_index(0);
     model.set_crown_fraction(0.0);
     model.set_scale_crown_by_ratio(false);
+    model.set_crown_follows_pavilion(true);
     model.set_is_busy(false);
     model.set_progress(-1.0);
     {
@@ -132,6 +133,7 @@ fn rebuild(ctx: &Ctx) {
     let crown = CrownShift {
         fraction: f64::from(model.get_crown_fraction()),
         scale_by_ratio: model.get_scale_crown_by_ratio(),
+        follow_pavilion: model.get_crown_follows_pavilion(),
     };
     let combo_index = model.get_target_material_index();
     let ri_text = model.get_target_ri_override_text();
@@ -276,6 +278,7 @@ fn start_search(
             target: selection.into(),
             crown_fraction: crown.fraction,
             scale_crown_by_ratio: crown.scale_by_ratio,
+            crown_follows_pavilion: crown.follow_pavilion,
             mode: RetargetModeData::Optimize,
             optimize: optimize::params_or_default(&ui),
         },

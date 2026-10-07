@@ -8,6 +8,8 @@
 //! - [`studio_env::run_studio_env`][]: `optics::raytracer::sample_studio_environment`
 //!   (across all four [`LightingPreset`](crate::optics::raytracer::LightingPreset)
 //!   variants).
+//! - [`sun_nee::run_sun_nee`][]: the analytic sun's NEE sampler, pdf and radiance factor
+//!   (`DaylightSun`), against `optics::raytracer::environment::rig`'s CPU twins.
 //! - [`white_balance::run_white_balance`][]:
 //!   `optics::raytracer::compute_illuminant_white_balance`'s 401-point (380..=780nm)
 //!   quadrature.
@@ -26,6 +28,7 @@ mod blackbody;
 mod cmf;
 mod hdr_env;
 mod studio_env;
+mod sun_nee;
 mod white_balance;
 
 pub use blackbody::{BLACKBODY_ABS_FLOOR, BLACKBODY_ULP_BUDGET, BlackbodyCase, run_blackbody};
@@ -37,6 +40,9 @@ pub use hdr_env::{
 pub use studio_env::{
     STUDIO_ENV_ABS_FLOOR, STUDIO_ENV_ULP_BUDGET, StudioEnvCase, build_studio_env_cases,
     run_studio_env,
+};
+pub use sun_nee::{
+    SUN_NEE_ABS_FLOOR, SUN_NEE_ULP_BUDGET, SunNeeCase, build_sun_nee_cases, run_sun_nee,
 };
 pub use white_balance::{WHITE_BALANCE_ABS_FLOOR, WHITE_BALANCE_ULP_BUDGET, run_white_balance};
 
