@@ -449,7 +449,7 @@ pub(in crate::gui) fn setup_camera_and_lighting_callbacks(
             ctx.pitch = 0.45;
             ctx.distance = 2.4;
             ctx.light_yaw = 0.85;
-            ctx.light_pitch = 0.95;
+            ctx.light_pitch = crate::settings::model::DEFAULT_LIGHT_PITCH_DEG.to_radians();
             ctx.dirty = true;
             // Immediately resubmits at the new pose so both viewports (the Edit
             // tab's Solid preview and, when it is showing the solid raster, the

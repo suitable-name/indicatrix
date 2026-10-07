@@ -224,8 +224,8 @@ export component SettingsDialog inherits Rectangle {
         SettingsModel.backdrop_index = 1;
         SettingsModel.surface_glare_pct = 100.0;
         SettingsModel.head_shadow_deg = 16.0;
-        SettingsModel.light_yaw_deg = 48.0;
-        SettingsModel.light_pitch_deg = 54.0;
+        SettingsModel.light_yaw_deg = SettingsModel.default_light_yaw_deg;
+        SettingsModel.light_pitch_deg = SettingsModel.default_light_pitch_deg;
         SettingsModel.inclusion_sigma_s = 0.0;
         SettingsModel.c_axis_override_enabled = false;
         SettingsModel.c_axis_tilt_deg = 0.0;
@@ -247,7 +247,7 @@ export component SettingsDialog inherits Rectangle {
         SettingsModel.backdrop_changed(1);
         SettingsModel.surface_glare_changed(100.0);
         SettingsModel.head_shadow_changed(16.0);
-        ViewportModel.light_pos_changed(48.0, 54.0);
+        ViewportModel.light_pos_changed(SettingsModel.default_light_yaw_deg, SettingsModel.default_light_pitch_deg);
         SettingsModel.inclusion_changed(0.0);
         SettingsModel.c_axis_override_changed(false);
         SettingsModel.c_axis_angles_changed(0.0, 0.0);

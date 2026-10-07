@@ -19,7 +19,10 @@ use crate::{
     },
     settings::{
         LightingPreset as SavedLightingPreset, LocalComputeTarget, LocalPreviewScale, SettingsFile,
-        model::{clamp_head_shadow_deg, clamp_surface_glare, percent_from_surface_glare},
+        model::{
+            DEFAULT_LIGHT_PITCH_DEG, DEFAULT_LIGHT_YAW_DEG, clamp_head_shadow_deg,
+            clamp_surface_glare, percent_from_surface_glare,
+        },
     },
 };
 use indicatrix::{
@@ -289,6 +292,11 @@ fn apply_loaded_ui_mirrors(
         .set_local_compute_target_index(local_compute_target_index(s.local_compute_target));
     ui.global::<SettingsModel>()
         .set_contribute_to_final_picture(s.contribute_to_final_picture);
+    // "Reset to Defaults" reads these instead of hard-coding the numbers.
+    ui.global::<SettingsModel>()
+        .set_default_light_yaw_deg(DEFAULT_LIGHT_YAW_DEG);
+    ui.global::<SettingsModel>()
+        .set_default_light_pitch_deg(DEFAULT_LIGHT_PITCH_DEG);
     ui.global::<SettingsModel>()
         .set_light_yaw_deg(s.light_yaw_deg);
     // Clamped identically to `apply_loaded_render_context`'s own

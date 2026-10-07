@@ -18,7 +18,9 @@ export global RenderModel {
     in-out property <bool> panel-open: false;
     in-out property <float> exposure: 1.0;
     in-out property <float> light-yaw-deg: 48.0;
-    in-out property <float> light-pitch-deg: 54.0;
+    // Mirrors `DEFAULT_LIGHT_PITCH_DEG` (indicatrix-web-core settings.rs); overwritten
+    // from the loaded settings at startup (render/panel.rs).
+    in-out property <float> light-pitch-deg: 72.0;
     // The viewer's head shadow on the lit presets, degrees (0 off, default 16).
     in-out property <float> head-shadow-deg: 16.0;
     // The lighting preset is one of the lit models (the product-photography rigs ignore it).

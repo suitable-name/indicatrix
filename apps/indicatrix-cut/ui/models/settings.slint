@@ -24,7 +24,12 @@ export global SettingsModel {
     // observer head. `settings_dialog.slint` greys it out for an HDR map.
     in-out property <float> head_shadow_deg: 16.0;
     in-out property <float> light_yaw_deg: 48.0;
-    in-out property <float> light_pitch_deg: 54.0;
+    in-out property <float> light_pitch_deg: 72.0;
+    // Defaults for "Reset to Defaults". Fed at startup from the Rust constants
+    // `DEFAULT_LIGHT_YAW_DEG` / `DEFAULT_LIGHT_PITCH_DEG` (settings/model/app_settings.rs)
+    // so they cannot drift; the literals here only matter before that runs.
+    in property <float> default_light_yaw_deg: 48.0;
+    in property <float> default_light_pitch_deg: 72.0;
     // Inclusion/subsurface scattering amount, off by default -- range and endpoint
     // meanings from `GemMaterial::scattering_sigma_s`.
     in-out property <float> inclusion_sigma_s: 0.0;

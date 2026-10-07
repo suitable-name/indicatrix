@@ -652,8 +652,9 @@ impl Default for RenderContext {
             yaw: DEFAULT_POSE.yaw,
             pitch: DEFAULT_POSE.pitch,
             distance: DEFAULT_POSE.distance,
-            light_yaw: 0.85,   // ~48 degrees azimuth
-            light_pitch: 0.95, // ~54 degrees elevation
+            light_yaw: 0.85, // ~48 degrees azimuth
+            // 72 degrees elevation, the `AppSettings` default.
+            light_pitch: crate::settings::model::DEFAULT_LIGHT_PITCH_DEG.to_radians(),
             material_name: "Diamond".to_string(),
             material_override: None,
             view_body_color: None,

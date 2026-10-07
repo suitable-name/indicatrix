@@ -255,9 +255,52 @@ genuine right-drag gesture.)
   At exposure 1× the lit models put their ambient light near middle grey, so only a
   direct reflection of a light source clips to white; use Studio Exposure to go darker
   or brighter.
+- **Studio Exposure** (Settings gear) — the overall brightness of the picture, a
+  slider from 0.4× to 2.5× (default 1×, shown next to the label). It scales the light
+  of every built-in lighting preset, the lit models and the Studio rigs alike. It does
+  not apply while an HDR environment map is loaded, which replaces the exposure and
+  light-position controls (the map brings its own brightness). A stored value outside
+  0.2× to 5× is pulled back into that range when the settings are read.
+- **Light direction** (Settings gear, under Studio Exposure) — where the main light
+  shines from, as two angles. **Light Azimuth** is the angle around the stone, 0° to
+  360° (default 48°). **Light Elevation** is the height above the stone, 10° (low and
+  raking) to 90° (straight overhead) (default 72°). Besides the two Settings sliders,
+  you can move the light in the viewport itself: right-drag, or Shift + left-drag,
+  changes both angles at once (the table above). The direction moves the light tent's
+  overhead softbox (the black cards turn with it), the sun of **Daylight sky + direct
+  sun**, the glow of **Daylight sky (no sun)**, the window of **Window daylight** and
+  the key softbox of the Studio rigs. The **Grading tray** does not depend on it: the
+  whole hemisphere is lit evenly, so the light direction changes nothing there. An HDR
+  map ignores it too.
+- **Views** (Settings gear, the **Lighting Presets** list) — one-click saved looks.
+  A view is more than a lighting preset: it stores the lighting preset *and* the light
+  direction (azimuth and elevation), the exposure and the camera distance, and for some
+  views also the camera pose. Click a name to apply the view; applying one that stores
+  no camera pose leaves your current turn around the stone alone. Seven views come
+  with the app and cannot be renamed or deleted:
+
+  | View | Lighting preset | Light azimuth / elevation | Exposure | Camera |
+  |---|---|---|---|---|
+  | Studio Softbox | Gem Studio Ring Lights | 48° / 54° | 1× | not set |
+  | Daylight Bright | D65 Daylight (6500K) | 30° / 65° | 1.3× | not set |
+  | Dramatic Spotlight | Dramatic Dark Spotlight | 300° / 25° | 0.7× | not set |
+  | Light Tent | Light tent + black cards | 48° / 72° | 1× | not set |
+  | Grading tray | Grading tray (D65 hemisphere + head shadow) | 48° / 72° | 1× | azimuth 20°, elevation 85° (looking almost straight down) |
+  | Daylight Sun | Daylight sky + direct sun | 30° / 55° | 1× | not set |
+  | Window daylight | Window daylight | 40° / 30° | 1.2× | not set |
+
+  The **Save as preset** button on the viewport toolbar (hidden in Simple mode)
+  captures your current lighting, light direction, exposure and camera pose under a
+  name you type; the save button in the Lighting Presets heading saves the current
+  lighting without the camera pose. Your own views are added to the same list, after
+  the built-in ones, and can be renamed and deleted (the pencil and trash buttons). Every
+  row, built-in or yours, has a small save toggle, the "usable for" mark: switch it on
+  and the view is offered in the export dialog's list of lightings, so one export can
+  render the stone under several of them (Chapter 9). New views start with it off.
 - **Backdrop** (Settings gear, under Studio Exposure) — what the camera sees behind
   the stone: **As lit** (the environment's own ground), **Grey** (the default:
-  the neutral canvas GemRay paints, for like-for-like comparisons) or **White**. Only
+  a neutral grey card, the convention gem-design programs use for like-for-like
+  comparisons) or **White**. Only
   the camera sees it; the stone's optics never do, so leakage and windows stay dark.
 - **Surface glare** (Settings gear, under Backdrop) — a 0–100 % slider in steps of 5
   (default 100 %). It scales the white mirror image of the light that a polished

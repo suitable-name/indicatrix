@@ -50,8 +50,9 @@ pub use worker::{LiveComputeTarget, LocalPreviewScale, PreviewScale, WorkerSetti
     reason = "used only via model:: from #[cfg(test)] code"
 )]
 pub use app_settings::{
-    AppSettings, Backdrop, DEFAULT_LIGHTING_RIG, DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SPP,
-    DEFAULT_RENDER_HEIGHT, DEFAULT_RENDER_WIDTH, DEFAULT_TARGET_SAMPLES,
+    AppSettings, Backdrop, DEFAULT_LIGHT_PITCH_DEG, DEFAULT_LIGHT_YAW_DEG, DEFAULT_LIGHTING_RIG,
+    DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SPP, DEFAULT_RENDER_HEIGHT, DEFAULT_RENDER_WIDTH,
+    DEFAULT_TARGET_SAMPLES,
 };
 #[allow(
     unused_imports,
