@@ -489,6 +489,16 @@ fn trace_spectral_ray_core(
     let camera_lambdas = lambdas;
     // Fluorescence pseudo-extinction at the camera wavelength (1/absorption-length) and
     // whether this path may still take its (single) vertex.
+    // Emitters are PerMm-only: the pseudo-extinction below is in 1/mm and the vertex sampling
+    // scales the segment by `absorption_path_scale`. A ModelUnit material's scale is
+    // `(W / 7) / MODEL_UNIT_FACE_UP_PATH`, which would make its emitters fluoresce about 2.5x
+    // (1 / K) too weakly. Today only PerMm physics recipes carry emitters.
+    debug_assert!(
+        !fluorescent
+            || material.absorption_unit == crate::optics::materials::AbsorptionUnit::PerMm
+            || material.absorption_path_scale.to_bits() == 1.0_f32.to_bits(),
+        "fluorescent emitters need a PerMm material (or an unscaled bare one)"
+    );
     let fluorescence_rate = if fluorescent {
         fluorescence.pseudo_extinction(camera_lambdas[0])
     } else {

@@ -721,20 +721,39 @@ mod tests {
         assert!(!ctx.physics_color());
     }
 
-    /// Export and the remote scene read the same flag: a zero-band physics material takes the
-    /// 7 mm default stone width, the same material unflagged keeps scale 1.
+    /// The absorption scale follows the material's own `AbsorptionUnit` tag, not the physics-colour
+    /// flag: a `ModelUnit` material (flagged or not) gets `1 / K` while no size is set, a `PerMm`
+    /// one (what a physics recipe builds) takes the 7 mm default over the design's model width.
+    /// The two values are NOT compared for inequality: with K = 2.52 and a ~17.6 model-unit
+    /// width they nearly coincide (7 / 17.6 ~ 1 / 2.52), so only exact formulas are asserted.
     #[test]
     fn export_and_remote_snapshots_apply_the_default_width_to_a_physics_material() {
         use crate::bridge::export_thread::SceneSnapshot;
-        let capture = |physics: bool| {
-            let mut ctx = pure_host_context();
-            ctx.set_custom_material_physics("Pure Host", physics);
-            SceneSnapshot::capture(&Mutex::new(ctx)).expect("resolves")
+        use indicatrix::{
+            optics::materials::AbsorptionUnit,
+            render_setup::{
+                MODEL_UNIT_FACE_UP_PATH, absorption_path_scale_for, measure_model_width,
+            },
         };
-        let plain = capture(false);
-        let physics = capture(true);
-        assert!((plain.material.absorption_path_scale - 1.0).abs() < f32::EPSILON);
-        assert!((physics.material.absorption_path_scale - 1.0).abs() > 1e-3);
+        let capture = |physics: bool, unit: AbsorptionUnit| {
+            let mut ctx = pure_host_context();
+            ctx.custom_materials = Arc::new(vec![
+                physics_ruby_without_bands().with_absorption_unit(unit),
+            ]);
+            ctx.set_custom_material_physics("Pure Host", physics);
+            let model_width = measure_model_width(&ctx.active_planes);
+            let snapshot = SceneSnapshot::capture(&Mutex::new(ctx)).expect("resolves");
+            (snapshot, model_width)
+        };
+        let calibrated = 1.0 / MODEL_UNIT_FACE_UP_PATH;
+        for physics in [false, true] {
+            let (model_unit, _) = capture(physics, AbsorptionUnit::ModelUnit);
+            assert_eq!(model_unit.material.absorption_path_scale, calibrated);
+        }
+        let (per_mm, model_width) = capture(true, AbsorptionUnit::PerMm);
+        let expected = absorption_path_scale_for(AbsorptionUnit::PerMm, 0.0, model_width)
+            .expect("the default design measures");
+        assert_eq!(per_mm.material.absorption_path_scale, expected);
     }
 
     /// Without the physics editor an opened file's "edited by an older version" question is

@@ -51,6 +51,7 @@ impl GemMaterial {
                 scattering_g: 0.0,
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
+                absorption_unit: super::AbsorptionUnit::ModelUnit,
                 uniaxial_extraordinary_dispersion: None,
             },
             // Quartz (Rock Crystal / Amethyst / Citrine, alpha-SiO2)
@@ -94,6 +95,7 @@ impl GemMaterial {
                 scattering_g: 0.0,
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
+                absorption_unit: super::AbsorptionUnit::ModelUnit,
                 // Quartz (with Amethyst and Citrine, which reuse this exact curve) and
                 // Rutile are the built-ins with a genuine primary e-ray Sellmeier
                 // fit alongside the o-ray one -- for Quartz, G. Ghosh, Opt. Commun. 163, 95-102
@@ -191,6 +193,7 @@ impl GemMaterial {
                 scattering_g: 0.0,
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
+                absorption_unit: super::AbsorptionUnit::ModelUnit,
                 uniaxial_extraordinary_dispersion: None,
             },
         ]

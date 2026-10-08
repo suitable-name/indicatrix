@@ -206,8 +206,8 @@ fn hex(bytes: &[u8]) -> String {
 #[test]
 fn wire_format_is_pinned() {
     assert_eq!(
-        PROTOCOL_VERSION, 14,
-        "the bytes below were pinned for version 14"
+        PROTOCOL_VERSION, 15,
+        "the bytes below were pinned for version 15"
     );
 
     // TraceChunk = variant 4; scene id 300 = varint AC 02.
@@ -231,7 +231,7 @@ fn wire_format_is_pinned() {
         hex(&encode_to_worker(&watch).expect("encodes")),
         "08 05 06 62 6C 6F 62 3A 78"
     );
-    // Init = variant 0, then version 14, role Render = 0, worker index 2.
+    // Init = variant 0, then version 15, role Render = 0, worker index 2.
     let init = ToWorker::Init {
         protocol_version: PROTOCOL_VERSION,
         role: WorkerRole::Render,
@@ -239,7 +239,7 @@ fn wire_format_is_pinned() {
     };
     assert_eq!(
         hex(&encode_to_worker(&init).expect("encodes")),
-        "00 0E 00 02"
+        "00 0F 00 02"
     );
 
     // ChunkResult = variant 2; one [0.5, 1.0, 2.0] sum; 187.25 ms = 0x4067680000000000.
@@ -270,7 +270,7 @@ fn wire_format_is_pinned() {
     let loaded = FromWorker::Loaded {
         protocol_version: PROTOCOL_VERSION,
     };
-    assert_eq!(hex(&encode_from_worker(&loaded).expect("encodes")), "00 0E");
+    assert_eq!(hex(&encode_from_worker(&loaded).expect("encodes")), "00 0F");
 }
 
 /// `LightingSpec` pinned: preset index and backdrop index as zigzag varints, then the

@@ -392,6 +392,7 @@ pub fn run_specialisation_equivalence(
 
     let mut cases = Vec::with_capacity(representative_materials.len());
     for name in representative_materials {
+        // Bare built-in on purpose (scale 1.0, no `material_for_stone`): this compares CPU against GPU on the same material, so only parity matters, not the render's colour scale.
         let material = GemMaterial::by_name(name).unwrap_or_else(|| {
             panic!("{name:?} is a built-in material in GemMaterial::all_materials()")
         });

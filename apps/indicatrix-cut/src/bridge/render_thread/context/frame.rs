@@ -57,7 +57,6 @@ pub(in crate::bridge::render_thread) struct FrameInputs {
     pub(in crate::bridge::render_thread) girdle_frosted: bool,
     pub(in crate::bridge::render_thread) edge_rounding_radius: f32,
     pub(in crate::bridge::render_thread) stone_width_mm: f32,
-    pub(in crate::bridge::render_thread) physics_color: bool,
     pub(in crate::bridge::render_thread) active_planes: Arc<Vec<GpuFacetPlane>>,
     /// See [`RenderContext::active_tools`].
     pub(in crate::bridge::render_thread) active_tools: Arc<Vec<ToolPrimitive>>,
@@ -134,7 +133,6 @@ pub(in crate::bridge::render_thread) fn snapshot_frame_inputs(
         girdle_frosted: ctx.girdle_frosted,
         edge_rounding_radius: ctx.edge_rounding_radius,
         stone_width_mm: ctx.stone_width_mm,
-        physics_color: ctx.physics_color(),
         // `Arc::clone`, not a deep copy -- see `RenderContext::active_planes`'s doc
         // comment.
         active_planes: Arc::clone(&ctx.active_planes),

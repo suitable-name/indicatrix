@@ -188,6 +188,7 @@ fn run_specialisation_image_comparison_check(ctx: &GpuContext) -> bool {
     ];
     let mut all_passed = true;
     for (name, class_label) in materials {
+        // Bare built-in on purpose (scale 1.0, no `material_for_stone`): this compares CPU against GPU on the same material, so only parity matters, not the render's colour scale.
         let material =
             indicatrix::optics::materials::GemMaterial::by_name(name).unwrap_or_else(|| {
                 panic!("{name:?} is a built-in material in GemMaterial::all_materials()")

@@ -74,6 +74,7 @@ impl GemMaterial {
                 scattering_g: 0.0,
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
+                absorption_unit: super::AbsorptionUnit::ModelUnit,
                 uniaxial_extraordinary_dispersion: None,
             },
             // Morganite (Beryl, Be3Al2(SiO3)6:Mn3+) -- same beryl host as Aquamarine
@@ -102,6 +103,7 @@ impl GemMaterial {
                 scattering_g: 0.0,
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
+                absorption_unit: super::AbsorptionUnit::ModelUnit,
                 uniaxial_extraordinary_dispersion: None,
             },
             // Chrysoberyl (Yellow, BeAl2O4:Fe3+) -- same host mineral as Alexandrite
@@ -142,6 +144,7 @@ impl GemMaterial {
                 scattering_g: 0.0,
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
+                absorption_unit: super::AbsorptionUnit::ModelUnit,
                 uniaxial_extraordinary_dispersion: None,
             },
         ]

@@ -11,7 +11,7 @@ use super::*;
 use indicatrix::{
     geometry::cuts::StandardGemCuts,
     optics::raytracer::build_plane_soa,
-    render_setup::{MaterialOverrides, apply_material_overrides},
+    render_setup::{MaterialOverrides, apply_material_overrides, needs_model_width},
     renderer::cpu_frame::trace_pixels_interleaved,
 };
 
@@ -59,7 +59,7 @@ fn desktop_recipe(s: &DesktopSettings, planes: &[GpuFacetPlane]) -> DesktopScene
         s.material_name,
     )
     .unwrap_or_else(GemMaterial::diamond);
-    let model_width = if s.overrides.stone_width_mm > 0.0 {
+    let model_width = if needs_model_width(&material) {
         measure_model_width(planes)
     } else {
         None

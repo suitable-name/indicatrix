@@ -174,7 +174,13 @@ fn resolve_design(ctx: &BatchContext<'_>, entry_id: i64) -> Option<ResolvedDesig
     let Ok(Some(material_name)) = material_name else {
         return None;
     };
-    let material = GemMaterial::by_name(&material_name)?;
+    // Through the render's size rule (a library design has no stone size): the same absorption
+    // calibration the live view applies to a built-in's per-model-unit colour.
+    let material = indicatrix::render_setup::material_for_stone(
+        GemMaterial::by_name(&material_name)?,
+        0.0,
+        &planes,
+    );
 
     Some(ResolvedDesign {
         title: full.title,

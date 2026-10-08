@@ -333,7 +333,12 @@ fn prepare_run_inputs(
         .girdle_diameter_mm
         .is_some_and(|mm| mm > 0.0 && mm.is_finite());
     if !options.vary_anchored && !wants_size {
-        return Ok(material);
+        // No solve needed unless the material is per-mm (it reads the model width even for the
+        // 7 mm default). A per-model-unit material still gets the render's unset-size scale
+        // `1 / MODEL_UNIT_FACE_UP_PATH`, never the bare 1.0 (planes are not read for it).
+        if !indicatrix::render_setup::needs_model_width(&material) {
+            return Ok(sized_material_for_optimize(material, design, &[]));
+        }
     }
     let solved = design.solve()?;
     if options.vary_anchored {
@@ -482,13 +487,16 @@ mod tests {
         let mut options = OptimizeOptions::default();
         let unsized_material = prepare_run_inputs(&design, coloured(), &mut options, None)
             .expect("the fresh design solves");
-        assert_eq!(unsized_material.absorption_path_scale, 1.0);
+        let face_up = indicatrix::render_setup::MODEL_UNIT_FACE_UP_PATH;
+        assert!((unsized_material.absorption_path_scale - 1.0 / face_up).abs() < 1e-7);
 
         design.girdle_diameter_mm = Some(6.5);
         let sized = prepare_run_inputs(&design, coloured(), &mut options, None)
             .expect("the fresh design solves");
+        // A per-model-unit colour is tuned for 7 mm: 6.5 mm renders 6.5/7 as dense, on top of the
+        // face-up calibration `1 / K`.
         assert!(
-            sized.absorption_path_scale > 1.0,
+            (sized.absorption_path_scale - 6.5 / 7.0 / face_up).abs() < 1e-6,
             "{}",
             sized.absorption_path_scale
         );

@@ -187,7 +187,13 @@ pub use tilt::{
 /// 22: lighting wave. `LightingPreset::{DaylightSun, Aset, ShopLights, WindowDaylight,
 ///     WhiteTray, IlluminantA}` appended (enum indices 9 to 14; `SceneState` carries the
 ///     enum), and `LightingModel::{Aset, DaylightSun}` (GPU model ids 4 and 5) added.
-pub const PROTOCOL_VERSION: u16 = 22;
+/// 23: absorption units. `indicatrix::optics::materials::GemMaterial` (inside
+///     `SceneState::material`) gained `absorption_unit` (`AbsorptionUnit`, enum index 0
+///     `ModelUnit` / 1 `PerMm`, one byte, declared right after `absorption_path_scale`), and
+///     the tracer no longer scales the inclusion `scattering_sigma_s` by the path scale (it is
+///     per model unit, independent of the stone's size). A peer on 22 would misalign the
+///     material and trace scattering scenes with the old rule.
+pub const PROTOCOL_VERSION: u16 = 23;
 
 #[cfg(test)]
 mod tests {
@@ -196,7 +202,8 @@ mod tests {
     ///
     /// 21: `SceneState::head_shadow_deg` (see the constant's history).
     /// 22: lighting wave (new `LightingPreset` and `LightingModel` variants).
+    /// 23: absorption units (`GemMaterial::absorption_unit`; scattering unscaled).
     fn protocol_version_matches_constant() {
-        assert_eq!(super::PROTOCOL_VERSION, 22);
+        assert_eq!(super::PROTOCOL_VERSION, 23);
     }
 }

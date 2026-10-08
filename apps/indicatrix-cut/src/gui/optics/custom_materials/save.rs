@@ -275,8 +275,9 @@ pub(super) fn apply_custom_material_save(
         |model| GemMaterial::new_custom_with_dispersion(&trimmed, model, biref, abs_rgb),
     );
     if let Some(mode) = mode.as_ref().filter(|m| m.is_physics()) {
-        // Rendered from the stored resolved bands, never a re-resolve.
-        new_mat.absorption = mode.resolve_tensor();
+        // Rendered from the stored resolved bands, never a re-resolve. Per millimetre
+        // (`with_chromophore_absorption` tags them so).
+        new_mat = new_mat.with_chromophore_absorption(mode.resolve_tensor());
     }
     // The L*C*h editor's bands colour a fantasy material; a physics recipe wins over them.
     let band_rows = body_bands.filter(|rows| !is_physics && !rows.is_empty());

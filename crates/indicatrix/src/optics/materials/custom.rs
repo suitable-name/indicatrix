@@ -1,7 +1,7 @@
 //! Builder-style constructors and opt-in setters for [`super::GemMaterial`]:
 //! [`super::GemMaterial::new_custom`] and the `with_*`/scattering-recommendation methods.
 
-use super::{CrystalSystem, GemMaterial, OpticalCharacter};
+use super::{AbsorptionUnit, CrystalSystem, GemMaterial, OpticalCharacter};
 use crate::optics::{
     absorption::{AbsorptionBand, AbsorptionTensor, legacy_rgb_bands},
     dispersion::DispersionModel,
@@ -102,6 +102,7 @@ impl GemMaterial {
             scattering_g: 0.0,
             edge_rounding_radius: 0.0,
             absorption_path_scale: 1.0,
+            absorption_unit: AbsorptionUnit::ModelUnit,
             uniaxial_extraordinary_dispersion: None,
         }
     }
@@ -316,9 +317,13 @@ impl GemMaterial {
     /// record of a real yellow specimen. `name` is left unchanged on purpose, so
     /// every lookup keyed by name (specific gravity, the RI presets, the render
     /// material dropdown) keeps resolving to the same species.
+    ///
+    /// The triple's numbers are per model unit, tuned for a 7 mm stone, so the material becomes
+    /// [`AbsorptionUnit::ModelUnit`] (whatever the base was).
     #[must_use]
     pub fn with_body_color(mut self, absorption_rgb: [f32; 3]) -> Self {
         self.absorption = AbsorptionTensor::isotropic(legacy_rgb_bands(absorption_rgb));
+        self.absorption_unit = AbsorptionUnit::ModelUnit;
         self
     }
 
@@ -326,9 +331,12 @@ impl GemMaterial {
     /// [`Self::with_body_color`] but the isotropic absorption is the explicit band list
     /// `rows` (`[centre_nm, width_nm, amplitude_per_mm]` each, see
     /// `absorption::body_color_bands`) and [`Self::absorption_path_scale`] becomes
-    /// `path_scale` (millimetres per model unit), so the stone's colour is the one the
-    /// solver predicted for its real size. Rows with a non-positive or non-finite
-    /// amplitude, width or centre are dropped; an empty result is a colourless stone.
+    /// `path_scale` (millimetres per model unit). The bands are per millimetre, so the material
+    /// becomes [`AbsorptionUnit::PerMm`] and `render_setup::apply_material_overrides` replaces
+    /// the scale with the stone's real `W / model_width` (7 mm when no size is set); `path_scale`
+    /// only matters to a caller that traces the material without that step. Rows with a
+    /// non-positive or non-finite amplitude, width or centre are dropped; an empty result is a
+    /// colourless stone.
     #[must_use]
     pub fn with_body_color_bands(mut self, rows: &[[f32; 3]], path_scale: f32) -> Self {
         let bands = rows
@@ -337,6 +345,7 @@ impl GemMaterial {
             .map(|r| AbsorptionBand::new(r[0], r[1], r[2]))
             .collect();
         self.absorption = AbsorptionTensor::isotropic(bands);
+        self.absorption_unit = AbsorptionUnit::PerMm;
         if path_scale.is_finite() && path_scale > 0.0 {
             self.absorption_path_scale = path_scale;
         }
@@ -358,17 +367,34 @@ impl GemMaterial {
     /// built-in cut renders at -- see [`Self::absorption_path_scale`]'s doc comment.
     /// `scale == 1.0` (the default every built-in keeps) reproduces today's
     /// behaviour exactly (a multiply by exactly `1.0` is an IEEE 754 no-op).
+    ///
+    /// A non-finite or non-positive `scale` is ignored and the material keeps the scale it has
+    /// (the guard `render_setup` and the worker's scene validation apply): the scale multiplies
+    /// every interior path length and divides the scattering coefficient, so zero, a negative or
+    /// NaN would collapse, invert or poison the trace.
     #[must_use]
     pub const fn with_absorption_path_scale(mut self, scale: f32) -> Self {
-        self.absorption_path_scale = scale;
+        if scale.is_finite() && scale > 0.0 {
+            self.absorption_path_scale = scale;
+        }
         self
     }
 
     /// Replaces this material's absorption tensor with physically-based chromophore
-    /// absorption bands.
+    /// absorption bands. These are per millimetre, so the material becomes
+    /// [`AbsorptionUnit::PerMm`].
     #[must_use]
     pub fn with_chromophore_absorption(mut self, tensor: AbsorptionTensor) -> Self {
         self.absorption = tensor;
+        self.absorption_unit = AbsorptionUnit::PerMm;
+        self
+    }
+
+    /// Sets what the numbers of [`Self::absorption`] are measured per (see [`AbsorptionUnit`]),
+    /// for a caller that installs a tensor by hand.
+    #[must_use]
+    pub const fn with_absorption_unit(mut self, unit: AbsorptionUnit) -> Self {
+        self.absorption_unit = unit;
         self
     }
 

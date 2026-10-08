@@ -403,6 +403,47 @@ fn the_requests_need_no_design() {
     assert!(matches!(response, SolveResponse::Metrics(_)));
 }
 
+/// Review fix (absorption units): the tilt sweep sizes its material by the scene's stone width
+/// exactly like the desktop tilt profile (`material_for_stone(material, stone_width_mm, planes)`),
+/// so web tilt == desktop tilt for a sized stone; the width is a tilt input (it stales the curves)
+/// while the other render-time overrides still are not.
+#[test]
+fn the_tilt_material_is_sized_by_the_stone_width_like_the_desktop() {
+    let design = template_design(1);
+    let material = MaterialSpec {
+        overrides: MaterialOverridesSpec {
+            inclusion_sigma_s: 0.3,
+            c_axis_override: None,
+            edge_rounding_radius: 0.02,
+            stone_width_mm: 10.87,
+        },
+        ..MaterialSpec::catalogue("Emerald")
+    };
+    let (spec, planes) = scene_of(&design, material);
+    let params = TiltParams::from_scene(&spec);
+    assert_eq!(params.material.overrides.stone_width_mm, 10.87);
+    assert_eq!(params.material.overrides.inclusion_sigma_s, 0.0);
+    assert_eq!(params.material.overrides.edge_rounding_radius, 0.0);
+
+    let traced =
+        resolve_scene_material(&tilt_material_spec(&params.material), &planes).expect("built-in");
+    let bare = resolve_material_with_override(&GemMaterial::all_materials(), &[], None, "Emerald")
+        .expect("built-in");
+    let desktop = indicatrix::render_setup::material_for_stone(bare, 10.87, &planes);
+    assert_eq!(traced, desktop);
+    assert!(
+        (desktop.absorption_path_scale
+            - 10.87 / 7.0 / indicatrix::render_setup::MODEL_UNIT_FACE_UP_PATH)
+            .abs()
+            < 1e-6
+    );
+
+    // A different stone size is a different tilt request.
+    let mut other = spec.clone();
+    other.material.overrides.stone_width_mm = 6.0;
+    assert_ne!(params, TiltParams::from_scene(&other));
+}
+
 /// The tilt sweep is the desktop dialog's four `evaluate_full_axis_profile_at_azimuth`
 /// calls, under the bare resolved material: the request's overrides change nothing.
 #[test]

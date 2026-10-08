@@ -26,9 +26,7 @@
 //! replaces it is a design's refractive-index override (`MaterialSelection::
 //! apply_overrides`), which flattens any material to a non-dispersive index.
 
-use indicatrix::{
-    geometry::GpuFacetPlane, optics::materials::GemMaterial, render_setup::measure_model_width,
-};
+use indicatrix::{geometry::GpuFacetPlane, optics::materials::GemMaterial, render_setup};
 use indicatrix_cut_core::{
     Design,
     material::{BuiltinMaterials, MaterialLookup, MaterialSelection},
@@ -128,35 +126,24 @@ pub fn resolved_gem_material(
 /// `material` sized for the design's real stone, for a run that works out the face-up
 /// colour (the Optimize tone objective).
 ///
-/// When [`Design::girdle_diameter_mm`] is `Some(mm)` with `mm > 0` and the planes measure a
-/// model width `w > 1e-9` ([`indicatrix::render_setup::measure_model_width`]), the material's
-/// `absorption_path_scale` becomes `mm / w`: the renderer's own rule in
-/// `render_setup::apply_material_overrides_for_mode` (model units of path times that scale
-/// are millimetres of body colour). Otherwise the material is returned unchanged, so one
-/// model unit of path counts as one unit of colour strength, the swatch convention.
+/// The renderer's own size rule, `render_setup::material_for_stone` (the stone-size step of
+/// `render_setup::apply_material_overrides`), with [`Design::girdle_diameter_mm`] as the width:
+/// a per-model-unit material (the built-ins, legacy colour triples) gets `mm / 7`, a per-mm one
+/// (band colours, physics recipes) gets `mm / w` for the planes' model width `w`
+/// ([`indicatrix::render_setup::measure_model_width`]), and 7 mm when the design has no girdle
+/// diameter. A per-model-unit material with no girdle diameter is returned unchanged, so the
+/// objective sees the colour the render shows.
 #[must_use]
 pub fn sized_material_for_optimize(
     material: GemMaterial,
     design: &Design,
     planes: &[GpuFacetPlane],
 ) -> GemMaterial {
-    let Some(mm) = design
+    let mm = design
         .girdle_diameter_mm
         .filter(|mm| *mm > 0.0 && mm.is_finite())
-    else {
-        return material;
-    };
-    match measure_model_width(planes) {
-        Some(width) if width > 1e-9 => {
-            let scale = (mm / width) as f32;
-            if scale.is_finite() && scale > 0.0 {
-                material.with_absorption_path_scale(scale)
-            } else {
-                material
-            }
-        }
-        _ => material,
-    }
+        .unwrap_or(0.0);
+    render_setup::material_for_stone(material, mm as f32, planes)
 }
 
 /// How close a design's own refractive index must sit to a built-in preset's for that

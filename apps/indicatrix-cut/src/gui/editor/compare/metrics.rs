@@ -19,7 +19,7 @@
 
 mod tilt_run;
 
-use super::session::{CompareSession, CompareSide, resolve_metrics_material};
+use super::session::{CompareSession, CompareSide, resolve_metrics_material, sized_for_design};
 use crate::gui::solid_preview::cut_slider::cut_geometry_no_solve;
 use indicatrix::{
     color::metrics::total_evaluations,
@@ -329,7 +329,11 @@ fn design_figures(
     // Never solves (the masts are in hand) and, without concave tiers, holds exactly the
     // planes `design_to_gpu_planes_from_solved` gives.
     let stone = cut_geometry_no_solve(design, Some(solved), None);
-    let material = resolve_metrics_material(design, custom);
+    let material = sized_for_design(
+        resolve_metrics_material(design, custom),
+        design,
+        &stone.planes,
+    );
     Some(measure_table_up_geom(
         stone.as_geometry(),
         &material,

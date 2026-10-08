@@ -852,3 +852,66 @@ fn frosted_exterior_nee_deposits_the_analytic_sun_value() {
 // which is private to that module (this file has no access to it, unlike
 // `trace_spectral_ray` -- the public wrapper -- which cannot express an explicit
 // NEE-on/off A/B override).
+
+/// The inclusion coefficient is per model unit and independent of the stone's size: with a
+/// colourless medium, the scatter decision and the model-space free path of every seed are the
+/// same whatever `path_scale` (unset 1.0, 7 mm / 7 = 1.0, 10.87 mm / 7, a per-mm 3.5), and so
+/// the transmittance of the survivors in model units.
+#[test]
+fn scattering_statistics_do_not_depend_on_the_stone_size() {
+    let sigma_s = 0.3f32;
+    let hit_t = 1.5f32;
+    let run = |path_scale: f32| {
+        let alphas = [0.0f32; NUM_CHANNELS];
+        let mut scattered = 0u32;
+        let mut free_paths = Vec::new();
+        let mut survivor_weight = 0.0f64;
+        for seed in 0..3000u32 {
+            let mut stokes = [StokesVector::unpolarized(1.0); NUM_CHANNELS];
+            let mut path_pdf = [1.0f32; NUM_CHANNELS];
+            match maybe_scatter_or_extinguish(
+                &alphas,
+                sigma_s,
+                0.0,
+                0,
+                Vec3::Z,
+                hit_t,
+                path_scale,
+                seed,
+                0,
+                &mut stokes,
+                &mut path_pdf,
+            ) {
+                Some((t_free, _)) => {
+                    scattered += 1;
+                    free_paths.push(t_free);
+                }
+                None => survivor_weight += f64::from(path_pdf[0]),
+            }
+        }
+        (scattered, free_paths, survivor_weight)
+    };
+    let (base_count, base_paths, base_weight) = run(1.0);
+    assert!(
+        base_count > 0 && base_count < 3000,
+        "a mixed outcome: {base_count}"
+    );
+    for path_scale in [10.87_f32 / 7.0, 3.5, 0.4] {
+        let (count, paths, weight) = run(path_scale);
+        assert!(
+            count.abs_diff(base_count) <= 2,
+            "scale {path_scale}: {count} scatters vs {base_count}"
+        );
+        for (a, b) in paths.iter().zip(&base_paths) {
+            assert!((a - b).abs() <= 1e-3 * b.abs().max(1.0), "{a} vs {b}");
+        }
+        // Survivors carry exp(-sigma_s * hit_t) in model units, whatever the scale.
+        let per_survivor = weight / f64::from(3000 - count);
+        let expected = f64::from(-(sigma_s * hit_t)).exp();
+        assert!(
+            (per_survivor - expected).abs() < 1e-3,
+            "scale {path_scale}: {per_survivor} vs {expected}"
+        );
+        let _ = base_weight;
+    }
+}

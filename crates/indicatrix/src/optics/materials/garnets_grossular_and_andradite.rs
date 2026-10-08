@@ -44,6 +44,7 @@ impl GemMaterial {
                 scattering_g: 0.0,
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
+                absorption_unit: super::AbsorptionUnit::ModelUnit,
                 uniaxial_extraordinary_dispersion: None,
             },
             // Andradite (Demantoid variety, Ca3Fe2(SiO4)3:Cr): n_d=1.887, B-G 0.057
@@ -73,6 +74,7 @@ impl GemMaterial {
                 scattering_g: 0.0,
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
+                absorption_unit: super::AbsorptionUnit::ModelUnit,
                 uniaxial_extraordinary_dispersion: None,
             },
         ]

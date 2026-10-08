@@ -22,14 +22,14 @@
 //! without the library, and without `--db`.
 
 use crate::{args::MaterialArg, outcome::CliError};
-use indicatrix::optics::materials::GemMaterial;
+use indicatrix::{geometry::GpuFacetPlane, optics::materials::GemMaterial};
 use indicatrix_cut_core::{
     Design, MaterialSelection, ResolvedMaterial,
     material::{LibraryMaterial, MaterialLookup, built_in_material_by_exact_name},
     native::CustomMaterialSnapshot,
 };
 use indicatrix_editor::{
-    material_lookup::{EditorMaterialLookup, resolved_gem_material},
+    material_lookup::{EditorMaterialLookup, resolved_gem_material, sized_material_for_optimize},
     optimize_view::default_optimize_material_ri,
     retarget::view::resolved_material_from_selection,
 };
@@ -185,6 +185,17 @@ impl Scoring {
     #[must_use]
     pub const fn n_d(&self) -> f64 {
         self.resolved.n_d
+    }
+
+    /// The material sized for `design`'s stone: the very material the Live Render and `optimize`
+    /// score, with the design's girdle diameter as the stone width
+    /// ([`sized_material_for_optimize`]). Every command that scores optics (`metrics`, `validate`,
+    /// `sweep`, `optimize`) takes this instead of the bare `resolved.gem`, so the figures equal the
+    /// render for a sized stone; a design with no girdle diameter is scored as the render shows it
+    /// at Stone Size "not set".
+    #[must_use]
+    pub fn sized_gem(&self, design: &Design, planes: &[GpuFacetPlane]) -> GemMaterial {
+        sized_material_for_optimize(self.resolved.gem.clone(), design, planes)
     }
 }
 
@@ -481,6 +492,54 @@ mod tests {
             "{}",
             error.message
         );
+    }
+
+    /// Review fix (absorption units): `metrics`, `validate`, `sweep` and `optimize` all take
+    /// `Scoring::sized_gem`, which is the render's size rule (`material_for_stone`) with the
+    /// design's girdle diameter; a design without one keeps the bare material.
+    #[test]
+    fn the_scoring_material_is_sized_by_the_girdle_diameter_like_the_render() {
+        use crate::stone::analyze;
+        use indicatrix_editor::solve_policy::design_to_gpu_planes_from_solved;
+        let arg = MaterialArg::Named("Emerald".to_string());
+        let mut design = testing::template();
+        let bare_scoring =
+            resolve_scoring(&design, &Catalogue::default(), Some(&arg)).expect("resolves");
+        let analysis = analyze(&design);
+        let solved = analysis.require_stone(&design).expect("a usable stone");
+        let planes = design_to_gpu_planes_from_solved(&design, solved);
+
+        // No girdle diameter: the render's "not set", the material at the face-up calibration
+        // scale (7 mm look) and nothing else changed.
+        design.girdle_diameter_mm = None;
+        assert_eq!(
+            bare_scoring.sized_gem(&design, &planes),
+            bare_scoring
+                .resolved
+                .gem
+                .clone()
+                .with_absorption_path_scale(
+                    1.0 / indicatrix::render_setup::MODEL_UNIT_FACE_UP_PATH
+                )
+        );
+
+        design.girdle_diameter_mm = Some(10.87);
+        let sized = bare_scoring.sized_gem(&design, &planes);
+        assert_eq!(
+            sized,
+            indicatrix::render_setup::material_for_stone(
+                bare_scoring.resolved.gem.clone(),
+                10.87,
+                &planes
+            )
+        );
+        assert!(
+            (sized.absorption_path_scale
+                - 10.87 / 7.0 / indicatrix::render_setup::MODEL_UNIT_FACE_UP_PATH)
+                .abs()
+                < 1e-6
+        );
+        assert_ne!(sized, bare_scoring.resolved.gem);
     }
 
     #[test]

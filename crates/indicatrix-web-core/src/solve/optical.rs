@@ -17,9 +17,10 @@
 //!   (`gui::tilt::tilt_profile`): `indicatrix::color::metrics::evaluate_all_axes_profiles`,
 //!   the four `PROFILE_AZIMUTHS_DEG` axes at 181 points each, under the preset's rig at
 //!   the current light (the dialog's sweep never uses the HDR map, so neither does this
-//!   one) and the BARE resolved material -- the dialog states that inclusions, c-axis
-//!   orientation, edge rounding, physical size and the frosted girdle are not applied to
-//!   it, so the request's overrides are dropped here.
+//!   one) and the resolved material sized by the stone width ([`tilt_material_spec`]; the
+//!   desktop sizes it with `material_for_stone`) -- the dialog states that inclusions, c-axis
+//!   orientation, edge rounding and the frosted girdle are not applied to it, so the
+//!   request's other overrides are dropped here.
 //!
 //! Neither request carries a design: the caller sends the stone's planes and the settings
 //! it renders with (see [`MetricsParams::from_scene`]), and the message's `design_toml` is
@@ -177,12 +178,13 @@ impl MetricsResultData {
 /// What a tilt-sweep job needs: the stone, the material and the light.
 ///
 /// The camera is not an input (the sweep moves it itself) and the material's render-time
-/// overrides are ignored (see the module doc comment).
+/// overrides are ignored (see the module doc comment), except the stone size.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TiltParams {
     /// The stone's facet planes.
     pub planes: Vec<PlaneData>,
-    /// The material; only its name, custom list and linked-design part are used.
+    /// The material; only its name, custom list, linked-design part and
+    /// `overrides.stone_width_mm` are used.
     pub material: MaterialSpec,
     /// The lighting preset the sweep is scored under (`LightingPreset::index`).
     pub preset_index: i32,
@@ -193,17 +195,16 @@ pub struct TiltParams {
 }
 
 impl TiltParams {
-    /// The sweep inputs of the frame `spec` renders. The material's render-time
-    /// overrides are left at their defaults, since the sweep ignores them: two scenes that
-    /// differ only in those give equal params, so changing them does not stale the curves.
+    /// The sweep inputs of the frame `spec` renders. The material's render-time overrides are
+    /// left at their defaults, since the sweep ignores them, except the stone size
+    /// ([`tilt_material_spec`]): two scenes that differ only in the inclusions, axis or edge
+    /// rounding give equal params, so changing those does not stale the curves, while a new
+    /// stone width (which changes the absorption the sweep scores) does.
     #[must_use]
     pub fn from_scene(spec: &SceneSpec) -> Self {
         Self {
             planes: spec.planes.clone(),
-            material: MaterialSpec {
-                overrides: MaterialOverridesSpec::default(),
-                ..spec.material.clone()
-            },
+            material: tilt_material_spec(&spec.material),
             preset_index: spec.lighting.preset_index,
             light_yaw: spec.lighting.light_yaw,
             light_pitch: spec.lighting.light_pitch,
@@ -325,6 +326,22 @@ pub fn run_metrics_with_map(
     SolveResponse::Metrics(MetricsResultData::new(metrics, scored_under))
 }
 
+/// The material the tilt sweep traces: the resolved material with no render-time override
+/// (inclusions, axis, edge rounding) except the stone size, which the render's own scene
+/// carries in `overrides.stone_width_mm` (the linked design's girdle diameter, or the
+/// stone-width control). The desktop's tilt profile sizes its material the same way
+/// (`material_for_stone(material, ctx.stone_width_mm, ..)`), so web tilt == desktop tilt.
+#[must_use]
+pub fn tilt_material_spec(material: &MaterialSpec) -> MaterialSpec {
+    MaterialSpec {
+        overrides: MaterialOverridesSpec {
+            stone_width_mm: material.overrides.stone_width_mm,
+            ..MaterialOverridesSpec::default()
+        },
+        ..material.clone()
+    }
+}
+
 /// Runs the four-axis tilt sweep -- see the module doc comment.
 ///
 /// `hooks.on_sweep` is called before every evaluation, and a set `hooks.cancel` (checked
@@ -335,11 +352,7 @@ pub fn run_tilt(params: &TiltParams, hooks: &SolveHooks<'_>) -> SolveResponse {
         Ok(planes) => planes,
         Err(message) => return failed(message),
     };
-    // The dialog's sweep traces the bare resolved material: no render-time overrides.
-    let bare = MaterialSpec {
-        overrides: MaterialOverridesSpec::default(),
-        ..params.material.clone()
-    };
+    let bare = tilt_material_spec(&params.material);
     let material = match resolve_scene_material(&bare, &planes) {
         Ok(material) => material,
         Err(error) => return failed(error.to_string()),

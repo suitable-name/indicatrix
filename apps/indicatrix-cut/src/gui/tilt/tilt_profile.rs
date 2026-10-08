@@ -201,6 +201,31 @@ fn axes_step(finished: crate::gui::editor::Finished) -> AxesStep {
     }
 }
 
+/// The material the tilt sweep traces: the resolved one (`resolve_material_with_override`),
+/// sized by the stone-size rule of the render's own override step
+/// (`render_setup::material_for_stone`), so the curves are scored in the absorption the render
+/// shows and a sized Emerald sweeps as dark as it renders. `None` when nothing resolves. Part of
+/// the cache key, so a size change re-sweeps.
+fn tilt_sweep_material(
+    custom_materials: &[GemMaterial],
+    material_override: Option<&GemMaterial>,
+    material_name: &str,
+    stone_width_mm: f32,
+    planes: &[GpuFacetPlane],
+) -> Option<GemMaterial> {
+    let material = resolve_material_with_override(
+        &GemMaterial::all_materials(),
+        custom_materials,
+        material_override,
+        material_name,
+    )?;
+    Some(indicatrix::render_setup::material_for_stone(
+        material,
+        stone_width_mm,
+        planes,
+    ))
+}
+
 /// [`handle_request_tilt_profile_axes`]' second half: the dedup check and the sweep launch,
 /// for the render context's stone with `finished` (the finished stone, when the Cut slider
 /// has the design cut back) swapped in.
@@ -221,6 +246,7 @@ fn request_axes_for_stone(
         lighting_preset,
         light_yaw,
         light_pitch,
+        stone_width_mm,
     ) = {
         let ctx = render_ctx
             .lock()
@@ -236,6 +262,7 @@ fn request_axes_for_stone(
             ctx.lighting_preset,
             ctx.light_yaw,
             ctx.light_pitch,
+            ctx.stone_width_mm,
         )
     };
     let (planes, tools) = finished.map_or((planes, tools), |stone| {
@@ -253,11 +280,12 @@ fn request_axes_for_stone(
     // curves for Diamond or a previous design's material when the current one does
     // not resolve -- there is nothing honest to sweep, and the viewport's own
     // `ViewportModel.trace_refusal` banner already tells the cutter why.
-    let Some(material) = resolve_material_with_override(
-        &GemMaterial::all_materials(),
+    let Some(material) = tilt_sweep_material(
         &custom_materials,
         material_override.as_ref(),
         &material_name,
+        stone_width_mm,
+        &planes,
     ) else {
         return;
     };
@@ -571,7 +599,50 @@ pub fn cached_curve_material_is_stale(
 mod tests {
     use super::{
         AxesCacheKey, AxesStep, axes_step, cached_curve_material_is_stale, should_recompute_axes,
+        tilt_sweep_material,
     };
+
+    /// Review fix (absorption units): the tilt sweep traces the very material the render builds
+    /// for a sized stone (`apply_material_overrides` with only the stone size dialled in), and
+    /// an unsized stone gets the face-up calibration scale only.
+    #[test]
+    fn the_tilt_sweep_material_is_the_sized_render_material() {
+        use indicatrix::{
+            geometry::cuts::StandardGemCuts,
+            render_setup::{MaterialOverrides, apply_material_overrides, measure_model_width},
+        };
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let width = measure_model_width(&planes);
+        let override_banded =
+            GemMaterial::sapphire().with_body_color_bands(&[[550.0, 60.0, 0.3]], 1.0);
+        for (name, material_override) in [("Emerald", None), ("Sapphire", Some(&override_banded))] {
+            let bare = material_override
+                .cloned()
+                .or_else(|| GemMaterial::by_name(name))
+                .expect("resolves");
+            for stone_width_mm in [0.0_f32, 10.87] {
+                let got =
+                    tilt_sweep_material(&[], material_override, name, stone_width_mm, &planes)
+                        .expect("resolves");
+                let render = apply_material_overrides(
+                    bare.clone(),
+                    &MaterialOverrides {
+                        inclusion_sigma_s: 0.0,
+                        c_axis_override: None,
+                        edge_rounding_radius: 0.0,
+                        stone_width_mm,
+                    },
+                    width,
+                );
+                assert_eq!(got, render, "{name} at {stone_width_mm} mm");
+            }
+        }
+        // Sized differs from unsized, and an unknown name resolves to nothing.
+        let sized = tilt_sweep_material(&[], None, "Emerald", 10.87, &planes).expect("resolves");
+        let unsized_ = tilt_sweep_material(&[], None, "Emerald", 0.0, &planes).expect("resolves");
+        assert_ne!(sized.absorption_path_scale, unsized_.absorption_path_scale);
+        assert!(tilt_sweep_material(&[], None, "No Such Stone", 10.87, &planes).is_none());
+    }
     use crate::gui::editor::Withheld;
     use indicatrix::optics::{materials::GemMaterial, raytracer::LightingPreset};
     use indicatrix_solid::preview::StoneGeometryBuf;

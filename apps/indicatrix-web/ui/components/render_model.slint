@@ -38,7 +38,11 @@ export global RenderModel {
     in-out property <bool> c-axis-override: false;
     in-out property <float> c-axis-tilt-deg: 0.0;
     in-out property <float> c-axis-azimuth-deg: 0.0;
+    // The coefficient (per model unit, independent of the stone size) is what is stored; the
+    // slider drags `inclusion-position` (0-1), `sigma_s = 2 * position^2`
+    // (`indicatrix::render_setup::inclusion_scale`, the desktop's mapping).
     in-out property <float> inclusion-sigma-s: 0.0;
+    in-out property <float> inclusion-position: 0.0;
     in-out property <float> edge-rounding: 0.0;
     in-out property <float> stone-width-mm: 0.0;
     in-out property <bool> use-hdr: true;

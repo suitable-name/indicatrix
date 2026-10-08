@@ -55,6 +55,30 @@ impl Default for ColorMode {
     }
 }
 
+/// The swatch path (model units) for a stone of `stone_width_mm` (`0.0` = no size set): the
+/// face-up path the render integrates a per-model-unit colour over
+/// (`indicatrix::render_setup::MODEL_UNIT_FACE_UP_PATH`) times the scale the render gives that
+/// colour at that size (`absorption_path_scale_for` = `width / 7 mm / MODEL_UNIT_FACE_UP_PATH`).
+/// The constant cancels: the result is `FANTASY_PATH_UNITS * width / 7` (exactly
+/// [`FANTASY_PATH_UNITS`] at 7 mm or unset), so swatch and render agree by construction and a
+/// swatch darkens with the stone the way the render does.
+///
+/// [`fantasy_lab`] and [`nearest_legacy_rgb`] stay at [`FANTASY_PATH_UNITS`] (the 7 mm look), so
+/// their outputs remain comparable with stored triples.
+#[must_use]
+pub fn swatch_path_units(stone_width_mm: f32) -> f64 {
+    // Evaluated with the constant already cancelled (in f64, so 7 mm and unset give exactly
+    // FANTASY_PATH_UNITS); the test `swatch_path_equals_face_up_path_times_render_scale` checks it
+    // against `MODEL_UNIT_FACE_UP_PATH * absorption_path_scale_for(..)`.
+    let width_mm = indicatrix::render_setup::effective_stone_width_mm(if stone_width_mm.is_nan() {
+        0.0
+    } else {
+        stone_width_mm
+    });
+    FANTASY_PATH_UNITS * f64::from(width_mm)
+        / f64::from(indicatrix::render_setup::PHYSICS_DEFAULT_STONE_WIDTH_MM)
+}
+
 /// The body color (D65, unpolarised, `Lab`) of a fantasy `rgb` triple at
 /// [`FANTASY_PATH_UNITS`].
 #[must_use]
@@ -342,6 +366,28 @@ mod tests {
         recipe.resolved_bands =
             indicatrix::optics::chromophore::ResolvedBands::from_tensor(&tensor);
         recipe
+    }
+
+    /// The swatch path is the face-up path times the render's scale for the same size: exactly the
+    /// 1-unit reference at 7 mm or unset, `width / 7` otherwise.
+    #[test]
+    fn swatch_path_equals_face_up_path_times_render_scale() {
+        use indicatrix::{
+            optics::materials::AbsorptionUnit,
+            render_setup::{MODEL_UNIT_FACE_UP_PATH, absorption_path_scale_for},
+        };
+        assert_eq!(swatch_path_units(0.0), FANTASY_PATH_UNITS);
+        assert_eq!(swatch_path_units(7.0), FANTASY_PATH_UNITS);
+        for mm in [0.0_f32, 5.0, 7.0, 10.87] {
+            let scale = absorption_path_scale_for(AbsorptionUnit::ModelUnit, mm, None)
+                .expect("a model-unit scale always exists");
+            let through_scale = f64::from(MODEL_UNIT_FACE_UP_PATH) * f64::from(scale);
+            assert!(
+                (swatch_path_units(mm) - through_scale).abs() < 1e-6,
+                "{mm} mm: {} vs {through_scale}",
+                swatch_path_units(mm)
+            );
+        }
     }
 
     #[test]

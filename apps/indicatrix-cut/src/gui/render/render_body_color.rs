@@ -18,7 +18,7 @@
 //! own colour (a physics recipe) is never recoloured and the control is greyed out.
 //!
 //! Everything decided here is a plain function ([`control_view`], [`choice_for`],
-//! [`pick_for_choice`], [`display_rgb`]) so it is tested without a window.
+//! [`pick_for_choice`], [`display_rgb_for_stone`]) so it is tested without a window.
 
 use std::{
     rc::Rc,
@@ -35,7 +35,7 @@ use indicatrix::{
         materials::body_color::{BODY_COLOR_PRESETS, preset_index_for_rgb},
     },
 };
-use indicatrix_cut_core::material::color::{FANTASY_PATH_UNITS, nearest_legacy_rgb};
+use indicatrix_cut_core::material::color::{nearest_legacy_rgb, swatch_path_units};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::{
@@ -114,12 +114,17 @@ pub fn choice_label(choice: usize) -> &'static str {
     }
 }
 
-/// The sRGB colour a stone with this absorption triple shows (D65, the same path length
-/// the material editor's fantasy swatches use), for the control's dots and swatches.
+/// The sRGB colour (D65) a stone with this absorption triple shows at `stone_width_mm`
+/// (`0.0` = no size set): the swatch path is
+/// `MODEL_UNIT_FACE_UP_PATH` times the scale the render gives a per-model-unit
+/// colour at that size ([`swatch_path_units`], `width / 7 mm`), so the dot is the colour the
+/// face-up render shows (the calibration of `render_setup::MODEL_UNIT_FACE_UP_PATH`) and darkens
+/// with the stone like the render does. With no size or 7 mm it is the 1-unit reference. The
+/// toolbar's preset dots call this with the current Stone Size.
 #[must_use]
-pub fn display_rgb(absorption: [f32; 3]) -> [u8; 3] {
+pub fn display_rgb_for_stone(absorption: [f32; 3], stone_width_mm: f32) -> [u8; 3] {
     let tensor = AbsorptionTensor::isotropic(legacy_rgb_bands(absorption));
-    body_colors(&tensor, FANTASY_PATH_UNITS, Illuminant::D65)
+    body_colors(&tensor, swatch_path_units(stone_width_mm), Illuminant::D65)
         .unpolarised
         .srgb
 }
@@ -135,6 +140,9 @@ pub struct ControlInput {
     pub design_color: ColorOverride,
     /// The remembered view-only colour.
     pub view_color: ColorOverride,
+    /// The stone size the render uses (`RenderContext::stone_width_mm`, `0.0` = not set), which
+    /// the swatch is shown at.
+    pub stone_width_mm: f32,
 }
 
 /// What the control shows.
@@ -168,7 +176,7 @@ pub fn control_view(input: ControlInput) -> ControlView {
     ControlView {
         choice,
         summary: choice_label(choice),
-        swatch: shown.map(display_rgb),
+        swatch: shown.map(|rgb| display_rgb_for_stone(rgb, input.stone_width_mm)),
         enabled: !input.physics,
         physics: input.physics,
         targets_design: input.target == ColorTarget::Design,
@@ -196,22 +204,36 @@ pub struct DesignColorPort {
     pub apply: Box<dyn Fn(ColorOverride) -> Result<(), String>>,
 }
 
-/// Pushes the 9 preset names and swatch colours (they never change).
-fn push_presets(ui: &MainWindow) {
+/// The preset dots' colours at a stone of `stone_width_mm` (`0.0` = no size set): the same
+/// path as the selected swatch ([`display_rgb_for_stone`]), so a dot and the swatch it becomes
+/// when picked agree at every Stone Size.
+fn preset_swatch_colors(stone_width_mm: f32) -> Vec<slint::Color> {
+    BODY_COLOR_PRESETS
+        .iter()
+        .map(|preset| {
+            let [r, g, b] = display_rgb_for_stone(preset.absorption_rgb, stone_width_mm);
+            slint::Color::from_rgb_u8(r, g, b)
+        })
+        .collect()
+}
+
+/// Pushes the preset dots' colours for the current stone size (they follow Stone Size).
+fn push_preset_swatches(ui: &MainWindow, stone_width_mm: f32) {
+    ui.global::<ViewportModel>()
+        .set_render_color_preset_swatches(ModelRc::new(VecModel::from(preset_swatch_colors(
+            stone_width_mm,
+        ))));
+}
+
+/// Pushes the 9 preset names (they never change) and the dots' colours at `stone_width_mm`.
+fn push_presets(ui: &MainWindow, stone_width_mm: f32) {
     let labels: Vec<SharedString> = BODY_COLOR_PRESETS
         .iter()
         .map(|preset| SharedString::from(preset.label))
         .collect();
-    let swatches: Vec<slint::Color> = BODY_COLOR_PRESETS
-        .iter()
-        .map(|preset| {
-            let [r, g, b] = display_rgb(preset.absorption_rgb);
-            slint::Color::from_rgb_u8(r, g, b)
-        })
-        .collect();
     let model = ui.global::<ViewportModel>();
     model.set_render_color_preset_labels(ModelRc::new(VecModel::from(labels)));
-    model.set_render_color_preset_swatches(ModelRc::new(VecModel::from(swatches)));
+    push_preset_swatches(ui, stone_width_mm);
     model.set_render_color_custom_index(i32::try_from(CUSTOM_CHOICE).unwrap_or(i32::MAX));
 }
 
@@ -232,10 +254,16 @@ fn push_view(ui: &MainWindow, view: &ControlView) {
 
 /// Recomputes the control from the render context and the open design.
 fn refresh(ui: &MainWindow, render_ctx: &Arc<Mutex<RenderContext>>, port: &DesignColorPort) {
-    let (target, physics, view_color) = {
+    let (target, physics, view_color, stone_width_mm) = {
         let ctx = RenderContext::lock(render_ctx);
-        (ctx.color_target(), ctx.physics_color(), ctx.view_body_color)
+        (
+            ctx.color_target(),
+            ctx.physics_color(),
+            ctx.view_body_color,
+            ctx.stone_width_mm,
+        )
     };
+    push_preset_swatches(ui, stone_width_mm);
     let design_color = if target == ColorTarget::Design {
         let Some(current) = (port.current)() else {
             return;
@@ -251,6 +279,7 @@ fn refresh(ui: &MainWindow, render_ctx: &Arc<Mutex<RenderContext>>, port: &Desig
             physics,
             design_color,
             view_color,
+            stone_width_mm,
         }),
     );
 }
@@ -298,7 +327,7 @@ pub fn setup_render_body_color_callbacks(
     port: DesignColorPort,
 ) {
     let port = Rc::new(port);
-    push_presets(ui);
+    push_presets(ui, RenderContext::lock(render_ctx).stone_width_mm);
 
     // Restore the remembered view colour and the link state the context mirrors.
     let saved = SettingsPersister::installed_for_this_thread()
@@ -393,6 +422,7 @@ mod tests {
             physics,
             design_color: Some(BODY_COLOR_PRESETS[1].absorption_rgb),
             view_color: Some(YELLOW),
+            stone_width_mm: 0.0,
         }
     }
 
@@ -492,17 +522,52 @@ mod tests {
 
     #[test]
     fn the_swatch_colours_look_like_their_names() {
-        let [cr, cg, cb] = display_rgb(BODY_COLOR_PRESETS[0].absorption_rgb);
+        let [cr, cg, cb] = display_rgb_for_stone(BODY_COLOR_PRESETS[0].absorption_rgb, 0.0);
         assert!(
             cr > 200 && cg > 200 && cb > 200,
             "Clear is near white: {cr} {cg} {cb}"
         );
-        let [r, _, b] = display_rgb(BODY_COLOR_PRESETS[1].absorption_rgb);
+        let [r, _, b] = display_rgb_for_stone(BODY_COLOR_PRESETS[1].absorption_rgb, 0.0);
         assert!(b > r, "Blue is bluer than it is red: r={r} b={b}");
-        let [r, g, b] = display_rgb(BODY_COLOR_PRESETS[5].absorption_rgb);
+        let [r, g, b] = display_rgb_for_stone(BODY_COLOR_PRESETS[5].absorption_rgb, 0.0);
         assert!(r > b && g > b, "Yellow is warm: {r} {g} {b}");
-        let [r, g, b] = display_rgb(BODY_COLOR_PRESETS[2].absorption_rgb);
+        let [r, g, b] = display_rgb_for_stone(BODY_COLOR_PRESETS[2].absorption_rgb, 0.0);
         assert!(r > g && r > b, "Red is red: {r} {g} {b}");
+    }
+
+    /// The real swatch path (`display_rgb_for_stone`, via `swatch_path_units`) against the
+    /// render's own rule (`material_for_stone` scale times `MODEL_UNIT_FACE_UP_PATH`), at 5, 7
+    /// and 10.87 mm, for every preset: the dot is the colour the render shows. D65 on both sides,
+    /// 1/255 per channel.
+    #[test]
+    fn the_desktop_swatch_equals_the_sized_render_material_at_every_size() {
+        use indicatrix::{
+            optics::materials::GemMaterial,
+            render_setup::{MODEL_UNIT_FACE_UP_PATH, material_for_stone},
+        };
+        for preset in BODY_COLOR_PRESETS.iter() {
+            let material = GemMaterial::by_name("Cubic Zirconia")
+                .expect("built-in")
+                .with_body_color(preset.absorption_rgb);
+            for width_mm in [5.0_f32, 7.0, 10.87] {
+                let stone = material_for_stone(material.clone(), width_mm, &[]);
+                let render = body_colors(
+                    &stone.absorption,
+                    f64::from(MODEL_UNIT_FACE_UP_PATH) * f64::from(stone.absorption_path_scale),
+                    Illuminant::D65,
+                )
+                .unpolarised
+                .srgb;
+                let swatch = display_rgb_for_stone(preset.absorption_rgb, width_mm);
+                for (r, s) in render.iter().zip(swatch) {
+                    assert!(
+                        r.abs_diff(s) <= 1,
+                        "{} at {width_mm} mm: render {render:?} vs swatch {swatch:?}",
+                        preset.label
+                    );
+                }
+            }
+        }
     }
 
     #[test]

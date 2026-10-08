@@ -174,17 +174,30 @@ fn trace_frame(job: &TraceJob<'_>) -> Frame {
     frame
 }
 
+/// `material` with the render's stone-size rule applied for "no size set" (all training materials
+/// are `ModelUnit`, so no planes are read).
+fn sized_for_training(material: GemMaterial) -> GemMaterial {
+    indicatrix::render_setup::material_for_stone(material, 0.0, &[])
+}
+
 /// Every built-in material the tracer is trained against, spanning all three optical
 /// characters (isotropic, uniaxial, biaxial), dispersive and near-non-dispersive, and
 /// both clean and inclusion-scattering variants -- `bool` marks "trace with a frosted
 /// girdle finish".
+///
+/// Every material goes through the render's size rule (`material_for_stone`, no stone size set =
+/// the 7 mm look), so a coloured `ModelUnit` built-in is traced at the same absorption the app
+/// renders (scale `1 / MODEL_UNIT_FACE_UP_PATH`, not the old bare 1.0). The checksums this example
+/// prints therefore changed with that recalibration (coloured materials are lighter now); the
+/// training itself stays deterministic.
 fn training_materials() -> Vec<(&'static str, GemMaterial, bool)> {
-    let by_name = |name: &str| GemMaterial::by_name(name).expect("built-in material");
+    let by_name =
+        |name: &str| sized_for_training(GemMaterial::by_name(name).expect("built-in material"));
     vec![
         // Isotropic (cubic): Diamond (highly dispersive), Cubic Zirconia (much less
         // so) -- both take the isotropic Fresnel path in `transport.rs`, with no
         // birefringent mode-coupling code ever entered.
-        ("Diamond", GemMaterial::diamond(), false),
+        ("Diamond", sized_for_training(GemMaterial::diamond()), false),
         ("Cubic Zirconia", by_name("Cubic Zirconia"), false),
         // Uniaxial +/-: Zircon (positive) and Sapphire/Ruby/Tourmaline (negative) all
         // take `transport.rs`'s anisotropic o<->e re-coupling path.
@@ -625,7 +638,7 @@ pub fn train_tilt(scale: f32) -> f32 {
         ("Diamond", GemMaterial::diamond()),
         (
             "Alexandrite",
-            GemMaterial::by_name("Alexandrite").expect("built-in material"),
+            sized_for_training(GemMaterial::by_name("Alexandrite").expect("built-in material")),
         ),
     ];
     let mut checksum = 0.0f32;

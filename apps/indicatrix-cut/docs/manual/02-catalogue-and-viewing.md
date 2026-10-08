@@ -212,9 +212,8 @@ genuine right-drag gesture.)
   you can define a fully custom material (name, refractive index,
   dispersion, birefringence, color swatch, crystal system, and optical
   character) starting from one of the built-in templates.
-- **Lighting** — thirteen presets in the list, and fifteen in builds with the
-  `physical-color` feature (the two UV lamps). They are listed here in the order the
-  drop-down shows them, in three families:
+- **Lighting** — thirteen presets in the list. They are listed here in the order the
+  drop-down shows them, in two families:
   - **Lit models** — what a stone looks like in a real scene. They darken the facets
     that would reflect your own head, the way a face-up stone really shows a dark table
     (the Head shadow slider below sets how much), and their brilliance, windowing and
@@ -260,12 +259,6 @@ genuine right-drag gesture.)
     Incandescent A is the standard tungsten lamp (2856 K) with white balance applied.
     The brilliance figures under a Studio rig are measured against that rig's own light
     sources; the Grading tray gives the standard figure.
-  - **UV lamps** (only in builds with the `physical-color` feature; other builds do not
-    offer them, and a stored UV choice falls back to Light tent + black cards) —
-    **UV lamp 365 nm** and **UV lamp 395 nm**: the Studio rig lit by a
-    narrow ultraviolet line (10 nm and 12 nm wide) in a dark room, with no backdrop glow
-    and no white balance. A non-fluorescent stone stays nearly black (the 395 nm lamp
-    lights it faintly violet); a fluorescent one glows. They render on the CPU only.
 
   At exposure 1× the lit models put their ambient light near middle grey, so only a
   direct reflection of a light source clips to white; use Studio Exposure to go darker
@@ -333,7 +326,7 @@ genuine right-drag gesture.)
   slider now also changes the brilliance, windowing and extinction figures under those
   presets, not only the picture, so a wider head shadow lowers the face-up brilliance.
   The Studio rigs (D65 Daylight, Incandescent, Incandescent A, Ring Lights, Dark
-  Spotlight) and the UV lamps ignore it, and so does an HDR map (the slider greys out
+  Spotlight) ignore it, and so does an HDR map (the slider greys out
   while one is loaded). It follows into the live view, remote and hybrid rendering
   and every export; "Reset to 16°" restores the default.
 - **Tilt Curve** — opens the tilt-performance dialog (below). Simple mode hides

@@ -235,8 +235,7 @@ table, looking straight down at the stone. It is worked out from the body
 colour in Design settings and how far the light travels through it, under the
 lighting preset the Live Render shows when you click **Optimize**. So
 Incandescent and Daylight can rank the candidates differently, and the swatch
-is that light's colour as your screen shows it. The UV lamp presets use
-daylight for the tone.
+is that light's colour as your screen shows it.
 
 - **Lighten dark rough** looks for the angles that return the lightest colour
   (higher `L*`). Pick it when the rough is so dark that the stone looks black.

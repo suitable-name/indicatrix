@@ -628,10 +628,12 @@ export component MaterialEditorDialog inherits Rectangle {
                                 }
                             }
                             Text {
-                                text: "Tone, saturation and hue; the colour deepens in a larger stone.";
+                                text: "Swatches and previews show the colour at 7 mm; it deepens in a larger stone.";
                                 font-size: 9px;
                                 color: Theme.text-muted;
                                 vertical-alignment: center;
+                                wrap: word-wrap;
+                                horizontal-stretch: 1;
                             }
                         }
                         if root.fantasy_picker_open : LchEditor {

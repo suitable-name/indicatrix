@@ -182,7 +182,6 @@ impl SceneSnapshot {
             },
             &active_planes,
             &mut StoneWidthCache::new(),
-            guard.physics_color(),
         );
         // Frosted girdle: an empty `Vec` at the off position is
         // `trace_spectral_ray_with_finish`'s documented equivalent of
@@ -359,7 +358,8 @@ mod tests {
     }
 
     /// The off position must leave `absorption_path_scale` at the base material's
-    /// default (`1.0`), and a dialled-in width must scale it by the ratio to the
+    /// default (`1.0`), and a dialled-in width must scale a per-model-unit material (the
+    /// default Diamond) by `width / 7 mm` and a per-millimetre one by the ratio to the
     /// design's measured model-unit girdle width, matching
     /// `apply_material_overrides`'s computation exactly.
     #[test]
@@ -369,9 +369,11 @@ mod tests {
             ..Default::default()
         }))
         .expect("default resolves");
+        let face_up = indicatrix::render_setup::MODEL_UNIT_FACE_UP_PATH;
         assert_eq!(
-            off.material.absorption_path_scale, 1.0,
-            "the off position must leave the material's absorption_path_scale untouched"
+            off.material.absorption_path_scale,
+            1.0 / face_up,
+            "the off position gives a per-model-unit material the face-up calibration scale only"
         );
 
         let default_ctx = RenderContext::default();
@@ -399,13 +401,32 @@ mod tests {
             ..Default::default()
         }))
         .expect("default resolves");
-        let expected_scale = (6.5 / model_width) as f32;
+        let expected_scale = 6.5_f32 / 7.0 / face_up;
         assert!(
             (on.material.absorption_path_scale - expected_scale).abs() < 1e-4,
             "a dialled-in stone width must reach the exported scene as the expected \
              absorption_path_scale: got {}, expected {expected_scale}",
             on.material.absorption_path_scale
         );
+
+        // A per-millimetre (band) colour takes the design's model width, and 7 mm while no size
+        // is set.
+        let banded = indicatrix::optics::materials::GemMaterial::diamond()
+            .with_body_color_bands(&[[550.0, 60.0, 0.3]], 1.0);
+        for (width_mm, expected_mm) in [(0.0_f32, 7.0_f64), (6.5, 6.5)] {
+            let banded_on = SceneSnapshot::capture(&Mutex::new(RenderContext {
+                stone_width_mm: width_mm,
+                material_override: Some(banded.clone()),
+                ..Default::default()
+            }))
+            .expect("the override resolves");
+            let expected = (expected_mm / model_width) as f32;
+            assert!(
+                (banded_on.material.absorption_path_scale - expected).abs() < 1e-4,
+                "{width_mm} mm: got {}, expected {expected}",
+                banded_on.material.absorption_path_scale
+            );
+        }
     }
 
     /// The viewport's surface glare reaches the export snapshot, and the default

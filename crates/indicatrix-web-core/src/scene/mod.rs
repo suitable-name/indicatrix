@@ -38,8 +38,8 @@ use indicatrix::{
         },
     },
     render_setup::{
-        Backdrop, MaterialOverrides, apply_material_overrides_for_mode, measure_model_width,
-        resolve_material_with_override,
+        Backdrop, MaterialOverrides, apply_material_overrides, measure_model_width,
+        needs_model_width, resolve_material_with_override,
     },
     renderer::{env_map::EnvironmentMap, frame_scene::FrameScene},
     simd::PlanesSoA32,
@@ -177,12 +177,13 @@ impl CustomMaterialSpec {
         gem_material_from_custom_snapshot(&self.name, &self.to_snapshot())
     }
 
-    /// Whether this material's color renders from its physics recipe: the explicit flag
-    /// [`resolve_scene_material_with`] takes (the 7 mm default stone width applies to such
-    /// a material even when its recipe emits no bands, e.g. a pure host). Derived from the
-    /// recipe the spec carries -- present, physics active, and the top-level color not
-    /// edited by an older build (`native::snapshot_color`) -- never from the shape of the
-    /// built material's bands.
+    /// Whether this material's color renders from its physics recipe (which also decides
+    /// whether it carries fluorescence). Derived from the recipe the spec carries -- present,
+    /// physics active, and the top-level color not edited by an older build
+    /// (`native::snapshot_color`) -- never from the shape of the built material's bands. The
+    /// size rule needs no such flag: a physics material is tagged per-millimetre
+    /// (`GemMaterial::absorption_unit`), and so takes the 7 mm default stone width even when
+    /// its recipe emits no bands (a pure host).
     #[must_use]
     pub fn is_physics_color(&self) -> bool {
         self.color_recipe.is_some()
@@ -484,28 +485,6 @@ pub fn resolve_scene_material(
     spec: &MaterialSpec,
     planes: &[GpuFacetPlane],
 ) -> Result<GemMaterial, SceneError> {
-    resolve_scene_material_with(spec, planes, false)
-}
-
-/// [`resolve_scene_material`] with an explicit `physics_color` flag.
-///
-/// The flag says whether the traced material's color is a physics recipe. It comes from
-/// [`CustomMaterialSpec::is_physics_color`] of the traced custom material, never from the
-/// built material's bands. A physics material takes the 7 mm default stone width when
-/// `overrides.stone_width_mm` is 0.
-///
-/// [`resolve_scene_material`] itself passes `false`: a [`MaterialSpec`] carries built
-/// `GemMaterial`s only, so a caller that holds [`CustomMaterialSpec`]s calls this.
-///
-/// # Errors
-///
-/// [`SceneError::UnknownMaterial`] when neither the linked override nor the name
-/// resolves.
-pub fn resolve_scene_material_with(
-    spec: &MaterialSpec,
-    planes: &[GpuFacetPlane],
-    physics_color: bool,
-) -> Result<GemMaterial, SceneError> {
     let materials = GemMaterial::all_materials();
     let custom = &spec.custom_materials;
     let material_override = spec.linked_design.as_ref().and_then(|linked| {
@@ -521,21 +500,15 @@ pub fn resolve_scene_material_with(
                 name: spec.name.clone(),
             })?;
     let overrides = spec.overrides.to_overrides();
-    let eff_stone_width = indicatrix::render_setup::materials::effective_stone_width_mm(
-        overrides.stone_width_mm,
-        physics_color,
-    );
-    let model_width = if eff_stone_width > 0.0 {
+    // The plane arrangement is measured only for a per-millimetre material (band colours,
+    // physics recipes), the one kind whose scale depends on the design's model width -- the
+    // 7 mm default width of an unsized stone applies to it too.
+    let model_width = if needs_model_width(&base) {
         measure_model_width(planes)
     } else {
         None
     };
-    Ok(apply_material_overrides_for_mode(
-        base,
-        &overrides,
-        model_width,
-        physics_color,
-    ))
+    Ok(apply_material_overrides(base, &overrides, model_width))
 }
 
 /// The per-plane finishes for `spec` -- see the module doc comment, step 2.
@@ -648,8 +621,7 @@ impl OwnedScene {
     }
 
     /// [`Self::build`] for a caller that holds the session's [`CustomMaterialSpec`]s (the
-    /// materials with their physics recipes): the traced material's physics flag decides the
-    /// default stone width (`resolve_scene_material_with`) and its recipe fills the scene's
+    /// materials with their physics recipes): the traced material's recipe fills the scene's
     /// fluorescence ([`CustomMaterialSpec::fluorescence`]), the way the desktop's render
     /// context carries `active_fluorescence` beside `physics_color()`. A traced material that
     /// is not among `customs` (a catalogue name) builds exactly like [`Self::build`].
@@ -667,7 +639,6 @@ impl OwnedScene {
             .find(|c| c.name.eq_ignore_ascii_case(&spec.material.name));
         let mut scene = Self::build(spec, hdr)?;
         if let Some(custom) = traced.filter(|c| c.is_physics_color()) {
-            scene.material = resolve_scene_material_with(&spec.material, &scene.planes, true)?;
             scene.fluorescence = custom.fluorescence();
         }
         Ok(scene)
@@ -799,8 +770,9 @@ mod physics_flag_tests {
         assert!(!spec_with(Some(&mode), [0.1, 0.2, 2.5]).is_physics_color());
     }
 
-    /// A zero-band physics recipe still gets the 7 mm default width; without the flag the
-    /// material keeps scale 1.0.
+    /// A zero-band physics recipe is per-millimetre and still gets the 7 mm default width; a
+    /// fantasy-colour custom (per model unit) gets the face-up calibration scale `1 / K` while no
+    /// size is set.
     #[test]
     fn a_pure_host_physics_material_takes_the_default_stone_width() {
         let planes = StandardGemCuts::standard_round_brilliant();
@@ -811,13 +783,24 @@ mod physics_flag_tests {
             custom_materials: vec![spec.to_gem_material()],
             ..MaterialSpec::catalogue("Ruby X")
         };
-        let plain = resolve_scene_material_with(&material_spec, &planes, false).expect("resolves");
-        assert!((plain.absorption_path_scale - 1.0).abs() < f32::EPSILON);
-        let physics = resolve_scene_material_with(&material_spec, &planes, true).expect("resolves");
+        let physics = resolve_scene_material(&material_spec, &planes).expect("resolves");
         assert!(
-            (physics.absorption_path_scale - 1.0).abs() > 1e-3,
+            (physics.absorption_path_scale
+                - 1.0 / indicatrix::render_setup::MODEL_UNIT_FACE_UP_PATH)
+                .abs()
+                > 1e-3,
             "7 mm / model width must rescale the path, got {}",
             physics.absorption_path_scale
+        );
+        let fantasy = MaterialSpec {
+            custom_materials: vec![spec_with(None, [0.2, 0.6, 0.3]).to_gem_material()],
+            ..MaterialSpec::catalogue("Ruby X")
+        };
+        let plain = resolve_scene_material(&fantasy, &planes).expect("resolves");
+        assert!(
+            (plain.absorption_path_scale - 1.0 / indicatrix::render_setup::MODEL_UNIT_FACE_UP_PATH)
+                .abs()
+                < f32::EPSILON
         );
     }
 

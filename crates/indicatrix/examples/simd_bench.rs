@@ -34,6 +34,7 @@ fn main() {
 
     // ---- Tracer benchmark: fixed ray set, real material, deep bounces. ----
     let planes = StandardGemCuts::standard_round_brilliant();
+    // Bare built-in on purpose (scale 1.0, no `material_for_stone`): this compares CPU against GPU on the same material, so only parity matters, not the render's colour scale.
     let material = GemMaterial::by_name("Tourmaline").expect("built-in material");
     let lighting = LightingPreset::RingLights.studio(1.0, 0.85, 0.95);
     // The `PlanesSoA32` arena built ONCE outside the sample loop -- this is exactly

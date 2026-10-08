@@ -98,9 +98,16 @@ use crate::{
 /// 14: multi-start optimizer. `OptimizeParams::starts` appended (a `u32` varint, one byte
 /// for the web's 1; postcard has no field defaults, so it is a wire change).
 ///
+/// 15: absorption units. `indicatrix::optics::materials::GemMaterial` (carried by
+/// `MaterialSpec::custom_materials`) gained `absorption_unit` (`AbsorptionUnit`, enum index
+/// 0 `ModelUnit` / 1 `PerMm`, one byte, after `absorption_path_scale`): the same stone size
+/// now scales per-model-unit and per-millimetre absorption differently, and inclusion
+/// scattering no longer scales with the size, so a Worker on 14 would render those scenes
+/// with the old rule.
+///
 /// A change to any message's bytes must bump this and update the pinned bytes in this
 /// module's `wire_format_is_pinned` test.
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
 
 /// What [`ToWorker::Picture`] makes of a sum (see `crate::display`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

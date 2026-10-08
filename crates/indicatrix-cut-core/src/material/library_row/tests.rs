@@ -5,6 +5,7 @@ use crate::native::{dispersion_model_to_json, gem_material_from_custom_snapshot}
 use indicatrix::optics::{
     chromophore::{ChromophoreCatalogue, ColorRecipe, ResolvedBands, resolve},
     dispersion::DispersionModel,
+    materials::AbsorptionUnit,
 };
 
 fn plain(name: &str) -> LibraryMaterial<'_> {
@@ -278,4 +279,72 @@ fn a_banded_row_carries_its_bands_into_the_file_snapshot() {
     };
     assert!(banded.snapshot().absorption_bands().is_some());
     assert!(plain("Plain").snapshot().absorption_bands().is_none());
+}
+
+// ---- absorption units (lane AU) ----
+
+fn sized(width_mm: f32) -> indicatrix::render_setup::MaterialOverrides {
+    indicatrix::render_setup::MaterialOverrides {
+        inclusion_sigma_s: 0.0,
+        c_axis_override: None,
+        edge_rounding_radius: 0.0,
+        stone_width_mm: width_mm,
+    }
+}
+
+/// B3: the vault row and the `.indicatrix.toml` snapshot of the same banded custom material
+/// build the identical material (absorption, unit and scale), and the render setup gives both
+/// `W / model_width` (7 mm while no size is set).
+#[test]
+fn a_banded_row_and_its_snapshot_build_the_same_per_mm_material() {
+    let json = absorption_bands_to_json(&BANDS).expect("rows serialise");
+    let banded = LibraryMaterial {
+        absorption_bands_json: Some(&json),
+        ..plain("Banded")
+    };
+    let from_row = banded.gem_material();
+    let from_file = gem_material_from_custom_snapshot("Banded", &banded.snapshot());
+    assert_eq!(from_row.absorption, from_file.absorption);
+    assert_eq!(from_row.absorption_unit, AbsorptionUnit::PerMm);
+    assert_eq!(from_file.absorption_unit, AbsorptionUnit::PerMm);
+    assert_eq!(
+        from_row.absorption_path_scale,
+        from_file.absorption_path_scale
+    );
+    let model_width = 2.3_f64;
+    for (width_mm, expected_mm) in [(0.0_f32, 7.0_f64), (10.87, f64::from(10.87_f32))] {
+        let row = indicatrix::render_setup::apply_material_overrides(
+            from_row.clone(),
+            &sized(width_mm),
+            Some(model_width),
+        );
+        let file = indicatrix::render_setup::apply_material_overrides(
+            from_file.clone(),
+            &sized(width_mm),
+            Some(model_width),
+        );
+        assert_eq!(row, file);
+        assert!((f64::from(row.absorption_path_scale) - expected_mm / model_width).abs() < 1e-5);
+    }
+}
+
+/// A physics recipe row is per millimetre too (a pure-host one included).
+#[test]
+fn a_physics_recipe_row_is_per_mm_and_scales_with_the_model_width() {
+    let mode = ColorMode::physics(ruby(), [0.0; 3]);
+    let json = mode.to_json();
+    let row = LibraryMaterial {
+        color_recipe_json: Some(&json),
+        ..plain("Physics Ruby")
+    };
+    let material = row.gem_material();
+    assert_eq!(material.absorption_unit, AbsorptionUnit::PerMm);
+    let one = indicatrix::render_setup::apply_material_overrides(
+        material.clone(),
+        &sized(0.0),
+        Some(2.0),
+    );
+    let two = indicatrix::render_setup::apply_material_overrides(material, &sized(0.0), Some(4.0));
+    assert!((one.absorption_path_scale - 3.5).abs() < 1e-6);
+    assert!((two.absorption_path_scale - 1.75).abs() < 1e-6);
 }

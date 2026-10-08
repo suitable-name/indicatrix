@@ -598,14 +598,18 @@ fn main() {
     );
     let scene = Scene::standard();
 
-    let diamond = GemMaterial::diamond();
+    // The render's size rule (no stone size set = the 7 mm look) so a coloured built-in would
+    // cost what the app traces; these three are near-colourless, so timings barely move.
+    let sized = |m: GemMaterial| indicatrix::render_setup::material_for_stone(m, 0.0, &[]);
+
+    let diamond = sized(GemMaterial::diamond());
     run_material(
         "Diamond (RI~2.417, colorless, cubic/isotropic)",
         &diamond,
         &scene,
     );
 
-    let quartz = GemMaterial::by_name("Quartz").expect("Quartz must be a built-in material");
+    let quartz = sized(GemMaterial::by_name("Quartz").expect("Quartz must be a built-in material"));
     run_material(
         "Quartz (RI~1.544, weakly absorbing, uniaxial)",
         &quartz,
@@ -618,7 +622,7 @@ fn main() {
     // bounces through the uniaxial closed-form path per sample -- reported alongside
     // Diamond/Quartz to show the batched/cached uniaxial solve's cost at the
     // high-birefringence end, not just Quartz's comparatively mild case.
-    let zircon = GemMaterial::by_name("Zircon").expect("Zircon must be a built-in material");
+    let zircon = sized(GemMaterial::by_name("Zircon").expect("Zircon must be a built-in material"));
     run_material(
         "Zircon (RI~1.93, colorless, strongly birefringent uniaxial)",
         &zircon,

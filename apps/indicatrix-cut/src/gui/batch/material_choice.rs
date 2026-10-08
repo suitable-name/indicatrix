@@ -8,6 +8,19 @@
 //! A stone that windows 0% while most of its light is extinguished is not a good match,
 //! so windowing, extinction and (flipped) brilliance count equally, each averaged over
 //! a table-up and two tilted poses.
+//!
+//! # Stone size (limitation)
+//!
+//! The candidates are the plain built-in presets, scored unsized: the batch has no girdle
+//! diameter to size them with (`FullDiagramRecord` and the vault carry no
+//! `Design::girdle_diameter_mm`, and the angle-table fallback has none either), so this module
+//! and the library tilt/preview batches that use it trace the bare material. That equals the
+//! render of an unsized, unlinked library design (Stone Size "not set": a `ModelUnit` built-in is
+//! untouched); a library design whose own file carries a girdle diameter renders its linked view
+//! with that size, so its batch tilt curves can differ from the live view by the
+//! `girdle_mm / 7` absorption factor. Sizing them needs the diameter threaded through the record
+//! (then `render_setup::material_for_stone(material, mm, planes)` in [`balanced_loss`]'s caller
+//! and the engines' `resolve_design`).
 
 use crate::bridge::preview_render::{PREVIEW_LIGHT_PITCH, PREVIEW_LIGHT_YAW};
 use indicatrix::{
@@ -55,6 +68,7 @@ pub fn best_balanced(planes: &[GpuFacetPlane], shortlist: &[&RiPresetCandidate])
         let Some(material) = GemMaterial::by_name(&candidate.name) else {
             continue;
         };
+        let material = indicatrix::render_setup::material_for_stone(material, 0.0, planes);
         let loss = balanced_loss(planes, &material);
         if loss.is_finite() && loss < best.1 {
             best = (index, loss);

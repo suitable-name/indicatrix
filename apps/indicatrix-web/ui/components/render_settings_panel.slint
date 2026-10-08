@@ -249,9 +249,9 @@ export component RenderSettingsPanel inherits Rectangle {
             }
             Slider {
                 minimum: 0;
-                maximum: 3;
-                step: 0.05;
-                value <=> RenderModel.inclusion-sigma-s;
+                maximum: 1;
+                step: 0.01;
+                value <=> RenderModel.inclusion-position;
                 changed => { RenderModel.settings-edited(); }
             }
             ValueRow {

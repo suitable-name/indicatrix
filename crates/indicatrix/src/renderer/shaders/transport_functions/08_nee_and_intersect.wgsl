@@ -257,11 +257,14 @@ fn tf_nee_contribution_hg_scatter(
     // function both apply (`exp_poly`, not the `exp()` builtin -- see
     // that function's own doc comment, `transport_physics.wgsl`).
     let hit_t_scaled = hit.t * absorption_path_scale;
+    // `sigma_s` is per model unit (size-independent): converted to absorption-length units
+    // exactly as the CPU twin does (`sigma_s / absorption_path_scale`).
+    let sigma_s_abs = sigma_s / absorption_path_scale;
 
     let nee_common = t_unpol * phase_val * mis_weight / sample.pdf;
     var nee_deposit: array<f32, 8>;
     for (var k: u32 = 0u; k < 8u; k = k + 1u) {
-        let transmittance_k = exp_poly(-(alphas[k] + sigma_s) * hit_t_scaled);
+        let transmittance_k = exp_poly(-(alphas[k] + sigma_s_abs) * hit_t_scaled);
         let env_k = rgb_to_spectral_radiance(env_rgb.x, env_rgb.y, env_rgb.z, (*lambdas)[k]);
         nee_deposit[k] = fma((*stokes)[k].x * transmittance_k * nee_common * env_k, 1.0, 0.0);
     }

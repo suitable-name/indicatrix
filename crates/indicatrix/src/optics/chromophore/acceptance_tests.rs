@@ -22,9 +22,7 @@ use crate::{
         materials::GemMaterial,
     },
     render_setup::{
-        materials::{
-            MaterialOverrides, apply_material_overrides_for_mode, effective_stone_width_mm,
-        },
+        materials::{MaterialOverrides, apply_material_overrides, effective_stone_width_mm},
         measure_model_width,
     },
 };
@@ -821,9 +819,8 @@ fn criterion_5_conc_typical_fits_the_band_budget_for_all_hosts() {
 
 #[test]
 fn criterion_6_stone_size_default_and_resolved_scale() {
-    assert_eq!(effective_stone_width_mm(0.0, true), 7.0);
-    assert_eq!(effective_stone_width_mm(0.0, false), 0.0);
-    assert_eq!(effective_stone_width_mm(5.0, true), 5.0);
+    assert_eq!(effective_stone_width_mm(0.0), 7.0);
+    assert_eq!(effective_stone_width_mm(5.0), 5.0);
 
     let model_width = measure_model_width(&StandardGemCuts::standard_round_brilliant())
         .expect("round brilliant measures");
@@ -837,20 +834,25 @@ fn criterion_6_stone_size_default_and_resolved_scale() {
         edge_rounding_radius: 0.0,
         stone_width_mm: 0.0,
     };
-    let physics =
-        apply_material_overrides_for_mode(base.clone(), &overrides, Some(model_width), true);
+    // A physics recipe is per millimetre: the 7 mm default applies while no size is set.
+    let physics = apply_material_overrides(
+        base.clone()
+            .with_chromophore_absorption(base.absorption.clone()),
+        &overrides,
+        Some(model_width),
+    );
     let expected = 7.0 / model_width;
     let got = f64::from(physics.absorption_path_scale);
     assert!(
         ((got - expected) / expected).abs() < 1e-6,
         "scale {got} vs 7/model_width {expected}"
     );
-    // Non-physics materials stay untouched, bit for bit.
-    let plain =
-        apply_material_overrides_for_mode(base.clone(), &overrides, Some(model_width), false);
+    // A per-model-unit material (the built-in table) with no size set gets exactly the face-up
+    // calibration `1 / K` (its swatch colour over `K` units of path), whatever the model width.
+    let plain = apply_material_overrides(base.clone(), &overrides, Some(model_width));
     assert_eq!(
         plain.absorption_path_scale.to_bits(),
-        base.absorption_path_scale.to_bits()
+        (1.0 / crate::render_setup::MODEL_UNIT_FACE_UP_PATH).to_bits()
     );
 }
 
@@ -860,7 +862,7 @@ fn criterion_6_stone_size_default_and_resolved_scale() {
 fn builtin_vs_recipe() -> Vec<(&'static str, [f64; 3], SolveResult)> {
     let model_width = measure_model_width(&StandardGemCuts::standard_round_brilliant())
         .expect("round brilliant measures");
-    let per_mm = model_width / f64::from(effective_stone_width_mm(0.0, true));
+    let per_mm = model_width / f64::from(effective_stone_width_mm(0.0));
     let scaled = |bands: &[AbsorptionBand]| -> Vec<AbsorptionBand> {
         bands
             .iter()

@@ -339,6 +339,16 @@ notes avoid the word "physical": the combo is greyed out with "This material
 defines its own color.", and an already-set override is reported as replacing
 "this material's own color".
 
+**How colours relate to Stone Size.** The built-in colours, the colour presets and
+the nine Fantasy swatches are shown as they look face-up in a stone of 7 mm: the
+swatch, the colour control's dot and the render agree, and with no Stone Size set
+the stone is rendered as a 7 mm one. Setting a Stone Size in the rendering
+settings scales the colour physically from there: a bigger stone is darker and
+more saturated (a 10.87 mm green cubic zirconia stays green, only deeper), a
+smaller one paler. Colours made with the L*C*h editor, the library band rows
+and Physics recipes are per millimetre and follow the Stone Size the same way,
+with 7 mm assumed when none is set.
+
 **Where a custom material lives.** Saving writes it to your catalogue's own
 database -- this is the copy every material picker across the app actually
 reads from, and it is what makes the material available the next time you

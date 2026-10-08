@@ -207,7 +207,8 @@ impl LibraryMaterial<'_> {
             .and_then(ColorMode::from_json)
             .filter(ColorMode::is_physics);
         if let Some(mode) = physics {
-            material.absorption = mode.resolve_tensor();
+            // Physics bands are per millimetre (`with_chromophore_absorption` tags them so).
+            material = material.with_chromophore_absorption(mode.resolve_tensor());
         } else if let Some(rows) = self.absorption_bands() {
             // The seven-band colour replaces the triple's three bands (the triple stays what an
             // older build shows). The scale gives the bands per millimetre a physical stone;

@@ -683,12 +683,26 @@ fn a_stone_size_scales_the_material_to_the_design_width() {
     let width = indicatrix::render_setup::measure_model_width(&planes).expect("SRB measures");
     let mut design = crate::EditorSession::fresh().design;
 
+    // A per-model-unit colour (the triple of a body-colour preset) is tuned for 7 mm: the face-up
+    // calibration `1 / K` while no size is set, `mm / 7 / K` once one is -- the renderer's own rule.
+    let face_up = indicatrix::render_setup::MODEL_UNIT_FACE_UP_PATH;
     let unsized_material =
         crate::material_lookup::sized_material_for_optimize(blue_sapphire(), &design, &planes);
-    assert_eq!(unsized_material.absorption_path_scale, 1.0);
+    assert_eq!(unsized_material.absorption_path_scale, 1.0 / face_up);
 
     design.girdle_diameter_mm = Some(6.5);
     let sized =
         crate::material_lookup::sized_material_for_optimize(blue_sapphire(), &design, &planes);
-    assert_eq!(sized.absorption_path_scale, (6.5 / width) as f32);
+    assert_eq!(sized.absorption_path_scale, 6.5_f32 / 7.0 / face_up);
+
+    // A per-millimetre colour (bands) scales to the model width, 7 mm while no size is set.
+    let banded = || GemMaterial::sapphire().with_body_color_bands(&[[560.0, 80.0, 0.4]], 1.0);
+    design.girdle_diameter_mm = None;
+    let banded_unsized =
+        crate::material_lookup::sized_material_for_optimize(banded(), &design, &planes);
+    assert_eq!(banded_unsized.absorption_path_scale, (7.0 / width) as f32);
+    design.girdle_diameter_mm = Some(6.5);
+    let banded_sized =
+        crate::material_lookup::sized_material_for_optimize(banded(), &design, &planes);
+    assert_eq!(banded_sized.absorption_path_scale, (6.5 / width) as f32);
 }

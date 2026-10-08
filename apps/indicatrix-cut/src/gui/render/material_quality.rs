@@ -24,7 +24,7 @@ use crate::{
         model::{head_shadow_deg_from_slider, surface_glare_from_percent},
     },
 };
-use indicatrix::optics::materials::GemMaterial;
+use indicatrix::{optics::materials::GemMaterial, render_setup::inclusion_scale};
 use indicatrix_editor::guide::viewing_events as events;
 use slint::{ComponentHandle, SharedString};
 use std::sync::{Arc, Mutex};
@@ -195,19 +195,25 @@ pub(in crate::gui) fn setup_material_and_quality_callbacks(
 
     setup_local_render_path_callbacks(ui, render_ctx, settings_store);
 
-    // Inclusion/subsurface scattering amount. Linear, unlike the samples slider
-    // above -- `scattering_sigma_s`'s doc comment gives the 0.0-3.0 useful range
-    // directly, so there's no perceptual remapping to invert here.
+    // Inclusion/subsurface scattering amount. The slider carries a POSITION (0-1) and
+    // `position_to_sigma_s` (`2 * position^2`, finer at the clean end) is the one boundary
+    // crossing to the coefficient `scattering_sigma_s`, which is what is stored, persisted
+    // and shown (per model unit, independent of the stone size) -- so a saved value keeps
+    // its haze whatever the slider's mapping.
     let render_ctx_inc = render_ctx.clone();
     let settings_store_inc = settings_store.clone();
+    let ui_weak_inc = ui.as_weak();
     ui.global::<SettingsModel>()
-        .on_inclusion_changed(move |sigma_s: f32| {
-            let clamped = sigma_s.clamp(0.0, 3.0);
+        .on_inclusion_changed(move |position: f32| {
+            let sigma_s = inclusion_scale::position_to_sigma_s(position);
             let mut ctx = RenderContext::lock(&render_ctx_inc);
-            ctx.inclusion_sigma_s = clamped;
+            ctx.inclusion_sigma_s = sigma_s;
             ctx.dirty = true;
             drop(ctx);
-            settings_store_inc.update(|s| s.settings.inclusion_sigma_s = clamped);
+            settings_store_inc.update(|s| s.settings.inclusion_sigma_s = sigma_s);
+            if let Some(ui) = ui_weak_inc.upgrade() {
+                ui.global::<SettingsModel>().set_inclusion_sigma_s(sigma_s);
+            }
         });
 
     // Render Pause / Resume -- explicit user intent.
@@ -413,6 +419,7 @@ pub(in crate::gui) fn setup_material_effect_override_callbacks(
     // non-finite/non-positive results regardless.
     let render_ctx_stone = render_ctx.clone();
     let settings_store_stone = settings_store.clone();
+    let ui_weak_stone = ui.as_weak();
     ui.global::<SettingsModel>()
         .on_stone_width_changed(move |width_mm: f32| {
             let clamped = width_mm.max(0.0);
@@ -421,6 +428,11 @@ pub(in crate::gui) fn setup_material_effect_override_callbacks(
             ctx.dirty = true;
             drop(ctx);
             settings_store_stone.update(|s| s.settings.stone_width_mm = clamped);
+            // The toolbar's colour swatch and preset dots show the colour at this size: the
+            // same refresh the swatch already uses (it reads the width from the context).
+            if let Some(ui) = ui_weak_stone.upgrade() {
+                ui.global::<ViewportModel>().invoke_render_color_refresh();
+            }
         });
 }
 

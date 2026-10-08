@@ -47,6 +47,7 @@ impl GemMaterial {
                 scattering_g: 0.0,
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
+                absorption_unit: super::AbsorptionUnit::ModelUnit,
                 uniaxial_extraordinary_dispersion: None,
             },
             // YAG (Yttrium Aluminium Garnet, Y3Al5O12, undoped/colorless laser host)
@@ -79,6 +80,7 @@ impl GemMaterial {
                 scattering_g: 0.0,
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
+                absorption_unit: super::AbsorptionUnit::ModelUnit,
                 uniaxial_extraordinary_dispersion: None,
             },
             // GGG (Gadolinium Gallium Garnet, Gd3Ga5O12, colorless synthetic --
@@ -119,6 +121,7 @@ impl GemMaterial {
                 scattering_g: 0.0,
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
+                absorption_unit: super::AbsorptionUnit::ModelUnit,
                 uniaxial_extraordinary_dispersion: None,
             },
             // Benitoite (BaTiSi3O9): n_d=1.757, B-G 0.045 (benitoite's famous
@@ -157,6 +160,7 @@ impl GemMaterial {
                 scattering_g: 0.0,
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
+                absorption_unit: super::AbsorptionUnit::ModelUnit,
                 uniaxial_extraordinary_dispersion: None,
             },
         ]

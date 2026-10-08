@@ -23,6 +23,7 @@ use indicatrix_editor::{
         metrics::{MetricColumn, measure_column},
         plan::tier_display_names,
     },
+    solve_policy::design_to_gpu_planes_from_solved,
     verdict::{FixAction, Level, Reason, Verdict, evaluate, gather},
 };
 use serde_json::{Value, json};
@@ -77,11 +78,15 @@ fn judge(loaded: &Loaded, catalogue: &Catalogue, args: &ValidateArgs) -> Result<
     };
     let inputs = gather(design, solved, n_d, analysis.failure.as_deref());
     let optics = match (&scoring, solved) {
-        (Some(scoring), Some(solved)) if analysis.is_closed() => Some(measure_column(
-            &design.planes_from_solved(solved),
-            &scoring.resolved.gem,
-            args.lighting,
-        )),
+        (Some(scoring), Some(solved)) if analysis.is_closed() => {
+            // Sized by the design's girdle diameter, like the render.
+            let gem = scoring.sized_gem(design, &design_to_gpu_planes_from_solved(design, solved));
+            Some(measure_column(
+                &design.planes_from_solved(solved),
+                &gem,
+                args.lighting,
+            ))
+        }
         _ => None,
     };
     Ok(Report {

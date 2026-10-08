@@ -36,7 +36,6 @@ use indicatrix_cut_core::{
 };
 use indicatrix_editor::{
     EditorSession,
-    material_lookup::sized_material_for_optimize,
     optimize_view::{
         CandidateLine, RunForm, RunPlan, apply_candidate, baseline_line, build_run_plan,
         candidate_lines, default_vary_anchored, measure_anchor_hinges, optimize_availability,
@@ -400,7 +399,7 @@ fn execute(loaded: &Loaded, catalogue: &Catalogue, args: &OptimizeArgs) -> Comma
     let (plan, vary_anchored) = plan_for(design, &analysis, args)?;
     // The face-up tone is sized by the design's girdle diameter, like the Live Render.
     let planes = design_to_gpu_planes_from_solved(design, analysis.require_stone(design)?);
-    let gem = sized_material_for_optimize(scoring.resolved.gem.clone(), design, &planes);
+    let gem = scoring.sized_gem(design, &planes);
     let result = optimize_design_with(
         design,
         &gem,

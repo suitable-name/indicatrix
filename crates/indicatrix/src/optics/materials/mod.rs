@@ -71,6 +71,34 @@ pub enum OpticalCharacter {
     BiaxialNegative,
 }
 
+/// What a material's absorption numbers are measured per.
+///
+/// Metadata for the CPU-side render setup only (`render_setup::apply_material_overrides`
+/// reads it to choose [`GemMaterial::absorption_path_scale`]); the tracer and the GPU material
+/// layout never see it, so the WGSL structs are unchanged.
+///
+/// The two variants are the two calibrations the crate has:
+///
+/// * [`Self::ModelUnit`]: the number is an optical density per MODEL unit of path, tuned by eye
+///   for a stone about 7 mm wide, as the swatch looks over ONE model unit (the built-in table,
+///   the legacy `[R, G, B]` triples and the fantasy customs built from them). Light leaving a
+///   face-up stone has travelled about `render_setup::MODEL_UNIT_FACE_UP_PATH` model units, so
+///   the render scale is `W / 7 / MODEL_UNIT_FACE_UP_PATH` (`W` = 7 mm with no size set): the
+///   face-up look then equals the swatch at 7 mm, and a stone of width `W` mm is `W / 7` times
+///   as dense.
+/// * [`Self::PerMm`]: the number is a physical absorption per millimetre (the physics chromophore
+///   recipes and the seven-band L*C*h / library body colours). The scale is then `W / model_width`
+///   millimetres per model unit, with `W` the stone width, or 7 mm when none is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum AbsorptionUnit {
+    /// Absorption per model unit, calibrated for a 7 mm stone (see the type's doc comment).
+    #[default]
+    ModelUnit,
+    /// Absorption per millimetre.
+    PerMm,
+}
+
 /// A gemstone material's full optical description.
 ///
 /// Dispersion, birefringence, pleochroic absorption, and optional inclusion
@@ -123,6 +151,11 @@ pub struct GemMaterial {
     /// [`Self::with_recommended_scattering`] for a per-species starting point) to opt a
     /// material into a nonzero value.
     ///
+    /// Per MODEL unit of path, independent of the stone's physical size: inclusions are a
+    /// property of the design's geometry, so a 5 mm and a 12 mm stone of the same cut carry
+    /// the same haze (unlike the absorption, which gets denser with size -- see
+    /// [`Self::absorption_unit`]).
+    ///
     /// # Useful range
     ///
     /// The built-in cuts (`geometry::StandardGemCuts`) have a girdle radius of order 1
@@ -147,12 +180,25 @@ pub struct GemMaterial {
     /// whenever this is `<= 0.0`. See [`Self::with_edge_rounding`] to opt in.
     pub edge_rounding_radius: f32,
     /// Model units to absorption-length units: every interior path length is
-    /// multiplied by this before Beer-Lambert absorption and inclusion scattering.
+    /// multiplied by this before Beer-Lambert absorption. Inclusion scattering is NOT scaled
+    /// by it: `scattering_sigma_s` is per model unit whatever the stone's size (the tracer
+    /// converts it to absorption-length units with `sigma_s / absorption_path_scale`).
     /// `1.0` (every built-in, and `new_custom`'s default) is a no-op. See
     /// [`Self::with_absorption_path_scale`] to opt a material into a different
     /// physical size (e.g. a larger or smaller real-world stone rendered at the same
-    /// ~1-model-unit girdle radius as every built-in cut).
+    /// ~1-model-unit girdle radius as every built-in cut). The render setup chooses this value
+    /// from the stone's size and [`Self::absorption_unit`]; a material's own stored value is
+    /// only what an unsized `ModelUnit` material keeps.
     pub absorption_path_scale: f32,
+    /// What the numbers of [`Self::absorption`] are measured per -- see [`AbsorptionUnit`].
+    /// CPU-side metadata for `render_setup::apply_material_overrides`; the GPU material
+    /// layout does not carry it. Every built-in and every legacy-triple colour is
+    /// [`AbsorptionUnit::ModelUnit`]; band colours ([`Self::with_body_color_bands`]) and physics
+    /// chromophore absorption ([`Self::with_chromophore_absorption`]) are
+    /// [`AbsorptionUnit::PerMm`]. `#[serde(default)]` keeps an older serialized material loading
+    /// as `ModelUnit`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub absorption_unit: AbsorptionUnit,
     /// An optional, genuinely wavelength-dependent extraordinary-ray dispersion curve
     /// for a uniaxial material, evaluated instead of the constant-offset approximation
     /// `n_e(lambda) = n_o(lambda) + birefringence_delta` (see

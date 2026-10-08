@@ -26,9 +26,12 @@ use indicatrix_cut_core::{
     Design,
     optimize::{CANONICAL_LIGHT_PITCH, CANONICAL_LIGHT_YAW},
 };
-use indicatrix_editor::sweep::{
-    SweepError, SweepMetric, SweepOptions, SweepOutcome, SweepRange, SweepRow, SweepScene,
-    best_flags, default_worker_count, plan_sweep, sweep_csv, sweep_tier_angle,
+use indicatrix_editor::{
+    solve_policy::design_to_gpu_planes_from_solved,
+    sweep::{
+        SweepError, SweepMetric, SweepOptions, SweepOutcome, SweepRange, SweepRow, SweepScene,
+        best_flags, default_worker_count, plan_sweep, sweep_csv, sweep_tier_angle,
+    },
 };
 use serde_json::{Map, Value, json};
 use std::sync::atomic::AtomicBool;
@@ -262,9 +265,14 @@ fn execute(loaded: &Loaded, catalogue: &Catalogue, args: &SweepArgs) -> CommandR
         step_deg: args.step_deg,
     };
     let plan = plan_sweep(design, tier, range).map_err(|error| sweep_error(&error))?;
-    analyze(design).require_stone(design)?;
+    let analysis = analyze(design);
+    // Sized by the design's girdle diameter (at the design's current angles), like the render.
+    let gem = scoring.sized_gem(
+        design,
+        &design_to_gpu_planes_from_solved(design, analysis.require_stone(design)?),
+    );
     let scene = SweepScene {
-        material: &scoring.resolved.gem,
+        material: &gem,
         environment: args
             .lighting
             .studio(1.0, CANONICAL_LIGHT_YAW, CANONICAL_LIGHT_PITCH),

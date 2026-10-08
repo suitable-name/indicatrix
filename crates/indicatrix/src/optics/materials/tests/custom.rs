@@ -6,6 +6,24 @@ use crate::optics::{
     materials::{CrystalSystem, GemMaterial, OpticalCharacter},
 };
 
+/// Review fix: scattering now divides by the path scale, so `with_absorption_path_scale` ignores a
+/// non-finite or non-positive value (the previous scale stays), and takes a positive one.
+#[test]
+fn the_absorption_path_scale_builder_ignores_degenerate_values() {
+    let base = GemMaterial::sapphire().with_absorption_path_scale(1.5);
+    assert_eq!(base.absorption_path_scale, 1.5);
+    for bad in [0.0, -2.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let kept = base.clone().with_absorption_path_scale(bad);
+        assert_eq!(kept.absorption_path_scale, 1.5, "{bad} must be ignored");
+    }
+    let fresh = GemMaterial::sapphire().with_absorption_path_scale(f32::NAN);
+    assert_eq!(fresh.absorption_path_scale, 1.0);
+    assert_eq!(
+        base.with_absorption_path_scale(2.25).absorption_path_scale,
+        2.25
+    );
+}
+
 /// Every built-in material must have its OWN explicit `recommended_scattering` arm,
 /// keyed by its exact `all_materials()` name -- falling through to the generic
 /// default silently, as `"Moissanite"` (rather than the real name `"Synthetic

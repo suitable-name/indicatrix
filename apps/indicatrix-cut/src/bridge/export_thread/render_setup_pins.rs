@@ -110,7 +110,6 @@ fn material_dump_hashes() -> Vec<u64> {
                             overrides,
                             &planes,
                             &mut StoneWidthCache::new(),
-                            false,
                         );
                         let _ = writeln!(dump, "{applied:?}");
                     }
@@ -120,13 +119,8 @@ fn material_dump_hashes() -> Vec<u64> {
             let base =
                 resolve_material_with_override(&materials, &customs, Some(&forced), "Diamond")
                     .expect("an explicit forced override always resolves");
-            let applied = apply_material_overrides(
-                base,
-                overrides,
-                &planes,
-                &mut StoneWidthCache::new(),
-                false,
-            );
+            let applied =
+                apply_material_overrides(base, overrides, &planes, &mut StoneWidthCache::new());
             let _ = writeln!(dump, "{applied:?}");
             fnv1a(dump.as_bytes())
         })
@@ -142,15 +136,19 @@ fn resolved_material_dumps_are_pinned() {
     // material resolution, not upstream `indicatrix` material physics, so it is
     // re-baselined to the crate's current, real output rather than papering over a
     // stale assertion.
+    //
+    // Re-pinned 2026-10-08 for the absorption unit tag (`GemMaterial.absorption_unit` is in
+    // every `Debug` dump, so all six combos move) and the `(W / 7) / K` ModelUnit scale,
+    // K = 2.52 (`MODEL_UNIT_FACE_UP_PATH`).
     assert_eq!(
         material_dump_hashes(),
         [
-            5_999_495_000_894_761_511,
-            17_220_867_969_871_493_937,
-            15_180_922_634_778_384_829,
-            2_985_035_513_965_821_273,
-            10_383_256_312_175_675_446,
-            381_113_791_820_420_916,
+            3_580_898_491_540_929_908,
+            12_196_816_847_341_780_186,
+            9_708_379_532_442_297_358,
+            2_548_391_994_686_336_338,
+            6_689_374_829_022_688_779,
+            4_166_139_222_748_066_605,
         ]
     );
 }

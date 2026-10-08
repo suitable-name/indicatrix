@@ -250,7 +250,6 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                 girdle_frosted,
                 edge_rounding_radius,
                 stone_width_mm,
-                physics_color,
                 active_planes,
                 active_tools,
                 custom_materials,
@@ -437,7 +436,6 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                             custom_materials: &custom_materials,
                             material_override: material_override.as_ref(),
                             material_name: &material_name,
-                            physics_color,
                         },
                         target_samples,
                         &MaterialOverrides {
@@ -475,7 +473,6 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                     custom_materials: &custom_materials,
                     material_override: material_override.as_ref(),
                     material_name: &material_name,
-                    physics_color,
                 },
                 target_samples,
                 &MaterialOverrides {

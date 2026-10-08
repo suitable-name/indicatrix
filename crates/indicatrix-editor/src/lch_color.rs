@@ -302,6 +302,81 @@ mod tests {
         assert!(reference_path_mm(None) > 0.0);
     }
 
+    /// Review fix (absorption units): a stored solve resolves to a `PerMm` material, the
+    /// renderer supplies the scale (girdle 5 mm over a model width of 2 = 2.5 mm per model
+    /// unit), and the colour of that material at the reference path (7.5 mm = 3 model units)
+    /// is the swatch the editor showed, within Delta E 2000 of 2.
+    #[test]
+    fn a_stored_solve_renders_as_a_per_mm_material_matching_the_swatch() {
+        use crate::material_lookup::{EditorMaterialLookup, resolved_gem_material};
+        use indicatrix::{
+            color::body_color::{Illuminant, body_colors, delta_e_2000},
+            optics::materials::AbsorptionUnit,
+            render_setup::{MaterialOverrides, apply_material_overrides},
+        };
+        let path_mm = 7.5;
+        let solve = solved(path_mm);
+        let base = MaterialSelection {
+            name: Some("Diamond".to_string()),
+            ..MaterialSelection::none()
+        };
+        let stored = recoloured_with_solve(&base, &solve).expect("a new colour is an edit");
+        let gem = resolved_gem_material(&stored, &EditorMaterialLookup::new(&[]));
+        assert_eq!(gem.absorption_unit, AbsorptionUnit::PerMm);
+
+        let sized = apply_material_overrides(
+            gem,
+            &MaterialOverrides {
+                inclusion_sigma_s: 0.0,
+                c_axis_override: None,
+                edge_rounding_radius: 0.0,
+                stone_width_mm: 5.0,
+            },
+            Some(2.0),
+        );
+        assert!((sized.absorption_path_scale - 2.5).abs() < 1e-6);
+        let model_path = 3.0_f64;
+        let mm = f64::from(sized.absorption_path_scale) * model_path;
+        let rendered = body_colors(&sized.absorption, mm, Illuminant::D65).unpolarised;
+        let rendered_lab = srgb_to_lab(rendered.srgb.map(|v| f64::from(v) / 255.0));
+        let swatch = *solve.swatches.last().expect("the stone's own swatch");
+        let swatch_lab = srgb_to_lab(swatch.map(f64::from));
+        let delta_e = delta_e_2000(rendered_lab, swatch_lab);
+        assert!(delta_e < 2.0, "rendered vs swatch Delta E {delta_e}");
+    }
+
+    /// Review fix (absorption units): a design with LCh bands AND an old stored
+    /// `absorption_path_scale_override` (24.5, written by builds that stored the scale) now
+    /// renders at `W / model_width` -- the stored number is ignored for a per-millimetre
+    /// material, the renderer supplies the scale. THIS INTENTIONALLY CHANGES OLD FILES: they
+    /// rendered with the stored 24.5 whatever the stone size.
+    #[test]
+    fn an_old_stored_path_scale_is_ignored_for_a_banded_colour() {
+        use crate::material_lookup::{EditorMaterialLookup, resolved_gem_material};
+        use indicatrix::render_setup::{MaterialOverrides, apply_material_overrides};
+        let solve = solved(5.0);
+        let old_file = MaterialSelection {
+            name: Some("Diamond".to_string()),
+            ..MaterialSelection::none()
+        }
+        .with_body_color_bands(Some(solve.triple), Some(solve.bands.clone()), Some(24.5));
+        assert_eq!(old_file.absorption_path_scale_override, Some(24.5));
+        let gem = resolved_gem_material(&old_file, &EditorMaterialLookup::new(&[]));
+        // Before the render step the stored scale is still on the material...
+        assert_eq!(gem.absorption_path_scale, 24.5);
+        let overrides = |stone_width_mm| MaterialOverrides {
+            inclusion_sigma_s: 0.0,
+            c_axis_override: None,
+            edge_rounding_radius: 0.0,
+            stone_width_mm,
+        };
+        // ...and the render replaces it: W / model_width, 7 mm while no size is set.
+        let sized = apply_material_overrides(gem.clone(), &overrides(10.87), Some(2.0));
+        assert!((f64::from(sized.absorption_path_scale) - 10.87 / 2.0).abs() < 1e-5);
+        let unsized_ = apply_material_overrides(gem, &overrides(0.0), Some(2.0));
+        assert!((unsized_.absorption_path_scale - 3.5).abs() < 1e-6);
+    }
+
     #[test]
     fn a_preset_pick_after_a_custom_one_drops_the_bands() {
         let solve = solved(5.0);

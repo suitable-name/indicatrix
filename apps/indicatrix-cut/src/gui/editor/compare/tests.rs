@@ -13,7 +13,8 @@ use super::{
         CompareOrigin, CompareSession, FrameBook, FrameKind, MAX_SETTLE_POLLS, Renderer,
         SLOW_TRACED_SIDE_SECS, SideInput, TracedProgress, clamp_split_fraction, default_pose,
         fitted_pose, orbit, reduced_spp_note, resolve_metrics_material, resolve_side_material,
-        status_text, traced_may_start, traced_spp_for, traced_waits_for_layout, zoom,
+        sized_for_design, status_text, traced_may_start, traced_spp_for, traced_waits_for_layout,
+        zoom,
     },
 };
 use crate::gui::{
@@ -625,6 +626,39 @@ fn the_metrics_material_is_the_named_one_and_otherwise_follows_the_refractive_in
         at_205,
         resolve_metrics_material(&named, &[]),
         "and it is not silently Diamond"
+    );
+}
+
+/// Review fix (absorption units): a compare side of a sized stone traces AND measures the very
+/// material the render builds (`material_for_stone` with the design's girdle diameter), and an
+/// unsized design keeps the bare material.
+#[test]
+fn a_compare_side_traces_and_measures_the_sized_material() {
+    let mut design = round_brilliant();
+    design.girdle_diameter_mm = Some(10.87);
+    let session = CompareSession::build(
+        input(design.clone(), "Sized"),
+        input(round_brilliant(), "Unsized"),
+        CompareOrigin::Optimize,
+        START_POSE,
+    );
+    let side = &session.before;
+    let bare = resolve_metrics_material(&design, &[]);
+    let sized = sized_for_design(bare.clone(), &design, &side.stone.planes);
+    assert_eq!(side.metrics_material, sized);
+    assert_eq!(
+        side.material.as_ref().expect("Diamond resolves"),
+        &sized,
+        "the traced material is sized like the measured one"
+    );
+    let face_up = indicatrix::render_setup::MODEL_UNIT_FACE_UP_PATH;
+    assert!((sized.absorption_path_scale - 10.87 / 7.0 / face_up).abs() < 1e-6);
+    // No girdle diameter: only the face-up calibration scale (the 7 mm look).
+    let unsized_expected = bare.clone().with_absorption_path_scale(1.0 / face_up);
+    assert_eq!(session.after.metrics_material, unsized_expected);
+    assert_eq!(
+        session.after.material.as_ref().expect("Diamond resolves"),
+        &unsized_expected
     );
 }
 

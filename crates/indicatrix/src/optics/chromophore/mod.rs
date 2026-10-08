@@ -80,9 +80,8 @@ mod tests {
 
     #[test]
     fn stone_size_defaults_acceptance_criterion() {
-        assert_eq!(effective_stone_width_mm(0.0, true), 7.0);
-        assert_eq!(effective_stone_width_mm(0.0, false), 0.0);
-        assert_eq!(effective_stone_width_mm(5.0, true), 5.0);
+        assert_eq!(effective_stone_width_mm(0.0), 7.0);
+        assert_eq!(effective_stone_width_mm(5.0), 5.0);
     }
 
     #[test]

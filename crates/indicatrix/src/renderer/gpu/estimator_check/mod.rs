@@ -111,6 +111,7 @@ pub fn furnace_material() -> GemMaterial {
         scattering_g: 0.0,
         edge_rounding_radius: 0.0,
         absorption_path_scale: 1.0,
+        absorption_unit: crate::optics::materials::AbsorptionUnit::ModelUnit,
         uniaxial_extraordinary_dispersion: None,
     }
 }

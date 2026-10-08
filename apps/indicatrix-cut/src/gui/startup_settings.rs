@@ -32,6 +32,7 @@ use indicatrix::{
         materials::{GemMaterial, OpticalCharacter},
         raytracer::LightingModel,
     },
+    render_setup::inclusion_scale,
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::sync::{Arc, Mutex};
@@ -191,7 +192,7 @@ fn apply_loaded_render_context(
     // file could otherwise carry an out-of-range value straight into the render loop,
     // which every live-drag path already refuses to do.
     ctx.exposure = s.exposure.clamp(0.2, 5.0);
-    ctx.inclusion_sigma_s = s.inclusion_sigma_s.clamp(0.0, 3.0);
+    ctx.inclusion_sigma_s = inclusion_scale::clamp_stored_sigma_s(s.inclusion_sigma_s);
     // The settings dialog drags degrees, `RenderContext` stores the already-
     // resolved `Vec3` -- see `RenderContext::c_axis_override`'s own doc comment for
     // why this crossing happens here rather than downstream in `bridge`.
@@ -270,8 +271,13 @@ fn apply_loaded_ui_mirrors(
         .set_surface_glare_pct(percent_from_surface_glare(s.surface_glare));
     ui.global::<SettingsModel>()
         .set_head_shadow_deg(clamp_head_shadow_deg(s.head_shadow_deg));
+    // The slider shows the stored coefficient's position; the coefficient itself is the stored
+    // number, so an old file keeps its haze.
+    let inclusion_sigma_s = inclusion_scale::clamp_stored_sigma_s(s.inclusion_sigma_s);
     ui.global::<SettingsModel>()
-        .set_inclusion_sigma_s(s.inclusion_sigma_s.clamp(0.0, 3.0));
+        .set_inclusion_sigma_s(inclusion_sigma_s);
+    ui.global::<SettingsModel>()
+        .set_inclusion_position(inclusion_scale::sigma_s_to_position(inclusion_sigma_s));
     ui.global::<SettingsModel>()
         .set_c_axis_override_enabled(s.c_axis_override_enabled);
     ui.global::<SettingsModel>()

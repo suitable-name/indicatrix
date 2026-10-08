@@ -95,8 +95,14 @@ impl Shot {
     }
 
     fn material(&self) -> GemMaterial {
-        GemMaterial::by_name(self.material)
-            .unwrap_or_else(|| panic!("{} is a built-in material", self.material))
+        // Through the render's size rule (no stone size set = the 7 mm look), so the hand-judged
+        // gallery shows coloured built-ins as the app renders them (all `ModelUnit`: no planes read).
+        indicatrix::render_setup::material_for_stone(
+            GemMaterial::by_name(self.material)
+                .unwrap_or_else(|| panic!("{} is a built-in material", self.material)),
+            0.0,
+            &[],
+        )
     }
 
     fn camera(&self) -> Camera {

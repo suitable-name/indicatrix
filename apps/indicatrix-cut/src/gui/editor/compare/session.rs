@@ -14,7 +14,10 @@ use crate::gui::{
         preview_state::{CameraPose, DEFAULT_MESH_BOUNDING_RADIUS},
     },
 };
-use indicatrix::{geometry::meet_solver::SolvedTier, optics::materials::GemMaterial};
+use indicatrix::{
+    geometry::{GpuFacetPlane, meet_solver::SolvedTier},
+    optics::materials::GemMaterial,
+};
 use indicatrix_cut_core::Design;
 use indicatrix_editor::optimize_view::default_optimize_material_ri;
 use indicatrix_solid::preview::StoneGeometryBuf;
@@ -139,6 +142,23 @@ pub(super) fn resolve_metrics_material(design: &Design, custom: &[GemMaterial]) 
     resolved_gem_material(&selection, &EditorMaterialLookup::new(custom))
 }
 
+/// `material` sized for `design`'s own girdle diameter on `planes`: the renderer's size rule
+/// (`render_setup::material_for_stone`), used for both the traced and the measured material of a
+/// compare side and by the snapshot summary, so the figures equal the render. A design without a
+/// girdle diameter is "not set" (0.0).
+#[must_use]
+pub(super) fn sized_for_design(
+    material: GemMaterial,
+    design: &Design,
+    planes: &[GpuFacetPlane],
+) -> GemMaterial {
+    indicatrix::render_setup::material_for_stone(
+        material,
+        design.girdle_diameter_mm.unwrap_or(0.0) as f32,
+        planes,
+    )
+}
+
 /// One solved side of the comparison, built ONCE when the window opens. Keeps only
 /// what rendering needs -- the solved masts, the stone (planes plus concave tools) both
 /// renderers draw, and the traced material -- not the `Design` itself.
@@ -185,14 +205,23 @@ impl CompareSide {
                 let bounding_radius = MeshCache::default()
                     .get_or_build_geometry(&stone)
                     .map(CachedMesh::bounding_radius);
+                // The figures are scored in the absorption the render shows for the design's
+                // own girdle diameter (`render_setup::apply_material_overrides`' size rule).
+                // The traced material gets the same size step, so the picture and the figures
+                // show one absorption.
+                let metrics_material =
+                    sized_for_design(input.metrics_material, &input.design, &stone.planes);
+                let material = input
+                    .material
+                    .map(|material| sized_for_design(material, &input.design, &stone.planes));
                 Self {
                     label: input.label,
                     solved: Some(solved),
                     solve_error: None,
                     stone,
                     preform_planes,
-                    material: input.material,
-                    metrics_material: input.metrics_material,
+                    material,
+                    metrics_material,
                     bounding_radius,
                     tools_dropped,
                 }

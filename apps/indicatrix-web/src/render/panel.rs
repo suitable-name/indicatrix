@@ -12,6 +12,7 @@ use crate::{
     app::{Ctx, persist::schedule_save},
     io::{IncomingFile, open_files},
 };
+use indicatrix::render_setup::inclusion_scale;
 use indicatrix_web_core::settings::RenderSettings;
 use slint::ComponentHandle;
 
@@ -34,6 +35,9 @@ pub(super) fn push_panel(ui: &AppWindow, settings: &RenderSettings) {
     model.set_c_axis_tilt_deg(settings.c_axis_tilt_deg);
     model.set_c_axis_azimuth_deg(settings.c_axis_azimuth_deg);
     model.set_inclusion_sigma_s(settings.inclusion_sigma_s);
+    model.set_inclusion_position(inclusion_scale::sigma_s_to_position(
+        settings.inclusion_sigma_s,
+    ));
     model.set_edge_rounding(settings.edge_rounding_radius);
     model.set_stone_width_mm(settings.stone_width_mm);
     model.set_use_hdr(settings.use_hdr);
@@ -43,6 +47,18 @@ pub(super) fn push_panel(ui: &AppWindow, settings: &RenderSettings) {
 fn read_panel(ui: &AppWindow, settings: &RenderSettings) -> RenderSettings {
     let model = ui.global::<RenderModel>();
     let unsigned = |value: i32| u32::try_from(value).unwrap_or(0);
+    // The coefficient follows the slider only when the slider moved: an untouched panel keeps
+    // the stored value exactly (a stored value above the slider's top would otherwise be pulled
+    // down to it by any other edit).
+    let position = model.get_inclusion_position();
+    let inclusion_sigma_s =
+        if (position - inclusion_scale::sigma_s_to_position(settings.inclusion_sigma_s)).abs()
+            > 1e-6
+        {
+            inclusion_scale::position_to_sigma_s(position)
+        } else {
+            settings.inclusion_sigma_s
+        };
     RenderSettings {
         exposure: model.get_exposure(),
         light_yaw_deg: model.get_light_yaw_deg(),
@@ -57,7 +73,7 @@ fn read_panel(ui: &AppWindow, settings: &RenderSettings) -> RenderSettings {
         c_axis_override: model.get_c_axis_override(),
         c_axis_tilt_deg: model.get_c_axis_tilt_deg(),
         c_axis_azimuth_deg: model.get_c_axis_azimuth_deg(),
-        inclusion_sigma_s: model.get_inclusion_sigma_s(),
+        inclusion_sigma_s,
         edge_rounding_radius: model.get_edge_rounding(),
         stone_width_mm: model.get_stone_width_mm(),
         use_hdr: model.get_use_hdr(),

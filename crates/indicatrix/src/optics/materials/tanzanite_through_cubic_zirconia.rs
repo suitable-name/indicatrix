@@ -128,6 +128,7 @@ impl GemMaterial {
                 scattering_g: 0.0,
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
+                absorption_unit: super::AbsorptionUnit::ModelUnit,
                 uniaxial_extraordinary_dispersion: None,
             },
             // Moissanite (Synthetic SiC, 6H polytype)
@@ -179,6 +180,7 @@ impl GemMaterial {
                 scattering_g: 0.0,
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
+                absorption_unit: super::AbsorptionUnit::ModelUnit,
                 uniaxial_extraordinary_dispersion: None,
             },
             // Cubic Zirconia (ZrO2, 12 mol% Y2O3-stabilized)
@@ -209,6 +211,7 @@ impl GemMaterial {
                 scattering_g: 0.0,
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
+                absorption_unit: super::AbsorptionUnit::ModelUnit,
                 uniaxial_extraordinary_dispersion: None,
             },
         ]

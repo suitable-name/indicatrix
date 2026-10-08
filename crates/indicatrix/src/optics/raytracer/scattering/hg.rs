@@ -93,7 +93,7 @@ use glam::Vec3;
 )]
 pub(crate) fn maybe_scatter_or_extinguish(
     alphas: &[f32; NUM_CHANNELS],
-    sigma_s: f32,
+    sigma_s_model: f32,
     g: f32,
     hero_idx: usize,
     ray_dir: Vec3,
@@ -104,6 +104,12 @@ pub(crate) fn maybe_scatter_or_extinguish(
     stokes: &mut [StokesVector; NUM_CHANNELS],
     path_pdf: &mut [f32; NUM_CHANNELS],
 ) -> Option<(f32, Vec3)> {
+    // `sigma_s_model` is per MODEL unit and independent of the stone's size
+    // (`GemMaterial::scattering_sigma_s`); `alphas` are per absorption-length unit. Express the
+    // scattering coefficient in absorption-length units too, so the extinction below stays one
+    // consistent medium: `sigma_s * (hit_t * path_scale) == sigma_s_model * hit_t`.
+    // `path_scale == 1.0` makes the division an exact no-op.
+    let sigma_s = sigma_s_model / path_scale;
     let sigma_t_hero = alphas[hero_idx] + sigma_s;
 
     let dist_rand =
@@ -413,7 +419,8 @@ pub(in super::super) fn try_scatter_step(
 /// precomputed [`channel_absorption_alphas_assigned`] result, `sigma_s` is
 /// [`GemMaterial::scattering_sigma_s`]), and `hit.t` (the shadow ray's own distance to
 /// the exit facet) plays the same role that function's `hit_t` does -- so this applies
-/// the identical per-channel `exp(-(alphas[k]+sigma_s)*hit.t*path_scale)` transmittance,
+/// the identical per-channel `exp(-(alphas[k]+sigma_s/path_scale)*hit.t*path_scale)` transmittance
+/// (`sigma_s` is per model unit and does not scale with the stone's size; `alphas` do),
 /// via the same [`crate::simd::exp_f32x8`] idiom, that a phase-sampled continuation
 /// reaching the same boundary would have paid.
 #[expect(
@@ -517,9 +524,12 @@ pub(crate) fn nee_contribution_hg_scatter(
     // `maybe_scatter_or_extinguish`'s survive branch uses, so the CPU stays
     // self-consistent between the two estimators.
     let hit_t_scaled = hit_t * absorption_path_scale;
+    // `sigma_s` is per model unit (size-independent): same conversion as
+    // `maybe_scatter_or_extinguish`'s `sigma_s_model`.
+    let sigma_s_abs = sigma_s / absorption_path_scale;
     let mut trans_args = [0f32; NUM_CHANNELS];
     for k in 0..NUM_CHANNELS {
-        trans_args[k] = -(alphas[k] + sigma_s) * hit_t_scaled;
+        trans_args[k] = -(alphas[k] + sigma_s_abs) * hit_t_scaled;
     }
     let transmittance = crate::simd::exp_f32x8(trans_args);
 

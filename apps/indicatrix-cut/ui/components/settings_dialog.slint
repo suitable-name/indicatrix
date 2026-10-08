@@ -173,8 +173,8 @@ export component SettingsDialog inherits Rectangle {
     property <bool> head_shadow_enabled: !SettingsModel.env_map_loaded;
     property <int> head_shadow_shown: Math.round(SettingsModel.head_shadow_deg);
     property <string> stone_size_tooltip: root.stone_size_is_design_driven
-        ? "Stone Size: the width of the stone across the girdle in millimetres, so the colour and depth of a render match a real stone. Currently set from the linked design's own girdle diameter -- turn off \"Linked to design\" to set this manually."
-        : "Stone Size: the width of the stone across the girdle in millimetres, so the colour and depth of a render match a real stone. 0 leaves the picture unscaled.";
+        ? "Stone Size: the width of the stone across the girdle in millimetres. A bigger stone is physically deeper in colour (twice the width, twice the optical density); the built-in colours are tuned for about 7 mm, which is also what 0 assumes. Inclusion haze does not change with the size. Currently set from the linked design's own girdle diameter -- turn off \"Linked to design\" to set this manually."
+        : "Stone Size: the width of the stone across the girdle in millimetres. A bigger stone is physically deeper in colour (twice the width, twice the optical density); the built-in colours are tuned for about 7 mm, which is also what 0 assumes. Inclusion haze does not change with the size.";
     // Simple mode hides some controls that are off their defaults: say so (see the
     // callback's own comment in `models/settings.slint`).
     property <bool> advanced_note_visible: !GuideModel.shows_advanced() && SettingsModel.advanced_in_use(
@@ -228,6 +228,7 @@ export component SettingsDialog inherits Rectangle {
         SettingsModel.light_yaw_deg = SettingsModel.default_light_yaw_deg;
         SettingsModel.light_pitch_deg = SettingsModel.default_light_pitch_deg;
         SettingsModel.inclusion_sigma_s = 0.0;
+        SettingsModel.inclusion_position = 0.0;
         SettingsModel.c_axis_override_enabled = false;
         SettingsModel.c_axis_tilt_deg = 0.0;
         SettingsModel.c_axis_azimuth_deg = 0.0;
@@ -442,15 +443,17 @@ export component SettingsDialog inherits Rectangle {
         if GuideModel.shows_advanced(): BouncesPicker { }
 
         // Inclusion Haze: subsurface/inclusion scattering amount, off by default.
-        // Linear, unlike the samples slider above, since `scattering_sigma_s` is
-        // already a physical linear coefficient.
+        // The slider drags a position (0-1) and the coefficient is 2 * position^2
+        // (`render_setup::inclusion_scale`): finer at the clean end, where silk and light
+        // haze live. The label shows the coefficient (`scattering_sigma_s`, per model unit,
+        // the same for any stone size).
         VerticalLayout {
             spacing: 4px;
             HorizontalLayout {
                 alignment: space-between;
                 SettingLabel {
                     text: "Inclusion Haze";
-                    hint: "Inclusion Haze: a milky veil inside the stone, from 0 (clean) to 3 (milky), as tiny inclusions scatter the light.";
+                    hint: "Inclusion Haze: a milky veil inside the stone, from 0 (clean) to 2 (milky), as tiny inclusions scatter the light. The slider is finer at the clean end: a quarter of the way is a light silk. The haze is a property of the cut, so it does not change with Stone Size.";
                 }
                 Text {
                     text: SettingsModel.inclusion_sigma_s <= 0.0 ? "Off" : Math.round(SettingsModel.inclusion_sigma_s * 100.0) / 100.0 + "";
@@ -461,9 +464,9 @@ export component SettingsDialog inherits Rectangle {
             }
             Slider {
                 minimum: 0.0;
-                maximum: 3.0;
+                maximum: 1.0;
                 accessible-label: "Inclusion Haze";
-                value <=> SettingsModel.inclusion_sigma_s;
+                value <=> SettingsModel.inclusion_position;
                 changed(val) => { SettingsModel.inclusion_changed(val); }
             }
         }

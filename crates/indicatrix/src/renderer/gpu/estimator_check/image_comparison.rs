@@ -140,6 +140,7 @@ pub fn run_image_comparison_rutile(
 pub fn run_image_comparison_synthetic_moissanite(
     ctx: &crate::renderer::gpu::GpuContext,
 ) -> ImageComparisonResult {
+    // Bare built-in on purpose (scale 1.0, no `material_for_stone`): this compares CPU against GPU on the same material, so only parity matters, not the render's colour scale.
     let material = GemMaterial::by_name("Synthetic Moissanite")
         .expect("\"Synthetic Moissanite\" is a built-in material in GemMaterial::all_materials()");
     run_image_comparison_for(ctx, &material, &[], LightingPreset::Daylight)

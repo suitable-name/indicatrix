@@ -122,7 +122,7 @@ It is not part of a saved lighting preset.
 `head_shadow_deg` (`0.0..=30.0`, default `16.0`) is the angular radius, in degrees, of
 the viewer's head shadow on the lit lighting presets (light tent and its variants, grading
 tray, daylight sky); `0.0` turns it off. The dialog's "Head shadow" slider drags it in whole
-degrees. The Studio rigs, the UV lamps and an HDR map ignore it. It follows into the
+degrees. The Studio rigs and an HDR map ignore it. It follows into the
 live view, remote workers and exports (it rides `SceneState::head_shadow_deg`, protocol
 v22, and `RenderContext::head_shadow_deg` into the scene identity, so a change restarts
 accumulation). The key is optional (a file without it loads `16.0`) and a hand-edited

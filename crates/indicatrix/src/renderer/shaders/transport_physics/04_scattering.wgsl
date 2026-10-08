@@ -112,7 +112,7 @@ struct ScatterOrExtinguishResult {
 // convention above.
 fn maybe_scatter_or_extinguish(
     alphas: array<f32, 8>,
-    sigma_s: f32,
+    sigma_s_model: f32,
     g: f32,
     ray_dir: vec3<f32>,
     hit_t: f32,
@@ -122,6 +122,10 @@ fn maybe_scatter_or_extinguish(
     stokes: ptr<function, array<vec4<f32>, 8>>,
     path_pdf: ptr<function, array<f32, 8>>,
 ) -> ScatterOrExtinguishResult {
+    // `sigma_s_model` is per MODEL unit (size-independent); `alphas` are per absorption-length
+    // unit. Same conversion as the CPU twin: `sigma_s * (hit_t * path_scale) == sigma_s_model *
+    // hit_t`. `path_scale == 1.0` is an exact no-op division.
+    let sigma_s = sigma_s_model / path_scale;
     let sigma_t_hero = alphas[0] + sigma_s;
 
     let dist_rand = f32(hash_u32(rng_seed ^ hash_u32(bounce ^ DISTANCE_SAMPLE_STREAM))) / 4294967295.0;

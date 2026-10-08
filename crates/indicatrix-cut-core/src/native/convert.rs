@@ -392,12 +392,14 @@ pub fn gem_material_from_custom_snapshot(
         );
     // The N-band colour (path-aware L*C*h editor) wins over the three-band triple written
     // next to it; a live physics recipe still wins over both below.
+    // The same constructor the vault row uses, so a banded custom renders identically from a
+    // library row and from a design file's snapshot: per-millimetre bands, whose real scale the
+    // render setup chooses from the stone's size.
     if let Some(rows) = snapshot.absorption_bands() {
-        let scale = mat.absorption_path_scale;
-        mat = mat.with_body_color_bands(&rows, scale);
+        mat = crate::material::with_library_bands(mat, &rows);
     }
     if let SnapshotColor::Physics(mode) = snapshot_color(snapshot) {
-        mat.absorption = mode.resolve_tensor();
+        mat = mat.with_chromophore_absorption(mode.resolve_tensor());
     }
     mat
 }
@@ -411,7 +413,7 @@ pub fn gem_material_from_custom_snapshot_keeping_recipe(
 ) -> GemMaterial {
     let mut mat = gem_material_from_custom_snapshot(name, snapshot);
     if let SnapshotColor::EditedElsewhere(mode) = snapshot_color(snapshot) {
-        mat.absorption = mode.resolve_tensor();
+        mat = mat.with_chromophore_absorption(mode.resolve_tensor());
     }
     mat
 }

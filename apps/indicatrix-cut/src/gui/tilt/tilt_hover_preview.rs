@@ -295,6 +295,7 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
                     light_yaw,
                     light_pitch,
                     max_bounces,
+                    stone_width_mm,
                 ) = {
                     let ctx = render_ctx
                         .lock()
@@ -313,6 +314,7 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
                         ctx.light_yaw,
                         ctx.light_pitch,
                         ctx.max_bounces,
+                        ctx.stone_width_mm,
                     )
                 };
                 let (planes, tools) = finished.map_or((planes, tools), |stone| {
@@ -332,6 +334,9 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
                 ) else {
                     return;
                 };
+                // The render's size rule (absorption calibration and Stone Size), like the sweep.
+                let material =
+                    indicatrix::render_setup::material_for_stone(material, stone_width_mm, &planes);
                 let (cam_yaw, cam_pitch) = camera_pose_for_hover(axis_index, tilt_deg);
 
                 let buffer = render_hover_preview(&HoverPreviewScene {

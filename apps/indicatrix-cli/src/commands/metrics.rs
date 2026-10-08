@@ -180,8 +180,9 @@ fn measure(
     lighting: LightingPreset,
     tilt: bool,
 ) -> Result<Measured, CliError> {
-    let gem = &scoring.resolved.gem;
     let planes_gpu = design_to_gpu_planes_from_solved(design, solved);
+    // Sized by the design's girdle diameter, like the render and `optimize`.
+    let gem = &scoring.sized_gem(design, &planes_gpu);
     let environment = lighting.studio(1.0, CANONICAL_LIGHT_YAW, CANONICAL_LIGHT_PITCH);
     let table_up = evaluate_gem_optical_metrics(&planes_gpu, gem, 0.0, TABLE_UP_PITCH, environment);
     let tilt =

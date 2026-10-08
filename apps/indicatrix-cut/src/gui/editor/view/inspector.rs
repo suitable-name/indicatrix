@@ -18,7 +18,7 @@ use crate::{
                 EditorMaterialLookup, material_guess, traced_gem_material, traced_material_for,
             },
         },
-        render::render_body_color::display_rgb,
+        render::render_body_color::display_rgb_for_stone,
     },
 };
 use indicatrix::optics::materials::GemMaterial;
@@ -54,8 +54,10 @@ fn push_material_guess(ui: &MainWindow, design: &Design, n_d: f64) {
 /// no color or nothing traces at all (`traced_material_for`'s refusal) -- the same
 /// name `sync_viewport_material_link` traces, so the readout can never name a
 /// different stone than the one rendered. Computed whether or not the viewport is
-/// linked; the toolbar only shows it while linked.
-fn body_color_readout(design: &Design, custom: &[GemMaterial]) -> String {
+/// linked; the toolbar only shows it while linked. A custom colour's hex is the colour at the
+/// current Stone Size (`stone_width_mm`, `0.0` = not set), like the toolbar swatch; it is
+/// recomputed with the next editor refresh after the size changes.
+fn body_color_readout(design: &Design, custom: &[GemMaterial], stone_width_mm: f32) -> String {
     let rgb = design.material.body_color_override;
     design
         .material
@@ -66,7 +68,7 @@ fn body_color_readout(design: &Design, custom: &[GemMaterial]) -> String {
                 String::new()
             } else if let Some(rgb) = rgb.filter(|rgb| body_color_combo::is_custom(Some(*rgb))) {
                 // A custom colour is named by its on-screen hex, not just "custom color".
-                let [r, g, b] = display_rgb(rgb);
+                let [r, g, b] = display_rgb_for_stone(rgb, stone_width_mm);
                 format!("{name} (Custom #{r:02x}{g:02x}{b:02x})")
             } else {
                 format!("{name} ({color})")
@@ -165,7 +167,7 @@ pub(super) fn refresh_design_settings(
         let ctx = render_ctx
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let color_readout = body_color_readout(design, &ctx.custom_materials);
+        let color_readout = body_color_readout(design, &ctx.custom_materials, ctx.stone_width_mm);
         // Custom-catalogue-aware: unlike `effective_refractive_index`,
         // this also resolves a custom material by name before falling back to a built-in
         // or the design's `I` line -- see `ri_source_text` below for the matching

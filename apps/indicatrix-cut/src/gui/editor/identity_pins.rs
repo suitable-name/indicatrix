@@ -828,12 +828,16 @@ fn retarget_output_is_pinned() {
     // Lane RT1 (2026-10-07, deliberate behaviour change, re-recorded 2026-10-07): the default
     // crown policy follows the pavilion's stretch (crown rows move, a note names the stretch),
     // and `CrownShift::fixed()` joined the list, so the dump differs for every fixture.
+    //
+    // Re-pinned 2026-10-08 (Windows): the proposal's `target: ResolvedMaterial` holds a
+    // `GemMaterial`, whose Debug dump gained the `absorption_unit` field; angles and scores are
+    // unchanged.
     assert_eq!(
         got,
         [
-            12_329_206_420_166_937_951,
-            1_446_688_508_887_160_525,
-            8_242_296_784_616_884_399,
+            9_969_878_645_811_091_819,
+            12_262_411_588_369_304_583,
+            14_798_593_155_583_401_097,
         ]
     );
 }
