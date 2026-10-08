@@ -624,6 +624,15 @@ leave.
 - **Stones (up to)** — from 1 to 99. This is a *maximum*, not a target: a layout
   may cut fewer stones than this if that weighs more. Set it to 1 and you get the
   best ten single stones for this rough.
+- **Min stones** — from 1 up to **Stones (up to)**; the default 1 shows every
+  layout. This is a hard floor: a layout with fewer stones is left out of the list
+  altogether, and the ten places go to layouts that qualify, so asking for at
+  least 3 shows the ten best plans of three stones or more, even when a single big
+  stone weighs more. Raising it above the maximum raises the maximum with it, and
+  lowering the maximum below it lowers it. The summary line then names the range
+  ("3-5 stones"). If no layout reaches the floor on this rough, the window says
+  so; lower **Min stones** or loosen the minimum width. The floor is saved with a
+  plan, and a plan saved before it existed opens with 1.
 - **Candidate designs** — which designs the planner may use:
   - **Current filter (N designs)** — only the designs the library's search and
     filters currently show (Chapter 2). This is the default, and the way to say

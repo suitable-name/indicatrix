@@ -79,6 +79,9 @@ mod tests {
                 first_hit_depth: &guides.depth,
                 first_hit_normal: &guides.normal,
                 first_hit_facet_id: &guides.facet_id,
+                // All zeros here (`ensure` passes no index): a constant signature filters
+                // exactly like none, so `PINNED` stays the old literal.
+                first_hit_path_sig: &guides.path_sig,
             },
             &mut DenoiseScratch {
                 denoiser: &mut denoiser,

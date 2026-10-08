@@ -639,12 +639,17 @@ export global EditorModel {
     in-out property <length> inspector_height: 260px;
     in-out property <bool> settings_collapsed: false;
     in-out property <bool> inspector_collapsed: false;
+    // The tier table section (`editor_tier_table.slint`): collapsed, only its
+    // "TIERS" header row shows and the inspector stretches to fill the dock (the
+    // stored `inspector_height` is kept for when the table is expanded again).
+    in-out property <bool> tier_table_collapsed: false;
     in-out property <bool> remap_collapsed: false;
     callback layout_changed();
     changed dock_width => { layout_changed(); }
     changed inspector_height => { layout_changed(); }
     changed settings_collapsed => { layout_changed(); }
     changed inspector_collapsed => { layout_changed(); }
+    changed tier_table_collapsed => { layout_changed(); }
     changed remap_collapsed => { layout_changed(); }
 
     // Whether SOME text input in the Edit tab currently has

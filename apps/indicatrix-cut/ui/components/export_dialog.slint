@@ -2,6 +2,7 @@ import { SpinBox, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { ExportModel } from "../models/export.slint";
 import { RenderJobsModel } from "../models/render_jobs.slint";
+import { ExportRunModel } from "../models/export_run.slint";
 import { SettingsModel } from "../models/settings.slint";
 import { GuideModel } from "../models/guide.slint";
 import { HelpTopics } from "../models/help.slint";
@@ -140,7 +141,7 @@ export component ExportDialog inherits Rectangle {
                     root.close();
                 }
             } else if event.text == Key.Return {
-                if (!ExportModel.is_exporting) {
+                if (!ExportRunModel.running) {
                     root.start_export(root.effective_width, root.effective_height, root.effective_samples, ExportModel.selected_color_space_index, root.compute_target, root.effective_max_bounces);
                 }
             }
@@ -513,6 +514,17 @@ export component ExportDialog inherits Rectangle {
                         clicked => { root.cancel_export(); }
                     }
 
+                    // Closes the popup and leaves the export running; the header's export
+                    // indicator shows its progress and opens this popup again.
+                    if ExportModel.is_exporting: ActionButton {
+                        width: 150px;
+                        height: 32px;
+                        text: "Run in Background";
+                        hint: "Close this window and keep exporting. The header shows the progress; click it to see this window again.";
+                        ink: Theme.text-secondary;
+                        clicked => { root.close(); }
+                    }
+
                     if !ExportModel.is_exporting: ActionButton {
                         width: 90px;
                         height: 32px;
@@ -539,7 +551,10 @@ export component ExportDialog inherits Rectangle {
                         horizontal-stretch: 1;
                         height: 32px;
                         text: "Start Export";
-                        hint: "Draw the picture at the chosen size and save it. Enter does the same.";
+                        hint: ExportRunModel.running
+                            ? ExportRunModel.busy_hint
+                            : "Draw the picture at the chosen size and save it. Enter does the same.";
+                        enabled: !ExportRunModel.running;
                         icon: @image-url("../icons/save.svg");
                         font_size: 12px;
                         weight: 700;

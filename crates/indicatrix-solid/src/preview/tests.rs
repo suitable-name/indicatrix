@@ -431,6 +431,52 @@ fn a_reproject_keeps_the_planned_style_and_follows_the_camera() {
     );
 }
 
+/// The desktop's reproject planes are the planned ones round-tripped through a non-idempotent
+/// `normalize()`, so they can differ by an ULP: that must not read as a new design and wipe the
+/// tier highlight; a real plane move still must.
+#[test]
+fn a_reproject_with_ulp_noisy_planes_keeps_the_selection() {
+    let mut pipeline = PreviewPipeline::new();
+    pipeline
+        .replan(
+            web_job(0, (64, 48), -1),
+            live_update::DEFAULT_PREVIEW_BUDGET,
+            &ZeroClock,
+        )
+        .expect("planned");
+    let planned = pipeline.memory().planes.clone().expect("planes remembered");
+    let noisy: Vec<(glam::Vec3, f32)> = planned
+        .iter()
+        .map(|&(normal, m)| {
+            let bump = |v: f32| f32::from_bits(v.to_bits().wrapping_add(1));
+            (
+                glam::Vec3::new(bump(normal.x), normal.y, bump(normal.z)),
+                bump(m),
+            )
+        })
+        .collect();
+    let mut reproject = |planes: &[(glam::Vec3, f32)]| {
+        pipeline
+            .render(RedrawRequest::Reproject {
+                geometry: StoneGeometryBuf::from_halfspaces(planes),
+                camera: camera::orbit_step(PIN_CAMERA, 40.0, 0.0),
+                size: (64, 48),
+                view_mode: 0,
+                gear: None,
+            })
+            .expect("reprojected");
+        pipeline.memory().style.selected.iter().any(|&s| s)
+    };
+    assert!(
+        reproject(&noisy),
+        "an ULP of plane noise keeps the highlight"
+    );
+    assert!(reproject(&planned), "and so does the exact round trip back");
+    let mut moved = planned;
+    moved[0].1 += 0.05;
+    assert!(!reproject(&moved), "a genuinely different stone resets it");
+}
+
 #[test]
 fn a_replan_frame_carries_geometry_at_the_request_size_and_pose() {
     let mut pipeline = PreviewPipeline::new();

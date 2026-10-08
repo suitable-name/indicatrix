@@ -554,7 +554,7 @@ pub(super) fn redraw_from_epoch(
     }
     let (buffer, remote_count) = epoch.remote_snapshot();
     let samples_done = remote_count.max(1);
-    let (yaw, pitch, distance, planes, tools, denoise_enabled) = {
+    let (yaw, pitch, distance, planes, tools, denoise_enabled, n_d) = {
         let ctx = render_ctx.lock().unwrap_or_else(PoisonError::into_inner);
         (
             ctx.yaw,
@@ -563,13 +563,14 @@ pub(super) fn redraw_from_epoch(
             ctx.active_planes.clone(),
             ctx.active_tools.clone(),
             ctx.denoise_enabled,
+            ctx.active_n_d(),
         )
     };
     let stone = StoneGeometry {
         planes: &planes,
         tools: &tools,
     };
-    let desired_key = GuideCache::key_for_geom(width, height, yaw, pitch, distance, stone);
+    let desired_key = GuideCache::key_for_geom(width, height, yaw, pitch, distance, stone, n_d);
 
     // First (brief) lock: adopt any freshly finished background denoise for this pose,
     // and read out a cached denoised frame if one is already valid -- both O(1) next to
@@ -636,7 +637,7 @@ pub(super) fn redraw_from_epoch(
                 } = &mut *orch;
                 if adopt_ready_guides(&desired_key, guide_cache, pending_guide_gen.as_ref()) {
                     let guides = guide_cache
-                        .ensure_geom(width, height, yaw, pitch, distance, stone)
+                        .ensure_geom(width, height, yaw, pitch, distance, stone, n_d)
                         .clone();
                     orch.pending_denoise_gen = Some(spawn_denoise_generation(
                         desired_key,
@@ -656,6 +657,7 @@ pub(super) fn redraw_from_epoch(
                             // place that copy actually has to happen.
                             planes: planes.as_ref().clone(),
                             tools: tools.as_ref().clone(),
+                            n_d,
                         },
                     ));
                 }

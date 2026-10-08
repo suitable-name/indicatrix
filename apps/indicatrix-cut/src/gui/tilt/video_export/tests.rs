@@ -9,6 +9,19 @@ fn axis_label_for_index_reads_the_profile_azimuth_table() {
 }
 
 #[test]
+fn the_compute_pill_maps_to_the_engines_and_is_local_without_a_remote() {
+    assert_eq!(compute_target_of(0, true), ComputeTarget::LocalOnly);
+    assert_eq!(compute_target_of(1, true), ComputeTarget::RemoteOnly);
+    assert_eq!(compute_target_of(2, true), ComputeTarget::Both);
+    // An out-of-range index falls back to today's behaviour.
+    assert_eq!(compute_target_of(7, true), ComputeTarget::Both);
+    // No remote configured: the pill is hidden, so even a stale "Remote only" renders locally.
+    for index in 0..3 {
+        assert_eq!(compute_target_of(index, false), ComputeTarget::LocalOnly);
+    }
+}
+
+#[test]
 fn colorspace_label_covers_every_variant() {
     assert_eq!(colorspace_label(ColorSpace::Srgb), "sRGB");
     assert_eq!(colorspace_label(ColorSpace::DisplayP3), "Display P3");

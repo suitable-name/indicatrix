@@ -44,7 +44,6 @@ pub enum GuideGroup {
 
 impl GuideGroup {
     /// Every group, in the order of `GuideAllow`.
-    #[cfg(test)]
     pub const ALL: [Self; 11] = [
         Self::NewDesign,
         Self::TierForm,
@@ -125,6 +124,17 @@ impl CommandState {
         } else {
             self.facts.remove(&fact);
         }
+    }
+
+    /// The same state with every guide lock lifted: what a command sees when the guide runs it
+    /// for the learner (Next on an unfinished step), which is the app acting, not the learner
+    /// clicking a control the step has locked.
+    #[must_use]
+    pub fn without_guide_locks(mut self) -> Self {
+        for group in GuideGroup::ALL {
+            self.set(Fact::Allows(group), true);
+        }
+        self
     }
 
     /// Reads the current state of `ui`. Cheap: a few dozen property reads, no borrow of the

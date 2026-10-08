@@ -421,15 +421,15 @@ fn unnamed_flat_cutting_rows_are_labelled_by_cutting_position() {
     let rows = cutting_instructions_rows(&design, &solved);
     let flat: Vec<_> = rows.iter().filter(|r| r.second_line.is_none()).collect();
     assert_eq!(flat.len(), design.tiers.len());
-    for row in flat {
-        assert_eq!(row.facet, format!("#{}", row.order_idx + 1));
+    // An unnamed tier still shows its code, numbered in cutting order (the name is not needed).
+    let codes = design.tier_codes();
+    for (row, tier_ref) in rows.iter().zip(design.cutting_order()) {
+        let expected = match tier_ref {
+            indicatrix_cut_core::design::TierRef::Flat(i) => &codes.flat[i].code,
+            indicatrix_cut_core::design::TierRef::Concave(i) => &codes.concave[i].code,
+        };
+        assert_eq!(&row.facet, expected);
     }
-    // The first crown tier is stored fourth but cut fifth, after the groove.
-    let first_crown = rows
-        .iter()
-        .find(|r| r.side == 1 && r.second_line.is_none())
-        .expect("a flat crown row");
-    assert_eq!(first_crown.facet, "#5");
 }
 
 /// A planar design's schedule is in cutting order too, no longer in stored order: the fixture
@@ -447,19 +447,9 @@ fn cutting_rows_of_a_planar_design_follow_the_cutting_order() {
     let solved = design.solve().expect("every tier is pinned");
     let rows = cutting_instructions_rows(&design, &solved);
     let facets: Vec<&str> = rows.iter().map(|row| row.facet.as_str()).collect();
-    assert_eq!(
-        facets,
-        [
-            "Girdle",
-            "Pavilion Main",
-            "Lower Girdle",
-            "Culet",
-            "Star",
-            "Crown Main",
-            "Upper Girdle",
-            "Table"
-        ]
-    );
+    assert_eq!(facets, ["G1", "P1", "P2", "Culet", "C1", "C2", "C3", "T"]);
+    // The index list is the printed sheet's dashed, zero-padded form, not a comma list.
+    assert!(rows.iter().all(|row| !row.index_val.contains(", ")));
     let sides: Vec<i32> = rows.iter().map(|row| row.side).collect();
     assert_eq!(sides, [0, -1, -1, -1, 1, 1, 1, 1]);
     let positions: Vec<i32> = rows.iter().map(|row| row.order_idx).collect();

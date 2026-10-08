@@ -43,8 +43,9 @@
 # optimised build must select IDENTICAL packages, target, target-dir and features --
 # ONLY `RUSTFLAGS` (here, `CARGO_ENCODED_RUSTFLAGS`) may differ between them. Both now
 # build `indicatrix` (which owns the `pgo_train` example) together with whichever of
-# `indicatrix-cut`/`indicatrix-worker` `--target` selects, with `--bins --example
-# pgo_train` and the SAME `--features` string, in one `cargo build` each. Previously the
+# `indicatrix-cut` (plus `indicatrix-cut-core`, trained by `--example pgo_train_cutcore`)
+# or `indicatrix-worker` `--target` selects, with `--bins --example pgo_train` and the
+# SAME `--features` string, in one `cargo build` each. Previously the
 # instrumented step selected only `-p indicatrix --example pgo_train` while the optimised
 # step selected only `-p indicatrix-worker`/`-p indicatrix-cut` -- a different package
 # set changes every downstream crate's feature-unification result (e.g. `glam` gaining
@@ -75,7 +76,7 @@
 # tier list when unsupported (avx2 + scalar is the documented default pair), and an
 # explicit `--isa avx512` on such a host refuses immediately instead of crashing mid-run.
 #
-# Three instrumented training binaries feed each combination's merged profile:
+# Up to three instrumented training binaries feed each combination's merged profile:
 #   1. `indicatrix`'s `pgo_train` example -- the CPU spectral tracer (every material
 #      optical character, dispersive/non-dispersive, plain/frosted-girdle, both the
 #      float HDR buffer and the 8-bit tonemapped output), every lighting model plus a
@@ -86,32 +87,22 @@
 #      (only in the `gpu` tier, when this host has an adapter) the CPU-side GPU chunk
 #      dispatch/readback orchestration. See that example's own doc comment for the
 #      full stage-by-stage coverage table.
-#   2. `indicatrix-cut-core`'s OWN `pgo_train` example -- the editor-core layer built
-#      on top of `indicatrix`: `Design::solve`, `.asc` export, the native
-#      `.indicatrix.toml` save/load round trip, `resolve_after_edit`, and
+#   2. `indicatrix-cut-core`'s OWN `pgo_train_cutcore` example (cut target only) -- the
+#      editor-core layer built on top of `indicatrix`: `Design::solve`, `.asc` export,
+#      the native `.indicatrix.toml` save/load round trip, `resolve_after_edit`, and
 #      `optimize_design`'s search loop, run against every built-in template plus the
-#      crate's own CrackOtto-Step fixture. Built and run in its OWN, separate `cargo
-#      build`/run pair (same target/target-dir/rustflags/effective `indicatrix`
-#      features as the main build below, so its crate-hash-relevant flags match) --
-#      DELIBERATELY NOT added to `pgo_packages`'s own `-p` list for the SAME `cargo
-#      build ... --example pgo_train` invocation `indicatrix` uses: both crates
-#      ship an example named `pgo_train`, and Cargo's example-binary "pretty path"
-#      uplift (`target/<profile>/examples/<name>`) is keyed by name alone, not by
-#      package. Selecting both packages' `pgo_train` example in ONE invocation makes
-#      Cargo emit "output filename collision" and non-deterministically pick ONE of
-#      the two binaries for that shared path -- confirmed empirically on this
-#      toolchain (`cargo build --message-format=json` reports the IDENTICAL
-#      `"executable"` path for both targets, so unlike `cargo test --no-run`'s
-#      hash-suffixed binaries in step 3 below, the JSON message can't disambiguate
-#      them either). `train_indicatrix_cut_core` (below) runs this in its own
-#      isolated invocation instead, immediately after step 1's training run so the
-#      shared `examples/` path briefly holding its binary can never be mistaken for
-#      `indicatrix`'s own (already run and already `.profraw`'d by that point). Its
-#      LIBRARY code (not just this example) is still instrumented/optimized
-#      correctly regardless -- `CARGO_ENCODED_RUSTFLAGS` applies to the whole build
-#      graph, and `indicatrix-cut-core` is already a transitive dependency of
-#      `indicatrix-cut`/`indicatrix-worker` in the main invocation below -- this
-#      separate step exists only to actually EXECUTE its code, not to compile it.
+#      crate's own CrackOtto-Step fixture. It is built in the SAME `cargo build`
+#      invocation as everything else for the `cut` target (`pgo_packages` includes
+#      `indicatrix-cut-core`, and `--example pgo_train --example pgo_train_cutcore` are
+#      both passed), so the instrumented and optimised builds resolve the identical
+#      dependency graph and `indicatrix-cut-core`'s `-C metadata` (hence every mangled
+#      symbol) matches. The example carries a distinct name because two examples named
+#      `pgo_train` collide on Cargo's name-keyed "pretty path" uplift
+#      (`target/<profile>/examples/<name>`) in one invocation. An earlier separate
+#      invocation gave cut-core a different dependency graph and its profile never
+#      applied (proven 2026-10-06). The worker target does not link cut-core and skips
+#      this step. The workload runs from `examples/pgo_train_cutcore` right after the
+#      main one, with its own `cutcore-*.profraw` naming.
 #   3. `indicatrix-net`'s `scene_roundtrip` integration test, run under the same
 #      instrumentation -- covers `SceneState`'s postcard wire-protocol encode/decode,
 #      the one hot path that cannot be reached from `pgo_train` (a `indicatrix` example
@@ -131,11 +122,9 @@
 # `guide_pass`, the `indicatrix-vault` database, the desktop editor's event loops and GUI
 # code, or the `GpuBackend` type; those paths are optimised as cold code. The `gpu` tier's
 # `train_gpu` stage trains `render_hybrid`, which no app calls today. Two more limits:
-# `indicatrix-cut-core` is trained by a build whose package/feature set is narrower than
-# the optimised build's (the two `pgo_train` examples cannot share one cargo invocation),
-# and the `indicatrix-net` test build selects only that package with `--features render`.
-# The post-build crate-hash check therefore compares BOTH `indicatrix` and
-# `indicatrix-cut-core` tokens (`test_profile_hash_applied`); it proves the profile
+# the `indicatrix-net` test build selects only that package with `--features render`.
+# The post-build crate-hash check compares `indicatrix` tokens, and for the `cut` target
+# also `indicatrix-cut-core` tokens (`test_profile_hash_applied`); it proves the profile
 # applied to those crates, not how much of them the training covers.
 #
 # Environment knobs `pgo_train` honours:
@@ -192,7 +181,14 @@ WITH_NATIVE=0
 # could not verify the profile (a parsing miss); once the crate-hash check has proven
 # the profile applied, the count is reported and never fatal -- see
 # test_profile_warnings.
-MAX_MISSING_FUNCTION_WARNINGS=100000
+#
+# Since 2026-10-06 the fallback gate is the trained LIBRARY crates' count
+# (MAX_LIBRARY_MISSING_FUNCTION_WARNINGS; everything except indicatrix_cut/
+# indicatrix_worker's own code): indicatrix-cut's own count grows with every GUI feature
+# (~161,000 that day with the profile applied) and proves nothing. The overall count is
+# kept only as a generous ceiling against a runaway.
+MAX_MISSING_FUNCTION_WARNINGS=400000
+MAX_LIBRARY_MISSING_FUNCTION_WARNINGS=15000
 # Set to 1 by test_profile_hash_applied when it CONFIRMED the merged profile's crate
 # hash matches the optimised rlib; reset to 0 before every combination's checks.
 PROFILE_HASH_VERIFIED=0
@@ -213,6 +209,7 @@ while [ $# -gt 0 ]; do
         --collect-only) COLLECT_ONLY=1; shift ;;
         --native)       WITH_NATIVE=1; shift ;;
         --max-missing-function-warnings) MAX_MISSING_FUNCTION_WARNINGS="${2:?--max-missing-function-warnings needs a value}"; shift 2 ;;
+        --max-library-missing-function-warnings) MAX_LIBRARY_MISSING_FUNCTION_WARNINGS="${2:?--max-library-missing-function-warnings needs a value}"; shift 2 ;;
         -h|--help)      sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//' | sed '$d'; exit 0 ;;
         *)              die "unknown argument: $1 (try --help)" ;;
     esac
@@ -424,22 +421,44 @@ PGO_PROFILE_DIR="$ROOT/pgo-profile"
 US=$'\x1f'
 
 SYSROOT="$(rustc --print sysroot)"
-PROFDATA="$SYSROOT/lib/rustlib/$HOST_TARGET/bin/llvm-profdata$HOST_EXE"
-if [ ! -x "$PROFDATA" ]; then
-    if command -v llvm-profdata >/dev/null 2>&1; then
-        PROFDATA="$(command -v llvm-profdata)"
-    else
-        die "llvm-profdata not found in host rustlib ($PROFDATA) or system PATH"
+
+# llvm-profdata and llvm-nm must be the SAME LLVM major.minor as rustc. The llvm-tools
+# in a sysroot are installed separately from rustc and are not updated with it: on
+# 2026-10-06, rustc was on LLVM 22.1.8 but the sysroot's llvm-nm was still LLVM 21.1.5.
+# Such a stale llvm-nm cannot read the bitcode inside an LTO build's rlibs ("Unknown
+# attribute kind"). The crate-hash check then fails to verify every combination, and
+# an older llvm-profdata writes the merged profile.
+#
+# Candidates, first matching version wins:
+#   1. $PGO_LLVM_BIN (an explicit directory);
+#   2. the sysroot's rustlib;
+#   3. /usr/lib/llvm/<major>/bin (Gentoo's slotted LLVM);
+#   4. PATH.
+llvm_major_minor() { grep -oE 'LLVM version:? [0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' | head -n1; }
+RUSTC_LLVM="$(rustc -vV | llvm_major_minor || true)"
+find_llvm_tool() {
+    local name="$1" candidate version first_found=""
+    local -a candidates=()
+    [ -n "${PGO_LLVM_BIN:-}" ] && candidates+=("$PGO_LLVM_BIN/$name$HOST_EXE")
+    candidates+=("$SYSROOT/lib/rustlib/$HOST_TARGET/bin/$name$HOST_EXE")
+    [ -n "$RUSTC_LLVM" ] && candidates+=("/usr/lib/llvm/${RUSTC_LLVM%%.*}/bin/$name")
+    command -v "$name" >/dev/null 2>&1 && candidates+=("$(command -v "$name")")
+    for candidate in "${candidates[@]}"; do
+        [ -x "$candidate" ] || continue
+        [ -z "$first_found" ] && first_found="$candidate"
+        version="$("$candidate" --version 2>&1 | llvm_major_minor || true)"
+        if [ -z "$RUSTC_LLVM" ] || [ "$version" = "$RUSTC_LLVM" ]; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+    if [ -n "$first_found" ]; then
+        die "no $name matching rustc's LLVM $RUSTC_LLVM found (first candidate $first_found is LLVM $("$first_found" --version 2>&1 | llvm_major_minor || true)). Rebuild/reinstall the toolchain's llvm-tools, install LLVM $RUSTC_LLVM, or point PGO_LLVM_BIN at a directory holding a matching $name."
     fi
-fi
-LLVM_NM="$SYSROOT/lib/rustlib/$HOST_TARGET/bin/llvm-nm$HOST_EXE"
-if [ ! -x "$LLVM_NM" ]; then
-    if command -v llvm-nm >/dev/null 2>&1; then
-        LLVM_NM="$(command -v llvm-nm)"
-    else
-        die "llvm-nm not found in host rustlib ($LLVM_NM) or system PATH"
-    fi
-fi
+    die "$name not found (PGO_LLVM_BIN, host rustlib, /usr/lib/llvm/<major>/bin or PATH)"
+}
+PROFDATA="$(find_llvm_tool llvm-profdata)"
+LLVM_NM="$(find_llvm_tool llvm-nm)"
 
 # BOLT validation
 BOLT_ENABLED=0
@@ -468,12 +487,13 @@ target_bin() {
 }
 
 # The full package set for a -Target key: `indicatrix` (owns pgo_train) plus whichever
-# app it selects. Used IDENTICALLY by the instrumented and optimised builds -- see this
+# app it selects (cut also lists indicatrix-cut-core, which owns pgo_train_cutcore).
+# Used IDENTICALLY by the instrumented and optimised builds -- see this
 # file's header comment on package/feature parity.
 pgo_packages() {
     case "$1" in
         worker) printf 'indicatrix indicatrix-worker' ;;
-        cut)    printf 'indicatrix indicatrix-cut' ;;
+        cut)    printf 'indicatrix indicatrix-cut indicatrix-cut-core' ;;
         *)      die "unknown target: $1" ;;
     esac
 }
@@ -494,25 +514,6 @@ pgo_features() {
         [ "$target" = cut ] && feats+=(indicatrix-cut/gpu)
         [ "$target" = worker ] && feats+=(indicatrix-worker/gpu)
     fi
-    local IFS=,
-    printf '%s' "${feats[*]}"
-}
-
-# The `--features` string for `indicatrix-cut-core`'s OWN, separate `pgo_train`
-# build (see the header comment's "Three instrumented training binaries", step 2, for
-# why this is never merged into `pgo_packages`/`pgo_features` above). Deliberately
-# narrower than `pgo_features`: `indicatrix-cut-core` has no Cargo features of its
-# own, and a feature namespaced to a package NOT selected in this invocation (e.g.
-# `indicatrix-cut/gpu`, which `pgo_features` includes) is a hard `cargo` error under
-# this workspace's resolver, so only the `indicatrix`-namespaced features that matter
-# to `indicatrix-cut-core`'s own dependency on it are named here -- kept identical to
-# `pgo_features`'s own `indicatrix/*` subset so `indicatrix` itself builds with the
-# SAME feature set (and is therefore reused from cache, not rebuilt) in both
-# invocations.
-cutcore_features() {
-    local gpu="$1"
-    local -a feats=(indicatrix/serde indicatrix/hdr)
-    [ "$gpu" = gpu ] && feats+=(indicatrix/gpu)
     local IFS=,
     printf '%s' "${feats[*]}"
 }
@@ -540,27 +541,41 @@ test_profile_warnings() {
         printf '  [%s] %s function(s) without profile data (untrained code; the crate-hash check confirmed the profile applied)\n' "$label" "${no_profile_count:-0}"
         return 0
     fi
-    if [ "${no_profile_count:-0}" -gt "$MAX_MISSING_FUNCTION_WARNINGS" ]; then
-        die "[$label] $no_profile_count 'no profile data available' warning(s) in $logfile, over the configured threshold ($MAX_MISSING_FUNCTION_WARNINGS, --max-missing-function-warnings), and the crate-hash check could not verify the profile. Expected in bulk for indicatrix-cut/indicatrix-worker's own GUI/server/CLI code that pgo_train never runs (indicatrix-cut measured ~66,000 with a fully applied profile) -- but without the crate-hash confirmation a count this high may mean the profile silently stopped applying again. Check the crate-hash warning printed just above."
+    # The fallback gate counts only the TRAINED library crates' warnings. The app's own
+    # crate (GUI/server/CLI, never trained) grows with every feature: indicatrix-cut alone
+    # was ~66,000 on 2026-09-28 and ~161,000 on 2026-10-06 with a fully applied profile,
+    # which says nothing about whether the profile applied. A profile that silently stopped
+    # applying shows up as the libraries' counts jumping instead: measured 2026-10-06 with
+    # the profile applied, indicatrix under 103 and every library together about 5,500.
+    local library_count
+    library_count="$(grep 'no profile data available' "$logfile" \
+        | grep -vcE '^warning: (indicatrix_cut|indicatrix_worker)\.' || true)"
+    if [ "${library_count:-0}" -gt "$MAX_LIBRARY_MISSING_FUNCTION_WARNINGS" ]; then
+        die "[$label] $library_count 'no profile data available' warning(s) from the trained library crates in $logfile, over the threshold ($MAX_LIBRARY_MISSING_FUNCTION_WARNINGS, --max-library-missing-function-warnings), and the crate-hash check could not verify the profile: it most likely did not apply. Per-crate counts: $(grep 'no profile data available' "$logfile" | grep -oE '^warning: [a-z_]+' | sort | uniq -c | sort -rn | head -n 8 | tr -s ' \n' ' ')"
     fi
-    printf '  [%s] %s function(s) without profile data (crate-hash check could not verify; under the %s threshold)\n' "$label" "${no_profile_count:-0}" "$MAX_MISSING_FUNCTION_WARNINGS"
+    if [ "${no_profile_count:-0}" -gt "$MAX_MISSING_FUNCTION_WARNINGS" ]; then
+        die "[$label] $no_profile_count 'no profile data available' warning(s) in $logfile, over the overall ceiling ($MAX_MISSING_FUNCTION_WARNINGS, --max-missing-function-warnings), and the crate-hash check could not verify the profile. The trained libraries are under their own threshold, so this is the app's untrained code growing: raise the ceiling if that is expected."
+    fi
+    printf '  [%s] %s function(s) without profile data, %s of them in the trained libraries (crate-hash check could not verify; libraries under the %s threshold)\n' "$label" "${no_profile_count:-0}" "${library_count:-0}" "$MAX_LIBRARY_MISSING_FUNCTION_WARNINGS"
 }
 
 # Verifies the merged profile's crate-hash tokens match the tokens actually baked into
-# the optimised build's rlibs for `indicatrix` AND `indicatrix-cut-core`, i.e. the
-# profile actually applies to both. `indicatrix-cut-core` is trained by its own
-# `pgo_train` build with a narrower package/feature set (see `cutcore_features`), so a
-# feature-unification difference there would apply nothing to it while the
-# missing-function tolerance hid the loss. Best-effort: a parsing miss prints a warning
+# the optimised build's rlibs for `indicatrix` and, for the `cut` target, also
+# `indicatrix-cut-core`, i.e. the profile actually applies to both. (The worker does not
+# link cut-core: not applicable there.) A feature-unification difference between the
+# training and optimised builds would apply nothing while the missing-function
+# tolerance hid the loss. Best-effort: a parsing miss prints a warning
 # and leaves PROFILE_HASH_VERIFIED unset rather than failing the whole build over a
 # diagnostic script's own pattern; a CONFIRMED mismatch in either crate is a hard failure.
 test_profile_hash_applied() {
-    local profdata="$1" bdir="$2" rust_target="$3" label="$4"
+    local profdata="$1" bdir="$2" rust_target="$3" label="$4" target="$5"
     local core_rc=0 cutcore_rc=0
     test_crate_hash_token "$profdata" "$bdir" "$rust_target" "$label" \
         trace_spectral_ray_with_finish_soa 'Cs[0-9a-zA-Z]+_10indicatrix' indicatrix indicatrix || core_rc=$?
-    test_crate_hash_token "$profdata" "$bdir" "$rust_target" "$label" \
-        resolve_after_edit 'Cs[0-9a-zA-Z]+_19indicatrix_cut_core' indicatrix-cut-core indicatrix_cut_core || cutcore_rc=$?
+    if [ "$target" = cut ]; then
+        test_crate_hash_token "$profdata" "$bdir" "$rust_target" "$label" \
+            resolve_after_edit 'Cs[0-9a-zA-Z]+_19indicatrix_cut_core' indicatrix-cut-core indicatrix_cut_core || cutcore_rc=$?
+    fi
     if [ "$core_rc" -eq 0 ] && [ "$cutcore_rc" -eq 0 ]; then
         PROFILE_HASH_VERIFIED=1
     fi
@@ -575,14 +590,22 @@ test_crate_hash_token() {
     local profdata="$1" bdir="$2" rust_target="$3" label="$4"
     local func="$5" pattern="$6" pkg_dir="$7" rlib_stem="$8"
 
-    local prof_line
-    prof_line="$("$PROFDATA" show --all-functions "$profdata" 2>&1 | grep -m1 "$func" || true)"
-    if [ -z "$prof_line" ]; then
+    # The merged profile can hold several copies of the same function under different
+    # crate-hash tokens: a profile merged from several runs may hold copies of one
+    # function under different metadata. The profile applies when ANY
+    # copy carries the optimised rlib's token, so collect every token, not just the first
+    # match. Taking only the first match reported a false "did NOT apply" on 2026-10-06,
+    # while the per-crate warning counts showed `indicatrix` fully profiled.
+    local prof_lines
+    prof_lines="$("$PROFDATA" show --all-functions "$profdata" 2>&1 | grep "$func" || true)"
+    if [ -z "$prof_lines" ]; then
         printf 'warning: [%s] "%s" not found in %s -- cannot verify the %s crate-hash match.\n' "$label" "$func" "$profdata" "$pkg_dir" >&2
         return 2
     fi
+    local prof_tokens
+    prof_tokens="$(printf '%s\n' "$prof_lines" | grep -oE "$pattern" | sort -u || true)"
     local prof_token
-    prof_token="$(printf '%s' "$prof_line" | grep -oE "$pattern" | head -n1 || true)"
+    prof_token="$(printf '%s\n' "$prof_tokens" | head -n1)"
 
     # The compiled library is `lib<stem>-<hash>.rlib` in one of two layouts: the new
     # cargo build-dir layout (`build/<package>/<hash>/out/`, current nightly) or the
@@ -616,10 +639,10 @@ test_crate_hash_token() {
         printf 'warning: [%s] could not extract a "%s" crate-hash token from one or both symbols -- cannot verify the %s crate-hash match.\n' "$label" "$pattern" "$pkg_dir" >&2
         return 2
     fi
-    if [ "$prof_token" != "$nm_token" ]; then
-        die "[$label] profile did NOT apply to $pkg_dir: the merged profile's crate-hash token ($prof_token) differs from the optimised build's rlib ($nm_token) for '$func'. The instrumented and optimised builds must use identical --target, --target-dir, package set and --features; a crate-hash token mismatch means the profile did not apply."
+    if ! printf '%s\n' "$prof_tokens" | grep -qxF "$nm_token"; then
+        die "[$label] profile did NOT apply to $pkg_dir: none of the merged profile's crate-hash tokens for '$func' ($(printf '%s' "$prof_tokens" | tr '\n' ' ')) matches the optimised build's rlib ($nm_token). The instrumented and optimised builds must use identical --target, --target-dir, package set and --features; a crate-hash token mismatch means the profile did not apply."
     fi
-    printf '  [%s] crate-hash check OK (%s): %s -> %s\n' "$label" "$pkg_dir" "$func" "$prof_token"
+    printf '  [%s] crate-hash check OK (%s): %s -> %s (profile holds %s token(s))\n' "$label" "$pkg_dir" "$func" "$nm_token" "$(printf '%s\n' "$prof_tokens" | grep -c .)"
     return 0
 }
 
@@ -696,10 +719,19 @@ build_combination() {
     pkg_list="$(pgo_packages "$target")"
     local -a pkg_args=()
     for p in $pkg_list; do pkg_args+=(-p "$p"); done
+    # `cut` also builds cut-core's trainer (distinct example name, same invocation).
+    local -a example_args=(--example pgo_train)
+    [ "$target" = cut ] && example_args+=(--example pgo_train_cutcore)
 
+    # BOLT needs the relocations (--emit-relocs) and the symbols, so a binary BOLT will
+    # rewrite is linked unstripped (GNU ld also refuses --strip-all with --emit-relocs:
+    # "final link failed: invalid operation") and stripped after the BOLT pass. Only the
+    # worker is BOLTed, so only its build gets these flags; cut is a normal PGO build.
     local bolt_link_flags=""
-    if [ "$BOLT_ENABLED" -eq 1 ] && [ "$current_os" = linux ]; then
+    local release_strip="symbols"
+    if [ "$BOLT_ENABLED" -eq 1 ] && [ "$current_os" = linux ] && [ "$target" = worker ]; then
         bolt_link_flags="${US}-C${US}force-frame-pointers=yes${US}-C${US}link-arg=-Wl,--emit-relocs"
+        release_strip="none"
     fi
 
     local active_profile=""
@@ -743,11 +775,12 @@ build_combination() {
         mkdir -p "$rawdir"
 
         step "[$target][$current_os-$name][train] Instrumented build (packages: $pkg_list; features: $features)"
+        CARGO_PROFILE_RELEASE_STRIP="$release_strip" \
         CARGO_ENCODED_RUSTFLAGS="-C${US}target-cpu=$target_cpu${US}-C${US}profile-generate=$rawdir" \
         cargo build --release --target "$rust_target" --target-dir "$bdir" \
-        "${pkg_args[@]}" --bins --example pgo_train --features "$features" 2>&1 | tee -a "$logfile"
+        "${pkg_args[@]}" --bins "${example_args[@]}" --features "$features" 2>&1 | tee -a "$logfile"
 
-        # All three training runs execute from inside $rawdir with a RELATIVE
+        # All training runs execute from inside $rawdir with a RELATIVE
         # LLVM_PROFILE_FILE pattern: a Windows profile runtime interprets that path with
         # Windows semantics, so an absolute Unix path under Wine is unreliable, while a
         # bare file name resolves against the (Wine-mapped) working directory either
@@ -764,29 +797,21 @@ build_combination() {
             "$bdir/$rust_target/release/examples/pgo_train$target_exe"
         ) 2>&1 | tee -a "$logfile"
 
-        # `indicatrix-cut-core`'s OWN training binary -- a separate, isolated `cargo
-        # build` invocation (see the header comment's "Three instrumented training
-        # binaries", step 2, for why this can never share `indicatrix`'s own `-p
-        # ... --example pgo_train` invocation). Same target/target-dir/rustflags as
-        # the build above; only the package selection and feature string differ.
-        # Runs immediately after `indicatrix`'s own training run above, so the
-        # shared `examples/` "pretty path" this build is about to overwrite has
-        # already served its purpose for `indicatrix`'s binary by the time it does.
-        step "[$target][$current_os-$name][train] Instrumented build (indicatrix-cut-core, separate invocation; features: $(cutcore_features "$gpu"))"
-        CARGO_ENCODED_RUSTFLAGS="-C${US}target-cpu=$target_cpu${US}-C${US}profile-generate=$rawdir" \
-        cargo build --release --target "$rust_target" --target-dir "$bdir" \
-        -p indicatrix-cut-core --example pgo_train --features "$(cutcore_features "$gpu")" 2>&1 | tee -a "$logfile"
-
-        step "[$target][$current_os-$name][train] Running indicatrix-cut-core training workload"
-        (
-            cd "$rawdir"
-            env LLVM_PROFILE_FILE="cutcore-%p-%m.profraw" \
-            ${train_env[@]+"${train_env[@]}"} \
-            ${runner[@]+"${runner[@]}"} \
-            "$bdir/$rust_target/release/examples/pgo_train$target_exe"
-        ) 2>&1 | tee -a "$logfile"
+        # `indicatrix-cut-core`'s OWN training binary (cut target only), built by the
+        # invocation above (see the header comment, step 2).
+        if [ "$target" = cut ]; then
+            step "[$target][$current_os-$name][train] Running indicatrix-cut-core training workload"
+            (
+                cd "$rawdir"
+                env LLVM_PROFILE_FILE="cutcore-%p-%m.profraw" \
+                ${train_env[@]+"${train_env[@]}"} \
+                ${runner[@]+"${runner[@]}"} \
+                "$bdir/$rust_target/release/examples/pgo_train_cutcore$target_exe"
+            ) 2>&1 | tee -a "$logfile"
+        fi
 
         step "[$target][$current_os-$name][train] Building instrumented indicatrix-net wire-protocol test (scene_roundtrip)"
+        CARGO_PROFILE_RELEASE_STRIP="$release_strip" \
         CARGO_ENCODED_RUSTFLAGS="-C${US}target-cpu=$target_cpu${US}-C${US}profile-generate=$rawdir" \
         cargo test --release --target "$rust_target" --target-dir "$bdir" \
         -p indicatrix-net --features render --test scene_roundtrip --no-run \
@@ -846,18 +871,19 @@ build_combination() {
         step "[$target][$current_os-$name][build] Plain cross release build, NO PGO (packages: $pkg_list; features: $features)"
         CARGO_ENCODED_RUSTFLAGS="-C${US}target-cpu=$target_cpu" \
         cargo build --release --target "$rust_target" --target-dir "$bdir" \
-        "${pkg_args[@]}" --bins --example pgo_train --features "$features" 2>&1 | tee -a "$logfile"
+        "${pkg_args[@]}" --bins "${example_args[@]}" --features "$features" 2>&1 | tee -a "$logfile"
     else
         step "[$target][$current_os-$name][build] PGO release build (packages: $pkg_list; features: $features)"
+        CARGO_PROFILE_RELEASE_STRIP="$release_strip" \
         CARGO_ENCODED_RUSTFLAGS="-C${US}target-cpu=$target_cpu${US}-C${US}profile-use=$active_profile${US}-C${US}llvm-args=-pgo-warn-missing-function$bolt_link_flags" \
         cargo build --release --target "$rust_target" --target-dir "$bdir" \
-        "${pkg_args[@]}" --bins --example pgo_train --features "$features" 2>&1 | tee -a "$logfile"
+        "${pkg_args[@]}" --bins "${example_args[@]}" --features "$features" 2>&1 | tee -a "$logfile"
 
         # Crate-hash check FIRST: it is the real proof the profile applied, and
         # test_profile_warnings only treats the missing-function count as fatal when
         # this could not verify it.
         PROFILE_HASH_VERIFIED=0
-        test_profile_hash_applied "$active_profile" "$bdir" "$rust_target" "$target-$current_os-$name"
+        test_profile_hash_applied "$active_profile" "$bdir" "$rust_target" "$target-$current_os-$name" "$target"
         test_profile_warnings "$logfile" "$target-$current_os-$name"
     fi
 
@@ -928,6 +954,8 @@ bolt_binary() {
     llvm-bolt "$src" -data="$work/merged.fdata" -o "$work/$bin.bolt" \
     -reorder-blocks=ext-tsp -reorder-functions=hfsort+ \
     -split-functions -split-all-cold -icf=1 -dyno-stats
+    # The build kept the symbols for BOLT; strip them now, as a plain release would.
+    strip --strip-all "$work/$bin.bolt"
 
     cp -f "$work/$bin.bolt" "$OUT_DIR/$bin-$current_os-$name"
     printf '    %s (BOLT)\n' "$OUT_DIR/$bin-$current_os-$name"

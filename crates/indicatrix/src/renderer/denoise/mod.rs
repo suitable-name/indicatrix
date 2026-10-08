@@ -32,6 +32,7 @@
 //!     depth: &first_hit_depth,
 //!     normal: &first_hit_normal,
 //!     facet_id: &first_hit_facet_id, // -1 for background/miss pixels
+//!     path_sig: None,                // or Some(&guides.path_sig), see below
 //!     width, height, spp: current_sample_count,
 //! };
 //! denoiser.denoise_into(&inputs, &AtrousParams::default(), &mut filtered_buf);
@@ -44,11 +45,16 @@
 //! # Guide signals and edge-stopping
 //!
 //! Four terms gate every neighbour's contribution, multiplied with the spatial kernel
-//! weight:
+//! weight (plus one optional hard test, the path signature, applied first):
 //!
 //! - **Facet identity** (dominant, constant across sample counts): hard Kronecker-delta
 //!   weight (`1.0` on match, `0.0` otherwise) -- facet index is discrete geometry, not a
 //!   noisy estimator, and a blurred facet edge destroys the crisp cut look.
+//! - **Path signature** (optional, [`GBuffers::path_sig`]): a second hard match on the
+//!   hash of the facets the centre ray meets inside the stone. Inside one crown facet the
+//!   reflection pattern is the map of those interior regions; colour alone cannot tell it
+//!   from speckle, geometry can. A pure early return, so with `None` the filter is
+//!   bit-identical to the three-term-plus-colour form below.
 //! - **Normal**: `max(0, dot(n_p, n_q))^normal_power` (SVGF-style cosine-power weight),
 //!   a safety net for normal discontinuities facet id alone might miss; also constant.
 //! - **Depth**: `exp(-|z_p - z_q| / sigma_depth)`. A secondary tie-breaker (facets are
@@ -128,6 +134,13 @@ pub struct GBuffers<'a> {
     /// copies through unfiltered; a caller should use a single consistent sentinel such
     /// as `-1` for every miss.
     pub facet_id: &'a [i32],
+    /// Optional interior path signature per pixel (`GuideBuffers::path_sig`): a hash of
+    /// the facets the pixel's centre ray meets inside the stone. A tap whose signature
+    /// differs from the centre's is rejected outright, like a different facet id, so the
+    /// blur stops at the boundaries of the reflection regions inside one facet. `None`
+    /// leaves the filter exactly as it is without the term. A slice that is not
+    /// `width * height` long degrades to the identity copy, like the other guides.
+    pub path_sig: Option<&'a [u32]>,
     /// Image width in pixels.
     pub width: usize,
     /// Image height in pixels.
@@ -289,7 +302,8 @@ impl AtrousDenoiser {
         let buffers_ok = inputs.color.len() == len
             && inputs.depth.len() == len
             && inputs.normal.len() == len
-            && inputs.facet_id.len() == len;
+            && inputs.facet_id.len() == len
+            && inputs.path_sig.is_none_or(|sig| sig.len() == len);
         if !buffers_ok {
             let n = inputs.color.len().min(len);
             output[..n].copy_from_slice(&inputs.color[..n]);
@@ -405,6 +419,7 @@ mod tests {
                 depth: depth_s,
                 normal: normal_s,
                 facet_id: facet_s,
+                path_sig: None,
                 width,
                 height,
                 spp: 1,
@@ -526,6 +541,59 @@ mod tests {
         let mut out = Vec::new();
         denoiser.denoise_into(&g, &params, &mut out);
         assert_bit_identical(&reference, &out, "auto thread count");
+    }
+
+    /// A signature that is the same everywhere changes nothing: `Some(constant)` is
+    /// bit-identical to `None`, so the term is a pure early return.
+    #[test]
+    fn a_constant_signature_is_bit_identical_to_none() {
+        let (g, _color) = irregular_scene(61, 47, 0x5151);
+        let params = AtrousParams::default();
+        let sig = vec![0xdead_u32; 61 * 47];
+        let with_sig = GBuffers {
+            path_sig: Some(&sig),
+            ..g
+        };
+        let mut a = Vec::new();
+        let mut b = Vec::new();
+        AtrousDenoiser::new().denoise_into_with_threads(&g, &params, &mut a, 1);
+        AtrousDenoiser::new().denoise_into_with_threads(&with_sig, &params, &mut b, 1);
+        assert_bit_identical(&a, &b, "constant signature");
+    }
+
+    /// With a varied signature the result is still independent of the thread count.
+    #[test]
+    fn signature_filtering_is_thread_count_invariant() {
+        let (g, _color) = irregular_scene(83, 59, 0x77aa);
+        let sig: Vec<u32> = (0..83 * 59)
+            .map(|i| ((i % 83) / 6 + (i / 83) / 5) as u32 % 4)
+            .collect();
+        let with_sig = GBuffers {
+            path_sig: Some(&sig),
+            ..g
+        };
+        let params = AtrousParams::default();
+        let mut reference = Vec::new();
+        AtrousDenoiser::new().denoise_into_with_threads(&with_sig, &params, &mut reference, 1);
+        for threads in [2usize, 3, 8] {
+            let mut out = Vec::new();
+            AtrousDenoiser::new().denoise_into_with_threads(&with_sig, &params, &mut out, threads);
+            assert_bit_identical(&reference, &out, &format!("threads={threads}"));
+        }
+    }
+
+    /// A signature slice of the wrong length falls back to the identity copy.
+    #[test]
+    fn a_short_signature_buffer_falls_back_to_a_copy() {
+        let (g, color) = irregular_scene(20, 10, 9);
+        let sig = vec![0u32; 5];
+        let with_sig = GBuffers {
+            path_sig: Some(&sig),
+            ..g
+        };
+        let mut out = Vec::new();
+        AtrousDenoiser::new().denoise_into(&with_sig, &AtrousParams::default(), &mut out);
+        assert_bit_identical(&color, &out, "short signature");
     }
 
     /// Reusing one denoiser across frames of different sizes must not leak state from

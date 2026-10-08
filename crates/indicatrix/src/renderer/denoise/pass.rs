@@ -221,6 +221,8 @@ impl SharedColors {
 /// The centre pixel's own guide values, read once per output pixel.
 struct Centre {
     facet: i32,
+    /// `GBuffers::path_sig` at the centre pixel; `0` when the buffer is absent.
+    sig: u32,
     depth: f32,
     normal: Vec3,
     color: Vec3,
@@ -235,7 +237,8 @@ fn shifted(base: usize, offset: i64, limit: usize) -> Option<usize> {
 }
 
 /// The neighbour at `idx` as `(texel, weight)`, or `None` when it must not contribute:
-/// a different facet, a non-finite texel (it would contaminate every tap that shares
+/// a different facet, a different interior path signature (when `GBuffers::path_sig` is
+/// present; a pure early return, no weight is touched), a non-finite texel (it would contaminate every tap that shares
 /// it), or a normal weight of exactly zero (the product would be zero anyway, so the
 /// two `exp` calls are skipped). The factor order is fixed: it is the filter's
 /// bit-exact definition.
@@ -251,6 +254,12 @@ fn tap_contribution(
     let wf = facet_weight(centre.facet, g.facet_id[idx]);
     if wf == 0.0 {
         // Hard rejection: skip the (cheap) remaining term evaluation too.
+        return None;
+    }
+    if let Some(sig) = g.path_sig
+        && sig[idx] != centre.sig
+    {
+        // Same facet, different interior path: a different reflection region.
         return None;
     }
     let texel = src.load(idx);
@@ -291,6 +300,7 @@ fn atrous_pixel(
     }
     let centre = Centre {
         facet,
+        sig: g.path_sig.map_or(0, |sig| sig[center_idx]),
         depth: g.depth[center_idx],
         normal: tap.normal_n[center_idx],
         color,

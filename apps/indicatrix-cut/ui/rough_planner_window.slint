@@ -112,7 +112,8 @@ component ResultsColumn inherits VerticalLayout {
         spacing: 8px;
 
         Text {
-            text: "RESULTS";
+            text: RoughPlanModel.results.length > 0
+                ? "RESULTS (" + RoughPlanModel.results.length + ")" : "RESULTS";
             font-size: 11px;
             font-weight: 700;
             color: Theme.text-muted;
@@ -179,6 +180,13 @@ component ResultsColumn inherits VerticalLayout {
                 result: result;
                 rank_index: index;
                 show_thumbnails: root.show_thumbnails;
+            }
+
+            // Slack under the last card: the cards hold wrapping text whose height settles
+            // after the viewport is sized, and without it the last card can end up
+            // partly behind the bottom edge.
+            Rectangle {
+                height: 24px;
             }
         }
     }
@@ -475,9 +483,11 @@ export component RoughPlannerWindow inherits Window {
                     vertical-stretch: 1;
                     spacing: 8px;
 
-                    // Left column: 320px scrollable rough & shape, pinned plan form
+                    // Left column: 320px (340px from 1180px up) scrollable rough & shape,
+                    // pinned plan form. The forms inside are built to fit 300px of content
+                    // (radios in two rows, fields stretching), so nothing scrolls sideways.
                     Rectangle {
-                        width: 320px;
+                        width: root.width < 1180px ? 320px : 340px;
                         background: Theme.bg-dark;
                         border-radius: Theme.radius-md;
                         border-width: 1px;
@@ -490,6 +500,9 @@ export component RoughPlannerWindow inherits Window {
                             // Scrollable section for RoughForm and CutList
                             left_scroll := ScrollView {
                                 vertical-stretch: 1;
+                                // The content is exactly as wide as the visible part: no
+                                // sideways scrolling, no content centred past both edges.
+                                content-width: self.visible-width;
 
                                 VerticalLayout {
                                     alignment: start;

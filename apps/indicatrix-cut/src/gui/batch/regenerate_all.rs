@@ -6,6 +6,11 @@
 //! regeneration ([`offer_preview_regeneration`]/[`offer_tilt_regeneration`]), so this
 //! adds no second copy of either batch.
 //!
+//! A regeneration step asks which designs: "Missing or outdated only" (the default; the
+//! same vault scan the startup offer and the filter panel's "Compute missing tilt
+//! curves" run, counted off the UI thread and narrowed to the offered set by
+//! [`missing_among`]) or "All designs". [`chosen_ids`] picks the set the batch starts.
+//!
 //! "Both" runs them one after the other rather than together: the two confirm steps
 //! would otherwise sit on top of each other. It offers the previews first and holds the
 //! tilt ids in [`PENDING_TILT`]; [`preview_dialog_closed`] (called when the preview
@@ -27,7 +32,8 @@ use crate::{
 use indicatrix_vault::db::sqlite::Database;
 use slint::ComponentHandle;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
+    collections::HashSet,
     sync::{Arc, Mutex, PoisonError},
 };
 
@@ -37,17 +43,95 @@ thread_local! {
     static PENDING_TILT: RefCell<Option<Vec<i64>>> = const { RefCell::new(None) };
 }
 
-/// [`preview::offer_batch_confirmation`], worded as a regeneration: the designs may
-/// already have previews, which the batch replaces.
-pub fn offer_preview_regeneration(ui: &MainWindow, ids: &[i64]) {
-    preview::offer_batch_confirmation(ui, ids);
-    ui.global::<BatchModel>().set_preview_offer_regenerate(true);
+/// Which regeneration confirm step a scope scan belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::gui) enum ScopeKind {
+    Preview,
+    Tilt,
 }
 
-/// [`tilt::offer_batch_confirmation`], worded as a regeneration.
+thread_local! {
+    /// One counter per [`ScopeKind`], bumped each time that kind's regenerate dialog
+    /// opens, so a slow "missing" scan that lands after a newer dialog opened is dropped.
+    /// UI-thread only: the bump and the check both run in UI callbacks.
+    static SCOPE_GENERATION: [Cell<u64>; 2] = const { [Cell::new(0), Cell::new(0)] };
+}
+
+/// Starts a new scope scan for `kind` and returns its number for [`scope_is_current`].
+pub(in crate::gui) fn next_scope_generation(kind: ScopeKind) -> u64 {
+    SCOPE_GENERATION.with(|gens| {
+        let cell = &gens[kind as usize];
+        cell.set(cell.get() + 1);
+        cell.get()
+    })
+}
+
+/// Whether `generation` is still the newest scope scan of `kind`.
+pub(in crate::gui) fn scope_is_current(kind: ScopeKind, generation: u64) -> bool {
+    SCOPE_GENERATION.with(|gens| gens[kind as usize].get() == generation)
+}
+
+/// The designs of `ids` that `missing` (a whole-catalogue scan result) also holds, in
+/// `ids` order: "missing or outdated" restricted to the set the dialog was opened for
+/// (the whole library, or the filter panel's filtered set).
+pub(in crate::gui) fn missing_among(ids: &[i64], missing: &[i64]) -> Vec<i64> {
+    let missing: HashSet<i64> = missing.iter().copied().collect();
+    ids.iter()
+        .copied()
+        .filter(|id| missing.contains(id))
+        .collect()
+}
+
+/// The ids a regenerate confirm step starts: only the missing ones when the offer is a
+/// regeneration and its "missing or outdated only" pill is chosen, otherwise every id
+/// the offer holds (the startup, import and filter-panel offers hold the exact set to
+/// run).
+pub(in crate::gui) fn chosen_ids(
+    regenerate: bool,
+    missing_only: bool,
+    all: Vec<i64>,
+    missing: Vec<i64>,
+) -> Vec<i64> {
+    if regenerate && missing_only {
+        missing
+    } else {
+        all
+    }
+}
+
+/// `design` / `designs` for a count.
+fn designs(count: usize) -> String {
+    if count == 1 {
+        "1 design".to_string()
+    } else {
+        format!("{count} designs")
+    }
+}
+
+/// The "missing or outdated only" pill's text: `None` while the scan is still counting.
+pub(in crate::gui) fn missing_choice_label(count: Option<usize>) -> String {
+    match count {
+        None => "Missing or outdated only (counting...)".to_string(),
+        Some(0) => "All designs are up to date".to_string(),
+        Some(n) => format!("Missing or outdated only ({})", designs(n)),
+    }
+}
+
+/// The "all" pill's text.
+pub(in crate::gui) fn all_choice_label(count: usize) -> String {
+    format!("All designs ({count})")
+}
+
+/// Opens the preview confirm step as a regeneration: the designs may already have
+/// previews, which the batch replaces. The dialog offers "missing or outdated only"
+/// (counted off the UI thread, "Counting..." until it lands) or "all".
+pub fn offer_preview_regeneration(ui: &MainWindow, ids: &[i64]) {
+    preview::offer_regeneration(ui, ids);
+}
+
+/// [`offer_preview_regeneration`] for the tilt-curve confirm step.
 pub fn offer_tilt_regeneration(ui: &MainWindow, ids: &[i64]) {
-    tilt::offer_batch_confirmation(ui, ids);
-    ui.global::<BatchModel>().set_tilt_offer_regenerate(true);
+    tilt::offer_regeneration(ui, ids);
 }
 
 /// The preview dialog closed (a finished batch's Close, or "Not now" on its offer):
@@ -153,4 +237,63 @@ pub(in crate::gui) fn setup_regenerate_all_callbacks(
                 offer_preview_regeneration(&ui, &ids);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_among_keeps_only_the_offered_ids_in_offer_order() {
+        // `all_entry_ids` already leaves ignored designs out, and so does the vault's
+        // missing scan, so an ignored design (9, 7 here) can reach neither side.
+        let all = [1, 2, 3, 5, 8];
+        let missing = [8, 3, 7, 9];
+        assert_eq!(missing_among(&all, &missing), vec![3, 8]);
+        assert!(missing_among(&all, &[]).is_empty());
+        assert!(missing_among(&[], &missing).is_empty());
+    }
+
+    #[test]
+    fn chosen_ids_picks_the_missing_set_only_for_a_regeneration_that_asked_for_it() {
+        let all = vec![1, 2, 3];
+        let missing = vec![2];
+        assert_eq!(
+            chosen_ids(true, true, all.clone(), missing.clone()),
+            vec![2]
+        );
+        assert_eq!(chosen_ids(true, false, all.clone(), missing.clone()), all);
+        // The startup, import and filter-panel offers hold the exact set to run.
+        assert_eq!(chosen_ids(false, true, all.clone(), missing), all);
+    }
+
+    #[test]
+    fn choice_labels_count_and_pluralise() {
+        assert_eq!(
+            missing_choice_label(None),
+            "Missing or outdated only (counting...)"
+        );
+        assert_eq!(missing_choice_label(Some(0)), "All designs are up to date");
+        assert_eq!(
+            missing_choice_label(Some(1)),
+            "Missing or outdated only (1 design)"
+        );
+        assert_eq!(
+            missing_choice_label(Some(12)),
+            "Missing or outdated only (12 designs)"
+        );
+        assert_eq!(all_choice_label(3299), "All designs (3299)");
+    }
+
+    #[test]
+    fn scope_generation_drops_a_scan_that_a_newer_dialog_overtook() {
+        let first = next_scope_generation(ScopeKind::Preview);
+        let second = next_scope_generation(ScopeKind::Preview);
+        assert!(!scope_is_current(ScopeKind::Preview, first));
+        assert!(scope_is_current(ScopeKind::Preview, second));
+        // The tilt dialog counts on its own.
+        let tilt = next_scope_generation(ScopeKind::Tilt);
+        assert!(scope_is_current(ScopeKind::Tilt, tilt));
+        assert!(scope_is_current(ScopeKind::Preview, second));
+    }
 }

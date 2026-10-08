@@ -100,7 +100,17 @@ export component EditorInspector inherits Rectangle {
     // plus this component's 8px top/bottom padding) -- see `EditorModel.
     // inspector_collapsed`'s own doc comment (`ui/models/editor.slint`).
     property <length> header_height: 40px;
-    height: EditorModel.inspector_collapsed ? root.header_height : EditorModel.inspector_height;
+    // While the tier table above is collapsed (and this section is open) the
+    // inspector stretches to fill the dock; the stored `inspector_height` is left
+    // alone and applies again once the table is expanded. No explicit `height`:
+    // a layout child with one is fixed at it and never stretches, so the size is
+    // given as min/preferred/max instead (all equal unless stretching).
+    property <bool> fills_dock: EditorModel.tier_table_collapsed && !EditorModel.inspector_collapsed;
+    property <length> fixed_height: EditorModel.inspector_collapsed ? root.header_height : EditorModel.inspector_height;
+    vertical-stretch: root.fills_dock ? 1 : 0;
+    min-height: root.fills_dock ? 160px : root.fixed_height;
+    preferred-height: root.fixed_height;
+    max-height: root.fills_dock ? 100000px : root.fixed_height;
     background: Theme.bg-darkest;
     border-radius: Theme.radius-sm;
     // The worked-example guide's outline while a step points at the Tier or the

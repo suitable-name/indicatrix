@@ -556,6 +556,24 @@ impl RenderContext {
             .any(|n| n.eq_ignore_ascii_case(active))
     }
 
+    /// The `n_d` of the material being traced (the override when set, else the by-name
+    /// lookup), or `0.0` when it does not resolve. The denoiser's path signature refracts at
+    /// it, so every guide-buffer key carries it. Read-only: the view tint and the material
+    /// overrides never change the dispersion model.
+    #[must_use]
+    pub fn active_n_d(&self) -> f32 {
+        if let Some(material) = &self.material_override {
+            return material.dispersion.n_d();
+        }
+        resolve_material_with_override(
+            &GemMaterial::all_materials(),
+            &self.custom_materials,
+            None,
+            &self.material_name,
+        )
+        .map_or(0.0, |material| material.dispersion.n_d())
+    }
+
     /// The fluorescence of the material being traced: the emitters of its physics recipe, or
     /// `None` for every other material (built-in, fantasy, or a recipe without emitters). The
     /// render thread, export, the remote scene and the tilt sweeps all read this one answer

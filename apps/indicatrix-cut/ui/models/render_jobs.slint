@@ -35,6 +35,9 @@ export global RenderJobsModel {
     in-out property <bool> panel_open: false;
     in property <[RenderJobRow]> rows: [];
     in property <bool> queue_running: false;
+    // A job is rendering right now (the controller's own flag, not the database's). One of the
+    // three inputs of `ExportRunModel.running`.
+    in property <bool> job_running: false;
     in property <bool> can_start_queue: false;
     // "3 waiting · 1 done"
     in property <string> queue_status: "";

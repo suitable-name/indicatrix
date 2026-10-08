@@ -8,7 +8,7 @@ use super::queue::{
     compute_target_from_index, start_next_export_job,
 };
 use crate::{
-    ExportModel, LibraryModel, LightingPresetItem, MainWindow,
+    ExportModel, ExportRunModel, LibraryModel, LightingPresetItem, MainWindow,
     bridge::{
         export_thread::{self, ExportParams, RemoteSelection, SceneSnapshot},
         render_thread::PlanesOwner,
@@ -73,6 +73,11 @@ pub(in crate::gui) fn setup_render_export_callbacks(
             let Some(ui) = ui_weak_start.upgrade() else {
                 return;
             };
+            // One export at a time (the dialog's Start is disabled too; this covers Enter and
+            // a start racing a queue job).
+            if refuse_while_busy(&ui) {
+                return;
+            }
 
             let params =
                 match export_thread::validate_export_params(width, height, samples, max_bounces) {
@@ -143,6 +148,18 @@ pub(in crate::gui) fn setup_render_export_callbacks(
             }
         }
     });
+}
+
+/// Refuses a start while another export runs: says why in the dialog's status line and a
+/// toast, and returns `true`.
+fn refuse_while_busy(ui: &MainWindow) -> bool {
+    let Some(reason) = crate::gui::export_run::busy_refusal(ui) else {
+        return false;
+    };
+    ui.global::<ExportModel>().set_has_error(true);
+    ui.global::<ExportModel>().set_status_message(reason.into());
+    crate::gui::show_toast(ui, reason, "info");
+    true
 }
 
 /// The export folder: the configured one, or a native FOLDER picker (not Save-As, the
@@ -341,6 +358,11 @@ fn continue_start_export(
     if ui.global::<ExportModel>().get_is_exporting() {
         return;
     }
+    // A video or a queue job may have started while the folder or the finished stone was
+    // being prepared.
+    if refuse_while_busy(ui) {
+        return;
+    }
     let StartExportContext {
         render_ctx,
         settings_store,
@@ -379,10 +401,17 @@ fn continue_start_export(
     let local_compute = {
         // A COUNT, not a bool -- see
         // `RenderContext::export_active_count`'s doc comment.
+        // Remote only traces nothing here (no adapter, no local lane -- see `run_export`),
+        // so it leaves the viewport running; `finish_export_queue` mirrors the condition.
         let mut guard = crate::bridge::render_thread::RenderContext::lock(&render_ctx);
-        guard.export_active_count += 1;
+        if remote.compute_target.pauses_live_viewport() {
+            guard.export_active_count += 1;
+        }
         guard.local_compute_target
     };
+    // The header indicator says so while the viewport is held still.
+    ui.global::<ExportRunModel>()
+        .set_live_view_paused(remote.compute_target.pauses_live_viewport());
 
     let (design, designer, shape, ri) = design_naming(ui, &render_ctx);
 

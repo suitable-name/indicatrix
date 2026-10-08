@@ -100,6 +100,9 @@ pub struct PlanSettings {
     /// The MAXIMUM number of stones to cut (`1..=99`); a layout may hold any
     /// count from 1 up to this.
     pub count: u8,
+    /// The MINIMUM number of stones a shown layout must hold (`1..=count`); layouts with
+    /// fewer stones are dropped before the final ranking. `1` keeps every layout.
+    pub min_count: u8,
     /// Saw kerf lost at every cut, in mm.
     pub kerf_mm: f64,
     /// Preforming and polishing allowance per side of every piece, in mm.
@@ -124,6 +127,12 @@ impl PlanSettings {
         clamp_count(self.count)
     }
 
+    /// The stone-count floor as a `usize`, clamped to `1..=count`.
+    #[must_use]
+    pub fn min_count_usize(&self) -> usize {
+        usize::from(self.min_count).clamp(1, self.count_usize())
+    }
+
     /// Checks that the settings describe a cut the planner can reason about: a count in
     /// `1..=99`; finite, non-negative kerf, allowance, skin and specific gravity; a finite,
     /// positive minimum width.
@@ -137,6 +146,12 @@ impl PlanSettings {
     pub fn validate(&self) -> Result<(), PlanInputError> {
         if !(1..=99).contains(&self.count) {
             return Err(PlanInputError::CountOutOfRange(self.count));
+        }
+        if self.min_count < 1 || self.min_count > self.count {
+            return Err(PlanInputError::Setting {
+                field: "min_count",
+                value: f64::from(self.min_count),
+            });
         }
         let non_negative = [
             ("kerf_mm", self.kerf_mm),
@@ -170,6 +185,7 @@ impl Default for PlanSettings {
     fn default() -> Self {
         Self {
             count: 1,
+            min_count: 1,
             kerf_mm: 0.30,
             allowance_mm: 0.20,
             skin_mm: 0.0,

@@ -87,6 +87,9 @@ pub(super) struct ViewportGpu {
     /// Key of the guide buffers currently copied into the render loop's buffers, so an
     /// unchanged pose copies nothing rather than memcpying ~10 MB every frame.
     applied_guide_key: Option<crate::bridge::frame_cache::guide_pass::GuideKey>,
+    /// Key of the path signature currently held by the render loop's signature buffer
+    /// (`None`: the buffer is zeroed or unset); see [`Self::sync_path_sig`].
+    path_sig_key: Option<crate::bridge::frame_cache::guide_pass::GuideKey>,
     /// Set once a joined GPU-thread panic is observed (see [`hybrid_frame`])
     /// and never cleared -- `GpuBackend` itself only recovers from a cleanly-reported
     /// [`indicatrix::renderer::gpu::GpuFrameError::DeviceLost`], which
@@ -113,6 +116,7 @@ impl ViewportGpu {
             gpu: GpuBackend::acquire(),
             guides: crate::bridge::frame_cache::guide_pass::GuideCache::new(),
             applied_guide_key: None,
+            path_sig_key: None,
             gpu_retired: false,
             status_message: None,
         }
@@ -227,28 +231,76 @@ impl ViewportGpu {
     /// already the ones last applied -- see [`Self::applied_guide_key`]'s own doc
     /// comment. Split out of [`Self::try_accumulate`] to keep it short.
     fn copy_guides(&mut self, frame: &BackendFrame<'_>, out: &mut FrameOutputs<'_>) {
-        let key = crate::bridge::frame_cache::guide_pass::GuideCache::key_for(
-            frame.width,
-            frame.height,
-            frame.yaw,
-            frame.pitch,
-            frame.distance,
-            frame.planes,
-        );
+        let key = Self::guide_key(frame);
         if self.applied_guide_key.as_ref() != Some(&key) {
-            let guides = self.guides.ensure(
+            let guides = self.guides.ensure_geom(
                 frame.width,
                 frame.height,
                 frame.yaw,
                 frame.pitch,
                 frame.distance,
-                frame.planes,
+                frame.stone(),
+                frame.material.dispersion.n_d(),
             );
             out.depth.copy_from_slice(&guides.depth);
             out.normal.copy_from_slice(&guides.normal);
             out.facet_id.copy_from_slice(&guides.facet_id);
             self.applied_guide_key = Some(key);
         }
+    }
+
+    /// The guide-cache key for `frame`: pose, geometry and the material's `n_d`.
+    fn guide_key(frame: &BackendFrame<'_>) -> crate::bridge::frame_cache::guide_pass::GuideKey {
+        crate::bridge::frame_cache::guide_pass::GuideCache::key_for_geom(
+            frame.width,
+            frame.height,
+            frame.yaw,
+            frame.pitch,
+            frame.distance,
+            frame.stone(),
+            frame.material.dispersion.n_d(),
+        )
+    }
+
+    /// Brings `sig` (the render loop's first-hit path-signature buffer, `width * height`
+    /// long) in line with `frame`'s pose, geometry and material, for CPU and GPU frames
+    /// alike: both take the signature from the same [`GuideCache`] the GPU copy above
+    /// uses, so a GPU frame has already paid for it. Does nothing while the key is
+    /// unchanged.
+    ///
+    /// With `compute == false` (denoiser off, or the camera moving, when a prepass per
+    /// pose would cost more than the filter gains) the buffer is zeroed instead, which
+    /// the denoiser treats as one constant region, i.e. no signature term.
+    pub(super) fn sync_path_sig(
+        &mut self,
+        frame: &BackendFrame<'_>,
+        sig: &mut Vec<u32>,
+        compute: bool,
+    ) {
+        let pixels = frame.width as usize * frame.height as usize;
+        if !compute {
+            if self.path_sig_key.take().is_some() || sig.len() != pixels {
+                sig.clear();
+                sig.resize(pixels, 0);
+            }
+            return;
+        }
+        let key = Self::guide_key(frame);
+        if self.path_sig_key.as_ref() == Some(&key) && sig.len() == pixels {
+            return;
+        }
+        let guides = self.guides.ensure_geom(
+            frame.width,
+            frame.height,
+            frame.yaw,
+            frame.pitch,
+            frame.distance,
+            frame.stone(),
+            frame.material.dispersion.n_d(),
+        );
+        sig.clear();
+        sig.extend_from_slice(&guides.path_sig);
+        self.path_sig_key = Some(key);
     }
 }
 

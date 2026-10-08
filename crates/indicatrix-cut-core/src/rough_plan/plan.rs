@@ -6,11 +6,11 @@ use super::{
     Axis, BarCut, CandidateDesign, CutOrder, CutPlan, DesignHull, FINAL_TOP, LayoutGroup,
     PlacedStone, PlanProgress, PlanSettings, REFINE_TOP, RoughBlock, RoughLayout, RoughModel,
     SHAPED_UNIFORM_DESIGNS, SingleFit, SlabCut, fit_single_stones, fit_single_stones_with,
-    merge_and_rank,
+    merge_and_rank_min,
     pareto::{pareto_front, sanitize},
     plan_rough,
-    rank::{best_layout, flatten_groups, rank_indices},
-    refine::{final_ranking, own_pool},
+    rank::{best_layout, flatten_groups, rank_indices_min},
+    refine::{final_ranking_min, own_pool},
     shape::RoughBase,
     shaped::{
         BuildClipParams, ShapedAltParams, ShapedCtx, build_clipped_table, plan_shaped_alternatives,
@@ -230,7 +230,11 @@ fn plan_plain_block(
         PLAIN_SINGLE_FITS,
         rough.volume_mm3(),
     ));
-    Some(merge_and_rank(layouts, FINAL_LAYOUTS))
+    Some(merge_and_rank_min(
+        layouts,
+        FINAL_LAYOUTS,
+        input.settings.min_count_usize(),
+    ))
 }
 
 /// The size table, clipped table, six DPs and alternatives of a shaped rough,
@@ -374,7 +378,8 @@ fn finish_shaped(
     on_progress: &mut dyn FnMut(PlanProgress) -> bool,
 ) -> Option<Vec<RoughLayout>> {
     let (flat, group_of) = flatten_groups(groups);
-    let ranked = rank_indices(&flat, REFINE_TOP);
+    let min_stones = input.settings.min_count_usize();
+    let ranked = rank_indices_min(&flat, REFINE_TOP, min_stones);
     let mut refined = Vec::with_capacity(ranked.len() + SHAPED_SINGLE_LAYOUTS);
     for &idx in &ranked {
         if !on_progress(PlanProgress::Refine) {
@@ -395,17 +400,27 @@ fn finish_shaped(
         SHAPED_SINGLE_LAYOUTS,
         ctx.model_volume,
     ));
-    Some(final_ranking(refined, &flat, &ranked))
+    Some(final_ranking_min(refined, &flat, &ranked, min_stones))
 }
 
 /// The layouts to show when a plan was stopped before its refinement ran.
 ///
 /// Every layout of `groups` and of `extra` (single-stone and uniform layouts), unrefined,
-/// ranked and cut to [`FINAL_LAYOUTS`] by [`merge_and_rank`]. Empty when none has a stone.
+/// ranked and cut to [`FINAL_LAYOUTS`] by [`merge_and_rank_min`]. Empty when none has a stone.
 #[must_use]
 pub fn partial_ranking(groups: &[LayoutGroup], extra: Vec<RoughLayout>) -> Vec<RoughLayout> {
+    partial_ranking_min(groups, extra, 1)
+}
+
+/// [`partial_ranking`] keeping only layouts of at least `min_stones` stones.
+#[must_use]
+pub fn partial_ranking_min(
+    groups: &[LayoutGroup],
+    extra: Vec<RoughLayout>,
+    min_stones: usize,
+) -> Vec<RoughLayout> {
     let (flat, _) = flatten_groups(groups);
     let mut all: Vec<RoughLayout> = flat.into_iter().cloned().collect();
     all.extend(extra);
-    merge_and_rank(all, FINAL_LAYOUTS)
+    merge_and_rank_min(all, FINAL_LAYOUTS, min_stones)
 }

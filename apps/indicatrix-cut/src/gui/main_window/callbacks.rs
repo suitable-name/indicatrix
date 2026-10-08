@@ -91,6 +91,7 @@ pub(super) fn setup_render_callbacks(
     );
     optics::custom_materials::setup_custom_material_callbacks(ui, render_ctx, db);
     library::clipboard::setup_copy_callbacks(ui);
+    crate::gui::export_run::setup_export_run_callbacks(ui);
     tilt::tilt_profile::setup_tilt_profile_callback(ui, render_ctx, settings_store);
     tilt::tilt_hover_preview::setup_tilt_hover_preview_callback(ui, render_ctx);
 }
@@ -390,9 +391,15 @@ pub(super) fn setup_window_close(
         let is_dirty = ui_weak_close
             .upgrade()
             .is_some_and(|ui| ui.global::<EditorModel>().get_is_dirty());
+        let export_risk = ui_weak_close
+            .upgrade()
+            .and_then(|ui| crate::gui::export_run::work_at_risk(&ui));
         let planner_risk = joined_risk(
-            rough_plan::planner_work_at_risk(),
-            crate::gui::render_jobs::work_at_risk(),
+            joined_risk(
+                rough_plan::planner_work_at_risk(),
+                crate::gui::render_jobs::work_at_risk(),
+            ),
+            export_risk,
         );
         if !is_dirty && planner_risk.is_none() {
             render_ctx_close

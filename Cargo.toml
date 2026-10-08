@@ -1,21 +1,21 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/indicatrix",
-    "crates/indicatrix-net",
-    "crates/indicatrix-dispatch",
-    "crates/indicatrix-formats",
-    "crates/indicatrix-vault",
-    "crates/indicatrix-cut-core",
-    "crates/indicatrix-solid",
-    "crates/indicatrix-editor",
-    "crates/indicatrix-render-jobs",
-    "apps/indicatrix-cut",
-    "apps/indicatrix-worker",
     "apps/indicatrix-cli",
+    "apps/indicatrix-cut",
     "apps/indicatrix-web",
-    "crates/indicatrix-web-core",
     "apps/indicatrix-web-compute",
+    "apps/indicatrix-worker",
+    "crates/indicatrix",
+    "crates/indicatrix-cut-core",
+    "crates/indicatrix-dispatch",
+    "crates/indicatrix-editor",
+    "crates/indicatrix-formats",
+    "crates/indicatrix-net",
+    "crates/indicatrix-render-jobs",
+    "crates/indicatrix-solid",
+    "crates/indicatrix-vault",
+    "crates/indicatrix-web-core",
 ]
 # indicatrix: a physically-based spectral gemstone renderer and faceting-design
 # library. `indicatrix` is the spectral path tracer at the center; `indicatrix-formats` reads and
@@ -35,7 +35,7 @@ members = [
 # its Web Worker entry point.
 
 [workspace.package]
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Suitable-Name"]
@@ -130,17 +130,17 @@ wgpu = { version = "30.0.1", default-features = false }
 winresource = "0.1.31"
 
 # Workspace members
-indicatrix-vault = { path = "crates/indicatrix-vault", version = "0.7.0" }
-indicatrix = { path = "crates/indicatrix", version = "0.7.0" }
-indicatrix-net = { path = "crates/indicatrix-net", version = "0.7.0" }
-indicatrix-dispatch = { path = "crates/indicatrix-dispatch", version = "0.7.0" }
-indicatrix-formats = { path = "crates/indicatrix-formats", version = "0.7.0" }
-indicatrix-cut-core = { path = "crates/indicatrix-cut-core", version = "0.7.0" }
-indicatrix-solid = { path = "crates/indicatrix-solid", version = "0.7.0" }
-indicatrix-editor = { path = "crates/indicatrix-editor", version = "0.7.0" }
-indicatrix-web-core = { path = "crates/indicatrix-web-core", version = "0.7.0" }
-indicatrix-render-jobs = { path = "crates/indicatrix-render-jobs", version = "0.7.0" }
-indicatrix-cut = { path = "apps/indicatrix-cut", version = "0.7.0" }
+indicatrix-vault = { path = "crates/indicatrix-vault", version = "0.7.1" }
+indicatrix = { path = "crates/indicatrix", version = "0.7.1" }
+indicatrix-net = { path = "crates/indicatrix-net", version = "0.7.1" }
+indicatrix-dispatch = { path = "crates/indicatrix-dispatch", version = "0.7.1" }
+indicatrix-formats = { path = "crates/indicatrix-formats", version = "0.7.1" }
+indicatrix-cut-core = { path = "crates/indicatrix-cut-core", version = "0.7.1" }
+indicatrix-solid = { path = "crates/indicatrix-solid", version = "0.7.1" }
+indicatrix-editor = { path = "crates/indicatrix-editor", version = "0.7.1" }
+indicatrix-web-core = { path = "crates/indicatrix-web-core", version = "0.7.1" }
+indicatrix-render-jobs = { path = "crates/indicatrix-render-jobs", version = "0.7.1" }
+indicatrix-cut = { path = "apps/indicatrix-cut", version = "0.7.1" }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

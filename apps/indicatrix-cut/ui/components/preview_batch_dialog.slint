@@ -5,6 +5,7 @@ import { HelpTopics } from "../models/help.slint";
 import { HelpButton } from "help_button.slint";
 import { TipButton } from "compact_controls.slint";
 import { TipBox } from "tip_box.slint";
+import { SegmentPill } from "pill_button.slint";
 
 // Batch design-preview generation (Task: rendered design previews, batch generation
 // with two-level progress). One component, two states:
@@ -41,6 +42,7 @@ export component PreviewBatchDialog inherits Rectangle {
     in property <bool> running: BatchModel.preview_batch_running;
     in property <int> design_index: BatchModel.preview_design_index;
     in property <int> design_total: BatchModel.preview_design_total;
+    in property <string> eta: BatchModel.preview_eta;
     in property <int> local_active: BatchModel.preview_local_active;
     in property <int> local_lane_total: BatchModel.preview_local_lane_total;
     in property <string> remote_title: BatchModel.preview_remote_title;
@@ -61,6 +63,12 @@ export component PreviewBatchDialog inherits Rectangle {
     cancel => { BatchModel.preview_cancel(); }
     callback close();
     close => { BatchModel.preview_close(); }
+
+    // The regenerate confirm step offers "missing or outdated only" or "all"; the first has
+    // nothing to start while its scan is still counting (-1) or found nothing (0).
+    property <bool> can_start: !(root.offer_regenerate
+        && (root.running
+            || (BatchModel.preview_offer_missing_only && BatchModel.preview_offer_missing_count <= 0)));
 
     property <float> design_fraction: root.design_total > 0
         ? (root.design_index * 1.0) / root.design_total
@@ -110,7 +118,9 @@ export component PreviewBatchDialog inherits Rectangle {
                 }
             } else if event.text == Key.Return {
                 if root.confirming {
-                    root.generate_confirmed();
+                    if root.can_start {
+                        root.generate_confirmed();
+                    }
                 } else if root.done {
                     root.close();
                 }
@@ -133,7 +143,7 @@ export component PreviewBatchDialog inherits Rectangle {
                 // height and scrolling the body between a fixed title and fixed buttons
                 // makes them structurally impossible to clip.
                 height: root.confirming
-                    ? Math.min(root.height - 96px, 360px)
+                    ? Math.min(root.height - 96px, 410px)
                     : Math.min(root.height - 96px, 340px);
                 background: Theme.surface-dialog;
                 border-radius: Theme.radius-md;
@@ -182,14 +192,35 @@ export component PreviewBatchDialog inherits Rectangle {
                                 spacing: 10px;
                                 Text {
                                     text: root.offer_regenerate
-                                        ? (root.offer_count == 1
-                                            ? "Render a fresh front and top view for 1 design? Previews it already has are replaced."
-                                            : "Render fresh front and top views for " + root.offer_count + " designs? Previews they already have are replaced.")
+                                        ? "Which designs should get fresh front and top views? Previews a chosen design already has are replaced."
                                         : (root.offer_count == 1
                                             ? "1 design has no rendered preview yet. Generate a front and top view for it now?"
                                             : root.offer_count + " designs have no rendered preview yet. Generate front and top views for them now?");
                                     font-size: 12px;
                                     color: Theme.text-secondary;
+                                    wrap: word-wrap;
+                                }
+                                // The scope choice: only the regenerate commands show it. The
+                                // startup and import offers already hold exactly the missing set.
+                                if root.offer_regenerate: VerticalLayout {
+                                    spacing: 6px;
+                                    SegmentPill {
+                                        text: BatchModel.preview_offer_missing_label;
+                                        hint: "Render only the designs with no preview, a missing view, or a preview made with other render settings.";
+                                        selected: BatchModel.preview_offer_missing_only;
+                                        picked => { BatchModel.preview_offer_missing_only = true; }
+                                    }
+                                    SegmentPill {
+                                        text: BatchModel.preview_offer_all_label;
+                                        hint: "Render every design again, replacing the previews it has.";
+                                        selected: !BatchModel.preview_offer_missing_only;
+                                        picked => { BatchModel.preview_offer_missing_only = false; }
+                                    }
+                                }
+                                if root.offer_regenerate && root.running: Text {
+                                    text: "A preview batch is already running -- wait for it to finish or cancel it first.";
+                                    font-size: 11px;
+                                    color: Theme.accent-amber;
                                     wrap: word-wrap;
                                 }
                                 Text {
@@ -235,6 +266,7 @@ export component PreviewBatchDialog inherits Rectangle {
                                 text: root.from_import ? "Full render" : "Generate";
                                 hint: "Render a front and a top picture of each design. This takes longer but looks best. Enter does the same.";
                                 primary: true;
+                                enabled: root.can_start;
                                 clicked => { root.generate_confirmed(); }
                             }
                         }
@@ -292,7 +324,8 @@ export component PreviewBatchDialog inherits Rectangle {
                                 HorizontalLayout {
                                     alignment: space-between;
                                     Text {
-                                        text: "Completed " + root.design_index + " / " + root.design_total;
+                                        text: "Completed " + root.design_index + " / " + root.design_total
+                                            + (root.eta == "" ? "" : " · " + root.eta);
                                         font-size: 10px;
                                         color: Theme.text-muted;
                                     }

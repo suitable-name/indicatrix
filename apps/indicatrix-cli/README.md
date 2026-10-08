@@ -168,6 +168,10 @@ ENGINE OPTIONS
   `tilt-video`.
 - The remote worker and the engines of this computer are machine settings, so they are not in
   the job: give them with the flags. `--compute remote` and `--compute both` need `--remote`.
+- A tilt video queued with Compute "Remote only" (or run with `--compute remote`) traces nothing
+  on this computer: it only receives and saves the frames and encodes the video. If the remote
+  is missing or drops, the run stops with an error (exit code 5) rather than tracing locally;
+  run it again and it continues from the frames already written.
 - `--local gpu` and `--local cpu+gpu` need a build with the `gpu` feature
   (`cargo build -p indicatrix-cli --features gpu`). Without it every choice renders on the
   processor, and a note on standard error says so.

@@ -1,6 +1,7 @@
 import { ComboBox, LineEdit, SpinBox, Slider } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
-import { TiltVideoExportModel } from "../../models/tilt.slint";
+import { TiltModel, TiltVideoExportModel } from "../../models/tilt.slint";
+import { ExportRunModel } from "../../models/export_run.slint";
 import { GuideModel } from "../../models/guide.slint";
 import { SegmentPill } from "../pill_button.slint";
 import { ToggleRow } from "../toggle_switch.slint";
@@ -321,11 +322,44 @@ export component TiltVideoExportSection inherits Rectangle {
                     }
                 }
 
-                // Transfer -- only with a remote configured; a
-                // video always offers the remote its share (Compute is always Local +
-                // Remote here), so no compute gate is needed. Advanced.
-                if TiltVideoExportModel.remote_configured && GuideModel.shows_advanced(): Text { text: "Transfer"; font-size: 10px; color: Theme.text-muted; }
-                if TiltVideoExportModel.remote_configured && GuideModel.shows_advanced(): HorizontalLayout {
+                // Compute -- only with a remote configured, the same three pills as the
+                // still-image export's. Not gated on Advanced: "Remote only" is how a long
+                // video is sent away without taking this computer's CPU and GPU.
+                if TiltVideoExportModel.remote_configured: Text { text: "Compute"; font-size: 10px; color: Theme.text-muted; }
+                if TiltVideoExportModel.remote_configured: HorizontalLayout {
+                    spacing: 4px;
+                    for label[idx] in ["Local only", "Remote only", "Local + Remote"]: SegmentPill {
+                        height: 24px;
+                        text: label;
+                        hint: idx == 0
+                            ? "Draw the picture on this computer only."
+                            : (idx == 1
+                                ? "Draw the picture on the remote worker only."
+                                : "Share the work between this computer and the remote worker.");
+                        selected: TiltVideoExportModel.compute_target_index == idx;
+                        picked => {
+                            TiltVideoExportModel.compute_target_index = idx;
+                            TiltVideoExportModel.compute_target_picked(idx);
+                        }
+                    }
+                }
+                if !TiltVideoExportModel.remote_configured: Text {
+                    text: "No remote configured. Rendering locally only.";
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                }
+                if TiltVideoExportModel.remote_configured && TiltVideoExportModel.compute_target_index == 1: Text {
+                    text: "Remote only keeps this computer free: nothing is traced here, it only receives and saves the frames. If the remote stops answering, the video stops with a message instead of continuing here.";
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                }
+
+                // Transfer -- only with a remote configured and a Compute choice that uses
+                // it (with "Local only" there is nothing to transfer). Advanced.
+                if TiltVideoExportModel.remote_configured && TiltVideoExportModel.compute_target_index != 0 && GuideModel.shows_advanced(): Text { text: "Transfer"; font-size: 10px; color: Theme.text-muted; }
+                if TiltVideoExportModel.remote_configured && TiltVideoExportModel.compute_target_index != 0 && GuideModel.shows_advanced(): HorizontalLayout {
                     spacing: 4px;
                     for label[idx] in ["Full data", "Final picture only"]: SegmentPill {
                         height: 24px;
@@ -337,7 +371,7 @@ export component TiltVideoExportSection inherits Rectangle {
                         picked => { TiltVideoExportModel.transfer_index = idx; }
                     }
                 }
-                if TiltVideoExportModel.remote_configured && GuideModel.shows_advanced() && TiltVideoExportModel.transfer_index == 1: Text {
+                if TiltVideoExportModel.remote_configured && TiltVideoExportModel.compute_target_index != 0 && GuideModel.shows_advanced() && TiltVideoExportModel.transfer_index == 1: Text {
                     text: "One finished PNG per frame from the remote -- far less data, but your own CPU/GPU do not help. A plain worker falls back to full data.";
                     font-size: 10px;
                     color: Theme.text-muted;
@@ -546,6 +580,16 @@ export component TiltVideoExportSection inherits Rectangle {
                     clicked => { TiltVideoExportModel.cancel_video_export(); }
                 }
 
+                // Closes the graph window and leaves the video rendering; the header's export
+                // indicator shows the progress and opens this window again.
+                if TiltVideoExportModel.is_exporting: ActionButton {
+                    width: 150px;
+                    text: "Run in Background";
+                    hint: "Close this window and keep exporting. The header shows the progress; click it to see this window again.";
+                    ink: Theme.text-secondary;
+                    clicked => { TiltModel.dialog_open = false; }
+                }
+
                 // Saves this video as a render job (`gui::render_jobs`), with the same
                 // large-run confirmation as Start Video Export below.
                 if !TiltVideoExportModel.is_exporting: ActionButton {
@@ -565,9 +609,12 @@ export component TiltVideoExportSection inherits Rectangle {
                 if !TiltVideoExportModel.is_exporting: ActionButton {
                     horizontal-stretch: 1;
                     text: video_content.needs_confirmation ? "Review " + video_content.computed_frame_count + " Frames" : "Start Video Export";
-                    hint: video_content.needs_confirmation
-                        ? "This is a long run. Press once to confirm the number of frames, then press again to start."
-                        : "Render every frame of the sweep and join them into a video.";
+                    hint: ExportRunModel.running
+                        ? ExportRunModel.busy_hint
+                        : (video_content.needs_confirmation
+                            ? "This is a long run. Press once to confirm the number of frames, then press again to start."
+                            : "Render every frame of the sweep and join them into a video.");
+                    enabled: !ExportRunModel.running;
                     fill: Theme.accent-cyan;
                     hover_fill: Theme.accent-cyan-hover;
                     edge: Theme.accent-cyan;

@@ -6,6 +6,9 @@ export global BatchModel {
     in property <bool> preview_batch_running: false;
     in property <int> preview_design_index: 0;
     in property <int> preview_design_total: 0;
+    // Remaining-time text ("about 6 min left" / "estimating..." / ""), from
+    // `gui::progress_eta::batch_eta_label`.
+    in property <string> preview_eta: "";
     in property <int> preview_local_active: 0;
     in property <int> preview_local_lane_total: 0;
     // The title of the picture a remote dispatcher started most recently (or a pause
@@ -20,6 +23,14 @@ export global BatchModel {
     // The confirm step offers to REGENERATE designs that may already have previews
     // (Library menu, filter panel) rather than to fill in missing ones.
     in property <bool> preview_offer_regenerate: false;
+    // The regenerate confirm step's scope choice (`gui::batch::regenerate_all`): the
+    // ids behind "Missing or outdated only", their count (-1 while the scan runs), the
+    // two pill labels, and whether that pill is the chosen one (the default).
+    in property <[int]> preview_offer_missing_ids: [];
+    in property <int> preview_offer_missing_count: -1;
+    in property <string> preview_offer_missing_label: "";
+    in property <string> preview_offer_all_label: "";
+    in-out property <bool> preview_offer_missing_only: true;
     // The confirm step was opened by an import: it then also offers fast solid previews
     // and a "remember my choice" box. `preview_import_choice` mirrors
     // `AppSettings::import_preview_choice` (0 ask, 1 full, 2 solid, 3 skip).
@@ -40,6 +51,8 @@ export global BatchModel {
     in property <bool> tilt_batch_running: false;
     in property <int> tilt_design_index: 0;
     in property <int> tilt_design_total: 0;
+    // Same remaining-time text as `preview_eta`.
+    in property <string> tilt_eta: "";
     in property <int> tilt_local_active: 0;
     in property <int> tilt_local_lane_total: 0;
     // Same three remote fields as the preview batch's, counting designs.
@@ -50,6 +63,12 @@ export global BatchModel {
     in property <string> tilt_summary: "";
     // Same as `preview_offer_regenerate`, for the tilt confirm step.
     in property <bool> tilt_offer_regenerate: false;
+    // Same scope choice as `preview_offer_missing_*`, for the tilt confirm step.
+    in property <[int]> tilt_offer_missing_ids: [];
+    in property <int> tilt_offer_missing_count: -1;
+    in property <string> tilt_offer_missing_label: "";
+    in property <string> tilt_offer_all_label: "";
+    in-out property <bool> tilt_offer_missing_only: true;
     // The dialog is showing the Edit tab's single-design sweep ("Tilt Curves" on the
     // command bar) rather than a catalogue batch: one bar driven by
     // `tilt_single_fraction`, `tilt_single_stage` above it, and Cancel goes to

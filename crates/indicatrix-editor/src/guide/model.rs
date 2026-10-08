@@ -10,6 +10,7 @@
 use super::{
     MANUAL,
     goal::Goal,
+    perform::Perform,
     steps::{ALL_GROUPS, Group},
 };
 
@@ -109,6 +110,11 @@ pub struct GuideStep {
     pub goal: Goal,
     /// The groups of controls that stay usable; every other group is locked.
     pub allow: Vec<Group>,
+    /// What the Next button does while the step is unfinished: the step's action, done for the
+    /// learner through the editor's own paths. `None` on a reading step and on a step that
+    /// cannot be done automatically, which keeps its Skip step button. Filled in when the
+    /// guide is added to the catalogue (see [`super::perform`]).
+    pub perform: Option<Perform>,
 }
 
 impl GuideStep {
@@ -126,6 +132,7 @@ impl GuideStep {
             highlight_target: String::new(),
             goal: Goal::Manual,
             allow: ALL_GROUPS.to_vec(),
+            perform: None,
         }
     }
 
@@ -177,10 +184,25 @@ impl GuideStep {
         self
     }
 
+    /// Sets what the Next button does on this step while it is unfinished (see
+    /// [`Self::perform`]). A step needs this only when neither its goal nor the catalogue's
+    /// recipe table implies one.
+    #[must_use]
+    pub fn perform(mut self, perform: Perform) -> Self {
+        self.perform = Some(perform);
+        self
+    }
+
     /// Whether the step advances only through its Next button.
     #[must_use]
     pub const fn is_manual(&self) -> bool {
         self.goal.is_manual()
+    }
+
+    /// Whether Next can do this step for the learner.
+    #[must_use]
+    pub const fn can_perform(&self) -> bool {
+        self.perform.is_some()
     }
 
     /// The key a UI reports (through `GuideModel.notify`) when step number `index` of its
@@ -330,6 +352,14 @@ fn step_problem(step: &GuideStep) -> Option<String> {
     }
     if let Some(problem) = step.goal.problem() {
         return Some(problem);
+    }
+    if let Some(perform) = &step.perform {
+        if step.is_manual() {
+            return Some("a reading step has nothing to perform".to_owned());
+        }
+        if let Some(problem) = perform.problem() {
+            return Some(format!("its perform is not fit to run: {problem}"));
+        }
     }
     if !step.is_manual() {
         if step.actions.is_empty() {

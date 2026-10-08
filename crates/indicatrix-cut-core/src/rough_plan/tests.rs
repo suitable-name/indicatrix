@@ -55,6 +55,7 @@ pub(super) fn box_design(entry_id: i64) -> CandidateDesign {
 pub(super) fn settings_with(count: u8, kerf: f64, allowance: f64, min_width: f64) -> PlanSettings {
     PlanSettings {
         count,
+        min_count: 1,
         kerf_mm: kerf,
         allowance_mm: allowance,
         skin_mm: 0.0,

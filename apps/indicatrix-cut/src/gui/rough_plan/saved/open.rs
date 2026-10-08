@@ -165,6 +165,7 @@ fn push_settings(host: &Host, plan: &LoadedPlan) -> Vec<String> {
     let model = host.window.global::<RoughPlanModel>();
     let settings = &plan.settings;
     model.set_count(i32::from(settings.count));
+    model.set_min_count(i32::from(settings.min_count));
     model.set_kerf_mm(fmt_exact(settings.kerf_mm).into());
     model.set_allowance_mm(fmt_exact(settings.allowance_mm).into());
     model.set_skin_mm(fmt_exact(settings.skin_mm).into());

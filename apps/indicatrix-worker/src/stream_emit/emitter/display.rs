@@ -48,7 +48,7 @@ use indicatrix::{
     renderer::{
         denoise::AtrousDenoiser,
         frame_denoise::{DenoiseScratch, FirstHitSnapshot, denoise_and_tonemap_frame},
-        guide_pass::generate_guide_buffers_cancellable_geom,
+        guide_pass::generate_guide_buffers_cancellable_geom_with_index,
     },
 };
 use indicatrix_net::SceneState;
@@ -99,6 +99,9 @@ struct GuideInputs {
     /// Concave tools: a tool hit carries facet id `planes.len() + k`, so the denoiser's
     /// edge guides see a tool's walls as distinct facets rather than seeing through them.
     tools: Vec<ToolPrimitive>,
+    /// The material's reference index `n_d`: the guides' path signature follows the rays
+    /// through the stone with it, so it is part of what the guides depend on.
+    n_d: f32,
 }
 
 /// One `DisplayOnly` request's denoise thread and its hand-over state (see the module
@@ -129,6 +132,7 @@ impl DisplayDenoiser {
             distance: scene.distance,
             planes: scene.planes.clone(),
             tools: scene.tools.clone(),
+            n_d: scene.material.dispersion.n_d(),
         };
         let flag = Arc::clone(&cancel);
         let spawned = thread::Builder::new()
@@ -278,7 +282,7 @@ fn run(
     pictures: &mpsc::Sender<DisplayPicture>,
 ) {
     let camera = Camera::new(inputs.yaw, inputs.pitch, inputs.distance, DEFAULT_FOV_DEG);
-    let Some(guides) = generate_guide_buffers_cancellable_geom(
+    let Some(guides) = generate_guide_buffers_cancellable_geom_with_index(
         inputs.width,
         inputs.height,
         &camera,
@@ -286,6 +290,7 @@ fn run(
             planes: &inputs.planes,
             tools: &inputs.tools,
         },
+        inputs.n_d,
         cancel,
     ) else {
         return;
@@ -305,6 +310,7 @@ fn run(
                 first_hit_depth: &guides.depth,
                 first_hit_normal: &guides.normal,
                 first_hit_facet_id: &guides.facet_id,
+                first_hit_path_sig: &guides.path_sig,
             },
             &mut DenoiseScratch {
                 denoiser: &mut denoiser,
@@ -328,7 +334,7 @@ mod tests {
     use indicatrix::{
         geometry::cuts::StandardGemCuts,
         optics::{materials::GemMaterial, raytracer::LightingPreset},
-        renderer::guide_pass::generate_guide_buffers,
+        renderer::guide_pass::generate_guide_buffers_with_index,
     };
     use std::convert::Infallible;
 
@@ -366,7 +372,13 @@ mod tests {
     /// viewer's fov, then `denoise_and_tonemap_frame`.
     fn reference(scene: &SceneState, samples: u32, total: &[Vec3]) -> Vec<u8> {
         let camera = Camera::new(scene.yaw, scene.pitch, scene.distance, DEFAULT_FOV_DEG);
-        let guides = generate_guide_buffers(scene.width, scene.height, &camera, &scene.planes);
+        let guides = generate_guide_buffers_with_index(
+            scene.width,
+            scene.height,
+            &camera,
+            &scene.planes,
+            scene.material.dispersion.n_d(),
+        );
         denoise_and_tonemap_frame(
             FirstHitSnapshot {
                 width: scene.width,
@@ -376,6 +388,7 @@ mod tests {
                 first_hit_depth: &guides.depth,
                 first_hit_normal: &guides.normal,
                 first_hit_facet_id: &guides.facet_id,
+                first_hit_path_sig: &guides.path_sig,
             },
             &mut DenoiseScratch {
                 denoiser: &mut AtrousDenoiser::new(),

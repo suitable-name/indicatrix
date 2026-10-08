@@ -7,6 +7,9 @@ use indicatrix::{
     renderer::tonemap::tonemap_to_rgba_with_threads,
 };
 
+/// Diamond's reference index: the fixtures' path signature is built with it.
+const FIXTURE_N_D: f32 = 2.417;
+
 /// A deterministic, uneven float sum with out-of-gamut and near-zero values.
 fn fixed_sum(len: usize) -> Vec<Vec3> {
     (0..len)
@@ -100,6 +103,7 @@ fn a_denoised_srgb_export_matches_the_settled_live_view() {
         height,
         camera: &camera,
         planes: &planes,
+        n_d: FIXTURE_N_D,
         sample_count: 3,
         sum: &sum,
     };
@@ -108,7 +112,7 @@ fn a_denoised_srgb_export_matches_the_settled_live_view() {
     assert!(denoiser.has_guides_for(1));
 
     // The desktop's call, with its own fresh scratch.
-    let guides = generate_guide_buffers(width, height, &camera, &planes);
+    let guides = generate_guide_buffers_with_index(width, height, &camera, &planes, FIXTURE_N_D);
     let mut desktop_denoiser = AtrousDenoiser::new();
     let (mut avg, mut filtered) = (Vec::new(), Vec::new());
     let desktop = denoise_and_tonemap_frame(
@@ -120,6 +124,7 @@ fn a_denoised_srgb_export_matches_the_settled_live_view() {
             first_hit_depth: &guides.depth,
             first_hit_normal: &guides.normal,
             first_hit_facet_id: &guides.facet_id,
+            first_hit_path_sig: &guides.path_sig,
         },
         &mut DenoiseScratch {
             denoiser: &mut desktop_denoiser,
@@ -134,6 +139,33 @@ fn a_denoised_srgb_export_matches_the_settled_live_view() {
     let png = export_png(width, height, 3, &sum, ColorSpace::Srgb, Some(&mean)).expect("encodes");
     let expected = encode_png_with_icc(&live, width, height, ColorSpace::Srgb).expect("encodes");
     assert_eq!(png, expected, "denoised sRGB export vs settled live view");
+}
+
+/// A changed `n_d` under the same `guide_key` rebuilds the guides (the path signature
+/// depends on it); an unchanged one keeps them.
+#[test]
+fn a_changed_reference_index_rebuilds_the_guides() {
+    let (width, height, camera, planes, sum) = fixture_frame_parts();
+    let frame = |n_d| DenoiseFrame {
+        guide_key: 1,
+        width,
+        height,
+        camera: &camera,
+        planes: &planes,
+        n_d,
+        sample_count: 3,
+        sum: &sum,
+    };
+    let mut denoiser = Denoiser::new();
+    denoiser.ensure_guides(&frame(FIXTURE_N_D));
+    let signature = |d: &Denoiser| d.guides.as_ref().map(|(_, _, g)| g.path_sig.clone());
+    let diamond = signature(&denoiser).expect("built");
+    denoiser.ensure_guides(&frame(FIXTURE_N_D));
+    assert_eq!(signature(&denoiser).as_ref(), Some(&diamond), "kept");
+    denoiser.ensure_guides(&frame(1.0));
+    let none = signature(&denoiser).expect("rebuilt");
+    assert!(none.iter().all(|&s| s == 0), "n_d <= 1 means no signature");
+    assert!(diamond.iter().any(|&s| s != 0), "diamond has a signature");
 }
 
 #[test]
@@ -213,6 +245,7 @@ fn denoise_timing_probe() {
                 depth: &depth,
                 normal: &normal,
                 facet_id: &facet_id,
+                path_sig: None,
                 width: width as usize,
                 height: height as usize,
                 spp: 64,

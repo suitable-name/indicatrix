@@ -4,6 +4,7 @@ import { BatchModel } from "../models/batch.slint";
 import { HelpTopics } from "../models/help.slint";
 import { HelpButton } from "help_button.slint";
 import { TipButton } from "compact_controls.slint";
+import { SegmentPill } from "pill_button.slint";
 
 // Batch tilt-performance-curve computation. One component, two states, the
 // exact same shape `preview_batch_dialog.slint` already established for the preview
@@ -29,6 +30,7 @@ export component TiltBatchDialog inherits Rectangle {
     in property <bool> running: BatchModel.tilt_batch_running;
     in property <int> design_index: BatchModel.tilt_design_index;
     in property <int> design_total: BatchModel.tilt_design_total;
+    in property <string> eta: BatchModel.tilt_eta;
     in property <int> local_active: BatchModel.tilt_local_active;
     in property <int> local_lane_total: BatchModel.tilt_local_lane_total;
     in property <string> remote_title: BatchModel.tilt_remote_title;
@@ -55,6 +57,11 @@ export component TiltBatchDialog inherits Rectangle {
     }
     callback close();
     close => { BatchModel.tilt_close(); }
+
+    // Same rule as `preview_batch_dialog.slint`'s `can_start`.
+    property <bool> can_start: !(root.offer_regenerate
+        && (root.running
+            || (BatchModel.tilt_offer_missing_only && BatchModel.tilt_offer_missing_count <= 0)));
 
     property <float> design_fraction: root.single
         ? BatchModel.tilt_single_fraction
@@ -105,7 +112,9 @@ export component TiltBatchDialog inherits Rectangle {
                 }
             } else if event.text == Key.Return {
                 if root.confirming {
-                    root.generate_confirmed();
+                    if root.can_start {
+                        root.generate_confirmed();
+                    }
                 } else if root.done {
                     root.close();
                 }
@@ -185,14 +194,36 @@ export component TiltBatchDialog inherits Rectangle {
                                 spacing: 10px;
                                 Text {
                                     text: root.offer_regenerate
-                                        ? (root.offer_count == 1
-                                            ? "Recompute the full ±90° tilt sweep for 1 design? Curves it already has are replaced."
-                                            : "Recompute the full ±90° tilt sweeps for " + root.offer_count + " designs? Curves they already have are replaced.")
+                                        ? "Which designs should get their full ±90° tilt sweep recomputed? Curves a chosen design already has are replaced."
                                         : (root.offer_count == 1
                                             ? "1 design has no computed tilt-performance curves yet. Compute its full ±90° sweep now?"
                                             : root.offer_count + " designs have no computed tilt-performance curves yet. Compute their full ±90° sweeps now?");
                                     font-size: 12px;
                                     color: Theme.text-secondary;
+                                    wrap: word-wrap;
+                                }
+                                // The scope choice: only the regenerate commands show it. The
+                                // filter panel's "Compute missing tilt curves" already holds
+                                // exactly the missing set.
+                                if root.offer_regenerate: VerticalLayout {
+                                    spacing: 6px;
+                                    SegmentPill {
+                                        text: BatchModel.tilt_offer_missing_label;
+                                        hint: "Compute only the designs with no tilt curves, or curves made with other settings.";
+                                        selected: BatchModel.tilt_offer_missing_only;
+                                        picked => { BatchModel.tilt_offer_missing_only = true; }
+                                    }
+                                    SegmentPill {
+                                        text: BatchModel.tilt_offer_all_label;
+                                        hint: "Compute every design again, replacing the curves it has.";
+                                        selected: !BatchModel.tilt_offer_missing_only;
+                                        picked => { BatchModel.tilt_offer_missing_only = false; }
+                                    }
+                                }
+                                if root.offer_regenerate && root.running: Text {
+                                    text: "A tilt-curve batch is already running -- wait for it to finish or cancel it first.";
+                                    font-size: 11px;
+                                    color: Theme.accent-amber;
                                     wrap: word-wrap;
                                 }
                                 Text {
@@ -217,6 +248,7 @@ export component TiltBatchDialog inherits Rectangle {
                                 text: "Compute";
                                 hint: "Compute the tilt curves in the background. Enter does the same.";
                                 primary: true;
+                                enabled: root.can_start;
                                 clicked => { root.generate_confirmed(); }
                             }
                         }
@@ -278,7 +310,8 @@ export component TiltBatchDialog inherits Rectangle {
                                     Text {
                                         text: root.single
                                             ? BatchModel.tilt_single_stage
-                                            : "Completed " + root.design_index + " / " + root.design_total;
+                                            : "Completed " + root.design_index + " / " + root.design_total
+                                                + (root.eta == "" ? "" : " · " + root.eta);
                                         font-size: 10px;
                                         color: Theme.text-muted;
                                     }

@@ -82,22 +82,29 @@ export component CmIndexWheel inherits Rectangle {
         fill: transparent;
     }
 
-    for number in root.numbers: Text {
+    // The sizes follow the wheel: a wheel of 240 px or more gets full-size labels; a small one
+    // drops the scale numbers (or every other one) rather than letting them run together.
+    property <length> number_size: Math.clamp(root.side / 20, 10px, 16px);
+    property <length> mark_size: Math.clamp(root.side / 16, 12px, 20px);
+    property <length> dot_size: Math.clamp(root.side / 22, 12px, 20px);
+
+    for number[n] in root.numbers: Text {
+        visible: root.side >= 150px && (root.side >= 260px || Math.mod(n, 2) == 0);
         text: number.label;
         color: Theme.text-muted;
-        font-size: 11px;
+        font-size: root.number_size;
         horizontal-alignment: center;
         vertical-alignment: center;
-        width: 32px;
-        height: 16px;
+        width: root.number_size * 3;
+        height: root.number_size * 1.5;
         x: root.origin_x + number.x * root.side - self.width / 2;
         y: root.origin_y + number.y * root.side - self.height / 2;
     }
 
     for mark in root.marks: Rectangle {
-        width: 16px;
-        height: 16px;
-        border-radius: 8px;
+        width: root.dot_size;
+        height: root.dot_size;
+        border-radius: root.dot_size / 2;
         background: mark.ticked ? Theme.success : Theme.accent-cyan;
         border-width: 2px;
         border-color: Theme.bg-darkest;
@@ -107,12 +114,12 @@ export component CmIndexWheel inherits Rectangle {
     for mark in root.marks: Text {
         text: mark.label;
         color: mark.ticked ? Theme.success : Theme.text-primary;
-        font-size: 13px;
+        font-size: root.mark_size;
         font-weight: 700;
         horizontal-alignment: center;
         vertical-alignment: center;
-        width: 34px;
-        height: 18px;
+        width: root.mark_size * 3;
+        height: root.mark_size * 1.5;
         x: root.origin_x + mark.label_x * root.side - self.width / 2;
         y: root.origin_y + mark.label_y * root.side - self.height / 2;
     }

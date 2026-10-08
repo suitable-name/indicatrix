@@ -113,6 +113,13 @@ export global TiltVideoExportModel {
     // only shown while a remote is configured (`remote_configured`).
     in-out property <int> transfer_index: 0;
     in property <bool> remote_configured: false;
+    // "Compute": 0 = Local only, 1 = Remote only, 2 = Local + Remote (the still-image export's
+    // own pill order). Only offered while a remote is configured; without one the video renders
+    // locally whatever this holds. Remote only traces nothing on this computer.
+    in-out property <int> compute_target_index: 2;
+    // Fired by the pill after it sets `compute_target_index`, so Rust stores the choice in
+    // the app settings (it is seeded from them at startup).
+    callback compute_target_picked(int);
 
     // Output: same folder as the still-image export (`ExportModel.directory`), but its
     // OWN filename template -- a video export names a FOLDER (holding the numbered PNG

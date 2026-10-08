@@ -1,5 +1,6 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
+import { SectionHeader } from "section_header.slint";
 import { EditorModel } from "../models/editor.slint";
 import { SolidPreviewModel } from "../models/solid_preview.slint";
 import { GuideModel } from "../models/guide.slint";
@@ -40,8 +41,14 @@ import { TierTableRow } from "editor_tier_table/tier_table_row.slint";
 // while the body scrolls vertically) in a clipping wrapper, offset by
 // `tier_scroll.content-x` and as wide as the scrolled content.
 export component EditorTierTable inherits Rectangle {
-    vertical-stretch: 1;
-    min-height: 120px;
+    // Collapsed: only the 40px header row (24px `SectionHeader` + 8px padding top/
+    // bottom, same as `EditorInspector.header_height`), no stretch; the inspector
+    // takes the dock's spare height. `clip` hides the squeezed, invisible body.
+    property <bool> collapsed: EditorModel.tier_table_collapsed;
+    vertical-stretch: root.collapsed ? 0 : 1;
+    min-height: root.collapsed ? 40px : 120px;
+    max-height: root.collapsed ? 40px : 100000px;
+    clip: root.collapsed;
     background: Theme.bg-darkest;
     border-radius: Theme.radius-sm;
     // A visible border when the tier list's own `FocusScope` (`table_focus`) has
@@ -160,6 +167,21 @@ export component EditorTierTable inherits Rectangle {
 
     VerticalLayout {
         padding: 8px;
+        spacing: 4px;
+
+        SectionHeader {
+            title: "TIERS (\{EditorModel.tiers.length})";
+            hint: "Show or hide the tier table; the inspector then takes the space.";
+            collapsed: root.collapsed;
+            toggled => { EditorModel.tier_table_collapsed = !EditorModel.tier_table_collapsed; }
+        }
+
+        // The table body stays mounted (the public `focus_filter`/`focus_row`
+        // and the header's `tier_scroll` reference elements in it, which an `if`
+        // would forbid) and is hidden while collapsed.
+        VerticalLayout {
+        visible: !root.collapsed;
+        vertical-stretch: 1;
         spacing: 4px;
 
         // Toolbar: filter box, +Add Tier/Adopt all/Select, quick-add anchors,
@@ -401,5 +423,6 @@ export component EditorTierTable inherits Rectangle {
             wrap: word-wrap;
         }
         } // Rectangle (tier list area)
+        } // VerticalLayout (table body)
     }
 }

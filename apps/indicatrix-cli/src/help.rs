@@ -283,7 +283,10 @@ frames first and starts at frame one. A folder that holds another job's frames i
   --remote HOST:PORT      Also use a remote worker. Needs --cert-dir.
   --cert-dir FOLDER       The folder with ca.pem, client.pem and client.key. Needs --remote.
   --compute WHERE         Replace the job's choice: local, remote or both. remote and both
-                          need --remote.
+                          need --remote. remote traces nothing on this computer (it only
+                          receives and saves the frames and encodes the video); if the
+                          remote is missing or drops, the run stops with an error and a
+                          later run continues from the frames already written.
   --transfer WHAT         Replace the job's choice: full (raw sample data) or final (the
                           finished picture only).
   --contribute-local      With --transfer final: this computer renders a share too.

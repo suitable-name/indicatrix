@@ -75,6 +75,8 @@ pub fn denoise_and_tonemap_frame_into(
         depth: frame.first_hit_depth,
         normal: frame.first_hit_normal,
         facet_id: frame.first_hit_facet_id,
+        // An empty slice is "no signature" (a caller that has none), not a length error.
+        path_sig: (!frame.first_hit_path_sig.is_empty()).then_some(frame.first_hit_path_sig),
         width: frame.width as usize,
         height: frame.height as usize,
         spp: frame.current_sample_count,
@@ -108,6 +110,10 @@ pub struct FirstHitSnapshot<'a> {
     pub first_hit_normal: &'a [Vec3],
     /// First-hit facet index per pixel (`-1` for a miss).
     pub first_hit_facet_id: &'a [i32],
+    /// First-hit path signature per pixel (`0` for a miss or when the material has no
+    /// index): `GuideBuffers::path_sig`. Empty means the caller has none and the
+    /// denoiser filters on the other guides alone, exactly as before the signature existed.
+    pub first_hit_path_sig: &'a [u32],
 }
 
 /// The mutable denoise scratch state a call reuses across frames to avoid per-frame
@@ -197,6 +203,7 @@ mod tests {
             depth,
             normal,
             facet_id,
+            path_sig: None,
             width: width as usize,
             height: height as usize,
             spp: samples,
@@ -237,6 +244,8 @@ mod tests {
                 first_hit_depth: &guides.depth,
                 first_hit_normal: &guides.normal,
                 first_hit_facet_id: &guides.facet_id,
+                // Not fed to the pin fixture: `PINNED` below stays the old literal.
+                first_hit_path_sig: &[],
             },
             &mut DenoiseScratch {
                 denoiser: &mut denoiser,
@@ -271,6 +280,7 @@ mod tests {
             first_hit_depth: &guides.depth,
             first_hit_normal: &guides.normal,
             first_hit_facet_id: &guides.facet_id,
+            first_hit_path_sig: &guides.path_sig,
         };
 
         let mut denoiser = AtrousDenoiser::new();
@@ -331,6 +341,7 @@ mod tests {
                 first_hit_depth: &first_hit_depth,
                 first_hit_normal: &first_hit_normal,
                 first_hit_facet_id: &first_hit_facet_id,
+                first_hit_path_sig: &[],
             },
             &mut DenoiseScratch {
                 denoiser: &mut denoiser,

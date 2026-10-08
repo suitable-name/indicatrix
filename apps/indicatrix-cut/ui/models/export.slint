@@ -97,8 +97,11 @@ export global ExportModel {
     callback cancel_export();
     callback check_remote_availability();
 
+    // Not while an export runs: the dialog is then only being shown again (the header's export
+    // indicator), and refreshing would reset the preset checkboxes and the Transfer choice
+    // the running export was started with.
     changed is_open => {
-        if root.is_open {
+        if root.is_open && !root.is_exporting {
             root.check_remote_availability();
             root.populate_fanout_presets();
         }

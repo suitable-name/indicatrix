@@ -56,9 +56,15 @@
 //!   positions, then the final ranking ([`merge_and_rank`]).
 //! - [`plan_rough`]: all of the above, sequentially.
 //!
+//! The piece table, the alternatives, the single-design pass and the refinement also exist as
+//! `_lanes` twins ([`build_piece_table_lanes`], [`plan_alternatives_lanes`],
+//! [`uniform_layouts_lanes`], [`finish_plan_lanes`]) that split their work over scoped
+//! threads for an application. Each returns bitwise what its serial function returns, for
+//! any lane count; the serial function is the twin with one lane, which spawns nothing.
+//!
 //! # Determinism and portability
 //!
-//! The block planner is single-threaded, with no I/O, no clock, no
+//! The standalone block planner ([`plan_rough`]) is single-threaded, with no I/O, no clock, no
 //! `HashMap`/`HashSet`, no libm calls beyond IEEE `+ - * /`, `min`/`max`, `round` and
 //! `mul_add`: identical input gives bitwise-identical output, and the module builds for
 //! `wasm32-unknown-unknown`. The result never depends on the order of the
@@ -84,18 +90,24 @@ mod tests_brute;
 #[cfg(test)]
 mod tests_input;
 #[cfg(test)]
+mod tests_lanes;
+#[cfg(test)]
 mod tests_lp;
 mod tree;
 mod types;
 mod uniform;
 
-pub use dp::{plan_alternatives, plan_rough_for_order};
+pub use dp::{plan_alternatives, plan_alternatives_lanes, plan_rough_for_order};
 pub use fit::*;
 pub use pareto::pareto_front;
-pub use piece::{Grid, PieceTable, build_piece_table, choose_grid};
+pub use piece::{Grid, PieceTable, build_piece_table, build_piece_table_lanes, choose_grid};
 pub use plan::*;
-pub use rank::{best_layout, flatten_groups, merge_and_rank, rank_indices};
-pub use refine::{final_ranking, finish_plan, own_pool, refine};
+pub use rank::{
+    best_layout, flatten_groups, merge_and_rank, merge_and_rank_min, rank_indices, rank_indices_min,
+};
+pub use refine::{
+    final_ranking, final_ranking_min, finish_plan, finish_plan_lanes, own_pool, refine,
+};
 pub use shape::{
     BoxFace, HullError, MAX_HULL_PLANES, MAX_MESH_TRIANGLES, MeshError, RoughBase, RoughCut,
     RoughMeasure, RoughMesh, RoughModel, ShapeError, import_hull, import_mesh,
@@ -104,7 +116,7 @@ pub use types::{
     Axis, BarCut, CandidateDesign, CutOrder, CutPlan, LayoutGroup, PlacedStone, PlanInputError,
     PlanProgress, PlanSettings, RoughBlock, RoughLayout, SlabCut,
 };
-pub use uniform::uniform_layouts;
+pub use uniform::{uniform_layouts, uniform_layouts_lanes};
 
 /// Layouts in every final ranked list (the block planner's, the shaped planner's and the
 /// refinement's top-up); the exact single-stone fit counts in [`plan`] derive from it.

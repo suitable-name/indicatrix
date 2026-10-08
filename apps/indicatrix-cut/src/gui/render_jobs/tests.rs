@@ -236,6 +236,11 @@ fn context(dir: &Path) -> ExecContext {
 
 /// A three-frame, 16 x 16, one-sample video job writing into `dir`.
 fn video_job(dir: &Path, keep_frames: bool) -> RenderJobFile {
+    video_job_with(dir, keep_frames, RemoteSelection::local_only())
+}
+
+/// [`video_job`] with the compute choices of `remote`.
+fn video_job_with(dir: &Path, keep_frames: bool, remote: RemoteSelection) -> RenderJobFile {
     let request = VideoExportRequest {
         scene: capture(RenderContext::default()),
         axis_index: 0,
@@ -257,7 +262,7 @@ fn video_job(dir: &Path, keep_frames: bool) -> RenderJobFile {
             extinction: Vec::new(),
         },
         keep_frames,
-        remote: RemoteSelection::local_only(),
+        remote,
         local_compute: LocalComputeTarget::Cpu,
     };
     convert::build_video_job(
@@ -552,6 +557,41 @@ fn a_still_job_renders_and_never_overwrites_an_existing_picture() {
 
     let stopped = execute_job(&job, &ctx, &AtomicBool::new(true), &mut Recorder::new());
     assert_eq!(stopped, JobOutcome::Stopped { frames_done: 0 });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A video queued with "Remote only" freezes that choice, keeps it through the job file's
+/// text, and runs as `RemoteOnly` with the worker read at run time (never stored in the job).
+#[test]
+fn a_queued_video_keeps_its_compute_choice_through_the_job_file() {
+    use crate::bridge::export_thread::ComputeTarget;
+    let dir = test_dir("video_compute");
+    let remote = RemoteSelection {
+        compute_target: ComputeTarget::RemoteOnly,
+        worker: None,
+        transfer: crate::settings::ExportTransfer::FullData,
+        contribute_local: false,
+    };
+    let job = video_job_with(&dir, false, remote);
+    assert_eq!(job.compute.target, ComputeChoice::Remote);
+    let back =
+        codec::from_text(&codec::to_text(&job).expect("the job encodes")).expect("the job decodes");
+    assert_eq!(back.compute.target, ComputeChoice::Remote);
+
+    let worker = crate::settings::WorkerSettings {
+        address: "render-box.local:7878".to_string(),
+        ..crate::settings::WorkerSettings::default()
+    };
+    let ctx = ExecContext {
+        worker: Some(worker.clone()),
+        ..context(&dir)
+    };
+    let selection = remote_selection_for(&back, &ctx);
+    assert_eq!(selection.compute_target, ComputeTarget::RemoteOnly);
+    assert_eq!(selection.worker, Some(worker));
+
+    // The default for a local video stays local.
+    assert_eq!(video_job(&dir, false).compute.target, ComputeChoice::Local);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

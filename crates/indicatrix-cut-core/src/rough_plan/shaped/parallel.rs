@@ -1,4 +1,4 @@
-//! Scoped threads for the stages of the shaped planner that split their work.
+//! Scoped threads for the stages of the shaped and the block planner that split their work.
 //!
 //! A stage cut into jobs runs them on scoped threads and hands the results back in job
 //! order, so the output never depends on the lane count or on thread timing. Progress

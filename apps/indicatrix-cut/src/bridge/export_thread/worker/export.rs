@@ -51,6 +51,14 @@ pub fn run_export(
     // never runs and the CPU tracer carries the whole export. `Gpu` and `CpuGpu` both
     // acquire; what separates them is `render_accumulation`'s own calibration gate,
     // not the backend.
+    //
+    // `RemoteOnly` traces nothing here either, so it neither acquires an adapter nor runs
+    // the hybrid probe (the viewport stays live meanwhile, see `pauses_live_viewport`).
+    let local_compute = if remote.compute_target.pauses_live_viewport() {
+        local_compute
+    } else {
+        LocalComputeTarget::Cpu
+    };
     let gpu = match local_compute {
         LocalComputeTarget::Cpu => GpuBackend::disabled(),
         LocalComputeTarget::CpuGpu | LocalComputeTarget::Gpu => GpuBackend::acquire(),

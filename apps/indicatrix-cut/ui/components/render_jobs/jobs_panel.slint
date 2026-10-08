@@ -1,6 +1,7 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { RenderJobsModel } from "../../models/render_jobs.slint";
+import { ExportRunModel } from "../../models/export_run.slint";
 import { HelpTopics } from "../../models/help.slint";
 import { HelpButton } from "../help_button.slint";
 import { ActionButton } from "../chip_toggle.slint";
@@ -76,10 +77,12 @@ export component RenderJobsPanel inherits Rectangle {
                     width: 120px;
                     height: 30px;
                     text: "Start Queue";
-                    hint: RenderJobsModel.can_start_queue
-                        ? "Render the waiting jobs from the top of the list down, one at a time."
-                        : "There are no waiting jobs.";
-                    enabled: RenderJobsModel.can_start_queue;
+                    hint: ExportRunModel.direct_running
+                        ? ExportRunModel.busy_hint
+                        : (RenderJobsModel.can_start_queue
+                            ? "Render the waiting jobs from the top of the list down, one at a time."
+                            : "There are no waiting jobs.");
+                    enabled: RenderJobsModel.can_start_queue && !ExportRunModel.direct_running;
                     fill: Theme.accent-cyan;
                     hover_fill: Theme.accent-cyan-hover;
                     ink: Theme.text-on-accent;

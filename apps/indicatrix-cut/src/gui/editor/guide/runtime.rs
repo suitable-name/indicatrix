@@ -10,7 +10,7 @@
 use crate::gui::editor::{auto_solve, state::EditorState};
 use indicatrix::geometry::meet_solver::SolvedTier;
 use indicatrix_cut_core::Design;
-use indicatrix_editor::guide::{GoalContext, Guide, GuideCatalog, goal_met};
+use indicatrix_editor::guide::{GoalContext, Guide, GuideCatalog, Perform, goal_met};
 use std::{cell::RefCell, rc::Rc};
 
 /// What a guide waits for before it can open its first step.
@@ -78,6 +78,16 @@ pub(super) fn state() -> Option<Rc<RefCell<EditorState>>> {
 /// A copy of the guide with this id.
 pub(super) fn guide(id: &str) -> Option<Guide> {
     with(|rt| rt.catalog.get(id).cloned())
+}
+
+/// What Next does on step `index` of guide `guide_id` while it is unfinished, if anything.
+pub(super) fn step_perform(guide_id: &str, index: usize) -> Option<Perform> {
+    with(|rt| {
+        rt.catalog
+            .get(guide_id)
+            .and_then(|guide| guide.steps.get(index))
+            .and_then(|step| step.perform.clone())
+    })
 }
 
 /// Reads the catalogue.

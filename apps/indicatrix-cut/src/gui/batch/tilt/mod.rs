@@ -65,7 +65,7 @@ mod scan;
 mod wiring;
 
 pub use engine::{save_tilt_curves_for_entry, tilt_curves_for_planes};
-pub use wiring::{offer_batch_confirmation, setup_tilt_batch_callbacks};
+pub use wiring::{offer_regeneration, setup_tilt_batch_callbacks};
 
 #[cfg(test)]
 mod tests {

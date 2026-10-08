@@ -10,11 +10,11 @@
 //! reads: the app's local CPU/GPU/hybrid setting (`RenderContext::local_compute_target`,
 //! a persisted general setting) and the configured remote endpoint
 //! (`AppSettings::remote`) with the video section's own "Transfer" choice -- see
-//! `mod::build_request`'s own doc comment for where these are read from. There is no
-//! per-video "Compute" pill the way the still-image export dialog has one;
-//! `compute_target` always mirrors that dialog's own default (`Both`), letting
-//! `render_image_rgba`'s existing graceful remote-unavailable fallback decide, frame to
-//! frame, whether the remote is actually reachable.
+//! `mod::build_request`'s own doc comment for where these are read from. The section's
+//! own "Compute" pill (like the still-image export dialog's) picks `compute_target`:
+//! under `Both`, `render_image_rgba`'s graceful remote-unavailable fallback decides,
+//! frame to frame, whether the remote is actually reachable; under `RemoteOnly` there is
+//! no fallback and an unreachable remote fails the frame.
 //!
 //! # Final picture only
 //!
@@ -38,10 +38,8 @@ use std::sync::atomic::AtomicBool;
 /// source a still-image export reads (see this module's own doc comment) and reused
 /// unchanged for every frame of the sweep.
 pub(super) struct VideoComputeConfig {
-    /// Always `ComputeTarget::Both` (there is no per-video "Compute" pill, so this
-    /// mirrors the still-image export dialog's own default), the configured remote
-    /// endpoint snapshotted once for the whole video, and the section's "Transfer"
-    /// choice.
+    /// The section's "Compute" choice, the configured remote endpoint snapshotted once
+    /// for the whole video, and the section's "Transfer" choice.
     pub(super) remote: RemoteSelection,
     /// `RenderContext::local_compute_target` at the moment the video started -- the
     /// SAME persisted CPU/CPU+GPU/GPU setting the still-image export and the live

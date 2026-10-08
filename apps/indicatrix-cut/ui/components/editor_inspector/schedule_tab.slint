@@ -15,6 +15,11 @@ import { EditorModel } from "../../models/editor.slint";
 // Inspector hides its pill and body).
 export component ScheduleTab inherits VerticalLayout {
     spacing: 6px;
+    // The shared column grid of the header and the rows.
+    private property <length> code-w: 40px;
+    private property <length> angle-w: 56px;
+    private property <length> col-gap: 8px;
+    private property <length> row-pad: 6px;
     // Packed at the top, as the other inspector tabs: no row takes the spare height.
     alignment: start;
     Rectangle {
@@ -34,27 +39,29 @@ export component ScheduleTab inherits VerticalLayout {
         accessible-label: "Cutting schedule";
         VerticalLayout {
             spacing: 2px;
+            // One column grid for the header and every row: the code and angle columns are
+            // fixed, the index column takes the rest, so the columns line up whatever a row holds.
             HorizontalLayout {
-                spacing: 6px;
-                padding-left: 4px;
-                padding-right: 4px;
+                spacing: root.col-gap;
+                padding-left: root.row-pad;
+                padding-right: root.row-pad;
                 Rectangle {
-                    horizontal-stretch: 1;
+                    width: root.code-w;
                     height: facet_head.preferred-height;
-                    Tooltip { text: @markdown("The facet's name."); }
-                    facet_head := Text { text: "FACET"; font-size: 9px; font-weight: 700; color: Theme.text-muted; accessible-role: AccessibleRole.text; }
+                    Tooltip { text: @markdown("The facet's code, in cutting order: P pavilion, G girdle, C crown, T table."); }
+                    facet_head := Text { width: parent.width; text: "FACET"; horizontal-alignment: left; font-size: 9px; font-weight: 700; color: Theme.text-muted; accessible-role: AccessibleRole.text; }
                 }
                 Rectangle {
-                    width: 48px;
+                    width: root.angle-w;
                     height: angle_head.preferred-height;
                     Tooltip { text: @markdown("The angle to set on the machine, in degrees."); }
-                    angle_head := Text { text: "ANGLE"; font-size: 9px; font-weight: 700; color: Theme.text-muted; accessible-role: AccessibleRole.text; }
+                    angle_head := Text { width: parent.width; text: "ANGLE"; horizontal-alignment: right; font-size: 9px; font-weight: 700; color: Theme.text-muted; accessible-role: AccessibleRole.text; }
                 }
                 Rectangle {
                     horizontal-stretch: 1;
                     height: index_head.preferred-height;
-                    Tooltip { text: @markdown("The index-wheel positions to cut the facet at. See the glossary."); }
-                    index_head := Text { text: "INDEX"; font-size: 9px; font-weight: 700; color: Theme.text-muted; accessible-role: AccessibleRole.text; }
+                    Tooltip { text: @markdown("The index-wheel positions to cut the facet at, written as on the cutting sheet. See the glossary."); }
+                    index_head := Text { width: parent.width; text: "INDEX"; horizontal-alignment: left; font-size: 9px; font-weight: 700; color: Theme.text-muted; accessible-role: AccessibleRole.text; }
                 }
             }
             // One shaded band per tier, the zebra alternating per tier (not per line): a
@@ -66,19 +73,28 @@ export component ScheduleTab inherits VerticalLayout {
                 accessible-role: AccessibleRole.list-item;
                 accessible-label: row.facet + ", angle " + row.angle + ", index " + row.index_val + (row.second_line != "" ? ", " + row.second_line : "");
                 VerticalLayout {
-                    padding-left: 4px;
-                    padding-right: 4px;
+                    padding-left: root.row-pad;
+                    padding-right: root.row-pad;
+                    padding-top: 1px;
+                    padding-bottom: 1px;
                     HorizontalLayout {
-                        spacing: 6px;
-                        Text { horizontal-stretch: 1; text: row.facet; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
-                        Text { width: 48px; text: row.angle; font-size: 10px; color: Theme.text-secondary; }
-                        Text { horizontal-stretch: 1; text: row.index_val; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                        spacing: root.col-gap;
+                        alignment: start;
+                        Text { width: root.code-w; text: row.facet; horizontal-alignment: left; vertical-alignment: top; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                        Text { width: root.angle-w; text: row.angle; horizontal-alignment: right; vertical-alignment: top; font-size: 10px; color: Theme.text-secondary; }
+                        Text { horizontal-stretch: 1; text: row.index_val; horizontal-alignment: left; vertical-alignment: top; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
                     }
-                    if row.second_line != "": Text {
-                        text: row.second_line;
-                        font-size: 9px;
-                        color: Theme.accent-cyan;
-                        overflow: elide;
+                    // The tool line sits under the index column.
+                    if row.second_line != "": HorizontalLayout {
+                        spacing: root.col-gap;
+                        Rectangle { width: root.code-w + root.angle-w + root.col-gap; }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: row.second_line;
+                            font-size: 9px;
+                            color: Theme.accent-cyan;
+                            wrap: word-wrap;
+                        }
                     }
                 }
             }

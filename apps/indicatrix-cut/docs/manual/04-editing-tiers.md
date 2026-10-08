@@ -14,7 +14,9 @@ rather than typing a whole tier from scratch.
 
 Below the tier table, a resizable, collapsible inspector panel has five
 tabs: **Tier**, **Preform**, **Optimize**, **Schedule**, and **History**.
-Clicking a tab pill also re-expands the panel if it was collapsed. This
+Clicking a tab pill also re-expands the panel if it was collapsed. The tier
+table collapses the same way, through the arrow on its **TIERS** header; the
+inspector then takes all the space the table gave up. This
 chapter covers the Tier tab in full and the Preform tab's proportions/yield
 fields; Optimize is Chapter 8, Schedule is covered in Chapter 3, and
 History is Chapter 18.

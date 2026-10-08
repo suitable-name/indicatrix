@@ -59,6 +59,8 @@ pub fn add_tier(ui: &MainWindow) {
     editor.set_selected_tier_index(-1);
     editor.set_inspector_tab(0);
     editor.set_inspector_collapsed(false);
+    // The new tier appears in the table, so keep it in view as well.
+    editor.set_tier_table_collapsed(false);
 }
 
 /// Shows inspector tab `tab` (0 Tier, 1 Preform, 2 Optimize, 3 Schedule, 4 History), expanded.

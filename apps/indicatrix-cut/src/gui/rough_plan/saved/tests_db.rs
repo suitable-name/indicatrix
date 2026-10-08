@@ -86,6 +86,7 @@ fn planned_rough() -> (
     );
     let settings = PlanSettings {
         count: 3,
+        min_count: 1,
         kerf_mm: 0.3,
         allowance_mm: 0.2,
         skin_mm: 0.0,

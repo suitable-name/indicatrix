@@ -385,6 +385,23 @@ pub fn plan_alternatives(
     count: u8,
     on_progress: &mut dyn FnMut(PlanProgress) -> bool,
 ) -> Option<Vec<LayoutGroup>> {
+    plan_alternatives_lanes(grid, designs, best, count, 1, on_progress)
+}
+
+/// [`plan_alternatives`] with each round's piece table built on `lanes` scoped threads
+/// (the round's DP is one cut order and stays on the calling thread).
+///
+/// The tables are bitwise the serial ones whatever the lane count, so the groups are too.
+/// The per-plane events are relabelled as the round's [`PlanProgress::Alternatives`] on the
+/// calling thread, as in the serial run. With one lane nothing is spawned.
+pub fn plan_alternatives_lanes(
+    grid: &Grid,
+    designs: &[CandidateDesign],
+    best: &RoughLayout,
+    count: u8,
+    lanes: usize,
+    on_progress: &mut dyn FnMut(PlanProgress) -> bool,
+) -> Option<Vec<LayoutGroup>> {
     let mut removed_ids: Vec<i64> = Vec::new();
     let mut current = best.clone();
     let mut groups = Vec::new();
@@ -409,7 +426,7 @@ pub fn plan_alternatives(
         if pool.is_empty() {
             break;
         }
-        let table = build_piece_table_quiet(grid, &pool, on_progress, progress)?;
+        let table = build_piece_table_quiet(grid, &pool, lanes, on_progress, progress)?;
         let layouts =
             plan_rough_for_order(grid, &table, &pool, best.cut_order, count, &mut |_| {
                 on_progress(progress)
@@ -431,8 +448,9 @@ pub fn plan_alternatives(
 fn build_piece_table_quiet(
     grid: &Grid,
     pool: &[CandidateDesign],
+    lanes: usize,
     on_progress: &mut dyn FnMut(PlanProgress) -> bool,
     label: PlanProgress,
 ) -> Option<PieceTable> {
-    super::piece::build_piece_table(grid, pool, &mut |_| on_progress(label))
+    super::piece::build_piece_table_lanes(grid, pool, lanes, &mut |_| on_progress(label))
 }

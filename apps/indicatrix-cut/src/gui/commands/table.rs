@@ -644,7 +644,7 @@ pub static COMMANDS: &[Command] = &[
     ),
     command(
         "tools.regenerate_previews",
-        "Regenerate All Preview Images...",
+        "Regenerate Preview Images...",
         Category::Tools,
         "library thumbnails batch pictures",
         None,
@@ -653,7 +653,7 @@ pub static COMMANDS: &[Command] = &[
     ),
     command(
         "tools.regenerate_tilt",
-        "Regenerate All Tilt Curves...",
+        "Regenerate Tilt Curves...",
         Category::Tools,
         "library batch performance",
         None,

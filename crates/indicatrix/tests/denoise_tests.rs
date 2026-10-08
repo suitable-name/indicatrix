@@ -127,6 +127,7 @@ fn filtering_reduces_error_against_ground_truth() {
         width,
         height,
         spp: 1,
+        path_sig: None,
     };
 
     let mut denoiser = AtrousDenoiser::new();
@@ -185,6 +186,7 @@ fn facet_edges_survive_filtering() {
         width,
         height,
         spp: 1,
+        path_sig: None,
     };
 
     let mut denoiser = AtrousDenoiser::new();
@@ -233,6 +235,101 @@ fn facet_edges_survive_filtering() {
     }
 }
 
+/// One facet, two interior path-signature regions of nearly equal colour (the dark-stone
+/// case: a reflection boundary the colour term cannot see). Without the signature the
+/// boundary is smeared away; with it the boundary survives the widest kernel, and noise
+/// inside each region is still averaged out.
+#[test]
+fn path_signature_boundary_survives_inside_one_facet() {
+    let width = 64;
+    let height = 32;
+    let len = width * height;
+    let split = width / 2;
+
+    let color_a = Vec3::new(0.30, 0.20, 0.10);
+    let color_b = Vec3::new(0.34, 0.22, 0.12);
+
+    let mut color = vec![Vec3::ZERO; len];
+    let mut sig = vec![0u32; len];
+    for y in 0..height {
+        for x in 0..width {
+            let idx = y * width + x;
+            if x < split {
+                color[idx] = color_a;
+                sig[idx] = 0x1111;
+            } else {
+                color[idx] = color_b;
+                sig[idx] = 0x2222;
+            }
+        }
+    }
+    let facet_id = vec![3i32; len];
+    let depth = vec![1.0f32; len];
+    let normal = vec![Vec3::Z; len];
+
+    let without = GBuffers {
+        color: &color,
+        depth: &depth,
+        normal: &normal,
+        facet_id: &facet_id,
+        width,
+        height,
+        spp: 1,
+        path_sig: None,
+    };
+    let with = GBuffers {
+        path_sig: Some(&sig),
+        ..without
+    };
+    let params = AtrousParams {
+        num_passes: 5,
+        ..AtrousParams::default()
+    };
+    let mut denoiser = AtrousDenoiser::new();
+
+    let y = height / 2;
+    let left_idx = y * width + (split - 1);
+    let right_idx = y * width + split;
+    let original_jump = (color[right_idx] - color[left_idx]).length();
+
+    let smeared = denoiser.denoise(&without, &params);
+    let smeared_jump = (smeared[right_idx] - smeared[left_idx]).length();
+    assert!(
+        smeared_jump < original_jump * 0.5,
+        "premise: colour alone must smear this boundary: original={original_jump:.4}, smeared={smeared_jump:.4}"
+    );
+
+    let kept = denoiser.denoise(&with, &params);
+    let kept_jump = (kept[right_idx] - kept[left_idx]).length();
+    assert!(
+        kept_jump > original_jump * 0.95,
+        "the signature boundary must stay sharp: original={original_jump:.4}, kept={kept_jump:.4}"
+    );
+
+    // Noise inside each region is still filtered.
+    let mut rng = Xorshift32::new(0xbeef);
+    let noisy: Vec<Vec3> = color
+        .iter()
+        .map(|c| *c + Vec3::new(rng.next_signed(), rng.next_signed(), rng.next_signed()) * 0.1)
+        .collect();
+    let cleaned = denoiser.denoise(
+        &GBuffers {
+            color: &noisy,
+            ..with
+        },
+        &params,
+    );
+    let rows = 4..height - 4;
+    for (truth, xs) in [(color_a, 4..split - 4), (color_b, split + 4..width - 4)] {
+        let before = region_mse(&noisy, truth, width, &xs, rows.clone());
+        let after = region_mse(&cleaned, truth, width, &xs, rows.clone());
+        assert!(
+            after * 4.0 <= before,
+            "a noisy region must lose at least 3/4 of its error: before={before:.6}, after={after:.6}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------------
 // 3. Convergence taper: near-identity at high sample counts.
 // ---------------------------------------------------------------------------------
@@ -261,6 +358,7 @@ fn high_sample_count_approaches_identity() {
         width,
         height,
         spp: 100_000,
+        path_sig: None,
     };
 
     let mut denoiser = AtrousDenoiser::new();
@@ -329,6 +427,7 @@ fn uniform_image_is_unchanged() {
         width,
         height,
         spp: 1,
+        path_sig: None,
     };
 
     let mut denoiser = AtrousDenoiser::new();
@@ -373,6 +472,7 @@ fn filtering_is_deterministic() {
         width,
         height,
         spp: 3,
+        path_sig: None,
     };
     let params = AtrousParams::default();
 
@@ -422,6 +522,7 @@ fn one_by_one_image_does_not_panic() {
         width: 1,
         height: 1,
         spp: 2,
+        path_sig: None,
     };
 
     let mut denoiser = AtrousDenoiser::new();
@@ -451,6 +552,7 @@ fn zero_by_zero_image_does_not_panic() {
         width: 0,
         height: 0,
         spp: 0,
+        path_sig: None,
     };
 
     let mut denoiser = AtrousDenoiser::new();
@@ -479,6 +581,7 @@ fn zero_samples_does_not_panic_or_produce_nan() {
         width,
         height,
         spp: 0,
+        path_sig: None,
     };
 
     let mut denoiser = AtrousDenoiser::new();
@@ -507,6 +610,7 @@ fn all_black_buffer_does_not_panic_or_produce_nan() {
         width,
         height,
         spp: 5,
+        path_sig: None,
     };
 
     let mut denoiser = AtrousDenoiser::new();
@@ -539,6 +643,7 @@ fn mismatched_buffer_lengths_degrade_gracefully() {
         width,
         height,
         spp: 1,
+        path_sig: None,
     };
 
     let mut denoiser = AtrousDenoiser::new();
@@ -595,6 +700,7 @@ fn parallel_denoise_is_bit_identical_across_thread_counts() {
         width,
         height,
         spp: 1,
+        path_sig: None,
     };
     let params = AtrousParams::default();
 
@@ -657,6 +763,7 @@ fn zero_passes_param_does_not_panic() {
         width,
         height,
         spp: 1,
+        path_sig: None,
     };
     let params = AtrousParams {
         num_passes: 0,
@@ -700,6 +807,7 @@ fn a_non_finite_texel_does_not_contaminate_its_neighbours() {
         width,
         height,
         spp: 1,
+        path_sig: None,
     };
     let filtered = AtrousDenoiser::new().denoise(&inputs, &AtrousParams::default());
 
@@ -737,6 +845,7 @@ fn background_pixels_are_copied_through_unfiltered() {
         width,
         height,
         spp: 1,
+        path_sig: None,
     };
     let filtered = AtrousDenoiser::new().denoise(&inputs, &AtrousParams::default());
 
@@ -776,6 +885,7 @@ fn a_frame_with_no_samples_is_a_finite_black_frame() {
             first_hit_depth: &depth,
             first_hit_normal: &normal,
             first_hit_facet_id: &facet_id,
+            first_hit_path_sig: &[],
         },
         &mut DenoiseScratch {
             denoiser: &mut denoiser,

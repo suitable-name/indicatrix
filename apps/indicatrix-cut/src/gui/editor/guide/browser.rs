@@ -1,6 +1,6 @@
 //! The callbacks behind the tutorials: the browser's list, the welcome dialog's three
 //! answers, and the running guide's own callbacks (start, step entered, UI event, poll,
-//! launch tick, finished).
+//! perform, launch tick, finished).
 //!
 //! The Slint side is `ui/models/tutorials.slint` (`TutorialsModel`) and
 //! `ui/models/guide.slint` (`GuideModel`). Which guides exist, how they are grouped and
@@ -8,7 +8,7 @@
 //! this module only turns them into Slint rows and saves the result through the settings
 //! persister.
 
-use super::{build_design, launch, progress, runtime};
+use super::{build_design, launch, perform, progress, runtime};
 use crate::{
     EditorModel, GuideModel, MainWindow, PreferencesModel, TutorialRowData, TutorialsModel,
     gui::editor::state::EditorState,
@@ -149,6 +149,23 @@ fn setup_guide_callbacks(ui: &MainWindow) {
     guide.on_poll(move || {
         if let Some(ui) = ui_weak.upgrade() {
             progress::check_now(&ui);
+        }
+    });
+
+    // Next on an unfinished step does the step: the recipe runs, then the goal is judged as
+    // for any other route to it. While a recipe that started a solve has no result yet, the
+    // overlay layer's timer asks for ticks.
+    let ui_weak = ui.as_weak();
+    guide.on_perform(move |index| {
+        if let Some(ui) = ui_weak.upgrade() {
+            perform::start(&ui, index);
+        }
+    });
+
+    let ui_weak = ui.as_weak();
+    guide.on_perform_tick(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            perform::tick(&ui);
         }
     });
 

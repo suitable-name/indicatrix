@@ -19,13 +19,13 @@ use super::{
     wiring,
 };
 use crate::{
-    ActivityModel, MainWindow,
+    ActivityModel, MainWindow, RenderJobsModel,
     bridge::render_thread::RenderContext,
     gui::{external_links::open_local_path, show_toast},
     settings::SettingsPersister,
 };
 use indicatrix_render_jobs::{
-    FailureKind, JobOutcome, JobProgress, JobSink, codec,
+    ComputeChoice, FailureKind, JobOutcome, JobProgress, JobSink, codec,
     order::{QueueEntry, moved, moved_to_front, next_to_run},
     state::{
         APP_CLOSING_NOTE, CommandEffect, JobCommand, JobState, StopReason, command_effect,
@@ -135,6 +135,9 @@ struct Running {
     /// Its chip in the status strip.
     activity_id: i32,
     frames_total: u32,
+    /// Whether this run holds a live-viewport pause (`export_active_count`): false for a
+    /// Remote-only job, which traces nothing on this computer.
+    pausing: bool,
 }
 
 struct ControllerState {
@@ -265,14 +268,19 @@ impl JobController {
 
     /// Shows the rows, the queue line and the chip from what is cached.
     fn apply_view(&self) {
-        let view = {
+        let (view, job_running) = {
             let metas = self.metas.borrow();
             let live = self.live.borrow();
-            let queue_running = self.state.borrow().queue_running;
-            queue_view(&metas, queue_running, live.as_ref())
+            let state = self.state.borrow();
+            (
+                queue_view(&metas, state.queue_running, live.as_ref()),
+                state.current.is_some(),
+            )
         };
         if let Some(ui) = self.ui.upgrade() {
             wiring::publish(&ui, &view);
+            // The queue's input to `ExportRunModel.running`: one export at a time.
+            ui.global::<RenderJobsModel>().set_job_running(job_running);
         }
     }
 
@@ -337,10 +345,14 @@ impl JobController {
             return false;
         }
 
-        // Pauses the live viewport like every export; `on_finished` is the one decrement.
+        // Pauses the live viewport like every export, except a Remote-only job (nothing is
+        // traced here, so the person keeps working); `on_finished` is the one decrement.
+        let pausing = job.compute.target != ComputeChoice::Remote;
         let local_compute = {
             let mut guard = RenderContext::lock(&self.render_ctx);
-            guard.export_active_count += 1;
+            if pausing {
+                guard.export_active_count += 1;
+            }
             guard.local_compute_target
         };
         // Not cancellable from the status strip: that chip's cancel has a single handler,
@@ -375,6 +387,7 @@ impl JobController {
                 stop: None,
                 activity_id,
                 frames_total: row.meta.frames_total,
+                pausing,
             });
             state.last_note = None;
         }
@@ -469,7 +482,7 @@ impl JobController {
             let running = if ours { state.current.take() } else { None };
             (running, state.queue_running)
         };
-        {
+        if running.as_ref().is_none_or(|run| run.pausing) {
             let mut guard = RenderContext::lock(&self.render_ctx);
             guard.export_active_count = guard.export_active_count.saturating_sub(1);
         }
@@ -623,6 +636,16 @@ impl JobController {
             .any(|meta| JobState::parse(&meta.state) == Some(JobState::Queued));
         if !waiting {
             self.toast("There are no waiting jobs.", "info");
+            self.refresh();
+            return;
+        }
+        // One export at a time: a still export or a video from a dialog holds the machine.
+        let direct_export = self
+            .ui
+            .upgrade()
+            .is_some_and(|ui| crate::gui::export_run::ExportActivity::read(&ui).direct());
+        if direct_export {
+            self.toast(crate::gui::export_run::BUSY_MESSAGE, "info");
             self.refresh();
             return;
         }

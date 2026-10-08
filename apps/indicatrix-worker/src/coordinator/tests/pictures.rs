@@ -14,7 +14,7 @@ use indicatrix::{
     renderer::{
         denoise::AtrousDenoiser,
         frame_denoise::{DenoiseScratch, FirstHitSnapshot, denoise_and_tonemap_frame},
-        guide_pass::generate_guide_buffers,
+        guide_pass::generate_guide_buffers_with_index,
         tonemap::tonemap_accumulation,
     },
 };
@@ -269,7 +269,8 @@ fn viewer_samples_over_half_is_refused_with_validation_failed() {
 /// single fastest worker and streams DENOISED, tone-mapped `DISPLAY_FRAME`s (no
 /// `FRAME`); the last one is the whole request's picture, byte-identical to the GUI's
 /// own `denoise_and_tonemap_frame` of the same sum with guides from the same pose and
-/// geometry -- and not the plain tone-map.
+/// geometry (including the path-signature guide) -- and not the plain tone-map. Rendered
+/// at 32x24 so facets span several pixels; see the comment in the body.
 #[test]
 fn display_only_streams_tone_mapped_display_frames() {
     let pki = pki_with_server("pictures-display");
@@ -281,13 +282,20 @@ fn display_only_streams_tone_mapped_display_frames() {
     assert!(wait_for(WAIT, || registry.capacity().workers == 1));
 
     let (welcome, mut client) = viewer(handle.viewer_addr, &viewer_bundle);
-    let image = scene(8, 6);
+    // 32x24 (same 4:3 framing as the old 8x6): the denoiser's path-signature guide
+    // rejects taps whose first-hit facet/TIR path differs from the centre's, so the
+    // picture needs facets spanning several pixels for equal-signature neighbours to
+    // exist. At 8x6 nearly every gem pixel had a unique signature and background
+    // pixels are copied through unfiltered, so the denoiser legitimately did nothing.
+    const W: u32 = 32;
+    const H: u32 = 24;
+    let image = scene(W, H);
     let mode = TransferMode::DisplayOnly;
     send(
         &mut client,
         &render(3, image.clone(), (0, 2), mode, RequestIntent::Interactive),
     );
-    let transcript = collect(&mut client, (8, 6), |_, _| {});
+    let transcript = collect(&mut client, (W, H), |_, _| {});
     assert_eq!(transcript.done.expect("DONE").stats.samples_done, 2);
     assert_eq!(transcript.frame_samples, 0, "no FRAME in DisplayOnly");
     assert!(transcript.display_frames >= 1);
@@ -295,19 +303,26 @@ fn display_only_streams_tone_mapped_display_frames() {
     assert_eq!((header.request_id, header.samples_done), (3, 2));
     let encoding = DisplayEncoding::for_payload_encoding(welcome.payload_encoding);
     assert_eq!(header.encoding, encoding);
-    let pixels = display::decode_rgba8(encoding, 8, 6, &payload).unwrap();
+    let pixels = display::decode_rgba8(encoding, W, H, &payload).unwrap();
     let sum = trace_samples(&image, 0, 2, 2);
     let camera = Camera::new(image.yaw, image.pitch, image.distance, DEFAULT_FOV_DEG);
-    let guides = generate_guide_buffers(8, 6, &camera, &image.planes);
+    let guides = generate_guide_buffers_with_index(
+        W,
+        H,
+        &camera,
+        &image.planes,
+        image.material.dispersion.n_d(),
+    );
     let expected = denoise_and_tonemap_frame(
         FirstHitSnapshot {
-            width: 8,
-            height: 6,
+            width: W,
+            height: H,
             current_sample_count: 2,
             accum_buffer: &sum,
             first_hit_depth: &guides.depth,
             first_hit_normal: &guides.normal,
             first_hit_facet_id: &guides.facet_id,
+            first_hit_path_sig: &guides.path_sig,
         },
         &mut DenoiseScratch {
             denoiser: &mut AtrousDenoiser::new(),
@@ -319,7 +334,7 @@ fn display_only_streams_tone_mapped_display_frames() {
         pixels, expected,
         "the GUI's denoised picture of the same sum"
     );
-    let plain = tonemap_accumulation(8, 6, 2, &sum, indicatrix::color::ColorSpace::Srgb);
+    let plain = tonemap_accumulation(W, H, 2, &sum, indicatrix::color::ColorSpace::Srgb);
     assert_ne!(
         pixels, plain,
         "a display frame is denoised, not just tone-mapped"

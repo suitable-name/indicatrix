@@ -169,6 +169,8 @@ pub struct FormFields {
     pub weighed_ct: String,
     /// The stone-count limit as the spin box holds it.
     pub count: i32,
+    /// The minimum stone count as the spin box holds it (0 reads as 1).
+    pub min_count: i32,
     /// The picked row of the material list (negative for none).
     pub material_index: i32,
 }
@@ -184,6 +186,7 @@ impl FormFields {
             min_width_mm: model.get_min_width_mm().to_string(),
             weighed_ct: model.get_weighed_ct().to_string(),
             count: model.get_count(),
+            min_count: model.get_min_count(),
             material_index: model.get_material_index(),
         }
     }
@@ -283,9 +286,14 @@ impl PlanForm {
             .and_then(|i| choices.get(i))
             .ok_or_else(|| PICK_MATERIAL_MESSAGE.to_string())?;
         let count = u8::try_from(fields.count.clamp(1, 99)).unwrap_or(1);
+        // The floor never exceeds the cap: a minimum typed above the maximum reads as the maximum.
+        let min_count = u8::try_from(fields.min_count.clamp(1, 99))
+            .unwrap_or(1)
+            .min(count);
         Ok(Self {
             settings: PlanSettings {
                 count,
+                min_count,
                 kerf_mm,
                 allowance_mm,
                 skin_mm,
@@ -455,7 +463,25 @@ mod tests {
             min_width_mm: "1.00".to_string(),
             weighed_ct: String::new(),
             count: 12,
+            min_count: 1,
             material_index: 1,
+        }
+    }
+
+    #[test]
+    fn the_minimum_stone_count_is_clamped_between_one_and_the_maximum() {
+        for (max, typed, used) in [(12, 0, 1), (12, 1, 1), (12, 5, 5), (12, 40, 12), (3, -2, 1)] {
+            let form = PlanForm::parse(
+                &FormFields {
+                    count: max,
+                    min_count: typed,
+                    ..fields()
+                },
+                &materials(),
+            )
+            .expect("a valid form");
+            assert_eq!(form.settings.min_count, used, "typed {typed} of {max}");
+            assert_eq!(form.settings.validate(), Ok(()));
         }
     }
 
@@ -473,6 +499,7 @@ mod tests {
             form.settings,
             PlanSettings {
                 count: 12,
+                min_count: 1,
                 kerf_mm: 0.3,
                 allowance_mm: 0.2,
                 skin_mm: 0.0,

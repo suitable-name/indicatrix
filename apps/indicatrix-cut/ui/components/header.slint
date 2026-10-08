@@ -9,6 +9,8 @@ import { PreferencesModel } from "../models/preferences.slint";
 import { GuideModel } from "../models/guide.slint";
 import { RenderJobsModel } from "../models/render_jobs.slint";
 import { JobsChip } from "render_jobs/jobs_chip.slint";
+import { ExportChip } from "export_chip.slint";
+import { ExportRunModel } from "../models/export_run.slint";
 // The hand-drawn buttons of the toolbar are buttons for the keyboard and a screen reader too.
 import { TouchButton } from "touch_button.slint";
 
@@ -63,10 +65,15 @@ export component HeaderToolbar inherits Rectangle {
     // keeps its place at zero width, like the Remote button's, so the layout still puts a gap
     // beside it: eight cells, seven gaps, always.
     property <length> jobs_w: RenderJobsModel.chip_visible ? jobs_chip.preferred-width : 0px;
+    // The export chip (a running export started from a dialog, popup open or not) is the same
+    // kind of cell: zero width when idle, so nine cells and eight gaps, always.
+    property <length> export_w: ExportRunModel.direct_running ? export_chip.preferred-width : 0px;
     property <length> controls_min_w: root.search_min_w + 3 * root.combo_min_w + 84px
-        + import_btn.preferred-width + root.remote_w + root.jobs_w + 7 * root.controls_spacing;
+        + import_btn.preferred-width + root.remote_w + root.jobs_w + root.export_w + 8 * root.controls_spacing;
     property <length> controls_pref_w: 260px + 160px + 130px + 140px + 84px
-        + import_btn.preferred-width + root.remote_w + root.jobs_w + 7 * root.controls_spacing;
+        + import_btn.preferred-width + root.remote_w + root.jobs_w + root.export_w + 8 * root.controls_spacing;
+    // The indicator was clicked: `app.slint` shows the running export's popup again.
+    callback show_export_progress();
     // Wide row: the logo cluster keeps what the controls leave, never less than its own minimum width.
     property <length> row_avail_w: root.width - 20px - 8px;
     property <length> left_w: root.compact ? root.width - 20px
@@ -548,6 +555,16 @@ export component HeaderToolbar inherits Rectangle {
                 height: 28px;
                 visible: RenderJobsModel.chip_visible;
                 jobs_chip := JobsChip {}
+            }
+
+            // The export indicator, while an export from a dialog runs (see `ExportChip`).
+            Rectangle {
+                width: root.export_w;
+                height: 28px;
+                visible: ExportRunModel.direct_running;
+                export_chip := ExportChip {
+                    show_progress => { root.show_export_progress(); }
+                }
             }
 
             // Remote rendering: opens the single Remote Coordinator dialog

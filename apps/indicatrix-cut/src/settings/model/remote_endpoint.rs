@@ -44,6 +44,42 @@ impl ExportTransfer {
     }
 }
 
+/// Which computers render a tilt video: the "Compute" pill of the video section, remembered
+/// across restarts. Mirrors `export_thread::ComputeTarget` without the settings layer
+/// depending on the bridge; the pill order is the still-image export's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TiltVideoCompute {
+    /// This computer only.
+    Local,
+    /// The remote only: nothing is traced on this computer.
+    Remote,
+    /// This computer and the remote together (today's behaviour, the default).
+    #[default]
+    Both,
+}
+
+impl TiltVideoCompute {
+    /// Index of the "Compute" pill (0 = Local only, 1 = Remote only, 2 = Local + Remote).
+    #[must_use]
+    pub const fn index(self) -> i32 {
+        match self {
+            Self::Local => 0,
+            Self::Remote => 1,
+            Self::Both => 2,
+        }
+    }
+
+    /// Inverse of [`Self::index`]; anything unknown is `Both`.
+    #[must_use]
+    pub const fn from_index(index: i32) -> Self {
+        match index {
+            0 => Self::Local,
+            1 => Self::Remote,
+            _ => Self::Both,
+        }
+    }
+}
+
 /// How the live view gets remote contributions once the camera settles.
 ///
 /// `FullData` (the default) is today's behaviour: float deltas, combined with local

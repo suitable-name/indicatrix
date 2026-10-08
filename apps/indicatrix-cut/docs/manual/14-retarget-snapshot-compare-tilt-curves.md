@@ -222,19 +222,38 @@ sequence into an MP4 (or an animated GIF if `ffmpeg` is not on your PATH).
 
 Every frame renders through the SAME compute setup as a still-image export
 (Chapter 9): whichever local CPU / CPU+GPU / GPU mode you have chosen in
-Settings, plus the remote coordinator if one is configured, with the same
-graceful fallback to local-only rendering if the remote is unreachable or none
-is configured. There is no separate "Compute" choice for the video itself,
-but with a remote configured the section shows the same **Transfer** row as
-the export dialog (Full data, or Final picture only: one finished PNG per
-frame from the remote -- Chapter 10).
-Because a video now shares the app's single GPU adapter and the remote
+Settings, plus the remote coordinator if one is configured. With a remote
+configured the section shows the same **Compute** pills as the export dialog
+(Local only, Remote only, Local + Remote; the starting choice is Local +
+Remote, with the usual graceful fallback to local-only rendering if the remote
+is unreachable). **Remote only** keeps this computer free: nothing is traced
+here, no GPU is used, and the program only receives and saves the frames and
+encodes the video, so you can keep working. Because there is nothing to fall
+back to, a remote that is missing or stops answering stops the video with a
+message; the frames already written stay, and a queued video continues with its
+first missing frame when you resume it. Without a remote the video renders
+locally and the Compute pills are not shown. The section also shows the same
+**Transfer** row as the export dialog (Full data, or Final picture only: one
+finished PNG per frame from the remote -- Chapter 10), unless Compute is Local only.
+Because a video shares the app's single GPU adapter and the remote
 with the rest of the app, the live viewport pauses for the whole
 video's duration — exactly as it does during a still-image export — and
 resumes automatically once the video finishes, is cancelled, or fails.
 
 A video always draws the finished gem, even while the Edit tab's Cut slider is on an
 earlier step (Chapter 9).
+
+While the video renders, **Run in Background** closes the dialog and lets the export
+go on. The header shows a chip such as "Exporting video -- frame 37 of 181 · about 2
+min left", with a progress bar and a cross that cancels. Under Local only and Local +
+Remote it also says that the live view is paused while exporting. Click the chip to
+open the dialog again with its live progress. When the video is finished, cancelled or
+fails, a message appears even if the dialog is closed. The still-image export dialog
+works the same way, and clicking its chip brings you back to Live Render. Only one export runs at a time: while one is running, every
+button that would start another (Export, Start Video Export, the Jobs window's Start
+Queue) is greyed out, and its hover note says so. **Add to Queue** stays available,
+because it only saves a job. If you close the program while an export runs, it asks
+first.
 
 Next to **Start Video Export** sits **Add to Queue**. It saves the video as a render
 job instead of rendering it now. A queued video can be paused, and when you resume it,

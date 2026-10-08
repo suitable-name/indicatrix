@@ -226,6 +226,7 @@ fn editor_layout_settings_round_trip_through_save_and_load() {
     custom.settings.editor_inspector_height = 310.0;
     custom.settings.editor_settings_collapsed = true;
     custom.settings.editor_inspector_collapsed = true;
+    custom.settings.editor_tier_table_collapsed = true;
     custom.settings.editor_remap_collapsed = true;
     custom.settings.editor_layout_touched = true;
     save(&path, &custom).unwrap();
@@ -235,6 +236,7 @@ fn editor_layout_settings_round_trip_through_save_and_load() {
     assert_eq!(loaded.settings.editor_inspector_height, 310.0);
     assert!(loaded.settings.editor_settings_collapsed);
     assert!(loaded.settings.editor_inspector_collapsed);
+    assert!(loaded.settings.editor_tier_table_collapsed);
     assert!(loaded.settings.editor_remap_collapsed);
     assert!(loaded.settings.editor_layout_touched);
 }
@@ -256,6 +258,7 @@ fn missing_editor_layout_keys_default_to_the_old_fixed_layout() {
     );
     assert!(!loaded.settings.editor_settings_collapsed);
     assert!(!loaded.settings.editor_inspector_collapsed);
+    assert!(!loaded.settings.editor_tier_table_collapsed);
     assert!(!loaded.settings.editor_remap_collapsed);
     assert!(!loaded.settings.editor_layout_touched);
 }

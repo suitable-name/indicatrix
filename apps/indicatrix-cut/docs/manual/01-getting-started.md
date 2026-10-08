@@ -66,6 +66,8 @@ Below the menu bar, the window is divided into three areas:
     On the standard build, this tab has its own inner pair of sub-tabs,
     **Live Render** and **Edit**.
     The Edit sub-tab is the cutting-design editor covered in Chapters 3–8.
+    The app always starts on the Edit sub-tab in its Solid view; click
+    **Live Render** to see the traced picture.
   - **Cutting Instructions** — a plain table of every facet's angle, index, and
     notes, filterable to All Steps / Pavilion / Crown, with a "Copy
     Instructions" button and a click-to-copy on any row (Chapter 2).

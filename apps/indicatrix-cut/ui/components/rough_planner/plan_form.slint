@@ -82,6 +82,42 @@ export component PlanForm inherits VerticalLayout {
                 value <=> RoughPlanModel.count;
                 enabled: !root.busy;
                 accessible-label: "Most stones to plan";
+                // Lowering the maximum below the minimum lowers the minimum with it.
+                edited(value) => {
+                    if (value < RoughPlanModel.min_count) {
+                        RoughPlanModel.min_count = value;
+                    }
+                }
+            }
+        }
+    }
+
+    // Stones count floor (1..=count): layouts with fewer stones are not shown
+    HorizontalLayout {
+        spacing: 6px;
+        alignment: start;
+
+        Text {
+            text: "Min stones:";
+            font-size: 11px;
+            color: Theme.text-muted;
+            vertical-alignment: center;
+        }
+
+        TipBox {
+            hint: "The fewest stones a shown layout may hold. Layouts with fewer stones are left out, so raise it to see only plans that yield several stones. 1 shows everything. Raising it above the maximum raises the maximum too.";
+            SpinBox {
+                minimum: 1;
+                maximum: 99;
+                value <=> RoughPlanModel.min_count;
+                enabled: !root.busy;
+                accessible-label: "Fewest stones to plan";
+                // Raising the minimum above the maximum raises the maximum with it.
+                edited(value) => {
+                    if (value > RoughPlanModel.count) {
+                        RoughPlanModel.count = value;
+                    }
+                }
             }
         }
     }

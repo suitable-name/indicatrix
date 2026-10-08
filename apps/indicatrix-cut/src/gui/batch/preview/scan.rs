@@ -9,8 +9,8 @@ use std::{
     thread,
 };
 
-/// Every entry id whose cached preview is missing or was rendered with other
-/// parameters than the current ones, per `Database::entry_ids_missing_previews`'s
+/// Every entry id whose cached preview is missing, has either view (front or top)
+/// missing, or was rendered with other parameters than the current ones, per `Database::entry_ids_missing_previews`'s
 /// fingerprint comparison (`preview_size`/`preview_spp` feed the current
 /// fingerprint) -- one blob-free `LEFT JOIN` query rather than a page walk plus a
 /// per-row point lookup. The walk this replaced (`search_diagrams_page` plus a `get_preview_images`

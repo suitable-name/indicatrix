@@ -7,7 +7,7 @@
 use super::compositing::{AccumSnapshot, PoseAndGeometry, render_merged_frame};
 use crate::bridge::{
     frame_cache::guide_pass::{
-        GuideBuffers, GuideCache, GuideKey, generate_guide_buffers_cancellable_geom,
+        GuideBuffers, GuideCache, GuideKey, generate_guide_buffers_cancellable_geom_with_index,
     },
     render_thread::DenoiseScratch,
 };
@@ -67,6 +67,7 @@ pub(super) fn spawn_guide_generation(
     tools: Vec<ToolPrimitive>,
     width: u32,
     height: u32,
+    n_d: f32,
 ) -> PendingGuideGeneration {
     let cancel = Arc::new(AtomicBool::new(false));
     let result = Arc::new(Mutex::new(None));
@@ -74,7 +75,7 @@ pub(super) fn spawn_guide_generation(
     let result_worker = Arc::clone(&result);
 
     std::thread::spawn(move || {
-        if let Some(buffers) = generate_guide_buffers_cancellable_geom(
+        if let Some(buffers) = generate_guide_buffers_cancellable_geom_with_index(
             width,
             height,
             &camera,
@@ -82,6 +83,7 @@ pub(super) fn spawn_guide_generation(
                 planes: &planes,
                 tools: &tools,
             },
+            n_d,
             &cancel_worker,
         ) {
             *result_worker.lock().unwrap_or_else(PoisonError::into_inner) = Some(buffers);
@@ -179,6 +181,8 @@ pub(super) struct DenoiseGenerationJob {
     pub(super) planes: Vec<GpuFacetPlane>,
     /// The concave tools cut out of `planes`; empty for a planar stone.
     pub(super) tools: Vec<ToolPrimitive>,
+    /// The material's `n_d` (part of `guides`' key).
+    pub(super) n_d: f32,
 }
 
 /// Kicks off one full denoise-and-tonemap pass on a background thread for `key`'s pose,
@@ -220,6 +224,7 @@ pub(super) fn spawn_denoise_generation(
                 distance: job.distance,
                 planes: &job.planes,
                 tools: &job.tools,
+                n_d: job.n_d,
             },
             &mut guide_cache,
             &mut DenoiseScratch {

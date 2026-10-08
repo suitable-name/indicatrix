@@ -158,12 +158,21 @@ export component NewDesignDialog inherits Rectangle {
         }
     }
 
-    Rectangle {
+    // How far the card has been dragged from the centre by its title row. The dialog is
+    // mounted afresh on every opening (an `if` in `GlobalDialogsOverlay`), so this starts
+    // at zero each time. Clamped where it is written, and again on read so a window
+    // resize cannot leave the card outside its backdrop.
+    property <length> drag_x: 0px;
+    property <length> drag_y: 0px;
+
+    card := Rectangle {
         width: min(600px, root.width - 40px);
         // Capped at the backdrop's height less a 20px margin top and bottom: the body
         // ScrollView below takes the overflow so the title and the Cancel/Create
         // buttons stay reachable on a short window.
         height: min(content.preferred-height, root.height - 40px);
+        x: (root.width - self.width) / 2 + clamp(root.drag_x, -max(0px, (root.width - self.width) / 2), max(0px, (root.width - self.width) / 2));
+        y: (root.height - self.height) / 2 + clamp(root.drag_y, -max(0px, (root.height - self.height) / 2), max(0px, (root.height - self.height) / 2));
         background: Theme.surface-dialog;
         border-radius: Theme.radius-md;
         border-width: root.guide_highlighted ? 2px : 1px;
@@ -180,14 +189,29 @@ export component NewDesignDialog inherits Rectangle {
 
             HorizontalLayout {
                 spacing: 8px;
-                Text {
+                // The drag handle: the title's own area (the Help button and the body
+                // keep their clicks).
+                Rectangle {
                     horizontal-stretch: 1;
-                    text: "New Design";
-                    font-size: 14px;
-                    font-weight: 700;
-                    color: Theme.text-primary;
-                    vertical-alignment: center;
-                    accessible-role: AccessibleRole.text;
+                    TouchArea {
+                        mouse-cursor: MouseCursor.move;
+                        moved => {
+                            if self.pressed {
+                                let lim_x = max(0px, (root.width - card.width) / 2);
+                                let lim_y = max(0px, (root.height - card.height) / 2);
+                                root.drag_x = clamp(root.drag_x + self.mouse-x - self.pressed-x, -lim_x, lim_x);
+                                root.drag_y = clamp(root.drag_y + self.mouse-y - self.pressed-y, -lim_y, lim_y);
+                            }
+                        }
+                    }
+                    Text {
+                        text: "New Design";
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: Theme.text-primary;
+                        vertical-alignment: center;
+                        accessible-role: AccessibleRole.text;
+                    }
                 }
                 VerticalLayout {
                     alignment: center;

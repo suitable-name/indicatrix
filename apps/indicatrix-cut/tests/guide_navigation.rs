@@ -76,10 +76,37 @@ fn a_revisited_step_does_not_advance_by_itself_and_offers_next() {
         "the advance timer must stop while the learner re-reads a step"
     );
     assert!(
-        panel.contains("enabled: !GuideModel.step_done || GuideModel.revisiting;"),
+        panel.contains("enabled: (!GuideModel.step_done || GuideModel.revisiting)"),
         "the Next button must stay usable on a revisited step that is done"
     );
     assert!(panel.contains("text: GuideModel.offers_next ?"));
+}
+
+/// Next on an unfinished step does the step where the app can (`perform`), and the button waits
+/// while the recipe runs. Only a step the app cannot do keeps the plain "Skip step".
+#[test]
+fn next_on_an_unfinished_step_performs_it_and_waits_for_the_result() {
+    let guide = read("ui/models/guide.slint");
+    let press = body_of(&guide, "go_on => {");
+    assert!(press.contains("root.perform(root.step_index);"));
+    assert!(press.contains("root.perform_busy = true;"));
+    assert!(
+        press.contains("root.next();"),
+        "a step without a recipe still skips"
+    );
+    for header in ["begin => {", "next => {", "back => {", "close => {"] {
+        assert!(
+            body_of(&guide, header).contains("root.reset_perform();"),
+            "`{header}` leaves a recipe's progress behind for the next step"
+        );
+    }
+    let panel = read("ui/components/guide_panel.slint");
+    assert!(panel.contains("clicked => { GuideModel.go_on(); }"));
+    assert!(panel.contains("&& !GuideModel.perform_busy;"));
+    assert!(
+        panel.contains("running: GuideModel.perform_busy;"),
+        "the overlay layer ticks while a recipe waits for its goal"
+    );
 }
 
 #[test]

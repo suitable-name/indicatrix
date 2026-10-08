@@ -4,17 +4,28 @@
 use super::{
     COMPARE_STEP_TITLE, DIALOG_GEARS, ExactReason, LARGE_DESIGN_TIERS, MAX_TIERS_PER_STEP, Meets,
     PlannedTier, REBUILD_ANGLE_TOL_DEG, REBUILD_MAST_REL_TOL, SOLVE_STEP_TITLE, START_STEP_TITLE,
-    TIER_STEP, TIER_STEP_EXACT, TierFacts, reference_copy,
+    TIER_STEP, TIER_STEP_EXACT, TierFacts, TierRecipe, reference_copy,
 };
 use crate::guide::{
-    ALL_GROUPS, Goal, Group, GuideStep, NEW_DESIGN_CREATED,
+    ALL_GROUPS, CMD_COMPARE, Goal, Group, GuideStep, NEW_DESIGN_CREATED, Perform, TierEntry,
     build_text::{Role, block_label, indices_expansion, indices_phrase, indices_text, number_text},
 };
 use indicatrix_cut_core::{
-    Design, PreformShape,
+    Design, FreshDesignSpec, MaterialSelection, PreformShape,
     design::{ConcaveTier, TierRef},
     is_legacy_123_abc,
 };
+
+/// What Next types into the Tier form for one tier of the lesson: the recipe's own fields.
+fn tier_entry(recipe: &TierRecipe) -> TierEntry {
+    TierEntry::add(
+        &recipe.angle,
+        recipe.constraint_kind,
+        &recipe.constraint_text,
+        &recipe.name,
+        &recipe.indices,
+    )
+}
 
 /// One step's worth of the lesson's body.
 enum Piece {
@@ -271,6 +282,7 @@ fn tier_step(planned: &PlannedTier, number: usize, total: usize, gear: u32) -> G
             indices_phrase(&planned.indices_text, &planned.indices)
         ),
     )
+    .perform(Perform::Tier(tier_entry(&planned.recipe)))
     .highlight("inspector_tier")
     .allow(if planned.meets.is_exact() {
         TIER_STEP_EXACT
@@ -350,6 +362,12 @@ fn group_step(plan: &[PlannedTier], positions: &[usize], gear: u32) -> GuideStep
         Goal::All(tiers.iter().map(|planned| tier_goal(planned)).collect()),
         format!("tiers {first_name} to {last_name}"),
     )
+    .perform(Perform::Sequence(
+        tiers
+            .iter()
+            .map(|planned| Perform::Tier(tier_entry(&planned.recipe)))
+            .collect(),
+    ))
     .highlight("inspector_tier")
     .allow(if needs_advanced {
         TIER_STEP_EXACT
@@ -408,7 +426,8 @@ fn concave_step(tier: &ConcaveTier, code: &str, number: usize, gear: u32) -> Gui
         }
     ));
     actions.push("Click Add Concave Tier.".to_owned());
-    GuideStep::new(
+    // An unnamed concave tier is typed with a blank Name, which the form refuses: no recipe.
+    let mut step = GuideStep::new(
         format!("Add {label} (concave tier {number})"),
         "A concave tier is cut with a shaped tool instead of a flat lap.".to_owned(),
     )
@@ -424,7 +443,14 @@ fn concave_step(tier: &ConcaveTier, code: &str, number: usize, gear: u32) -> Gui
         format!("concave tier {number} to be added"),
     )
     .highlight("tier_table")
-    .allow(TIER_STEP)
+    .allow(TIER_STEP);
+    if !tier.name.trim().is_empty() {
+        step.perform = Some(Perform::ConcaveTier {
+            edit: None,
+            tier: Box::new(tier.clone()),
+        });
+    }
+    step
 }
 
 /// The first step: a new design with the original's gear, symmetry and preform.
@@ -453,7 +479,21 @@ pub(super) fn start_step(target: &Design, title: &str, step_count: usize) -> Gui
     } else {
         "Mirror off means each repeat is cut once and not mirrored."
     };
-    GuideStep::new(
+    // The New Design form as the actions describe it: Empty, this preform, gear, symmetry and
+    // mirror, no material.
+    let create = i32::try_from(gear)
+        .ok()
+        .map(|gear_teeth| Perform::NewDesign {
+            template_index: 0,
+            spec: Box::new(FreshDesignSpec {
+                gear_teeth,
+                symmetry_order: symmetry,
+                mirror: meta.mirror,
+                material: MaterialSelection::none(),
+                preform,
+            }),
+        });
+    let mut step = GuideStep::new(
         START_STEP_TITLE,
         format!(
             "This lesson rebuilds {title} in {step_count} steps, one tier at a time in cutting \
@@ -492,7 +532,9 @@ pub(super) fn start_step(target: &Design, title: &str, step_count: usize) -> Gui
         format!("a new design with {gear} teeth and {symmetry}-fold symmetry"),
     )
     .highlight("new_design_dialog")
-    .allow(&[Group::NewDesign])
+    .allow(&[Group::NewDesign]);
+    step.perform = create;
+    step
 }
 
 /// The step that solves the rebuilt design.
@@ -512,6 +554,7 @@ pub(super) fn solve_step() -> GuideStep {
          indices and its Meets setting against the step that added it.",
     )
     .goal(Goal::SolvedClosed, "a solve that closes")
+    .perform(Perform::solve())
     .highlight("solve_button")
     .allow(&[
         Group::Solve,
@@ -551,9 +594,11 @@ pub(super) fn compare_step(target: &Design, facts: &TierFacts) -> GuideStep {
     .why(
         "This step finishes by itself once every tier is cut as in the original and every \
          solved depth is within about one percent of it. A row that reads Changed names the \
-         tier to look at again. Click Skip step to finish without a perfect match.",
+         tier to look at again. Next opens the comparison for you; if the stone will not \
+         match, Skip step then finishes without a perfect match.",
     )
     .goal(goal, "a design that matches the original")
+    .perform(Perform::command(CMD_COMPARE))
     .allow(&[
         Group::Advanced,
         Group::Solve,

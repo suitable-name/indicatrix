@@ -10,6 +10,7 @@ use super::{
     ANGLE_TOLERANCE_DEG, MANUAL, NEW_DESIGN_CREATED, expected_tier,
     goal::Goal,
     model::{Guide, GuideCategory, GuideStep, StartingState},
+    perform::attach_performs,
     steps::{STEPS, Step},
     tour::welcome_tour_guide,
     tutorials,
@@ -216,6 +217,7 @@ fn guide_step_from(step: &Step) -> GuideStep {
         highlight_target: step.highlight_target.to_owned(),
         goal: goal_from_completion(step.completion).unwrap_or(Goal::Manual),
         allow: step.allow.to_vec(),
+        perform: None,
     }
 }
 
@@ -238,11 +240,13 @@ pub fn worked_example_guide() -> Guide {
 const BUILDERS: &[fn() -> Guide] = &[welcome_tour_guide, worked_example_guide];
 
 /// Every built-in guide, in browser order: the ones in [`BUILDERS`], then the per-function
-/// tutorials of [`tutorials::all`].
+/// tutorials of [`tutorials::all`]. Every action step carries what Next does for the learner
+/// ([`attach_performs`]), or nothing where the step cannot be done automatically.
 #[must_use]
 pub fn static_guides() -> Vec<Guide> {
     let mut guides: Vec<Guide> = BUILDERS.iter().map(|build| build()).collect();
     guides.extend(tutorials::all());
+    attach_performs(&mut guides);
     guides
 }
 

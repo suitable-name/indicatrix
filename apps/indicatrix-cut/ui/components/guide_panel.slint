@@ -312,25 +312,28 @@ export component GuidePanel inherits Rectangle {
                 clicked => { GuideModel.back(); }
             }
             Rectangle { horizontal-stretch: 1; }
-            // A manual (reading) step's primary Next/Finish; on an action step the
-            // same slot is a quiet "Skip step" -- those steps advance by themselves
-            // once their goal is reached. After Back, a step whose goal still holds shows
-            // "Done" and a primary Next instead: it stays until the learner moves on.
+            // A manual (reading) step's primary Next/Finish. On an action step the same
+            // slot does the step for the learner ("Next") where the app can, and is a quiet
+            // "Skip step" where it cannot; those steps also advance by themselves once their
+            // goal is reached. After Back, a step whose goal still holds shows "Done" and a
+            // primary Next instead: it stays until the learner moves on.
             ActionButton {
                 width: 84px;
                 height: 26px;
-                text: GuideModel.offers_next ? (GuideModel.has_next ? "Next" : "Finish") : "Skip step";
+                text: GuideModel.offers_next ? (GuideModel.has_next ? "Next" : "Finish") : (GuideModel.offers_perform ? "Next" : "Skip step");
                 hint: GuideModel.offers_next
                     ? (GuideModel.has_next ? "Go on to the next step." : "Finish the guide.")
-                    : "Skip this step without doing it. Steps move on by themselves once you have done what they ask.";
-                fill: GuideModel.offers_next ? Theme.primary : Theme.bg-input;
-                hover_fill: GuideModel.offers_next ? Theme.primary-hover : Theme.bg-elevated;
-                ink: GuideModel.offers_next ? Theme.text-on-primary : Theme.text-muted;
-                edge: GuideModel.offers_next ? Theme.primary : Theme.border-subtle;
+                    : (GuideModel.offers_perform
+                        ? "Do this step for me and go on."
+                        : "Skip this step without doing it. Steps move on by themselves once you have done what they ask.");
+                fill: (GuideModel.offers_next || GuideModel.offers_perform) ? Theme.primary : Theme.bg-input;
+                hover_fill: (GuideModel.offers_next || GuideModel.offers_perform) ? Theme.primary-hover : Theme.bg-elevated;
+                ink: (GuideModel.offers_next || GuideModel.offers_perform) ? Theme.text-on-primary : Theme.text-muted;
+                edge: (GuideModel.offers_next || GuideModel.offers_perform) ? Theme.primary : Theme.border-subtle;
                 font_size: 10px;
-                weight: GuideModel.offers_next ? 700 : 400;
-                enabled: !GuideModel.step_done || GuideModel.revisiting;
-                clicked => { GuideModel.next(); }
+                weight: (GuideModel.offers_next || GuideModel.offers_perform) ? 700 : 400;
+                enabled: (!GuideModel.step_done || GuideModel.revisiting) && !GuideModel.perform_busy;
+                clicked => { GuideModel.go_on(); }
             }
         }
     }
@@ -359,6 +362,15 @@ export component GuideOverlayLayer inherits Rectangle {
         interval: 300ms;
         running: GuideModel.open && !GuideModel.step_done && GuideModel.current.watches_ui;
         triggered => { GuideModel.poll(); }
+    }
+
+    // Next was pressed on an unfinished step and its recipe has run, but the goal is not met
+    // yet (a solve takes time): Rust re-checks a few times a second and, after a few seconds,
+    // lets the button offer Skip step instead.
+    Timer {
+        interval: 300ms;
+        running: GuideModel.perform_busy;
+        triggered => { GuideModel.perform_tick(); }
     }
 
     // A guide waiting for the design it asked for (a new design, a library design, possibly

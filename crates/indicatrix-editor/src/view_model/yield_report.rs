@@ -6,13 +6,11 @@
 
 use super::{
     CuttingRow,
-    row_format::{
-        format_angle_cell, format_index_value, representative_crown_and_pavilion_angles_deg,
-    },
+    row_format::{format_angle_cell, representative_crown_and_pavilion_angles_deg},
 };
 use crate::material_lookup::EditorMaterialLookup;
 use indicatrix::geometry::meet_solver::{Block, SolvedTier, classify_blocks};
-use indicatrix_cut_core::{Design, design::TierRef};
+use indicatrix_cut_core::{Design, design::TierRef, format_sheet_indices};
 
 /// `design`'s current yield/weight figures, formatted for `EditorView`'s read-only
 /// display fields.
@@ -500,7 +498,9 @@ pub fn cutting_instructions_rows(design: &Design, solved: &[SolvedTier]) -> Vec<
     // column uses, and it distinguishes a girdle facet (neither side) from a crown
     // one, which a sign test cannot.
     let tier_blocks = classify_blocks(&design.meet_tier_inputs());
-    let canonical_labels = indicatrix_cut_core::compute_tier_labels(&design.tiers);
+    // The row's label is the tier's code (`P1`, `G1`, `C1`, `T`), numbered in cutting order, as the
+    // printed cutting sheet writes it; the index list is the sheet's dashed, zero-padded form.
+    let tier_codes = design.tier_codes();
     let schedule = match design.try_to_asc_schedule_from_solved(solved) {
         Ok(schedule) => schedule,
         Err(mismatch) => {
@@ -520,22 +520,13 @@ pub fn cutting_instructions_rows(design: &Design, solved: &[SolvedTier]) -> Vec<
                 Some(Block::Pavilion) => -1,
                 _ => 0,
             },
-            facet: if tier.name.is_empty() {
-                format!("#{}", order_idx + 1)
-            } else if indicatrix_cut_core::is_legacy_123_abc(&tier.name) {
-                canonical_labels
-                    .get(tier_index)
-                    .map_or_else(|| tier.name.clone(), |l| l.display_name.clone())
-            } else {
-                tier.name
+            facet: match tier_codes.flat.get(tier_index) {
+                Some(label) if !label.code.is_empty() => label.code.clone(),
+                _ if tier.name.is_empty() => format!("#{}", order_idx + 1),
+                _ => tier.name,
             },
             angle: format_angle_cell(tier.angle_deg.abs()),
-            index_val: tier
-                .indices
-                .into_iter()
-                .map(format_index_value)
-                .collect::<Vec<_>>()
-                .join(", "),
+            index_val: format_sheet_indices(&tier.indices),
             notes: tier.notes,
             second_line: None,
         };
@@ -561,19 +552,13 @@ pub fn cutting_instructions_rows(design: &Design, solved: &[SolvedTier]) -> Vec<
                 Some(CuttingRow {
                     order_idx: order_idx as i32,
                     side: if tier.is_crown_side() { 1 } else { -1 },
-                    facet: if tier.name.is_empty() {
-                        format!("#{}", order_idx + 1)
-                    } else {
-                        tier.name.clone()
+                    facet: match tier_codes.concave.get(i) {
+                        Some(label) if !label.code.is_empty() => label.code.clone(),
+                        _ if tier.name.is_empty() => format!("#{}", order_idx + 1),
+                        _ => tier.name.clone(),
                     },
                     angle: format_angle_cell(tier.angle_deg.abs()),
-                    index_val: tier
-                        .indices
-                        .iter()
-                        .copied()
-                        .map(format_index_value)
-                        .collect::<Vec<_>>()
-                        .join(", "),
+                    index_val: format_sheet_indices(&tier.indices),
                     notes: tier.instructions.clone(),
                     second_line: Some(tier.second_line_fields()),
                 })

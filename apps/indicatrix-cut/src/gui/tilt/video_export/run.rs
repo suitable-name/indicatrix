@@ -18,6 +18,9 @@
 //! paused after a video export ends, mirroring `gui::render::render_export::queue::
 //! finish_export_queue`'s single decrement point and `bridge::export_thread::
 //! spawn_export`'s "`on_done` fires on every exit path, including a caught panic".
+//!
+//! A `RemoteOnly` video claims no pause at all ([`pauses_viewport`]): it acquires no GPU
+//! adapter and runs no local lane, so the live viewport stays usable for the whole video.
 
 use super::{
     encode,
@@ -25,7 +28,7 @@ use super::{
     metrics, params,
 };
 use crate::{
-    ActivityModel, MainWindow, TiltVideoExportModel,
+    ActivityModel, MainWindow, TiltModel, TiltVideoExportModel,
     bridge::{
         export_thread::{RemoteSelection, SceneSnapshot},
         render_thread::RenderContext,
@@ -65,8 +68,8 @@ pub struct VideoExportRequest {
     pub selection: metrics::MetricSelection,
     pub curves: metrics::MetricCurves,
     pub keep_frames: bool,
-    /// The remote side: always `ComputeTarget::Both` for a video (see this group's own
-    /// `mod.rs` doc comment on why there is no video-side "Compute" control), the
+    /// The remote side: the section's "Compute" choice (`Both` by default; `RemoteOnly`
+    /// traces nothing on this computer, see this group's own `mod.rs` doc comment), the
     /// configured remote endpoint (`AppSettings::remote`, read from the SAME settings
     /// store the still-image export reads), and the section's "Transfer" choice.
     pub remote: RemoteSelection,
@@ -93,6 +96,7 @@ pub(super) fn spawn(
     cancel: Arc<AtomicBool>,
     activity_id: i32,
 ) {
+    let pausing = pauses_viewport(&request);
     std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run(&ui_weak, &render_ctx, &request, &cancel, activity_id);
@@ -106,6 +110,7 @@ pub(super) fn spawn(
             report_failure(
                 &ui_weak,
                 &render_ctx,
+                pausing,
                 &format!("Video export failed unexpectedly: {message}"),
                 activity_id,
             );
@@ -128,8 +133,21 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// decrements `export_active_count`, called from every terminal path
 /// ([`report_cancelled`]/[`report_failure`]/[`report_done`]). See this module's own
 /// doc comment.
-fn finish_video_export(render_ctx: &Arc<Mutex<RenderContext>>) {
-    RenderContext::lock(render_ctx).export_active_count -= 1;
+///
+/// `pausing` is [`pauses_viewport`] for this run: a Remote-only video never incremented
+/// the count, so it must not decrement it either.
+fn finish_video_export(render_ctx: &Arc<Mutex<RenderContext>>, pausing: bool) {
+    if pausing {
+        RenderContext::lock(render_ctx).export_active_count -= 1;
+    }
+}
+
+/// Whether `request`'s run holds the live-viewport pause for its duration -- false only
+/// under `RemoteOnly`, which traces nothing on this computer. The caller
+/// (`mod.rs::handle_start_video_export`) increments `export_active_count` exactly when
+/// this is true, and [`finish_video_export`] decrements exactly when it is.
+pub(super) const fn pauses_viewport(request: &VideoExportRequest) -> bool {
+    request.remote.compute_target.pauses_live_viewport()
 }
 
 fn run(
@@ -140,14 +158,15 @@ fn run(
     activity_id: i32,
 ) {
     let digits = params::frame_number_digits(request.total_frames);
+    let pausing = pauses_viewport(request);
     let frame_paths = match render_all_frames(ui_weak, request, cancel, activity_id) {
         FramesOutcome::Done(paths) => paths,
         FramesOutcome::Cancelled { .. } => {
-            report_cancelled(ui_weak, render_ctx, activity_id);
+            report_cancelled(ui_weak, render_ctx, pausing, activity_id);
             return;
         }
         FramesOutcome::Failed { message, .. } => {
-            report_failure(ui_weak, render_ctx, &message, activity_id);
+            report_failure(ui_weak, render_ctx, pausing, &message, activity_id);
             return;
         }
     };
@@ -169,7 +188,14 @@ fn run(
             let _ = std::fs::remove_file(path);
         }
     }
-    report_done(ui_weak, render_ctx, &request.out_dir, &outcome, activity_id);
+    report_done(
+        ui_weak,
+        render_ctx,
+        pausing,
+        &request.out_dir,
+        &outcome,
+        activity_id,
+    );
 }
 
 /// Renders every frame of `request`'s sweep through [`frames::render_frames`] (every
@@ -301,9 +327,10 @@ fn report_frame_progress(
 fn report_cancelled(
     ui_weak: &slint::Weak<MainWindow>,
     render_ctx: &Arc<Mutex<RenderContext>>,
+    pausing: bool,
     activity_id: i32,
 ) {
-    finish_video_export(render_ctx);
+    finish_video_export(render_ctx, pausing);
     let ui_weak = ui_weak.clone();
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
         let model = ui.global::<TiltVideoExportModel>();
@@ -311,6 +338,10 @@ fn report_cancelled(
         model.set_has_error(false);
         model.set_status_message("Video export cancelled.".into());
         model.set_eta_text(String::new().into());
+        // Run in the background, nothing on screen would say so.
+        if !ui.global::<TiltModel>().get_dialog_open() {
+            crate::gui::show_toast(&ui, "Video export cancelled.", "info");
+        }
         ui.global::<ActivityModel>()
             .invoke_finish_external(activity_id);
     });
@@ -319,16 +350,20 @@ fn report_cancelled(
 fn report_failure(
     ui_weak: &slint::Weak<MainWindow>,
     render_ctx: &Arc<Mutex<RenderContext>>,
+    pausing: bool,
     message: &str,
     activity_id: i32,
 ) {
-    finish_video_export(render_ctx);
+    finish_video_export(render_ctx, pausing);
     let message = message.to_string();
     let ui_weak = ui_weak.clone();
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
         let model = ui.global::<TiltVideoExportModel>();
         model.set_is_exporting(false);
         model.set_has_error(true);
+        // A toast too: the popup may be closed (run in the background), and an error stays
+        // on screen until dismissed.
+        crate::gui::show_toast(&ui, &message, "error");
         model.set_status_message(message.into());
         model.set_eta_text(String::new().into());
         ui.global::<ActivityModel>()
@@ -339,18 +374,26 @@ fn report_failure(
 fn report_done(
     ui_weak: &slint::Weak<MainWindow>,
     render_ctx: &Arc<Mutex<RenderContext>>,
+    pausing: bool,
     out_dir: &Path,
     outcome: &encode::EncodeOutcome,
     activity_id: i32,
 ) {
-    finish_video_export(render_ctx);
+    finish_video_export(render_ctx, pausing);
     let (_, message) = frames::encode_outcome_message(outcome, out_dir);
+    let toast_kind = if matches!(outcome, encode::EncodeOutcome::Mp4(_)) {
+        "success"
+    } else {
+        "info"
+    };
     let ui_weak = ui_weak.clone();
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
         let model = ui.global::<TiltVideoExportModel>();
         model.set_is_exporting(false);
         model.set_has_error(false);
         model.set_progress(1.0);
+        // A toast too: the popup may be closed (run in the background).
+        crate::gui::show_toast(&ui, &message, toast_kind);
         model.set_status_message(message.into());
         model.set_eta_text(String::new().into());
         ui.global::<ActivityModel>()

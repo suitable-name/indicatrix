@@ -4,7 +4,9 @@
 use super::{
     head_shadow::{DEFAULT_HEAD_SHADOW_DEG, default_head_shadow_deg, deserialize_head_shadow_deg},
     local_compute::LocalComputeTarget,
-    remote_endpoint::{LegacyWorkerMigration, RemoteEndpoint, migrate_legacy_workers},
+    remote_endpoint::{
+        LegacyWorkerMigration, RemoteEndpoint, TiltVideoCompute, migrate_legacy_workers,
+    },
     surface_glare::{DEFAULT_SURFACE_GLARE, default_surface_glare, deserialize_surface_glare},
     ui_preferences::{UiMode, deserialize_ui_scale_percent, normalize_ui_scale_percent},
     worker::{LiveComputeTarget, LocalPreviewScale, WorkerSettings},
@@ -342,6 +344,12 @@ pub struct AppSettings {
     /// Local live-rendering CPU/CPU+GPU/GPU choice -- see `LocalComputeTarget`.
     #[serde(default)]
     pub local_compute_target: LocalComputeTarget,
+    /// The tilt video section's "Compute" pill (Local only / Remote only / Local + Remote),
+    /// remembered across restarts. An absent key (an older file) is Local + Remote, the
+    /// behaviour before the pill existed; without a configured remote the video is local
+    /// whatever this holds.
+    #[serde(default)]
+    pub tilt_video_compute_target: TiltVideoCompute,
     /// v16: whether this machine's own idle CPU/GPU traces a share of a "final picture
     /// only" export/tilt-frame alongside the remote, uploading its sum for the
     /// coordinator to fold in before tone-mapping -- see
@@ -417,7 +425,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub library_panel_collapsed: bool,
     /// The solid preview's Solid/Path-traced/Both view-mode selector -- see
-    /// [`DEFAULT_SOLID_VIEW_MODE`].
+    /// [`DEFAULT_SOLID_VIEW_MODE`]. Still saved when the user changes it, but not
+    /// applied at startup: the app always opens on the Edit tab in Solid mode.
     #[serde(default)]
     pub solid_view_mode: u8,
     /// The Live Render tab's Solid/Path-traced view-mode selector -- see
@@ -442,6 +451,10 @@ pub struct AppSettings {
     /// collapsed.
     #[serde(default)]
     pub editor_inspector_collapsed: bool,
+    /// Whether the Edit sub-tab's "TIERS" section (`editor_tier_table.slint`) is
+    /// collapsed; the inspector then takes the freed space.
+    #[serde(default)]
+    pub editor_tier_table_collapsed: bool,
     /// Whether the Edit sub-tab's "GEAR REMAP" section (nested inside "DESIGN") is
     /// collapsed.
     #[serde(default)]
@@ -651,6 +664,7 @@ impl Default for AppSettings {
             local_preview_scale: DEFAULT_LOCAL_PREVIEW_SCALE,
             live_compute_target: DEFAULT_LIVE_COMPUTE_TARGET,
             local_compute_target: DEFAULT_LOCAL_COMPUTE_TARGET,
+            tilt_video_compute_target: TiltVideoCompute::Both,
             contribute_to_final_picture: DEFAULT_CONTRIBUTE_TO_FINAL_PICTURE,
             remote_batch_lanes: DEFAULT_REMOTE_BATCH_LANES,
             plan_time_limit_secs: crate::plan_limit::DEFAULT_LIMIT_SECS,
@@ -670,6 +684,7 @@ impl Default for AppSettings {
             editor_inspector_height: DEFAULT_EDITOR_INSPECTOR_HEIGHT,
             editor_settings_collapsed: false,
             editor_inspector_collapsed: false,
+            editor_tier_table_collapsed: false,
             editor_remap_collapsed: false,
             editor_layout_touched: false,
             recent_native_files: Vec::new(),

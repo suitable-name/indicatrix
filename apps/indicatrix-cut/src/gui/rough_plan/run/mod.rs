@@ -388,6 +388,34 @@ fn summary_text(layouts: usize, designs: usize, elapsed: Duration, note: &str) -
     )
 }
 
+/// [`summary_text`] for a run with the settings' minimum stone count: with a floor above 1,
+/// the stone range ("2-5 stones") joins the summary, and an empty answer says that no layout
+/// reaches the floor.
+fn floor_summary_text(
+    settings: &PlanSettings,
+    layouts: usize,
+    designs: usize,
+    elapsed: Duration,
+    note: &str,
+) -> String {
+    let (min, max) = (settings.min_count_usize(), settings.count_usize());
+    if min <= 1 {
+        return summary_text(layouts, designs, elapsed, note);
+    }
+    if layouts == 0 {
+        return format!(
+            "No layout with at least {min} stones fits this rough: lower Min stones, or allow \
+             smaller stones (a smaller minimum width) or more designs{note}."
+        );
+    }
+    summary_text(
+        layouts,
+        designs,
+        elapsed,
+        &format!(", {min}-{max} stones{note}"),
+    )
+}
+
 /// Why gathering the designs stopped early.
 enum GatherStop {
     Cancelled,
@@ -522,7 +550,13 @@ pub fn run_plan(db: &Mutex<Database>, job: &PlanJob, reporter: &Reporter) -> Pla
     }
     let titles = load_titles(db, &layouts);
     let shapes = planned_shapes(&gathered.stored, &layouts);
-    let mut summary = summary_text(layouts.len(), designs.len(), started.elapsed(), &note);
+    let mut summary = floor_summary_text(
+        &job.settings,
+        layouts.len(),
+        designs.len(),
+        started.elapsed(),
+        &note,
+    );
     if stopped {
         summary = format!("{summary}. {}", stop_note(limit_secs));
     }

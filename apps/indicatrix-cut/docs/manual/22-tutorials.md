@@ -114,8 +114,8 @@ zero), or when the design does not solve.
    tier as Same or Changed, and **Compare visually...** to see the original and your stone
    side by side (Chapter 14). Entering this step holds the original as the snapshot, which
    replaces a snapshot you took earlier in the session, so Compare is ready at once. The step finishes by itself when every tier is cut as in the original and
-   every solved depth is within one percent of the original's. **Skip step** finishes it
-   anyway.
+   every solved depth is within one percent of the original's. **Next** opens the
+   comparison for you; if the stone will not match, **Skip step** then finishes it anyway.
 6. **You rebuilt the design.** A closing step that unlocks everything.
 
 ### What Meets says
@@ -321,9 +321,10 @@ Section **Optimizing**:
 - **Edit as Text** changes one angle in the cutting instructions as text, compares the text
   with a snapshot and applies it.
 
-The Retarget, Sweep, Compare to Snapshot and Edit as Text dialogs cover the guide panel,
-so the step that opens one lists everything you need to do in it. The panel comes back
-when the dialog closes. A step that waits for something the design does not show, such as
+Dialogs open beside the guide panel rather than over it, so the step text stays in view
+while you work in them; the New Design dialog can also be dragged by its title. If the
+window is too narrow to leave room (under about 420 pixels beside the panel), the dialog
+covers the panel and the step that opens it lists everything you need to do in it. A step that waits for something the design does not show, such as
 a search finishing or a compare window opening, finishes when the program notices it.
 
 ## The guide panel
@@ -339,12 +340,23 @@ bottom-right corner everywhere else. Each step shows:
 - a status chip: **Waiting for:** and the thing it needs, then **Done** for a moment
   before the next step opens.
 
+**Next** on a step you have not done yet does the step for you. The program makes the
+same entries you would (it types the values the step lists into the Tier form and
+presses Add Tier, picks the material and applies it, presses Solve, opens the tab or the
+view the step names) and then judges the step the usual way: **Done**, then the next
+step. The edit is one Undo step like your own, so **Ctrl+Z** takes it back, and a value
+the form refuses is refused with the same message under its field. If the step is still
+not done after that, the button changes to **Skip step**. Steps the program cannot do
+for you, such as ticking rows, a drag in the viewport, or choosing a file, show
+**Skip step** from the start. A step you have already done shows **Done** and moves
+on by itself, and a reading step always waits for **Next**.
+
 **Back** returns to the previous step and checks it again: if you still have what it
 asked for, it shows **Done** and waits for you to click **Next**, so you can read it
-again without it moving on by itself. **Skip step** moves on without doing the
-current one, and the cross in the corner closes the tutorial and unlocks everything.
-The small arrow button in the panel's header collapses it to a pill; the tutorial keeps
-running.
+again without it moving on by itself. Back does not undo anything. **Skip step** moves on
+without doing the current one, and the cross in the corner closes the tutorial and
+unlocks everything. The small arrow button in the panel's header collapses it to a pill;
+the tutorial keeps running.
 
 A step is judged from the design, not from the buttons you pressed. Whichever way you
 reach the goal counts: the tier form, an inline edit in the table, Undo and Redo, or
@@ -435,4 +447,8 @@ browser) and **Reset tutorial progress** (in Preferences) clear the Done marks.
   panel is open. If you need a locked control, close the tutorial.
 - **A step that never finishes.** If a step cannot be done in your situation, for
   example because the design you opened already has the tier it asks you to add, use
-  **Skip step**.
+  **Skip step**. It appears in place of **Next** on a step the program cannot do for you,
+  and after **Next** has tried and the step is still open.
+- **Next does not guess.** It types only the values the step lists. A step that leaves a
+  value to you (the girdle diameter of your own stone, a file to open, a facet to drag)
+  shows **Skip step** instead.

@@ -36,6 +36,18 @@ export struct CmWheelScale {
     label: string,
 }
 
+// One line of the schedule list (and one segment of the step strip): a step in cutting order.
+export struct CmScheduleRow {
+    // The tier's code, `P1`.
+    code: string,
+    // The angle, `42.80°`.
+    angle: string,
+    // The indices, joined (`96, 12, 24 ...`).
+    indices: string,
+    // 0 not done, 1 done, 2 changed since it was marked.
+    state: int,
+}
+
 export global CuttingModeModel {
     // Whether the screen is showing.
     in-out property <bool> open: false;
@@ -94,6 +106,11 @@ export global CuttingModeModel {
     in property <[CmWheelMark]> wheel_marks: [];
     in property <[CmWheelScale]> wheel_scale: [];
 
+    // Every step in cutting order, for the schedule list and the step strip.
+    in property <[CmScheduleRow]> schedule: [];
+
+    // A click on step `i` of the schedule list or the strip: shows that step.
+    callback jump_to(int);
     // Fired once the screen has opened for a design that can be stepped through; Rust builds
     // the steps, fills the page and clears `busy`.
     callback open_requested();

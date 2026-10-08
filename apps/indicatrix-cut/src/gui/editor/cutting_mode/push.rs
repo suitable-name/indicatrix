@@ -4,7 +4,7 @@
 //! the model's properties and rows. Setting a property to the value it holds changes nothing, so
 //! pushing a page again after a tick redraws only what moved.
 
-use crate::{CmChip, CmWheelMark, CmWheelScale, CuttingModeModel, MainWindow};
+use crate::{CmChip, CmScheduleRow, CmWheelMark, CmWheelScale, CuttingModeModel, MainWindow};
 use indicatrix_editor::cutting_mode::{
     CuttingPlan,
     dial::IndexWheel,
@@ -64,6 +64,24 @@ pub(super) fn push_page(
     model.set_stone_caption(stone_caption(step, plan.steps.len()).into());
     model.set_wheel_caption(wheel_caption(plan.gear_teeth, step).into());
 
+    model.set_schedule(ModelRc::new(VecModel::from(
+        (0..plan.steps.len())
+            .filter_map(|i| StepPage::new(&plan.steps, i, progress))
+            .map(|row| CmScheduleRow {
+                code: row.tier_name.into(),
+                angle: row.angle.into(),
+                indices: row
+                    .chips
+                    .iter()
+                    .map(|chip| chip.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+                    .into(),
+                state: row.state.code(),
+            })
+            .collect::<Vec<_>>(),
+    )));
+
     model.set_wheel_minor(wheel.minor_ticks.into());
     model.set_wheel_major(wheel.major_ticks.into());
     model.set_wheel_spokes(wheel.spokes.into());
@@ -118,6 +136,7 @@ pub(super) fn clear_page(ui: &MainWindow) {
     model.set_progress_fraction(0.0);
     model.set_stone_caption(SharedString::new());
     model.set_wheel_caption(SharedString::new());
+    model.set_schedule(ModelRc::default());
     model.set_wheel_minor(SharedString::new());
     model.set_wheel_major(SharedString::new());
     model.set_wheel_spokes(SharedString::new());

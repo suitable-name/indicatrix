@@ -655,7 +655,7 @@ pub(in crate::gui) fn setup_diagram_selection_and_export_callbacks(
 /// panel is showing from the remote worker.
 ///
 /// Also a no-op (with a toast, not a silent nothing) when the filtered set is
-/// empty, since [`offer_batch_confirmation`](crate::gui::batch::preview::offer_batch_confirmation)
+/// empty, since `offer_batch_confirmation`
 /// itself only skips silently -- a cutter who just pressed the button deserves to
 /// know why nothing opened.
 pub(in crate::gui) fn setup_regenerate_filtered_set_callbacks(

@@ -11,6 +11,7 @@
 
 use super::{
     OP_CAP,
+    shaped::parallel::{even_chunks, run_lanes},
     types::{CandidateDesign, PlanProgress, PlanSettings, RoughBlock},
 };
 
@@ -276,8 +277,57 @@ pub fn build_piece_table(
     front: &[CandidateDesign],
     on_progress: &mut dyn FnMut(PlanProgress) -> bool,
 ) -> Option<PieceTable> {
+    build_piece_table_lanes(grid, front, 1, on_progress)
+}
+
+/// [`build_piece_table`] on `lanes` scoped threads, one run of x-planes per thread.
+///
+/// Every cell is computed by the same call as in the serial build and the runs are
+/// concatenated in plane order, so the table is bitwise the serial one whatever the lane
+/// count. Reports [`PlanProgress::Grid`] once per x-plane (`done` is the plane, 1-based;
+/// the events of different lanes interleave) on the calling thread; `None` when cancelled.
+/// With one lane nothing is spawned.
+pub fn build_piece_table_lanes(
+    grid: &Grid,
+    front: &[CandidateDesign],
+    lanes: usize,
+    on_progress: &mut dyn FnMut(PlanProgress) -> bool,
+) -> Option<PieceTable> {
     let norms: Vec<Norm> = front.iter().map(Norm::of).collect();
     let [nx, ny, nz] = grid.cells;
+    let parts = run_lanes(
+        even_chunks(nx, lanes),
+        |planes, report| {
+            let cells = planes.len() * ny * nz;
+            let mut part = PieceTable {
+                cells: grid.cells,
+                values: Vec::with_capacity(cells),
+                design: Vec::with_capacity(cells),
+                orient: Vec::with_capacity(cells),
+            };
+            for plane in planes {
+                let gx = plane + 1;
+                for gy in 1..=ny {
+                    for gz in 1..=nz {
+                        let p = grid.stone_box([gx, gy, gz]);
+                        let (d, o, v) = best_pick(&norms, p, grid.settings.min_width_mm)
+                            .unwrap_or((0, 0, f64::NEG_INFINITY));
+                        part.values.push(v);
+                        part.design.push(d as u32);
+                        part.orient.push(o as u8);
+                    }
+                }
+                if !report(PlanProgress::Grid {
+                    done: gx,
+                    total: nx,
+                }) {
+                    return None;
+                }
+            }
+            Some(part)
+        },
+        on_progress,
+    )?;
     let total = nx * ny * nz;
     let mut table = PieceTable {
         cells: grid.cells,
@@ -285,26 +335,10 @@ pub fn build_piece_table(
         design: Vec::with_capacity(total),
         orient: Vec::with_capacity(total),
     };
-    for gx in 1..=nx {
-        for gy in 1..=ny {
-            for gz in 1..=nz {
-                let p = grid.stone_box([gx, gy, gz]);
-                let (d, o, v) = best_pick(&norms, p, grid.settings.min_width_mm).unwrap_or((
-                    0,
-                    0,
-                    f64::NEG_INFINITY,
-                ));
-                table.values.push(v);
-                table.design.push(d as u32);
-                table.orient.push(o as u8);
-            }
-        }
-        if !on_progress(PlanProgress::Grid {
-            done: gx,
-            total: nx,
-        }) {
-            return None;
-        }
+    for part in parts {
+        table.values.extend(part.values);
+        table.design.extend(part.design);
+        table.orient.extend(part.orient);
     }
     Some(table)
 }

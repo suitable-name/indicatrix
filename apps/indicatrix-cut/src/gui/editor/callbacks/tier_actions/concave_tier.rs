@@ -109,6 +109,7 @@ pub(super) fn setup_concave_tier_callbacks(
         model.set_inspector_concave_mode(true);
         model.set_inspector_tab(0);
         model.set_inspector_collapsed(false);
+        model.set_tier_table_collapsed(false);
         model.set_selected_tier_index(-1);
     });
 

@@ -13,6 +13,8 @@
 //! - `progress`: decides, from STATE, whether the current step's goal is met and reports it
 //!   through `GuideModel.notify`; also takes UI events (`progress::guide_event`, the handler
 //!   of `GuideModel.event`; other desktop code reports an event with `gui::tutorial_events::raise`).
+//! - `perform`: Next on an unfinished step -- carries out the step's recipe through the very
+//!   callbacks the learner's own clicks would reach, then lets `progress` judge the goal.
 //! - `browser`: the tutorial browser's list, the welcome dialog and the "finished" marks.
 //! - `build_design`: "Build this design" -- reads a library design, generates its rebuild
 //!   lesson off the UI thread, registers it ([`register_generated_guide`]) and starts it.
@@ -26,6 +28,7 @@
 mod browser;
 mod build_design;
 mod launch;
+mod perform;
 mod progress;
 mod runtime;
 

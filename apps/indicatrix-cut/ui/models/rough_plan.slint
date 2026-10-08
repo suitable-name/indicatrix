@@ -86,6 +86,7 @@ export global RoughPlanModel {
     in-out property <string> rough_y: "";
     in-out property <string> rough_z: "";
     in-out property <int> count: 1;                 // SpinBox 1..=99, "up to"
+    in-out property <int> min_count: 1;             // SpinBox 1..=count, the fewest stones a shown layout holds
     in-out property <string> time_limit_secs: "120"; // "Scan plan time limit" in seconds, 0 = no limit; shown for a rough with a mesh (`locate_possible`), Rust fills it from the settings file when the window is created
     in property <[string]> materials;               // filled by Rust when the window opens
     in-out property <int> material_index: 0;

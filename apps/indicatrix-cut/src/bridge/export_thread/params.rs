@@ -55,6 +55,17 @@ pub enum ComputeTarget {
     Both,
 }
 
+impl ComputeTarget {
+    /// Whether the export suspends the live viewport for its duration. `RemoteOnly` uses
+    /// no local lane, no GPU adapter and no hybrid probe (see `frame_local_compute` in the
+    /// tilt video and `run_export`), so the viewport keeps tracing while the remote renders;
+    /// `LocalOnly` and `Both` share the CPU, GPU and adapter with it and pause it.
+    #[must_use]
+    pub const fn pauses_live_viewport(self) -> bool {
+        !matches!(self, Self::RemoteOnly)
+    }
+}
+
 /// Everything about the REMOTE side of one export or tilt video, bundled so the render
 /// entry points take one argument for it: which engines ([`ComputeTarget`]), the
 /// configured remote endpoint's connection (`None` when no remote is configured -- there
@@ -62,7 +73,7 @@ pub enum ComputeTarget {
 /// picture only).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteSelection {
-    /// The export dialog's "Compute" pill (always `Both` for a tilt video).
+    /// The export dialog's "Compute" pill (the tilt video section has its own).
     pub compute_target: ComputeTarget,
     /// The remote endpoint's connection settings, if one is configured.
     pub worker: Option<WorkerSettings>,

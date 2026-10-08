@@ -1,21 +1,22 @@
 import { Theme } from "../../theme.slint";
 import { CmChip } from "../../models/cutting_mode.slint";
 
-// The indices of a step as big chips, six to a row, each a tick box: a click ticks the index
-// off (or takes the tick back). A ticked chip is green with a check mark.
+// The indices of a step as big chips, each a tick box: a click ticks the index off (or takes the
+// tick back). A ticked chip is green with a check mark.
 //
-// The chips share the width of the row equally, so nothing here depends on how the page is
-// laid out around it; the height follows from how many rows the chips need, so a long list
-// simply makes the page taller (the page scrolls).
+// The chips share the width of the row equally and the number per row follows from the width
+// (at least 76 px a chip), so nothing here depends on how the page is laid out around it; the
+// height follows from how many rows the chips need, so a long list simply makes the page taller
+// (the page scrolls).
 export component CmChips inherits Rectangle {
     in property <[CmChip]> chips;
 
     // A click on chip `i`.
     callback toggled(int);
 
-    property <int> cols: 6;
     property <length> gap: 10px;
-    property <length> chip_h: 60px;
+    property <length> chip_h: 52px;
+    property <int> cols: Math.max(1, Math.min(12, Math.floor((root.width + root.gap) / (76px + root.gap))));
     property <length> chip_w: (root.width - (root.cols - 1) * root.gap) / root.cols;
     property <int> rows: Math.ceil(root.chips.length / root.cols);
 
@@ -48,7 +49,7 @@ export component CmChips inherits Rectangle {
         Text {
             text: chip.text;
             color: Theme.text-primary;
-            font-size: 24px;
+            font-size: 22px;
             font-weight: 700;
             horizontal-alignment: center;
             vertical-alignment: center;
@@ -58,10 +59,10 @@ export component CmChips inherits Rectangle {
         if chip.ticked: Image {
             source: @image-url("../../icons/check.svg");
             colorize: Theme.success;
-            x: parent.width - self.width - 6px;
-            y: 6px;
-            width: 16px;
-            height: 16px;
+            x: parent.width - self.width - 5px;
+            y: 5px;
+            width: 14px;
+            height: 14px;
         }
     }
 }

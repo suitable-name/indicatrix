@@ -20,6 +20,10 @@ use glam::Vec3;
 use indicatrix::geometry::{ToolPrimitive, meet_solver::SolvedTier, stone_metrics::SolidStatus};
 use std::sync::{Arc, Mutex, PoisonError};
 
+/// Largest per-component plane difference [`WorkerMemory::same_stone`] still calls the same
+/// stone; the desktop sink's republish tolerance, orders of magnitude below any edit.
+pub const SAME_STONE_EPSILON: f32 = 1e-5;
+
 /// Facet outlines an embedding app owns OUTSIDE the request stream: the Slice tool's
 /// provisional tier and the tiers that follow a handle drag.
 ///
@@ -160,6 +164,27 @@ impl WorkerMemory {
             geometry.placements.clone_from(&self.placements);
             geometry
         })
+    }
+
+    /// Whether `planes` and `tools` are the stone last rendered, planes compared within
+    /// [`SAME_STONE_EPSILON`] per component and tools exactly.
+    ///
+    /// The desktop feeds a camera-follow `Reproject` the planes it holds in its render
+    /// context, which are the last `Planned` frame's planes round-tripped through
+    /// `GpuFacetPlane::new`; that `normalize()` is not idempotent in `f32`, so a normal
+    /// moves by one ULP now and then. An exact compare called such a pose change "a
+    /// different design" and wiped the selection, hover and labels (the tier highlight
+    /// vanished after turning the stone over). A real edit moves a plane by far more.
+    #[must_use]
+    pub fn same_stone(&self, planes: &[(Vec3, f32)], tools: &[ToolPrimitive]) -> bool {
+        self.tools == tools
+            && self.planes.as_deref().is_some_and(|last| {
+                last.len() == planes.len()
+                    && last.iter().zip(planes).all(|(&(ln, lm), &(rn, rm))| {
+                        (lm - rm).abs() <= SAME_STONE_EPSILON
+                            && (ln - rn).abs().max_element() <= SAME_STONE_EPSILON
+                    })
+            })
     }
 
     /// `style` with the shared [`Outlines`] (if any) copied over its `provisional` and
@@ -323,8 +348,7 @@ pub fn resolve_request_state(
             // orbit/zoom always resubmits the SAME planes, so this never fires
             // mid-drag.
             let planes = geometry.halfspaces();
-            if memory.planes.as_deref() != Some(planes.as_slice()) || memory.tools != geometry.tools
-            {
+            if !memory.same_stone(&planes, &geometry.tools) {
                 memory.style = SolidStyle::default();
                 memory.diagram = DiagramMemory::default();
                 memory.visible_tiers = None;

@@ -260,6 +260,7 @@ pub fn train_tracer(scale: f32) -> f32 {
                     depth: &frame.depth,
                     normal: &frame.normal,
                     facet_id: &frame.facet,
+                    path_sig: None,
                     width: width as usize,
                     height: height as usize,
                     spp,

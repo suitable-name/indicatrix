@@ -1,7 +1,7 @@
 import { Theme } from "../../theme.slint";
 
-// A large button for cutting mode: tall enough to hit from the bench, with the label in big
-// type and an optional icon before or after it. Not a tab stop, on purpose: cutting mode is driven
+// A button for cutting mode: 44 px tall, sized from its label and icon, with an optional icon
+// before or after the label. Not a tab stop, on purpose: cutting mode is driven
 // by its keys (`CuttingModeModel.handle_key`) and the screen swallows Tab so that no shortcut can
 // reach the design underneath. These buttons are the pointer's way to the same actions; the key
 // that does the same is named in `hint`, which is also what a screen reader reads after the label.
@@ -40,7 +40,11 @@ export component CmButton inherits Rectangle {
 
     preferred-width: root.group_width + 2 * root.pad;
     min-width: root.group_width + 2 * root.pad;
-    height: 52px;
+    // Content-sized: a Rectangle in a layout takes a share of the free room unless told not to,
+    // which made the buttons of the old footer 360 to 460 px wide.
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    height: 44px;
     border-radius: Theme.radius-md;
     border-width: 1px;
     border-color: !root.enabled ? Theme.border-subtle

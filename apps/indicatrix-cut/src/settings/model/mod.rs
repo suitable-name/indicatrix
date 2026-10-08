@@ -34,7 +34,7 @@ pub use head_shadow::{clamp_head_shadow_deg, head_shadow_deg_from_slider};
 pub use import_preview::ImportPreviewChoice;
 pub use lighting_preset::LightingPreset;
 pub use local_compute::LocalComputeTarget;
-pub use remote_endpoint::{ExportTransfer, LiveTransfer, RemoteEndpoint};
+pub use remote_endpoint::{ExportTransfer, LiveTransfer, RemoteEndpoint, TiltVideoCompute};
 pub use settings_file::SettingsFile;
 pub use surface_glare::{
     clamp_surface_glare, percent_from_surface_glare, surface_glare_from_percent,
@@ -591,6 +591,52 @@ address = "10.0.0.9:9443"
             parsed.settings.local_compute_target,
             LocalComputeTarget::Gpu
         );
+    }
+
+    // ---- Tilt video Compute pill: AppSettings::tilt_video_compute_target ---
+
+    #[test]
+    fn toml_round_trip_preserves_tilt_video_compute_target() {
+        for choice in [
+            TiltVideoCompute::Local,
+            TiltVideoCompute::Remote,
+            TiltVideoCompute::Both,
+        ] {
+            let mut file = SettingsFile::default();
+            file.settings.tilt_video_compute_target = choice;
+
+            let toml_str = toml::to_string_pretty(&file).expect("serialize");
+            let parsed: SettingsFile = toml::from_str(&toml_str).expect("deserialize");
+            assert_eq!(parsed.settings.tilt_video_compute_target, choice);
+        }
+    }
+
+    /// A settings file predating the pill must still load, defaulting to Local + Remote.
+    #[test]
+    fn a_settings_file_predating_the_tilt_video_compute_target_loads_as_both() {
+        let toml_str = "[settings]\nexposure = 1.2\n";
+        let parsed: SettingsFile = toml::from_str(toml_str).expect("deserialize");
+        assert_eq!(
+            parsed.settings.tilt_video_compute_target,
+            TiltVideoCompute::Both
+        );
+        assert_eq!(
+            AppSettings::default().tilt_video_compute_target,
+            TiltVideoCompute::Both
+        );
+    }
+
+    #[test]
+    fn tilt_video_compute_indices_round_trip_and_unknown_is_both() {
+        for choice in [
+            TiltVideoCompute::Local,
+            TiltVideoCompute::Remote,
+            TiltVideoCompute::Both,
+        ] {
+            assert_eq!(TiltVideoCompute::from_index(choice.index()), choice);
+        }
+        assert_eq!(TiltVideoCompute::from_index(-1), TiltVideoCompute::Both);
+        assert_eq!(TiltVideoCompute::from_index(7), TiltVideoCompute::Both);
     }
 
     #[test]

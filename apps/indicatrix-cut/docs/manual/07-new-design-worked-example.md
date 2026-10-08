@@ -14,7 +14,8 @@ Reopen the guide any time from Help > Guide: New Design Walkthrough, or find it 
 "New design walkthrough" in the tutorial browser (Help > Tutorials..., Chapter 22),
 which also lists the other guided lessons and marks the ones you have finished. The card
 does not build the stone for you: the guide starts at Step 1, where you create
-an **Empty** design yourself, and you add every tier by hand.
+an **Empty** design yourself, and you add every tier by hand -- or press **Next** on
+a step you have not done, and the guide makes the same entries for you.
 
 While the guide is open:
 
@@ -28,7 +29,10 @@ While the guide is open:
   until then, and "Done" for a moment before the next step. Any route to the
   goal counts: the tier form, an inline edit, Undo/Redo, or auto-solve
   finishing first (the toolbar's quick-add buttons do not count for the
-  girdle: quick-add Girdle names the tier "Girdle" and adds no indices). **Skip step** moves on without it; **Back**
+  girdle: quick-add Girdle names the tier "Girdle" and adds no indices). **Next** on a
+  step you have not done does it for you (it types the listed values into the same form,
+  so **Ctrl+Z** undoes it); the optional yield step, whose girdle diameter is your own
+  stone's, shows **Skip step** instead, which moves on without it. **Back**
   returns to the previous step. The two reading steps -- checking the orbits
   (Step 8) and the closing note -- wait for **Next** (**Finish** on the closing
   note) instead.

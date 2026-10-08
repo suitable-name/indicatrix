@@ -68,7 +68,7 @@ mod wiring;
 
 pub use engine::{RI_MATCH_TOLERANCE, target_ri_for_design};
 pub use import_choice::offer_import_previews;
-pub use wiring::{offer_batch_confirmation, setup_preview_batch_callbacks};
+pub use wiring::{offer_regeneration, setup_preview_batch_callbacks};
 
 #[cfg(test)]
 mod tests {

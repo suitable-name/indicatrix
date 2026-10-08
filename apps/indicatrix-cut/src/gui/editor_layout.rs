@@ -50,12 +50,13 @@ pub(super) fn apply_editor_layout_from_settings(ui: &MainWindow, s: &AppSettings
     editor.set_inspector_height(inspector_height);
     editor.set_settings_collapsed(s.editor_settings_collapsed);
     editor.set_inspector_collapsed(s.editor_inspector_collapsed);
+    editor.set_tier_table_collapsed(s.editor_tier_table_collapsed);
     editor.set_remap_collapsed(s.editor_remap_collapsed);
 }
 
 /// Wires `EditorModel.layout_changed` (fired by `ui/models/editor.slint` on every
 /// change to `dock_width`/`inspector_height`/`settings_collapsed`/
-/// `inspector_collapsed`/`remap_collapsed`) to persist all five through the same
+/// `inspector_collapsed`/`tier_table_collapsed`/`remap_collapsed`) to persist all six through the same
 /// debounced writer every other durable setting in `gui::mod::build_main_window` goes
 /// through -- the same shape as that function's own `on_panel_collapsed_changed`.
 ///
@@ -94,12 +95,14 @@ pub(super) fn setup_editor_layout_callbacks(
         let inspector_height = editor.get_inspector_height();
         let settings_collapsed = editor.get_settings_collapsed();
         let inspector_collapsed = editor.get_inspector_collapsed();
+        let tier_table_collapsed = editor.get_tier_table_collapsed();
         let remap_collapsed = editor.get_remap_collapsed();
         settings_store.update(|s| {
             s.settings.editor_dock_width = dock_width;
             s.settings.editor_inspector_height = inspector_height;
             s.settings.editor_settings_collapsed = settings_collapsed;
             s.settings.editor_inspector_collapsed = inspector_collapsed;
+            s.settings.editor_tier_table_collapsed = tier_table_collapsed;
             s.settings.editor_remap_collapsed = remap_collapsed;
             s.settings.editor_layout_touched = true;
         });

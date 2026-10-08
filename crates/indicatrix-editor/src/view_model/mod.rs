@@ -134,11 +134,13 @@ pub struct CuttingRow {
     pub order_idx: i32,
     /// `1` crown, `-1` pavilion, `0` girdle.
     pub side: i32,
-    /// The facet name, or `"#N"` for an unnamed tier.
+    /// The tier's code in cutting order (`P1`, `G1`, `C1`, `T`), as the printed cutting sheet
+    /// writes it; the name (or `"#N"`) only if no code exists.
     pub facet: String,
     /// The angle, two decimals.
     pub angle: String,
-    /// The index list, `", "`-joined.
+    /// The index list as the cutting sheet prints it: dash-joined, zero-padded (`96-08-16`),
+    /// `"-"` when empty.
     pub index_val: String,
     /// The tier's notes.
     pub notes: String,

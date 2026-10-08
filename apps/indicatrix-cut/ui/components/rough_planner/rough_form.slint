@@ -17,9 +17,13 @@ export component RoughForm inherits VerticalLayout {
         color: Theme.text-muted;
     }
 
-    // Base shape picker
-    HorizontalLayout {
-        spacing: 8px;
+    // Base shape picker: two rows of two, because all four in one row (about 340 px with
+    // "Mesh (OBJ/STL/PLY)") are wider than the left column and used to push the whole form
+    // past its edges.
+    VerticalLayout {
+      spacing: 4px;
+      HorizontalLayout {
+        spacing: 12px;
         alignment: start;
 
         RoughRadio {
@@ -36,6 +40,11 @@ export component RoughForm inherits VerticalLayout {
             editable: !RoughPlanModel.running && !RoughPlanModel.mesh_busy;
             picked => { RoughPlanModel.set_base(1); }
         }
+      }
+      HorizontalLayout {
+        spacing: 12px;
+        alignment: start;
+
         RoughRadio {
             label: "Pebble";
             hint: "A rounded, pebble-shaped rough. You give its three sizes in millimetres.";
@@ -50,6 +59,7 @@ export component RoughForm inherits VerticalLayout {
             editable: !RoughPlanModel.running && !RoughPlanModel.mesh_busy;
             picked => { RoughPlanModel.import_obj(); }
         }
+      }
     }
 
     // The unit the numbers of a mesh file are read in. The choice is read when a file is picked

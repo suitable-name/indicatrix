@@ -289,7 +289,9 @@ pub(super) fn finish_export_queue(
     // at the same time as a fanned-out hi-res export queue, so this decrements this
     // queue's own claim rather than unconditionally clearing every job's -- see
     // `RenderContext::export_active_count`'s doc comment.
-    RenderContext::lock(render_ctx).export_active_count -= 1;
+    if queue.remote.compute_target.pauses_live_viewport() {
+        RenderContext::lock(render_ctx).export_active_count -= 1;
+    }
     ui.global::<ExportModel>()
         .set_preview_image(slint::Image::default());
     // No estimate makes sense once the whole queue has stopped, on every exit path
@@ -301,6 +303,11 @@ pub(super) fn finish_export_queue(
         ui.global::<ExportModel>().set_has_error(false);
         ui.global::<ExportModel>()
             .set_status_message("Export cancelled.".into());
+        // Run in the background, nothing on screen would say so (the finished and failed
+        // outcomes below always toast).
+        if !ui.global::<ExportModel>().get_is_open() {
+            show_toast(ui, "Export cancelled.", "info");
+        }
         return;
     }
 

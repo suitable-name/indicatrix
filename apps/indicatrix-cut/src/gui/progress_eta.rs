@@ -171,9 +171,24 @@ pub fn format_eta(eta: Option<Duration>) -> String {
     }
 }
 
+/// The remaining-time text a design-count batch dialog (preview or tilt-curve batch)
+/// shows after its "Completed N / M" caption: `""` before the first design finishes
+/// and once all are done (the summary line takes over), `"estimating..."` while the
+/// estimator has no trustworthy fit yet, otherwise [`format_eta`]'s own wording.
+#[must_use]
+pub fn batch_eta_label(completed: u32, total: u32, eta: Option<Duration>) -> String {
+    if total == 0 || completed >= total {
+        return String::new();
+    }
+    match eta {
+        Some(_) => format_eta(eta),
+        None => "estimating...".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{EtaEstimator, format_eta};
+    use super::{EtaEstimator, batch_eta_label, format_eta};
     use std::time::{Duration, Instant};
 
     /// Perfectly linear progress (a constant rate the whole way) must produce an
@@ -252,6 +267,17 @@ mod tests {
             eta.eta(start + Duration::from_secs(9)).is_none(),
             "a single observation right after reset must not yet produce an estimate"
         );
+    }
+
+    #[test]
+    fn batch_eta_label_covers_estimating_known_and_finished() {
+        assert_eq!(batch_eta_label(3, 10, None), "estimating...");
+        assert_eq!(
+            batch_eta_label(3, 10, Some(Duration::from_secs(120))),
+            "about 2 min left"
+        );
+        assert_eq!(batch_eta_label(10, 10, None), "");
+        assert_eq!(batch_eta_label(0, 0, None), "");
     }
 
     #[test]

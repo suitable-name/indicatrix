@@ -15,6 +15,10 @@ use crate::{
     gui::batch::{
         batch_queue::{LanePlan, WorkQueue, local_lane_count, remote_lane_count},
         preview_cache::PreviewThumbnailCache,
+        regenerate_all::{
+            ScopeKind, all_choice_label, chosen_ids, missing_among, missing_choice_label,
+            next_scope_generation, scope_is_current,
+        },
         remote_lanes_setting::setup_remote_batch_lanes,
     },
     settings::{ImportPreviewChoice, LiveComputeTarget, SettingsPersister, WorkerSettings},
@@ -343,6 +347,8 @@ fn start_batch(
     ui.global::<BatchModel>().set_preview_batch_running(true);
     ui.global::<BatchModel>().set_preview_design_index(0);
     ui.global::<BatchModel>()
+        .set_preview_eta(String::new().into());
+    ui.global::<BatchModel>()
         .set_preview_design_total(entry_ids.len() as i32);
     ui.global::<BatchModel>().set_preview_local_active(0);
     ui.global::<BatchModel>().set_preview_local_lane_total(0);
@@ -393,11 +399,13 @@ fn confirm_offer(ui: &MainWindow, env: &ConfirmEnv, mode: PreviewMode) {
         };
         remember_choice(ui, &env.settings_store, choice);
     }
-    let ids: Vec<i64> = model
-        .get_preview_offer_ids()
-        .iter()
-        .map(i64::from)
-        .collect();
+    let to_ids = |ids: slint::ModelRc<i32>| ids.iter().map(i64::from).collect::<Vec<i64>>();
+    let ids = chosen_ids(
+        model.get_preview_offer_regenerate(),
+        model.get_preview_offer_missing_only(),
+        to_ids(model.get_preview_offer_ids()),
+        to_ids(model.get_preview_offer_missing_ids()),
+    );
     start_batch(
         ui,
         &env.db,
@@ -426,6 +434,59 @@ fn confirm_offer(ui: &MainWindow, env: &ConfirmEnv, mode: PreviewMode) {
 /// A no-op for an empty `ids` -- nothing to offer.
 pub fn offer_batch_confirmation(ui: &MainWindow, ids: &[i64]) {
     open_offer(ui, ids, false);
+}
+
+thread_local! {
+    /// What [`offer_regeneration`]'s background count needs: the vault and the settings
+    /// whose preview size/spp feed the cache fingerprint. Set once by
+    /// [`setup_preview_batch_callbacks`]; UI-thread only.
+    static SCOPE_ENV: RefCell<Option<(Arc<Mutex<Database>>, Arc<SettingsPersister>)>> =
+        const { RefCell::new(None) };
+}
+
+/// Opens the confirm step as a REGENERATION of `ids` (the Library menu's whole-catalogue
+/// commands, the filter panel's filtered set): the dialog offers "missing or outdated
+/// only" and "all". The missing set is the same scan the startup offer runs
+/// (`spawn_missing_preview_scan`), done off the UI thread and restricted to `ids`; until
+/// it lands the pill reads "counting...". A no-op for an empty `ids`.
+pub fn offer_regeneration(ui: &MainWindow, ids: &[i64]) {
+    if ids.is_empty() {
+        return;
+    }
+    open_offer(ui, ids, false);
+    let model = ui.global::<BatchModel>();
+    model.set_preview_offer_regenerate(true);
+    model.set_preview_offer_missing_only(true);
+    model.set_preview_offer_missing_count(-1);
+    model.set_preview_offer_missing_ids(slint::ModelRc::default());
+    model.set_preview_offer_missing_label(missing_choice_label(None).into());
+    model.set_preview_offer_all_label(all_choice_label(ids.len()).into());
+
+    let Some((db, settings_store)) = SCOPE_ENV.with(|env| env.borrow().clone()) else {
+        return;
+    };
+    let generation = next_scope_generation(ScopeKind::Preview);
+    let settings = settings_store.snapshot().settings;
+    let all = ids.to_vec();
+    spawn_missing_preview_scan(
+        ui.as_weak(),
+        db,
+        settings.preview_size,
+        settings.preview_spp,
+        move |ui, missing| {
+            if !scope_is_current(ScopeKind::Preview, generation) {
+                return;
+            }
+            let missing = missing_among(&all, &missing);
+            let model = ui.global::<BatchModel>();
+            model.set_preview_offer_missing_count(missing.len() as i32);
+            model.set_preview_offer_missing_label(missing_choice_label(Some(missing.len())).into());
+            let missing_i32: Vec<i32> = missing.iter().map(|&id| id as i32).collect();
+            model.set_preview_offer_missing_ids(slint::ModelRc::new(slint::VecModel::from(
+                missing_i32,
+            )));
+        },
+    );
 }
 
 /// [`offer_batch_confirmation`], also naming whether an import opened it -- which adds
@@ -476,6 +537,7 @@ pub fn setup_preview_batch_callbacks(
     settings_store: &Arc<SettingsPersister>,
     thumbnail_cache: &PreviewThumbnailCache,
 ) {
+    SCOPE_ENV.with(|env| *env.borrow_mut() = Some((Arc::clone(db), Arc::clone(settings_store))));
     let handle: Rc<RefCell<Option<PreviewBatchHandle>>> = Rc::new(RefCell::new(None));
     // Shared by every `start_batch` call site below -- see that function's own doc
     // comment for why the completion push in `spawn_preview_batch` compares against

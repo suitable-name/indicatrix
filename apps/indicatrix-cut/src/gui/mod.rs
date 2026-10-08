@@ -14,6 +14,9 @@ mod editor;
 // in its own module purely to keep this file from growing further; see this
 // module's own doc comment.
 mod editor_layout;
+// "Is an export running?" for the start guards, the header export indicator's wording and the
+// close guard's sentence for a dialog export -- see the module's own doc comment.
+mod export_run;
 // Opening the bundled user manual and revealing the Edit tab's last-saved folder --
 // see the module's own doc comment.
 mod external_links;

@@ -15,14 +15,14 @@ use super::{
 use indicatrix_cut_core::rough_plan::{
     CandidateDesign, CutOrder, FINAL_LAYOUTS, LayoutGroup, PLAIN_SINGLE_FITS, PlanInput, PlanPath,
     PlanProgress, REFINE_TOP, RoughBlock, RoughLayout, SHAPED_SINGLE_FITS, SHAPED_SINGLE_LAYOUTS,
-    best_layout, build_piece_table, choose_grid, final_ranking, finish_plan, flatten_groups,
-    merge_and_rank, own_pool, pareto_front, partial_ranking, plan_alternatives,
-    plan_rough_for_order, rank_indices,
+    best_layout, build_piece_table_lanes, choose_grid, final_ranking_min, finish_plan_lanes,
+    flatten_groups, merge_and_rank_min, own_pool, pareto_front, partial_ranking_min,
+    plan_alternatives_lanes, plan_rough_for_order, rank_indices_min,
     shaped::{
         ShapedAltParams, ShapedCtx, ShapedGrid, grid_poll_events, plan_shaped_alternatives,
         plan_shaped_for_order, refine_shaped, shaped_uniform_layouts,
     },
-    single_fit_layouts, uniform_layouts, uniform_pool,
+    single_fit_layouts, uniform_layouts_lanes, uniform_pool,
 };
 
 /// DP ticks the plain planner reports per cell of the first cut axis and order.
@@ -116,10 +116,15 @@ fn plan_plain_block(
         PLAIN_SINGLE_FITS,
         rough.volume_mm3(),
     ));
-    Some(merge_and_rank(layouts, FINAL_LAYOUTS))
+    Some(merge_and_rank_min(
+        layouts,
+        FINAL_LAYOUTS,
+        settings.min_count_usize(),
+    ))
 }
 
-/// The core's `plan_rough` over the Pareto `front`, with the six orders on threads.
+/// The core's `plan_rough` over the Pareto `front`, every stage that splits on threads: the
+/// piece tables, the six orders, the single-design pass and the refinement.
 fn plan_block_layouts(
     rough: &RoughBlock,
     input: &PlanInput<'_>,
@@ -136,14 +141,21 @@ fn plan_block_layouts(
     progress.note(Note::Grid(grid.cells()[0]));
     progress.note(Note::Dp(dp_ticks(grid.cells(), PLAIN_TICKS_PER_CELL)));
 
-    let table = build_piece_table(&grid, &front, &mut on_progress)?;
+    let table = build_piece_table_lanes(&grid, &front, lanes, &mut on_progress)?;
     let mixed = run_orders(lanes, progress, |order, on| {
         plan_rough_for_order(&grid, &table, &front, order, settings.count, on)
     })?;
     let alternatives = match best_layout(&mixed) {
         // The FULL candidate list, not the front: a design dominated only by a removed
         // one may be needed once that one is gone.
-        Some(best) => plan_alternatives(&grid, designs, best, settings.count, &mut on_progress)?,
+        Some(best) => plan_alternatives_lanes(
+            &grid,
+            designs,
+            best,
+            settings.count,
+            lanes,
+            &mut on_progress,
+        )?,
         None => Vec::new(),
     };
 
@@ -157,12 +169,12 @@ fn plan_block_layouts(
     }
     groups.push(LayoutGroup {
         pool: Vec::new(),
-        layouts: uniform_layouts(rough, settings, designs, &mut on_progress)?,
+        layouts: uniform_layouts_lanes(rough, settings, designs, lanes, &mut on_progress)?,
     });
     if !on_progress(PlanProgress::Uniform { done: 1, total: 1 }) {
         return None;
     }
-    finish_plan(rough, settings, designs, &groups, &mut on_progress)
+    finish_plan_lanes(rough, settings, designs, &groups, lanes, &mut on_progress)
 }
 
 /// A shaped rough: the positional DPs over the clipped table, the leave-one-out
@@ -183,6 +195,10 @@ fn plan_shaped(
         return Some(Vec::new());
     }
     let settings = input.settings;
+    let min_stones = settings.min_count_usize();
+    let partial = |groups: &[LayoutGroup], extra: Vec<RoughLayout>| {
+        partial_ranking_min(groups, extra, min_stones)
+    };
     let inset = settings.skin_mm + settings.allowance_mm;
     let (Ok(ctx), Ok(coarse_region)) = (
         ShapedCtx::new(input.model, settings),
@@ -204,7 +220,7 @@ fn plan_shaped(
         None => return None,
     };
     if progress.time_stopped() {
-        return Some(partial_ranking(&groups, Vec::new()));
+        return Some(partial(&groups, Vec::new()));
     }
     let job = FitJob {
         region: &ctx.usable,
@@ -215,7 +231,7 @@ fn plan_shaped(
         mesh: ctx.fit_mesh(),
     };
     let Some(single_fits) = fit_single_stones_parallel(&job, lanes, progress) else {
-        return stopped_layouts(progress, || partial_ranking(&groups, Vec::new()));
+        return stopped_layouts(progress, || partial(&groups, Vec::new()));
     };
     let single_layouts = || {
         single_fit_layouts(
@@ -229,7 +245,7 @@ fn plan_shaped(
     let pool = uniform_pool(&front, &single_fits, designs);
     let Some(uniforms) = shaped_uniform_layouts(&ctx, &pool, settings, lanes, &mut on_progress)
     else {
-        return stopped_layouts(progress, || partial_ranking(&groups, single_layouts()));
+        return stopped_layouts(progress, || partial(&groups, single_layouts()));
     };
     groups.push(LayoutGroup {
         pool: Vec::new(),
@@ -237,7 +253,7 @@ fn plan_shaped(
     });
 
     let (flat, group_of) = flatten_groups(&groups);
-    let ranked = rank_indices(&flat, REFINE_TOP);
+    let ranked = rank_indices_min(&flat, REFINE_TOP, min_stones);
     let Some(mut refined) = refine_parallel(ranked.len(), lanes, progress, |slot| {
         let index = ranked[slot];
         let group = &groups[group_of[index]];
@@ -248,10 +264,10 @@ fn plan_shaped(
         };
         refine_shaped(&ctx, flat[index], &pool, settings)
     }) else {
-        return stopped_layouts(progress, || partial_ranking(&groups, single_layouts()));
+        return stopped_layouts(progress, || partial(&groups, single_layouts()));
     };
     refined.extend(single_layouts());
-    Some(final_ranking(refined, &flat, &ranked))
+    Some(final_ranking_min(refined, &flat, &ranked, min_stones))
 }
 
 /// What a stage that returned `None` means: the time limit stopped the plan (the layouts
@@ -278,7 +294,7 @@ fn shaped_dp_groups(
     progress.note(Note::Grid(shaped_grid_events(&grid)));
     progress.note(Note::Dp(dp_ticks(grid.cells, SHAPED_TICKS_PER_CELL)));
 
-    let size_table = grid.size_table(settings, front, &mut on_progress)?;
+    let size_table = grid.size_table_lanes(settings, front, lanes, &mut on_progress)?;
     let clip = ClipJob {
         grid: &grid,
         front,

@@ -8,11 +8,14 @@ use crate::{
         preview_render::{BATCH_TILT_LIGHTING_PRESET, PREVIEW_LIGHT_PITCH, PREVIEW_LIGHT_YAW},
         remote::remote_render,
     },
-    gui::batch::{
-        batch_queue::WorkQueue,
-        material_choice::ensure_balanced_material,
-        preview::{RI_MATCH_TOLERANCE, target_ri_for_design},
-        remote_dispatch::{DispatcherGroup, RemoteStatus},
+    gui::{
+        batch::{
+            batch_queue::WorkQueue,
+            material_choice::ensure_balanced_material,
+            preview::{RI_MATCH_TOLERANCE, target_ri_for_design},
+            remote_dispatch::{DispatcherGroup, RemoteStatus},
+        },
+        progress_eta::{EtaEstimator, batch_eta_label},
     },
     settings::WorkerSettings,
 };
@@ -448,6 +451,9 @@ pub(super) struct LiveProgress {
     /// and the most recently started design's title. Changed only through
     /// [`update_remote`].
     remote: RemoteStatus,
+    /// Fed `completed / design_total` on every [`push_progress`], so the remaining
+    /// time reflects the mixed local + remote throughput of the whole batch.
+    eta: EtaEstimator,
 }
 
 /// Pushes a snapshot of `progress` to the UI thread. Called by every lane after any
@@ -461,12 +467,19 @@ pub(super) fn push_progress(
     local_lane_total: u32,
     progress: &Mutex<LiveProgress>,
 ) {
-    let snapshot = progress
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone();
+    let (snapshot, eta_text) = {
+        let mut p = progress.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = std::time::Instant::now();
+        if design_total > 0 {
+            let fraction = f64::from(p.completed) / f64::from(design_total);
+            p.eta.observe(now, fraction);
+        }
+        let eta_text = batch_eta_label(p.completed, design_total, p.eta.eta(now));
+        (p.clone(), eta_text)
+    };
     let ui_weak = ui_weak.clone();
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+        ui.global::<BatchModel>().set_tilt_eta(eta_text.into());
         ui.global::<BatchModel>()
             .set_tilt_design_index(snapshot.completed as i32);
         ui.global::<BatchModel>()

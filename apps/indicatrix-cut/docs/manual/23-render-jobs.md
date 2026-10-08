@@ -19,6 +19,8 @@ A job keeps a frozen copy of everything it needs: the finished stone, the materi
 
 The job does not freeze the remote worker. Its address and certificates are read from Settings when the job runs (see Limitations). The job does remember your choices about where to render: local only, local and remote, or remote only, and the transfer.
 
+A tilt video has the same **Compute** pills as a still picture. **Remote only** keeps this computer free: the video's frames are drawn entirely by the remote worker, and this computer only receives and saves them and encodes the video, using almost no CPU or GPU. If the remote is missing or stops answering, the job fails with a message instead of drawing the frames here; resume it once the remote is back and it continues with its first missing frame. On the command line, `indicatrix-cli tilt-video` takes the same choice from the job file, or from `--compute local`, `remote` or `both`.
+
 ### One job per picture
 
 With presets ticked under **Also Render With These Presets**, each picture becomes its own job: one for the current view and one for every ticked preset.
@@ -41,6 +43,8 @@ Each row shows the job's number, its name, its state and what it renders, then i
 **Start Queue** renders the waiting jobs from the top of the list down, one job at a time. While the queue runs, the button reads **Pause Queue**. It stops the job that is rendering and keeps the rest waiting.
 
 The queue never starts by itself, not even when the program starts. When the last waiting job is done, the queue stops and the program says so.
+
+Only one export runs at a time, whether it is a queue job or a still picture or a tilt video started from its own dialog. While a still picture or video from a dialog is rendering, **Start Queue** is greyed out; while a queue job renders, the Export button and **Start Video Export** are greyed out. Each says why in its hover note. A dialog export can be sent to the background (**Run in Background**) and shows as a chip in the header; click the chip to open its dialog again (Chapter 14). **Add to Queue** is always available.
 
 Only the buttons that make sense for a job's state are shown on its row.
 

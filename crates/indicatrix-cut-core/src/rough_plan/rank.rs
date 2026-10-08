@@ -65,13 +65,27 @@ pub fn as_layout<L: Borrow<RoughLayout>>(handle: &L) -> &RoughLayout {
 /// float noise below the tolerance. Volumes that straddle a group edge are ranked by volume.
 #[must_use]
 pub fn rank_indices<L: Borrow<RoughLayout>>(candidates: &[L], limit: usize) -> Vec<usize> {
+    rank_indices_min(candidates, limit, 1)
+}
+
+/// [`rank_indices`] over the candidates holding at least `min_stones` stones: the ONE place
+/// the planner's minimum stone count is applied. Layouts below it are dropped before sorting,
+/// dedup and the per-set cap, so every slot goes to a qualifying layout. `min_stones <= 1` is
+/// exactly [`rank_indices`] (empty layouts are skipped either way).
+#[must_use]
+pub fn rank_indices_min<L: Borrow<RoughLayout>>(
+    candidates: &[L],
+    limit: usize,
+    min_stones: usize,
+) -> Vec<usize> {
+    let min_stones = min_stones.max(1);
     let comps: Vec<Vec<(i64, usize)>> = candidates
         .iter()
         .map(|c| as_layout(c).composition())
         .collect();
     let volume = |i: usize| as_layout(&candidates[i]).total_volume_mm3;
     let mut order: Vec<usize> = (0..candidates.len())
-        .filter(|&i| !as_layout(&candidates[i]).stones.is_empty())
+        .filter(|&i| as_layout(&candidates[i]).stones.len() >= min_stones)
         .collect();
     order.sort_by(|&i, &j| volume(j).total_cmp(&volume(i)).then(i.cmp(&j)));
     let mut start = 0;
@@ -122,7 +136,18 @@ pub fn rank_indices<L: Borrow<RoughLayout>>(candidates: &[L], limit: usize) -> V
 /// per-set cap drops the rest: a list that uses one design never has more than three.
 #[must_use]
 pub fn merge_and_rank(candidates: Vec<RoughLayout>, limit: usize) -> Vec<RoughLayout> {
-    let keep = rank_indices(&candidates, limit);
+    merge_and_rank_min(candidates, limit, 1)
+}
+
+/// [`merge_and_rank`] keeping only layouts of at least `min_stones` stones (see
+/// [`rank_indices_min`]).
+#[must_use]
+pub fn merge_and_rank_min(
+    candidates: Vec<RoughLayout>,
+    limit: usize,
+    min_stones: usize,
+) -> Vec<RoughLayout> {
+    let keep = rank_indices_min(&candidates, limit, min_stones);
     take_indices(candidates, &keep)
 }
 

@@ -349,8 +349,8 @@ pub fn rough_from_dto(dto: &RoughDto) -> Result<RoughModel, String> {
 ///
 /// # Errors
 ///
-/// Returns a message naming the field when the count is outside `1..=99` (it is reported,
-/// never clamped), a length is negative (zero for the minimum width), or a length is
+/// Returns a message naming the field when the count is outside `1..=99` or the minimum
+/// count outside `1..=count` (both reported, never clamped), a length is negative (zero for the minimum width), or a length is
 /// beyond what the planner form accepts (`MAX_LOSS_MM` for kerf, allowance and skin,
 /// `MAX_MIN_WIDTH_MM` for the minimum width).
 pub fn settings_from_dto(dto: &SettingsDto, specific_gravity: f64) -> Result<PlanSettings, String> {
@@ -358,8 +358,19 @@ pub fn settings_from_dto(dto: &SettingsDto, specific_gravity: f64) -> Result<Pla
         .ok()
         .filter(|count| (1..=99).contains(count))
         .ok_or_else(|| format!("settings.count must be 1 to 99, found {}", dto.count))?;
+    // An absent floor is 1 (older files); a present one is reported, never clamped.
+    let min_count = match dto.min_count {
+        None => 1,
+        Some(found) => u8::try_from(found)
+            .ok()
+            .filter(|min| (1..=count).contains(min))
+            .ok_or_else(|| {
+                format!("settings.min_count must be 1 to the stone count {count}, found {found}")
+            })?,
+    };
     Ok(PlanSettings {
         count,
+        min_count,
         kerf_mm: non_negative_up_to(dto.kerf_mm, MAX_LOSS_MM, "settings.kerf_mm")?,
         allowance_mm: non_negative_up_to(dto.allowance_mm, MAX_LOSS_MM, "settings.allowance_mm")?,
         skin_mm: non_negative_up_to(dto.skin_mm, MAX_LOSS_MM, "settings.skin_mm")?,
@@ -426,6 +437,9 @@ pub fn candidate_source_from_dto(dto: &SettingsDto) -> Result<CandidateSource, S
 pub fn settings_to_dto(settings: &PlanSettings, source: CandidateSource) -> SettingsDto {
     SettingsDto {
         count: i64::from(settings.count),
+        // The default 1 is left out, so a plan without a stone-count floor stays byte-identical
+        // to the files written before the key existed.
+        min_count: (settings.min_count != 1).then(|| i64::from(settings.min_count)),
         kerf_mm: settings.kerf_mm,
         allowance_mm: settings.allowance_mm,
         skin_mm: settings.skin_mm,

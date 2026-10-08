@@ -9,7 +9,13 @@ use super::{
 use crate::{
     BatchModel, LibraryModel, MainWindow,
     bridge::{preview_render, render_thread::RenderContext},
-    gui::batch::batch_queue::{LanePlan, WorkQueue, local_lane_count, remote_lane_count},
+    gui::batch::{
+        batch_queue::{LanePlan, WorkQueue, local_lane_count, remote_lane_count},
+        regenerate_all::{
+            ScopeKind, all_choice_label, chosen_ids, missing_among, missing_choice_label,
+            next_scope_generation, scope_is_current,
+        },
+    },
     settings::{LiveComputeTarget, SettingsPersister, WorkerSettings},
 };
 use indicatrix_vault::db::sqlite::Database;
@@ -271,6 +277,7 @@ fn start_batch(
     ui.global::<BatchModel>().set_tilt_done(false);
     ui.global::<BatchModel>().set_tilt_batch_running(true);
     ui.global::<BatchModel>().set_tilt_design_index(0);
+    ui.global::<BatchModel>().set_tilt_eta(String::new().into());
     // `entry_ids.len()` is at most one catalogue's worth of rows (a few thousand in
     // the real corpus), nowhere near `i32::MAX` -- `cast_possible_truncation` is
     // workspace-`allow`ed (`Cargo.toml`).
@@ -331,6 +338,49 @@ pub fn offer_batch_confirmation(ui: &MainWindow, ids: &[i64]) {
     ui.global::<BatchModel>().set_tilt_visible(true);
 }
 
+thread_local! {
+    /// What [`offer_regeneration`]'s background count needs: the vault. Set once by
+    /// [`setup_tilt_batch_callbacks`]; UI-thread only.
+    static SCOPE_DB: RefCell<Option<Arc<Mutex<Database>>>> = const { RefCell::new(None) };
+}
+
+/// Opens the confirm step as a REGENERATION of `ids` (the Library menu's whole-catalogue
+/// command, the filter panel's filtered set): the dialog offers "missing or outdated
+/// only" and "all". The missing set is the same scan the filter panel's "Compute missing
+/// tilt curves" runs (`spawn_missing_tilt_curve_scan`), done off the UI thread and
+/// restricted to `ids`; until it lands the pill reads "counting...". A no-op for an
+/// empty `ids`.
+pub fn offer_regeneration(ui: &MainWindow, ids: &[i64]) {
+    if ids.is_empty() {
+        return;
+    }
+    offer_batch_confirmation(ui, ids);
+    let model = ui.global::<BatchModel>();
+    model.set_tilt_offer_regenerate(true);
+    model.set_tilt_offer_missing_only(true);
+    model.set_tilt_offer_missing_count(-1);
+    model.set_tilt_offer_missing_ids(slint::ModelRc::default());
+    model.set_tilt_offer_missing_label(missing_choice_label(None).into());
+    model.set_tilt_offer_all_label(all_choice_label(ids.len()).into());
+
+    let Some(db) = SCOPE_DB.with(|db| db.borrow().clone()) else {
+        return;
+    };
+    let generation = next_scope_generation(ScopeKind::Tilt);
+    let all = ids.to_vec();
+    spawn_missing_tilt_curve_scan(ui.as_weak(), db, move |ui, missing| {
+        if !scope_is_current(ScopeKind::Tilt, generation) {
+            return;
+        }
+        let missing = missing_among(&all, &missing);
+        let model = ui.global::<BatchModel>();
+        model.set_tilt_offer_missing_count(missing.len() as i32);
+        model.set_tilt_offer_missing_label(missing_choice_label(Some(missing.len())).into());
+        let missing_i32: Vec<i32> = missing.iter().map(|&id| id as i32).collect();
+        model.set_tilt_offer_missing_ids(slint::ModelRc::new(slint::VecModel::from(missing_i32)));
+    });
+}
+
 /// Wires up every tilt-curve-batch-related callback on `ui`:
 ///
 /// - `tilt_batch_cancel`/`tilt_batch_close` -- the progress dialog's Cancel/Close.
@@ -359,6 +409,7 @@ pub fn setup_tilt_batch_callbacks(
     render_ctx: &Arc<Mutex<RenderContext>>,
     settings_store: &Arc<SettingsPersister>,
 ) {
+    SCOPE_DB.with(|scope_db| *scope_db.borrow_mut() = Some(Arc::clone(db)));
     let handle: Rc<RefCell<Option<TiltBatchHandle>>> = Rc::new(RefCell::new(None));
     // Shared by every `start_batch` call site below -- see that function's own doc
     // comment for why the completion push in `spawn_tilt_batch` compares against it.
@@ -397,12 +448,15 @@ pub fn setup_tilt_batch_callbacks(
     ui.global::<BatchModel>()
         .on_tilt_generate_confirmed(move || {
             if let Some(ui) = ui_weak_confirm.upgrade() {
-                let ids: Vec<i64> = ui
-                    .global::<BatchModel>()
-                    .get_tilt_offer_ids()
-                    .iter()
-                    .map(i64::from)
-                    .collect();
+                let model = ui.global::<BatchModel>();
+                let to_ids =
+                    |ids: slint::ModelRc<i32>| ids.iter().map(i64::from).collect::<Vec<i64>>();
+                let ids = chosen_ids(
+                    model.get_tilt_offer_regenerate(),
+                    model.get_tilt_offer_missing_only(),
+                    to_ids(model.get_tilt_offer_ids()),
+                    to_ids(model.get_tilt_offer_missing_ids()),
+                );
                 start_batch(
                     &ui,
                     &db_confirm,

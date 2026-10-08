@@ -110,6 +110,7 @@ pub(super) fn step_data(index: usize, step: &GuideStep) -> GuideStepData {
         highlight_target: step.highlight_target.as_str().into(),
         completion: step.completion_key(index).into(),
         watches_ui: step.goal.watches_ui(),
+        performable: step.can_perform(),
         allow: guide_allow(&step.allow),
     }
 }
@@ -176,6 +177,15 @@ fn begin_new_design(ui: &MainWindow, guide: &Guide, template_index: i32, spec: &
         design_arrived: false,
         uuid_before: open_design_uuid(),
     }));
+    request_new_design(ui, spec, template_index);
+    evaluate_launch(ui);
+}
+
+/// Presses Create on the New Design dialog's Empty form filled in from `spec`, through the
+/// callback the dialog's button calls (so the unsaved-changes question and every other guard
+/// apply, and the dialog closes itself once the design is made). Next on the "start a new
+/// design" step uses it too.
+pub(super) fn request_new_design(ui: &MainWindow, spec: &FreshDesignSpec, template_index: i32) {
     let fields = EmptyFormFields::of(spec);
     ui.global::<EditorModel>().invoke_new_design_create(
         fields.shape_index,
@@ -189,7 +199,6 @@ fn begin_new_design(ui: &MainWindow, guide: &Guide, template_index: i32, spec: &
         fields.material_index,
         template_index,
     );
-    evaluate_launch(ui);
 }
 
 /// Asks the editor to open library catalogue entry `entry_id`, through the Load Selected
@@ -384,6 +393,19 @@ mod tests {
             design_the_form_builds(&empty).preform,
             PreformSpec::cylinder(FIXED_CYLINDER_PREFORM_SIDES, 1.5, 1.0, 1.5)
         );
+    }
+
+    #[test]
+    fn only_a_step_with_a_recipe_reaches_the_panel_as_performable() {
+        use indicatrix_editor::guide::Perform;
+        let guide = sample_guide();
+        assert!(!step_data(0, &guide.steps[0]).performable, "a reading step");
+        assert!(
+            !step_data(1, &guide.steps[1]).performable,
+            "an action step without a recipe only skips"
+        );
+        let with_recipe = guide.steps[1].clone().perform(Perform::InspectorTab(1));
+        assert!(step_data(1, &with_recipe).performable);
     }
 
     #[test]

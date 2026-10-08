@@ -239,6 +239,7 @@ pub(in crate::gui::rough_plan) mod fixtures {
         };
         let settings = PlanSettings {
             count: 4,
+            min_count: 1,
             kerf_mm: 0.0,
             allowance_mm: 0.0,
             skin_mm: 0.0,

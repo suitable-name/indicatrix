@@ -11,13 +11,13 @@ Writes:
 
 The generated files are committed. This script exists so the icons are reproducible
 and adjustable rather than opaque binaries nobody can regenerate -- rerun it after
-changing a colour or the geometry below.
+changing a color or the geometry below.
 
 # Why draw the icon rather than rasterize one of `ui/icons/*.svg`
 
 Those are 16-24px monochrome UI glyphs, drawn to read at toolbar size against a known
 background. An application icon has different requirements: it needs to survive being
-scaled from 256px down to 16px, carry the product's own colour rather than inheriting
+scaled from 256px down to 16px, carry the product's own color rather than inheriting
 `colorize`, and stay legible on an arbitrary desktop wallpaper. Drawing it here also
 means each size is rendered at its own detail level (see `FACET_DETAIL_MIN_PX`) instead
 of one bitmap being blurred down to 16px.

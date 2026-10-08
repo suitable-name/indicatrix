@@ -12,7 +12,8 @@
 
 use super::{metrics, overlay, params, render, run::VideoExportRequest};
 use crate::{
-    bridge::export_thread::AccumulationCarry, gui::tilt::tilt_hover_preview,
+    bridge::export_thread::{AccumulationCarry, ComputeTarget},
+    gui::tilt::tilt_hover_preview,
     settings::LocalComputeTarget,
 };
 use indicatrix::renderer::gpu_backend::GpuBackend;
@@ -186,6 +187,19 @@ pub fn encode_outcome_message(
     }
 }
 
+/// The local engines the frame loop sets up for `compute_target`: the app's own choice,
+/// except under `RemoteOnly`, where the owner chose to keep this computer free and no local
+/// GPU context or hybrid probe may exist.
+const fn frame_local_compute(
+    compute_target: ComputeTarget,
+    local_compute: LocalComputeTarget,
+) -> LocalComputeTarget {
+    match compute_target {
+        ComputeTarget::RemoteOnly => LocalComputeTarget::Cpu,
+        ComputeTarget::LocalOnly | ComputeTarget::Both => local_compute,
+    }
+}
+
 /// Renders every frame of `request`'s sweep in order, writing each as a numbered PNG in
 /// `request.out_dir` (which must exist).
 ///
@@ -222,7 +236,10 @@ pub fn render_frames(
     // what `carry` seeds forward from frame to frame. A sweep with nothing left to
     // render acquires nothing.
     let needs_render = (0..angles.len()).any(|index| !is_on_disk(index));
-    let gpu = match request.local_compute {
+    // `Remote only` traces nothing here: `local_compute` becomes the CPU alone (no hybrid
+    // calibration probe, which would trace locally) and no GPU adapter is acquired.
+    let local_compute = frame_local_compute(request.remote.compute_target, request.local_compute);
+    let gpu = match local_compute {
         LocalComputeTarget::CpuGpu | LocalComputeTarget::Gpu if needs_render => {
             GpuBackend::acquire()
         }
@@ -231,7 +248,7 @@ pub fn render_frames(
     let mut carry = AccumulationCarry::default();
     let config = render::VideoComputeConfig {
         remote: request.remote.clone(),
-        local_compute: request.local_compute,
+        local_compute,
     };
 
     for (index, &tilt_deg) in angles.iter().enumerate() {
@@ -414,6 +431,49 @@ mod tests {
             FramesOutcome::Cancelled { frames_done: 1 }
         ));
         assert_eq!(existing_frames(&dir, 3), vec![true, false, false]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remote_only_builds_no_local_compute_and_the_other_choices_keep_the_apps() {
+        for local in [
+            LocalComputeTarget::Cpu,
+            LocalComputeTarget::CpuGpu,
+            LocalComputeTarget::Gpu,
+        ] {
+            assert_eq!(
+                frame_local_compute(ComputeTarget::RemoteOnly, local),
+                LocalComputeTarget::Cpu,
+                "Remote only must not set up a GPU or a hybrid probe"
+            );
+            assert_eq!(frame_local_compute(ComputeTarget::LocalOnly, local), local);
+            assert_eq!(frame_local_compute(ComputeTarget::Both, local), local);
+        }
+    }
+
+    /// Remote only with no reachable remote fails the first frame with a message and traces
+    /// nothing locally: no frame file appears.
+    #[test]
+    fn remote_only_without_a_remote_fails_instead_of_tracing_locally() {
+        let dir = test_dir("remote_only");
+        let mut request = request(&dir);
+        request.remote = RemoteSelection {
+            compute_target: ComputeTarget::RemoteOnly,
+            ..RemoteSelection::local_only()
+        };
+        let mut recorder = Recorder::default();
+        let outcome = render_frames(&request, false, &AtomicBool::new(false), &mut recorder);
+        let FramesOutcome::Failed {
+            message,
+            frames_done,
+        } = outcome
+        else {
+            panic!("expected the video to fail without a remote");
+        };
+        assert!(message.starts_with("Frame 1 of 3: "), "{message}");
+        assert_eq!(frames_done, 0);
+        assert!(recorder.saved.is_empty());
+        assert!(!holds_frames(&dir), "nothing may be traced locally");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

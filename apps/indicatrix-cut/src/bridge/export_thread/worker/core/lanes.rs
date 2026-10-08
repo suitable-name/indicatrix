@@ -73,8 +73,17 @@ fn resolve_remote_capability(
                 // differently than the local half, and `render_accumulation` sums both
                 // halves into one buffer. Falling back to local-only for the WHOLE
                 // render keeps the image correct and says so plainly -- for the still
-                // export and the tilt video alike, even under `RemoteOnly`. Cached like
-                // every other outcome below, so the note is not repeated every frame.
+                // export and the tilt video alike. `RemoteOnly` is the exception: it was
+                // chosen to keep this computer free, so tracing locally instead would
+                // betray it; it fails with the same sentence. Cached like every other
+                // outcome below, so the note is not repeated every frame.
+                if matches!(compute_target, ComputeTarget::RemoteOnly) {
+                    return Err(format!(
+                        "{} Remote only cannot render this scene; choose Local only or \
+                         Local + Remote.",
+                        refusal.export_note()
+                    ));
+                }
                 *pending_note = Some(refusal.export_note().to_string());
                 carry.remote_probed = true;
                 carry.remote_capability = None;

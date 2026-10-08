@@ -3,6 +3,7 @@ import { Theme } from "../theme.slint";
 import { SettingsModel } from "../models/settings.slint";
 import { ViewportModel } from "../models/viewport.slint";
 import { TiltModel } from "../models/tilt.slint";
+import { RemoteWorkerModel } from "../models/remote_worker.slint";
 import { GuideModel } from "../models/guide.slint";
 import { HelpTopics } from "../models/help.slint";
 import { HelpButton } from "help_button.slint";
@@ -484,6 +485,17 @@ export component SettingsDialog inherits Rectangle {
                 SettingsModel.girdle_frosted = !SettingsModel.girdle_frosted;
                 SettingsModel.girdle_frosted_changed(SettingsModel.girdle_frosted);
             }
+        }
+
+        // Denoise live view: the same app-wide switch as the remote dialog's "Denoise
+        // merged image" row (`AppSettings::denoise_enabled`), bound to the one
+        // `RemoteWorkerModel.denoise_enabled` property and the one `denoise_toggled`
+        // callback, so the two rows always agree.
+        ToggleRow {
+            text: "Denoise live view";
+            hint: "Denoise live view: smooth the grain out of the live picture while it builds up. Turn off to see the raw samples.";
+            checked: RemoteWorkerModel.denoise_enabled;
+            toggled => { RemoteWorkerModel.denoise_toggled(!RemoteWorkerModel.denoise_enabled); }
         }
 
         // Edge Rounding: softens meet-point edges from perfectly sharp (0.0, default)

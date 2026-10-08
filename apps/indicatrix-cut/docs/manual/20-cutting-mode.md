@@ -40,16 +40,25 @@ locked.
 
 ## Reading a step
 
-The page is split in two. On the left is the step itself:
+On a desktop window (1100 pixels wide or more) the page has a header, a body in two
+columns and a bar of buttons at the bottom. The header holds the design's name, the
+**Done** badge of a finished step, the help button and **Close**. Under it runs the
+**step strip**: the progress line ("4 of 12 steps done") and one small segment for each
+step, green when done, amber when changed since it was marked, grey when still to cut;
+the current step is outlined in cyan. Click a segment to jump to that step.
+
+On the left is the step itself:
 
 - **Step k of N** at the top, then the **side** of the stone the step is on (Crown,
   Pavilion or Girdle) and the tier's code (P1, G1, C2, T), the label the cutting
   sheet gives it.
-- **The angle**, in very large figures, in degrees as the cutting sheet gives it: the
-  number you set on the machine. A tier with a cheater offset shows the offset
+- **The angle**, in very large figures beside the code, in degrees as the cutting
+  sheet gives it: the number you set on the machine. The figures shrink with the
+  window so they always fit. A tier with a cheater offset shows the offset
   separately under **Cheater**.
 - **Indices.** One chip for each index the step cuts, in the order the cutting sheet
   lists them. A step with no index list is cut at index 0 and shows that one chip.
+  The chips wrap onto as many rows as the width needs.
 - **Instruction** gives the tier's own name and then what its facets meet, in the
   words the cutting sheet uses (Chapter 11): "Crown Main: Meet P1, P2".
 - **Depth** appears when the step has a depth to cut to: the depth in millimetres and
@@ -59,7 +68,13 @@ The page is split in two. On the left is the step itself:
   displacement and the details of the cut.
 - **Your note** is the note you wrote on the tier, in amber.
 
-On the right are two pictures that change with the step:
+The facts are set in two columns. Below the step, filling the rest of the column, is the
+**schedule**: every step in cutting order with its code, angle, indices and a green tick
+once done. The current row is highlighted, done rows are dimmed, the list scrolls to keep
+the current row in view, and a click on a row shows that step.
+
+On the right are two pictures that change with the step. The stone fills the free
+height; the index wheel stands beside it (below it in a narrower window):
 
 - **The stone after this step.** This is the Solid view's picture with the Cut slider
   set to the step (Chapter 13): the rough as it is cut by every step up to and
@@ -69,10 +84,17 @@ On the right are two pictures that change with the step:
 - **The index wheel.** A ring numbered like the faceting machine's index gear, with
   the indices of this step marked as dots. The line under it names the gear. A
   small tick is drawn for every tooth and the numbers are written at the major
-  divisions only, so a gear with many teeth stays readable.
+  divisions only, so a gear with many teeth stays readable. In a small wheel
+  the scale numbers thin out; the marked indices are always numbered.
 
-At the bottom are the **progress line** ("4 of 12 steps done"), a progress bar, the key
-reminder and the buttons.
+At the bottom are **Previous**, **Mark step done** and **Next** grouped in the middle,
+**Reset progress** at the right, and the key reminder under them.
+
+In a window narrower than 1100 pixels the blocks are stacked in one column that
+scrolls: the step, the stone, the index wheel and the schedule.
+
+The stone is drawn at the size it is shown, so it stays sharp when the window is big.
+When you leave cutting mode the editor's viewport gets its own size back.
 
 ## Moving between steps
 
@@ -113,7 +135,7 @@ the last index of a step marks the step done. Taking a tick back from a step tha
 done takes the step's done mark away and leaves the other indices ticked, so no work
 is lost. Taking the done mark back from a step clears its ticks.
 
-The **progress bar** and the line next to it count the steps marked done.
+The **step strip** and the progress line count the steps marked done.
 
 ## When the design changes
 

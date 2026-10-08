@@ -268,7 +268,10 @@ impl Database {
     /// resumable walk.
     ///
     /// A design needs a render when `diagram_previews` has no row for it, the row's
-    /// `preview_generated_at` is `NULL`, or the row's `params_fingerprint` differs from
+    /// `preview_generated_at` is `NULL`, EITHER view (`preview_front` / `preview_top`) is
+    /// missing -- [`Self::save_preview_images`] stamps an attempt even when one view's
+    /// render failed, so the stamp alone would call such a half-rendered row current --
+    /// or the row's `params_fingerprint` differs from
     /// `current_fingerprint(material)` -- the fingerprint a render made NOW would store,
     /// given the row's persisted `preview_material` (`None` when it has none). A row
     /// written before fingerprints existed carries `NULL` there and so counts as
@@ -282,7 +285,9 @@ impl Database {
     /// pattern loads both 256x256 PNGs for EVERY entry in the catalogue merely to
     /// check `generated_at.is_none()` -- measured at 4.4s and 447 MB for one pass over
     /// the real catalogue's 3,299 entries -- when the same test is answered here by a
-    /// `LEFT JOIN` that never selects a blob column at all.
+    /// `LEFT JOIN` that never selects a blob column at all. The "either view missing"
+    /// test is `preview_front IS NULL OR preview_top IS NULL`, which reads only the
+    /// record header, so the query stays blob-free.
     ///
     /// # Errors
     ///
@@ -292,7 +297,10 @@ impl Database {
         current_fingerprint: impl Fn(Option<&str>) -> String,
     ) -> Result<Vec<i64>> {
         self.outdated_entry_ids(
-            "SELECT de.id, p.preview_generated_at, p.params_fingerprint, p.preview_material
+            "SELECT de.id,
+                    CASE WHEN p.preview_front IS NULL OR p.preview_top IS NULL
+                         THEN NULL ELSE p.preview_generated_at END,
+                    p.params_fingerprint, p.preview_material
              FROM diagram_entries de
              LEFT JOIN diagram_previews p ON p.entry_id = de.id
              WHERE de.ignored = 0
@@ -304,7 +312,8 @@ impl Database {
 
     /// Runs `sql` -- one row per design to consider, as `(entry id, generated-at stamp,
     /// stored fingerprint, persisted material)`, each of the last three `NULL` when the
-    /// cache row is absent -- and returns, in row order, the ids whose cache entry is not
+    /// cache row is absent (the caller may also null the stamp to mark an incomplete
+    /// row, as [`Self::entry_ids_missing_previews`] does for a missing view) -- and returns, in row order, the ids whose cache entry is not
     /// current: no stamp, or a stored fingerprint other than
     /// `current_fingerprint(material)`. Shared by
     /// [`Self::entry_ids_missing_previews`] and
@@ -602,6 +611,40 @@ mod tests {
             .entry_ids_missing_previews(|_| FINGERPRINT.to_string())
             .unwrap();
         assert_eq!(legacy, vec![entry_id]);
+
+        drop(db);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A row with only one of its two views is listed (the attempt stamp is set, but the
+    /// design still needs a render); re-saving both views clears it again.
+    #[test]
+    fn entry_ids_missing_previews_lists_a_row_with_either_view_missing() {
+        let (db, entry_id, path) = temp_db_with_one_entry();
+
+        save_current(&db, entry_id, Some(&[1]), None, 1);
+        assert_eq!(
+            db.entry_ids_missing_previews(|_| FINGERPRINT.to_string())
+                .unwrap(),
+            vec![entry_id],
+            "front only"
+        );
+
+        save_current(&db, entry_id, None, Some(&[2]), 2);
+        assert_eq!(
+            db.entry_ids_missing_previews(|_| FINGERPRINT.to_string())
+                .unwrap(),
+            vec![entry_id],
+            "top only"
+        );
+
+        save_current(&db, entry_id, Some(&[1]), Some(&[2]), 3);
+        assert!(
+            db.entry_ids_missing_previews(|_| FINGERPRINT.to_string())
+                .unwrap()
+                .is_empty(),
+            "both views present: current again"
+        );
 
         drop(db);
         std::fs::remove_file(&path).ok();

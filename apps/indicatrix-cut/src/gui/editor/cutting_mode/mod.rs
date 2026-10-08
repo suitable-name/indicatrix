@@ -156,6 +156,15 @@ pub(super) fn setup_cutting_mode(
         }
     });
     let weak = ui.as_weak();
+    model.on_jump_to(move |step| {
+        if let (Some(ui), Ok(step)) = (weak.upgrade(), usize::try_from(step)) {
+            let last = with_session(|session| session.plan.as_ref().map(|plan| plan.steps.len()));
+            if last.is_some_and(|count| step < count) {
+                go_to(&ui, Some(step));
+            }
+        }
+    });
+    let weak = ui.as_weak();
     model.on_toggle_done(move || {
         if let Some(ui) = weak.upgrade() {
             let before = done_count();

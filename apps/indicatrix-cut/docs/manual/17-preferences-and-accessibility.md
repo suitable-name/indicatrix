@@ -92,6 +92,12 @@ where it is described):
 All of these only hide the control. A tier, setting or file that already uses one
 keeps working exactly as before.
 
+## Denoise live view
+
+Preferences has a **Denoise live view** switch (on by default) that smooths the grain
+out of the live picture while it builds up; it is the same switch as **Denoise merged
+image** in the remote worker dialog (Chapter 10), so changing one changes the other.
+
 ## Interface scale
 
 **Interface scale** makes everything in the windows larger or smaller. The choices

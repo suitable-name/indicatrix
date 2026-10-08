@@ -268,6 +268,7 @@ fn a_render_worker_denoises_and_encodes_pictures_of_its_scene() {
         height: 4,
         camera: scene.camera(),
         planes: scene.planes(),
+        n_d: scene.material().dispersion.n_d(),
         sample_count: 4,
         sum: &sum,
     };

@@ -1,0 +1,83 @@
+import { Theme } from "../theme.slint";
+import { ExportRunModel } from "../models/export_run.slint";
+import { TouchButton } from "touch_button.slint";
+
+// The header's export indicator, shown while an export started from a dialog (the still export
+// or the tilt video) runs, whether or not its popup is open: "Exporting video -- frame 37 of
+// 181 · about 2 min left", a thin progress bar along the bottom edge, and a cross that cancels.
+// Under Local only and Local + Remote a second line says the live view is paused. Clicking the
+// chip asks for the full progress popup again (`show_progress`; `app.slint` opens it). The header
+// sizes its cell from `preferred-width`, capped so the chip never crowds the search box; the
+// text elides, and the tooltip carries all of it. All state is read from `ExportRunModel`.
+export component ExportChip inherits Rectangle {
+    callback show_progress();
+
+    property <bool> paused: ExportRunModel.live_view_paused;
+
+    preferred-width: min(320px, line_text.preferred-width + 12px + 30px);
+    height: 28px;
+    background: chip_touch.has_hover ? Theme.bg-elevated : Theme.bg-input;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.accent-cyan;
+    clip: true;
+
+    VerticalLayout {
+        x: 12px;
+        y: 0px;
+        width: parent.width - 12px - 30px;
+        height: parent.height - 3px;
+        alignment: center;
+
+        line_text := Text {
+            text: ExportRunModel.indicator_text;
+            font-size: 11px;
+            font-weight: 600;
+            color: Theme.accent-cyan;
+            overflow: elide;
+        }
+        if root.paused: Text {
+            text: "Live view paused while exporting";
+            font-size: 9px;
+            color: Theme.text-muted;
+            overflow: elide;
+        }
+    }
+
+    // The 3 px bar along the bottom edge.
+    Rectangle {
+        x: 0px;
+        y: parent.height - 3px;
+        width: parent.width * max(0.0, min(1.0, ExportRunModel.indicator_progress));
+        height: 3px;
+        background: Theme.accent-cyan;
+    }
+
+    chip_touch := TouchButton {
+        label: ExportRunModel.indicator_text;
+        hint: ExportRunModel.indicator_text + (root.paused ? ". Live view paused while exporting" : "") + ". Click to show the export again.";
+        clicked => { root.show_progress(); }
+    }
+
+    // Cancel. After the main button, so it sits on top of it.
+    Rectangle {
+        x: parent.width - 28px;
+        y: 4px;
+        width: 22px;
+        height: 20px;
+        Image {
+            source: @image-url("../icons/close.svg");
+            colorize: cancel_touch.has_hover ? Theme.danger : Theme.text-secondary;
+            width: 9px;
+            height: 9px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            image-fit: contain;
+        }
+        cancel_touch := TouchButton {
+            label: "Cancel the export";
+            hint: "Stop the export that is running. Files already finished are kept.";
+            clicked => { ExportRunModel.cancel_direct(); }
+        }
+    }
+}

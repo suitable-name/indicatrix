@@ -27,10 +27,27 @@
   scalar-trained binary's avx2 path, to be well-optimised.
 
 .DESCRIPTION
-  Per combination, in its own target directory (target\pgo-<cpu>-<gpu>):
-    1. build the training example `pgo_train`, plus every selected app binary, all
+  `-Target all` (the default) is ONE combined build per combination, not a worker run plus
+  a cut run: a single instrumented `cargo build` over `indicatrix`, `indicatrix-cut`,
+  `indicatrix-cut-core` and `indicatrix-worker` (both examples, features = the union of the
+  worker and cut strings), both trainers and the scene_roundtrip test run once, ONE merged
+  profile, and ONE optimised build that emits BOTH binaries. Why: one package set means
+  feature unification compiles `indicatrix` (and cut-core) once with one crate hash shared
+  by both apps, so a single profile applies to both -- and the work is done once instead of
+  twice. Trade-off: the worker is compiled with cut's features enabled (additive; behaviour
+  unchanged, binary somewhat larger than a `-Target worker` build). The combined build uses
+  its own target directory (target\pgo-all-<cpu>-<gpu>) and the un-prefixed profile path
+  pgo-profile\windows-<cpu>-<gpu>.profdata; `-Target worker` / `-Target cut` keep their
+  separate builds (target\pgo-<cpu>-<gpu>, pgo-profile\<target>\). Post-checks on the
+  combined build: crate-hash tokens for `indicatrix` AND `indicatrix-cut-core`, hash
+  mismatch must be 0. -SkipTrain reuses the combined profile.
+
+  Per combination, in its own target directory (target\pgo-<cpu>-<gpu>, or
+  target\pgo-all-<cpu>-<gpu> for -Target all):
+    1. build the training examples `pgo_train` (and, for the `cut` target,
+       `pgo_train_cutcore` of `indicatrix-cut-core`), plus every selected app binary, all
        together in one `cargo build` instrumented with -C profile-generate. Building the
-       app binaries (not just `pgo_train`) alongside it in the SAME invocation, with the
+       app binaries (not just the examples) alongside them in the SAME invocation, with the
        SAME package set, target, target-dir and feature list as step 4 below, is required
        so every crate's `-C metadata` fingerprint (and therefore its mangled-symbol crate
        hash) is identical between this step and step 4: if the two builds select
@@ -40,23 +57,17 @@
        denoiser, tone-map, meet-point solver against synthetic AND real designs,
        CAD-preview mesh extraction; GPU only under the `gpu` tier and only if an
        adapter exists)
-    2b. build and run `indicatrix-cut-core`'s OWN `pgo_train` example (Design::solve,
-       .asc export, design-file save/load, resolve_after_edit, optimize_design) -- in a
-       SEPARATE, isolated `cargo build` invocation, never combined with step 1's `-p
-       indicatrix ... --example pgo_train`: both crates ship an
-       example named `pgo_train`, and Cargo's example-binary "pretty path" uplift
-       (target\<profile>\examples\<name>.exe) is keyed by name alone, not by package
-       -- selecting both in ONE invocation was measured (on this toolchain, via
-       `cargo build --message-format=json`) to report the IDENTICAL `"executable"`
-       path for both targets and non-deterministically pick one binary for that
-       shared path, an unrecoverable ambiguity `cargo test --no-run`'s own
-       hash-suffixed binaries don't have. `indicatrix-cut-core`'s LIBRARY code is
-       still instrumented/optimised correctly regardless of this split --
-       CARGO_ENCODED_RUSTFLAGS applies to the whole build graph, and
-       `indicatrix-cut-core` is already a transitive dependency of
-       `indicatrix-cut`/`indicatrix-worker` in step 1 -- this separate step exists
-       only to actually EXECUTE its code so its already-instrumented functions
-       collect real samples. See `Get-CutCoreFeatures`/`Invoke-CutCoreTraining`.
+    2b. (cut target only) run `indicatrix-cut-core`'s OWN `pgo_train_cutcore` example
+       (Design::solve, .asc export, design-file save/load, resolve_after_edit,
+       optimize_design). It is built by step 1's SAME `cargo build` invocation
+       (`indicatrix-cut-core` is in the package list and `--example pgo_train_cutcore` is
+       passed), so the instrumented and optimised builds resolve an identical dependency
+       graph and cut-core's `-C metadata` (and every mangled symbol) matches. The distinct
+       example name is required: two examples named `pgo_train` collide on Cargo's
+       name-keyed example "pretty path" (target\<profile>\examples\<name>.exe). A separate
+       cut-core invocation, as used before 2026-10-06, had a different dependency graph
+       and its profile never applied. The worker target does not link cut-core and skips
+       this step. See `Invoke-CutCoreTraining`.
     2c. build and run `indicatrix-net`'s `scene_roundtrip` integration test under the same
        instrumentation (postcard wire-protocol encode/decode of `SceneState`), through
        `cargo test --no-run --message-format=json` so the hash-suffixed test binary can
@@ -67,9 +78,10 @@
        -C llvm-args=-pgo-warn-missing-function, so a totally-unapplied profile shows up
        as a flood of "no profile data available" warnings in build.log instead of
        silently compiling as if untrained again)
-    5. verify the profile actually applied (crate-hash check of BOTH `indicatrix` and
-       `indicatrix-cut-core` against the merged .profdata, plus a build.log scan for "hash mismatch"/"no profile data available"
-       over documented thresholds -- see Test-ProfileHashApplied/Test-ProfileWarnings)
+    5. verify the profile actually applied (crate-hash check of `indicatrix`, and for
+       the cut target also `indicatrix-cut-core`, against the merged .profdata, plus a
+       build.log scan for "hash mismatch"/"no profile data available" over documented
+       thresholds -- see Test-ProfileHashApplied/Test-ProfileWarnings)
     6. copy the executables to <OutDir> as <binary>-win-<cpu>-<gpu>.exe
 
   Training coverage is a known limitation, not a complete picture. The training binaries
@@ -77,11 +89,9 @@
   the `indicatrix-vault` database, the desktop editor's event loops and GUI code, or the
   `GpuBackend` type. The `gpu` tier's `train_gpu` stage trains `render_hybrid`, which no
   app calls today, so it warms code the shipped binaries do not run. Functions in these
-  areas have zero profile counts and are optimised as cold code. Two further limits:
-  `indicatrix-cut-core` is trained by its own build with a narrower package and feature
-  set than the optimised build (the two `pgo_train` examples cannot share one cargo
-  invocation), and `indicatrix-net`'s test build selects only that package; the
-  per-crate hash check in step 5 is what detects either producing a non-matching crate.
+  areas have zero profile counts and are optimised as cold code. One further limit:
+  `indicatrix-net`'s test build selects only that package; the per-crate hash check in
+  step 5 is what detects it producing a non-matching crate.
 
 .PARAMETER Cpu
   avx512, avx2, scalar, native, or all (default all; see the CPU axis note above -- avx512
@@ -153,6 +163,10 @@ $pgoProfileDir = Join-Path $root 'pgo-profile'
 # space-joined RUSTFLAGS would.
 $unitSep = [char]0x1F
 
+# `-Target all` is ONE combined build per combination (see .DESCRIPTION): its own target
+# directory prefix keeps it from sharing rlibs/logs with a `cut`- or `worker`-only run, so
+# the crate-hash check can never pick up another package set's newest rlib.
+$dirPrefix = if ($Target -eq 'all') { 'pgo-all' } else { 'pgo' }
 $includeWorker = $Target -in @('all', 'worker')
 $includeCut = $Target -in @('all', 'cut')
 # `indicatrix` is always in the package set: it owns `pgo_train`, and the instrumented and
@@ -161,8 +175,14 @@ $includeCut = $Target -in @('all', 'cut')
 $pkgList = @()
 if ($includeCut) { $pkgList += 'indicatrix-cut' }
 if ($includeWorker) { $pkgList += 'indicatrix-worker' }
-$trainPkgList = @('indicatrix') + $pkgList
 $binList = $pkgList
+# The cut target also builds `indicatrix-cut-core` (owner of the `pgo_train_cutcore`
+# example) in the SAME invocation, so its crate hash is identical in the instrumented and
+# optimised builds. The worker does not link cut-core.
+$trainPkgList = @('indicatrix') + $pkgList
+if ($includeCut) { $trainPkgList += 'indicatrix-cut-core' }
+$exampleArgs = @('--example', 'pgo_train')
+if ($includeCut) { $exampleArgs += @('--example', 'pgo_train_cutcore') }
 
 # --- llvm-profdata / llvm-nm from the active toolchain -----------------------------
 $sysroot = (& rustc --print sysroot).Trim()
@@ -250,42 +270,15 @@ function Get-PgoFeatures([bool]$IncludeCut, [bool]$IncludeWorker, [string]$GpuNa
     return ($features -join ',')
 }
 
-# The `--features` string for `indicatrix-cut-core`'s OWN, separate `pgo_train` build
-# (see .DESCRIPTION's step 2b for why this is never merged into `Get-PgoFeatures`
-# above / `$trainPkgList`). Deliberately narrower: `indicatrix-cut-core` has no Cargo
-# features of its own, and a feature namespaced to a package NOT selected in this
-# invocation (e.g. `indicatrix-cut/gpu`, which `Get-PgoFeatures` includes) is a hard
-# `cargo` error under this workspace's resolver -- only the `indicatrix`-namespaced
-# features `indicatrix-cut-core` actually depends on are named here, kept identical
-# to `Get-PgoFeatures`'s own `indicatrix/*` subset so `indicatrix` itself builds with
-# the SAME feature set (a cache hit, not a rebuild) in both invocations.
-function Get-CutCoreFeatures([string]$GpuName) {
-    $features = @('indicatrix/serde', 'indicatrix/hdr')
-    if ($GpuName -eq 'gpu') { $features += 'indicatrix/gpu' }
-    return ($features -join ',')
-}
-
-# Builds and runs `indicatrix-cut-core`'s own `pgo_train` example as a separate,
-# isolated `cargo build` invocation -- see .DESCRIPTION's step 2b. `$Tdir`/`$CpuFlag`
-# must match the SAME target-dir/target-cpu the caller's own instrumented build just
-# used; `$env:CARGO_ENCODED_RUSTFLAGS` must already carry that build's
-# `-C profile-generate=...` (this function does not set it itself, so the caller's
-# own `Remove-Item Env:...`/env setup around its call stays the single source of
-# truth for what "instrumented" means here). Called immediately after the caller
-# training-runs `indicatrix`'s own pgo_train.exe, so the shared
-# target\...\examples\pgo_train.exe path this overwrites has already served its
-# purpose for that binary by the time it does.
-function Invoke-CutCoreTraining([string]$Tdir, [string]$Name, [string]$GpuName, [string]$LogFile) {
-    $cutCoreFeatures = Get-CutCoreFeatures $GpuName
-    "==> [$Name] instrumented build (indicatrix-cut-core, separate invocation; features: $cutCoreFeatures)" |
-        Out-File -FilePath $LogFile -Append -Encoding utf8
-    cargo build --release --target $hostTarget --target-dir $Tdir `
-        -p indicatrix-cut-core --example pgo_train --features $cutCoreFeatures 2>&1 |
-        Out-File -FilePath $LogFile -Append -Encoding utf8
-    if ($LASTEXITCODE -ne 0) { throw "[$Name] indicatrix-cut-core instrumented build failed (exit $LASTEXITCODE)" }
-
+# Runs `indicatrix-cut-core`'s own `pgo_train_cutcore` example (cut target only), which
+# the caller's instrumented `cargo build` already built in the same invocation as
+# everything else -- see .DESCRIPTION's step 2b. `$env:CARGO_ENCODED_RUSTFLAGS` need not
+# be touched here; `$env:LLVM_PROFILE_FILE` must already point into the profile
+# directory, and its file name is replaced by `cutcore-%p-%m.profraw`.
+function Invoke-CutCoreTraining([string]$Tdir, [string]$Name, [string]$LogFile) {
     "==> [$Name] indicatrix-cut-core training run" | Out-File -FilePath $LogFile -Append -Encoding utf8
-    $cutCoreExe = Join-Path $Tdir "$hostTarget\release\examples\pgo_train.exe"
+    $env:LLVM_PROFILE_FILE = Join-Path (Split-Path -Parent $env:LLVM_PROFILE_FILE) 'cutcore-%p-%m.profraw'
+    $cutCoreExe = Join-Path $Tdir "$hostTarget\release\examples\pgo_train_cutcore.exe"
     & $cutCoreExe 2>&1 | Out-File -FilePath $LogFile -Append -Encoding utf8
     if ($LASTEXITCODE -ne 0) { throw "[$Name] indicatrix-cut-core training run failed (exit $LASTEXITCODE)" }
 }
@@ -349,16 +342,14 @@ function Get-SharedProfilePath([string]$PgoProfileDir, [string]$TargetKey, [stri
 #     failing the whole build over a diagnostic script's own regex, but a CONFIRMED
 #     mismatch between the two crate-hash tokens is a hard failure.
 # Returns $true when the crate-hash match was CONFIRMED for EVERY checked crate
-# (`indicatrix` and `indicatrix-cut-core`), $false when any could not be verified (a
+# (`indicatrix`, plus `indicatrix-cut-core` for the cut target; the worker does not link
+# cut-core, so it is not applicable there), $false when any could not be verified (a
 # parsing miss -- a warning is printed); throws on a confirmed mismatch in either.
-# `indicatrix-cut-core` is trained by its own `pgo_train` build with a narrower package
-# and feature set (see Get-CutCoreFeatures), so its crate hash is checked separately: a
-# feature-unification difference there would otherwise apply nothing to it while the
-# missing-function tolerance hid the loss.
-function Test-ProfileHashApplied([string]$Profdata, [string]$Tdir, [string]$Name) {
+function Test-ProfileHashApplied([string]$Profdata, [string]$Tdir, [string]$Name, [bool]$CheckCutCore) {
     $coreOk = Test-CrateHashToken -Profdata $Profdata -Tdir $Tdir -Name $Name `
         -FuncName 'trace_spectral_ray_with_finish_soa' -TokenPattern 'Cs[0-9a-zA-Z]+_10indicatrix' `
         -PackageDir 'indicatrix' -RlibStem 'indicatrix'
+    if (-not $CheckCutCore) { return $coreOk }
     $cutCoreOk = Test-CrateHashToken -Profdata $Profdata -Tdir $Tdir -Name $Name `
         -FuncName 'resolve_after_edit' -TokenPattern 'Cs[0-9a-zA-Z]+_19indicatrix_cut_core' `
         -PackageDir 'indicatrix-cut-core' -RlibStem 'indicatrix_cut_core'
@@ -381,13 +372,13 @@ function Test-CrateHashToken([string]$Profdata, [string]$Tdir, [string]$Name, [s
     # classic one (`deps\`, older/stable cargo). More than one may exist (the
     # instrumented build's, or a different feature set); take the newest across both --
     # the optimised build that just finished.
-    $releaseRoot = Join-Path $Tdir "$hostTargetelease"
+    $releaseRoot = Join-Path $Tdir "$hostTarget\release"
     $rlib = @(
         Get-ChildItem -Path (Join-Path $releaseRoot "build\$PackageDir\*\out\lib$RlibStem-*.rlib") -ErrorAction SilentlyContinue
         Get-ChildItem -Path (Join-Path $releaseRoot "deps\lib$RlibStem-*.rlib") -ErrorAction SilentlyContinue
     ) | Sort-Object LastWriteTime | Select-Object -Last 1
     if (-not $rlib) {
-        Write-Warning "[$Name] no lib$RlibStem-*.rlib found under $releaseRootuild\$PackageDir\*\out or $releaseRoot\deps -- cannot verify the $PackageDir crate-hash match."
+        Write-Warning "[$Name] no lib$RlibStem-*.rlib found under $releaseRoot\build\$PackageDir\*\out or $releaseRoot\deps -- cannot verify the $PackageDir crate-hash match."
         return $false
     }
     $nmLine = & $llvmNm $rlib.FullName 2>&1 | Select-String -SimpleMatch $FuncName | Select-Object -First 1
@@ -448,7 +439,7 @@ if ($Parallel) {
     # (Test-ProfileWarnings/Test-ProfileHashApplied) likewise runs after Wait-Job, back
     # in this process, rather than inside the job.
     $jobScript = {
-        param($root, $hostTarget, $OutDir, $SkipTrain, $CpuName, $TargetCpu, $SimdCap, $GpuName, $logfile, $profdata, $unitSep, $features, $trainPkgList, $binList, $sharedMerged, $cutCoreFeatures)
+        param($root, $hostTarget, $OutDir, $SkipTrain, $CpuName, $TargetCpu, $SimdCap, $GpuName, $logfile, $profdata, $unitSep, $features, $trainPkgList, $binList, $sharedMerged, $exampleArgs, $dirPrefix)
 
         $ErrorActionPreference = 'Stop'
         $null > $logfile # Truncate/create log file
@@ -467,7 +458,7 @@ if ($Parallel) {
         }
 
         $name = "$CpuName-$GpuName"
-        $tdir = Join-Path $root "target\pgo-$name"
+        $tdir = Join-Path $root "target\$dirPrefix-$name"
         $pdir = Join-Path $tdir 'profiles'
         $localMerged = Join-Path $tdir 'merged.profdata'
         $cpuFlag = @('-C', "target-cpu=$TargetCpu")
@@ -485,7 +476,7 @@ if ($Parallel) {
             # same crate hashes.
             $env:CARGO_ENCODED_RUSTFLAGS = (@($cpuFlag) + @('-C', "profile-generate=$pdir")) -join $unitSep
             Invoke-Checked "[$name] instrumented build (packages: $($trainPkgList -join ', '); features: $features)" {
-                cargo build --release --target $hostTarget --target-dir $tdir @pkgArgs --bins --example pgo_train --features $features
+                cargo build --release --target $hostTarget --target-dir $tdir @pkgArgs --bins @exampleArgs --features $features
             }
 
             $env:LLVM_PROFILE_FILE = Join-Path $pdir 'train-%p-%m.profraw'
@@ -493,17 +484,14 @@ if ($Parallel) {
             $exe = Join-Path $tdir "$hostTarget\release\examples\pgo_train.exe"
             Invoke-Checked "[$name] training run (INDICATRIX_SIMD='$SimdCap')" { & $exe }
 
-            # indicatrix-cut-core's own training binary -- a separate, isolated
-            # `cargo build` invocation (see .DESCRIPTION's step 2b for why this can
-            # never share `indicatrix`'s own `-p ... --example pgo_train`
-            # invocation above). Runs immediately after, so the shared
-            # examples\pgo_train.exe path it is about to overwrite has already
-            # served its purpose for indicatrix's own binary above.
-            Invoke-Checked "[$name] instrumented build (indicatrix-cut-core, separate invocation; features: $cutCoreFeatures)" {
-                cargo build --release --target $hostTarget --target-dir $tdir -p indicatrix-cut-core --example pgo_train --features $cutCoreFeatures
+            # indicatrix-cut-core's own training binary (cut target only), built by the
+            # instrumented invocation above (see .DESCRIPTION's step 2b). A job cannot
+            # call Invoke-CutCoreTraining, so the run is inlined.
+            if ($exampleArgs -contains 'pgo_train_cutcore') {
+                $env:LLVM_PROFILE_FILE = Join-Path $pdir 'cutcore-%p-%m.profraw'
+                $cutCoreExe = Join-Path $tdir "$hostTarget\release\examples\pgo_train_cutcore.exe"
+                Invoke-Checked "[$name] indicatrix-cut-core training run" { & $cutCoreExe }
             }
-            $cutCoreExe = Join-Path $tdir "$hostTarget\release\examples\pgo_train.exe"
-            Invoke-Checked "[$name] indicatrix-cut-core training run" { & $cutCoreExe }
 
             # indicatrix-net's wire-protocol test, the third training binary (same set
             # as scripts/pgo-bolt-build.sh; see Invoke-NetTraining, which a job cannot
@@ -543,7 +531,7 @@ if ($Parallel) {
         $env:CARGO_ENCODED_RUSTFLAGS = (@($cpuFlag) + @('-C', "profile-use=$activeProfile", '-C', 'llvm-args=-pgo-warn-missing-function')) -join $unitSep
 
         Invoke-Checked "[$name] PGO release build (packages: $($trainPkgList -join ', '); features: $features)" {
-            cargo build --release --target $hostTarget --target-dir $tdir @pkgArgs --bins --example pgo_train --features $features
+            cargo build --release --target $hostTarget --target-dir $tdir @pkgArgs --bins @exampleArgs --features $features
         }
 
         if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Force $OutDir | Out-Null }
@@ -573,18 +561,17 @@ if ($Parallel) {
         }
         foreach ($g in $gpuList) {
             $name = "$c-$g"
-            $tdir = Join-Path $root "target\pgo-$name"
+            $tdir = Join-Path $root "target\$dirPrefix-$name"
             if (-not (Test-Path $tdir)) { New-Item -ItemType Directory -Force $tdir | Out-Null }
             $logfile = Join-Path $tdir "build.log"
             $features = Get-PgoFeatures $includeCut $includeWorker $g
-            $cutCoreFeatures = Get-CutCoreFeatures $g
             $sharedMerged = Get-SharedProfilePath $pgoProfileDir $Target $name
 
             Write-Host "==> [$name] Dispatched build in background (log: $logfile)"
 
             $jobArgs = @(
                 $root, $hostTarget, $OutDir, $SkipTrain.IsPresent,
-                $c, $targetCpu, $simdCap, $g, $logfile, $profdata, $unitSep, $features, $trainPkgList, $binList, $sharedMerged, $cutCoreFeatures
+                $c, $targetCpu, $simdCap, $g, $logfile, $profdata, $unitSep, $features, $trainPkgList, $binList, $sharedMerged, $exampleArgs, $dirPrefix
             )
             $job = Start-Job -Name $name -ScriptBlock $jobScript -ArgumentList $jobArgs
             $jobs += @{ Job = $job; Name = $name; Log = $logfile; Tdir = $tdir; Profdata = $sharedMerged }
@@ -601,7 +588,7 @@ if ($Parallel) {
             try {
                 # Crate-hash check FIRST: it is the real proof the profile applied;
                 # the missing-function count is only fatal when it could not verify.
-                $verified = Test-ProfileHashApplied -Profdata $j.Profdata -Tdir $j.Tdir -Name $j.Name
+                $verified = Test-ProfileHashApplied -Profdata $j.Profdata -Tdir $j.Tdir -Name $j.Name -CheckCutCore $includeCut
                 Test-ProfileWarnings -LogFile $j.Log -Name $j.Name -MaxMissing $MaxMissingFunctionWarnings -HashVerified ([bool]$verified)
             }
             catch {
@@ -631,7 +618,7 @@ else {
         param([string]$CpuName, [string]$TargetCpu, [string]$SimdCap, [string]$GpuName)
 
         $name = "$CpuName-$GpuName"
-        $tdir = Join-Path $root "target\pgo-$name"
+        $tdir = Join-Path $root "target\$dirPrefix-$name"
         $pdir = Join-Path $tdir 'profiles'
         $localMerged = Join-Path $tdir 'merged.profdata'
         $sharedMerged = Get-SharedProfilePath $pgoProfileDir $Target $name
@@ -669,7 +656,7 @@ else {
 
                 $env:CARGO_ENCODED_RUSTFLAGS = (@($cpuFlag) + @('-C', "profile-generate=$pdir")) -join $unitSep
                 Invoke-Checked "[$name] instrumented build (packages: $($trainPkgList -join ', '); features: $features)" {
-                    cargo build --release --target $hostTarget --target-dir $tdir @pkgArgs --bins --example pgo_train --features $features
+                    cargo build --release --target $hostTarget --target-dir $tdir @pkgArgs --bins @exampleArgs --features $features
                 } $logfile
 
                 $env:LLVM_PROFILE_FILE = Join-Path $pdir 'train-%p-%m.profraw'
@@ -677,10 +664,9 @@ else {
                 $exe = Join-Path $tdir "$hostTarget\release\examples\pgo_train.exe"
                 Invoke-Checked "[$name] training run (INDICATRIX_SIMD='$SimdCap')" { & $exe } $logfile
 
-                # indicatrix-cut-core's own training binary -- see .DESCRIPTION's
-                # step 2b and `Invoke-CutCoreTraining`'s own doc comment for why
-                # this is always a separate, isolated `cargo build` invocation.
-                Invoke-CutCoreTraining $tdir $name $GpuName $logfile
+                # indicatrix-cut-core's own training binary (cut target only), built by
+                # the instrumented invocation above -- see .DESCRIPTION's step 2b.
+                if ($includeCut) { Invoke-CutCoreTraining $tdir $name $logfile }
 
                 # indicatrix-net's wire-protocol test, the third training binary
                 # (same set as scripts/pgo-bolt-build.sh).
@@ -711,11 +697,11 @@ else {
             $env:CARGO_ENCODED_RUSTFLAGS = (@($cpuFlag) + @('-C', "profile-use=$activeProfile", '-C', 'llvm-args=-pgo-warn-missing-function')) -join $unitSep
 
             Invoke-Checked "[$name] PGO release build (packages: $($trainPkgList -join ', '); features: $features)" {
-                cargo build --release --target $hostTarget --target-dir $tdir @pkgArgs --bins --example pgo_train --features $features
+                cargo build --release --target $hostTarget --target-dir $tdir @pkgArgs --bins @exampleArgs --features $features
             } $logfile
 
             # Crate-hash check FIRST -- see the parallel branch's identical note.
-            $verified = Test-ProfileHashApplied -Profdata $activeProfile -Tdir $tdir -Name $name
+            $verified = Test-ProfileHashApplied -Profdata $activeProfile -Tdir $tdir -Name $name -CheckCutCore $includeCut
             Test-ProfileWarnings -LogFile $logfile -Name $name -MaxMissing $MaxMissingFunctionWarnings -HashVerified ([bool]$verified)
 
             if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Force $OutDir | Out-Null }

@@ -13,11 +13,12 @@
 //!
 //! # Why caching, and on what key
 //!
-//! The guide buffers depend only on camera pose (`yaw`/`pitch`/`distance`) and the
-//! active facet geometry -- never on which backend produced the radiance, and never on
-//! light direction, material, or exposure. [`GuideCache`] recomputes only when
-//! [`GuideCache::ensure`]'s key (resolution + pose + a hash of the facet planes)
-//! differs from the last call, not on every `FRAME` redraw of an in-progress
+//! The guide buffers depend only on camera pose (`yaw`/`pitch`/`distance`), the
+//! active facet geometry, and the material's `n_d` (the path signature refracts at it)
+//! -- never on which backend produced the radiance, and never on light direction or
+//! exposure. [`GuideCache`] recomputes only when
+//! [`GuideCache::ensure_geom`]'s key (resolution + pose + a hash of the facet planes +
+//! `n_d`) differs from the last call, not on every `FRAME` redraw of an in-progress
 //! accumulation.
 //!
 //! # Why it runs off the UI thread
@@ -37,7 +38,7 @@
 //! ready.
 
 use indicatrix::{
-    geometry::{plane::GpuFacetPlane, tool::StoneGeometry},
+    geometry::tool::StoneGeometry,
     optics::raytracer::{Camera, DEFAULT_FOV_DEG},
     render_setup::hash_geometry,
 };
@@ -47,7 +48,8 @@ use std::sync::atomic::AtomicBool;
 // compute the same guides for its denoised display frames); re-exported so every GUI
 // call site keeps its `bridge::frame_cache::guide_pass::...` path.
 pub use indicatrix::renderer::guide_pass::{
-    GuideBuffers, generate_guide_buffers_cancellable_geom, generate_guide_buffers_into_geom,
+    GuideBuffers, generate_guide_buffers_cancellable_geom_with_index,
+    generate_guide_buffers_into_geom_with_index,
 };
 // Only the tests build guides synchronously into a fresh allocation.
 #[cfg(test)]
@@ -71,6 +73,8 @@ pub struct GuideKey {
     pitch: f32,
     distance: f32,
     planes_hash: u64,
+    /// The active material's `n_d`: the path signature refracts at it (`0.0` = none).
+    n_d: f32,
 }
 
 /// Caches one [`GuideBuffers`], regenerating it only when [`GuideKey`] changes. See the
@@ -123,6 +127,10 @@ impl GuideCache {
     /// last call -- an unchanged pose/gem on a subsequent call (e.g. a later `FRAME`
     /// event from the same in-progress remote render) is a cache hit and costs nothing
     /// beyond the key comparison.
+    ///
+    /// Test-only: the live code always has a material and goes through
+    /// [`Self::ensure_geom`]. Uses `n_d = 0.0`, i.e. no path signature.
+    #[cfg(test)]
     pub fn ensure(
         &mut self,
         width: u32,
@@ -130,7 +138,7 @@ impl GuideCache {
         yaw: f32,
         pitch: f32,
         distance: f32,
-        planes: &[GpuFacetPlane],
+        planes: &[indicatrix::geometry::plane::GpuFacetPlane],
     ) -> &GuideBuffers {
         self.ensure_geom(
             width,
@@ -139,11 +147,18 @@ impl GuideCache {
             pitch,
             distance,
             StoneGeometry::planes_only(planes),
+            0.0,
         )
     }
 
     /// [`Self::ensure`] for a stone with concave tools: the primary rays hit the
     /// notches too, so the denoiser's depth/normal/facet-id edges follow them.
+    ///
+    /// `n_d` is the active material's `DispersionModel::n_d()`; the path signature
+    /// refracts through the stone at that index, so it is part of the key and a
+    /// material change regenerates the buffers. `n_d <= 1.0` means no signature.
+    // Pose, geometry and index are one flat key; a bundle struct would only rename them.
+    #[allow(clippy::too_many_arguments)]
     pub fn ensure_geom(
         &mut self,
         width: u32,
@@ -152,15 +167,17 @@ impl GuideCache {
         pitch: f32,
         distance: f32,
         geom: StoneGeometry<'_>,
+        n_d: f32,
     ) -> &GuideBuffers {
-        let key = Self::key_for_geom(width, height, yaw, pitch, distance, geom);
+        let key = Self::key_for_geom(width, height, yaw, pitch, distance, geom, n_d);
         if self.key.as_ref() != Some(&key) {
             let camera = Camera::new(yaw, pitch, distance, DEFAULT_FOV_DEG);
-            let completed = generate_guide_buffers_into_geom(
+            let completed = generate_guide_buffers_into_geom_with_index(
                 width,
                 height,
                 &camera,
                 geom,
+                n_d,
                 &AtomicBool::new(false),
                 &mut self.buffers,
             );
@@ -176,6 +193,9 @@ impl GuideCache {
     /// generates guide buffers outside this cache (`gui::remote`'s background prepass)
     /// can tag its result with the exact key [`Self::matches_key`]/[`Self::adopt`] will
     /// compare against.
+    ///
+    /// Test-only, like [`Self::ensure`]: `n_d = 0.0`.
+    #[cfg(test)]
     #[must_use]
     pub fn key_for(
         width: u32,
@@ -183,7 +203,7 @@ impl GuideCache {
         yaw: f32,
         pitch: f32,
         distance: f32,
-        planes: &[GpuFacetPlane],
+        planes: &[indicatrix::geometry::plane::GpuFacetPlane],
     ) -> GuideKey {
         Self::key_for_geom(
             width,
@@ -192,11 +212,12 @@ impl GuideCache {
             pitch,
             distance,
             StoneGeometry::planes_only(planes),
+            0.0,
         )
     }
 
-    /// [`Self::key_for`] for a stone with concave tools. Equal to it when there are
-    /// none, so a planar design's keys (and every cache entry behind them) are unchanged.
+    /// [`Self::key_for`] for a stone with concave tools, and the material's `n_d` (see
+    /// [`Self::ensure_geom`]).
     #[must_use]
     pub fn key_for_geom(
         width: u32,
@@ -205,6 +226,7 @@ impl GuideCache {
         pitch: f32,
         distance: f32,
         geom: StoneGeometry<'_>,
+        n_d: f32,
     ) -> GuideKey {
         GuideKey {
             width,
@@ -213,6 +235,7 @@ impl GuideCache {
             pitch,
             distance,
             planes_hash: hash_geometry(geom),
+            n_d,
         }
     }
 
@@ -309,6 +332,24 @@ mod tests {
             2,
             "a changed set of cutting instructions must invalidate the cache even with an \
              unchanged camera pose"
+        );
+    }
+
+    /// The path signature refracts at the material's `n_d`, so a material change with an
+    /// unchanged pose must regenerate the guides, and the same index must not.
+    #[test]
+    fn guide_cache_regenerates_when_the_material_index_changes() {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let geom = StoneGeometry::planes_only(&planes);
+        let mut cache = GuideCache::new();
+        cache.ensure_geom(8, 8, 0.60, 0.45, 2.4, geom, 2.417);
+        cache.ensure_geom(8, 8, 0.60, 0.45, 2.4, geom, 2.417);
+        assert_eq!(cache.generation(), 1);
+        cache.ensure_geom(8, 8, 0.60, 0.45, 2.4, geom, 1.52);
+        assert_eq!(
+            cache.generation(),
+            2,
+            "a changed n_d must invalidate the cache"
         );
     }
 

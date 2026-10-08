@@ -22,8 +22,11 @@ const VIEW_SOLID: i32 = 0;
 const VIEW_DIAGRAM: i32 = 3;
 
 /// What the viewport showed before cutting mode took it over.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct Saved {
+    /// `SolidPreviewModel.viewport_width` and `viewport_height`: the editor viewport's size. The
+    /// cutting mode screen sizes the render to its own, larger picture while it is open.
+    pub(super) viewport_size: (f32, f32),
     /// `SolidPreviewModel.tier_cutoff`: the Cut slider.
     pub(super) tier_cutoff: i32,
     /// `SolidPreviewModel.view_mode`.
@@ -37,6 +40,7 @@ impl Saved {
     /// view as it was left, nothing selected.
     pub(super) const fn after_replacement(self) -> Self {
         Self {
+            viewport_size: self.viewport_size,
             tier_cutoff: MODEL_FINISHED,
             view_mode: self.view_mode,
             selected_row: -1,
@@ -65,6 +69,10 @@ pub(super) fn cutoff_after(position: usize, step_count: usize) -> i32 {
 /// Takes a note of the viewport as it is now.
 pub(super) fn capture(ui: &MainWindow) -> Saved {
     Saved {
+        viewport_size: (
+            ui.global::<SolidPreviewModel>().get_viewport_width(),
+            ui.global::<SolidPreviewModel>().get_viewport_height(),
+        ),
         tier_cutoff: ui.global::<SolidPreviewModel>().get_tier_cutoff(),
         view_mode: ui.global::<SolidPreviewModel>().get_view_mode(),
         selected_row: ui.global::<EditorModel>().get_selected_tier_index(),
@@ -88,6 +96,14 @@ pub(super) fn restore(ui: &MainWindow, saved: Saved) {
     let solid = ui.global::<SolidPreviewModel>();
     if solid.get_view_mode() != saved.view_mode {
         solid.set_view_mode(saved.view_mode);
+    }
+    // The screen sized the render to its own picture; the editor viewport does not re-report its
+    // size on its own, so put it back and ask for the redraw at that size.
+    let (width, height) = saved.viewport_size;
+    if width > 0.0 && height > 0.0 {
+        solid.set_viewport_width(width);
+        solid.set_viewport_height(height);
+        solid.invoke_viewport_resized();
     }
     set_cutoff(ui, saved.tier_cutoff);
     let editor = ui.global::<EditorModel>();
@@ -164,6 +180,7 @@ mod tests {
     #[test]
     fn a_replaced_design_comes_back_finished_and_unselected() {
         let saved = Saved {
+            viewport_size: (800.0, 600.0),
             tier_cutoff: 4,
             view_mode: 3,
             selected_row: 2,
@@ -171,6 +188,7 @@ mod tests {
         assert_eq!(
             saved.after_replacement(),
             Saved {
+                viewport_size: (800.0, 600.0),
                 tier_cutoff: MODEL_FINISHED,
                 view_mode: 3,
                 selected_row: -1,

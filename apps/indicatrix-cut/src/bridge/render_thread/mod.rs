@@ -176,6 +176,9 @@ pub fn spawn_render_thread<T, F, M, S, R>(
         let mut first_hit_depth: Vec<f32> = Vec::new();
         let mut first_hit_normal: Vec<Vec3> = Vec::new();
         let mut first_hit_facet_id: Vec<i32> = Vec::new();
+        // Path signature per pixel, the denoiser's second edge-stop: from the guide cache
+        // for CPU and GPU frames alike (`ViewportGpu::sync_path_sig`), never traced.
+        let mut first_hit_path_sig: Vec<u32> = Vec::new();
         // Scratch buffer for folding a remote accumulator's current total into a
         // display cycle's input (see `should_combine_remote`'s call site below).
         // Reused across cycles like the buffers above; stays empty when nothing combines.
@@ -603,31 +606,32 @@ pub fn spawn_render_thread<T, F, M, S, R>(
             // `accum_samples` was left un-incremented for exactly this case, so
             // `accum_buffer`'s sample count stays accurate.
             if let Some((sample_offset, frame_spp)) = local_claim {
+                let backend_frame = BackendFrame {
+                    width,
+                    height,
+                    yaw,
+                    pitch,
+                    distance,
+                    camera: &camera,
+                    planes: &active_planes,
+                    tools: &active_tools,
+                    fluorescence: fluorescence
+                        .as_deref()
+                        .unwrap_or_else(|| Fluorescence::none()),
+                    facet_finishes,
+                    material: &current_mat,
+                    max_bounces,
+                    environment,
+                    spp: frame_spp,
+                    // The claimed range's first absolute index -- the disjointness
+                    // guarantee: while combining, the epoch's cursor never hands
+                    // this range to the remote lane too. See this module's doc
+                    // comment.
+                    sample_offset,
+                };
                 accumulate_frame_samples(
                     &mut gpu_backend,
-                    &BackendFrame {
-                        width,
-                        height,
-                        yaw,
-                        pitch,
-                        distance,
-                        camera: &camera,
-                        planes: &active_planes,
-                        tools: &active_tools,
-                        fluorescence: fluorescence
-                            .as_deref()
-                            .unwrap_or_else(|| Fluorescence::none()),
-                        facet_finishes,
-                        material: &current_mat,
-                        max_bounces,
-                        environment,
-                        spp: frame_spp,
-                        // The claimed range's first absolute index -- the disjointness
-                        // guarantee: while combining, the epoch's cursor never hands
-                        // this range to the remote lane too. See this module's doc
-                        // comment.
-                        sample_offset,
-                    },
+                    &backend_frame,
                     &mut FrameOutputs {
                         accum: &mut accum_buffer,
                         depth: &mut first_hit_depth,
@@ -636,6 +640,13 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                     },
                     &mut hybrid_pacing,
                     local_compute_target,
+                );
+                // The signature costs a prepass per pose and material, so it is skipped
+                // (zeroed) while the denoiser is off or the camera is moving.
+                gpu_backend.sync_path_sig(
+                    &backend_frame,
+                    &mut first_hit_path_sig,
+                    denoise_enabled && !camera_moving,
                 );
             }
 
@@ -745,6 +756,7 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                             first_hit_depth: &first_hit_depth,
                             first_hit_normal: &first_hit_normal,
                             first_hit_facet_id: &first_hit_facet_id,
+                            first_hit_path_sig: &first_hit_path_sig,
                         },
                         evaluated.snapshot(cam_pitch_deg),
                         // `push_frame_to_ui`'s own activity start/finish reads

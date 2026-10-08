@@ -9,8 +9,9 @@
 // and whether the panel is open, and navigation is implemented in this file (a global's
 // callback can be given a body directly in the file that declares it). Rust's jobs are
 // pushing `steps` when a guide starts (`start_guide`), deciding from the design when a
-// step's goal is reached and calling `notify` (`gui::editor::guide::check_progress`), and
-// recording a finished guide (`finished`).
+// step's goal is reached and calling `notify` (`gui::editor::guide::check_progress`), doing a
+// step for the learner when Next is pressed on it unfinished (`perform`), and recording a
+// finished guide (`finished`).
 
 import { EditorModel } from "editor.slint";
 import { PreferencesModel } from "preferences.slint";
@@ -75,6 +76,9 @@ export struct GuideStepData {
     // (the view mode, the inspector tab): `GuideOverlayLayer` then asks Rust to re-check
     // the step on a timer while it is current.
     watches_ui: bool,
+    // Whether Next can do this step for the learner (the step has a recipe,
+    // `indicatrix_editor::guide::Perform`). A step without one keeps its "Skip step" button.
+    performable: bool,
     // Which controls stay usable while this step is current.
     allow: GuideAllow,
 }
@@ -129,9 +133,21 @@ export global GuideModel {
     /// Whether the current step only advances on Next (a reading step).
     out property <bool> current_is_manual: root.current.completion == "manual";
     /// Whether the panel's right-hand button reads Next or Finish: a reading step, or a step
-    /// that is being re-read (after Back) and whose goal is already met. Any other step shows
-    /// a quiet "Skip step" while it waits for its goal.
+    /// that is being re-read (after Back) and whose goal is already met. Any other step waits
+    /// for its goal: its button does the step (`offers_perform`) or, where the app cannot, is
+    /// a quiet "Skip step".
     out property <bool> offers_next: root.current_is_manual || (root.revisiting && root.step_done);
+    /// `true` from the press of Next on an unfinished step until the step is done or the
+    /// recipe has had its time (`perform_tick`): the button waits instead of offering Skip.
+    in-out property <bool> perform_busy: false;
+    /// `true` once a recipe ran and the step is still unfinished (a refused entry, a solve
+    /// that did not close): from then on the button only skips, so it never promises what it
+    /// did not deliver. Cleared whenever a step is entered.
+    in-out property <bool> perform_failed: false;
+    /// Whether the button reads "Next" on an unfinished action step because pressing it does
+    /// the step: the step has a recipe and one has not just failed.
+    out property <bool> offers_perform: !root.offers_next && root.current.performable
+        && !root.perform_failed && !root.step_done;
 
     /// What `editor_tier_table.slint`, `editor_design_settings.slint`,
     /// `editor_inspector.slint`, `editor_command_bar.slint` and
@@ -193,6 +209,7 @@ export global GuideModel {
         root.collapsed = false;
         root.step_done = false;
         root.revisiting = false;
+        root.reset_perform();
         root.step_index = 0;
         root.open = true;
         root.step_entered();
@@ -205,6 +222,28 @@ export global GuideModel {
     callback event(string);
     /// Re-check the current step against the design and the UI state now.
     callback poll();
+    /// Do the step at this index for the learner (Rust: `gui::editor::guide::perform`): the
+    /// step's recipe runs through the same callbacks the learner's clicks reach, and the
+    /// step then completes the usual way once its goal holds.
+    callback perform(int);
+    /// One tick while `perform_busy`: Rust re-checks the goal, and gives up waiting after a
+    /// few seconds (`perform_failed`).
+    callback perform_tick();
+    /// The panel's button on an unfinished step: does the step where it can, else skips it.
+    callback go_on();
+    go_on => {
+        if root.offers_perform {
+            root.perform_busy = true;
+            root.perform(root.step_index);
+        } else {
+            root.next();
+        }
+    }
+    /// Forgets a recipe's progress: a step just entered, or the guide closed.
+    function reset_perform() {
+        root.perform_busy = false;
+        root.perform_failed = false;
+    }
     /// One tick while `launch_pending`: Rust checks whether the guide's starting design has
     /// arrived.
     callback launch_tick();
@@ -234,6 +273,7 @@ export global GuideModel {
     next => {
         root.step_done = false;
         root.revisiting = false;
+        root.reset_perform();
         if root.has_next {
             root.step_index += 1;
             root.step_entered();
@@ -247,6 +287,7 @@ export global GuideModel {
     callback back();
     back => {
         root.step_done = false;
+        root.reset_perform();
         if root.has_back {
             root.revisiting = true;
             root.step_index -= 1;
@@ -257,6 +298,7 @@ export global GuideModel {
     close => {
         root.step_done = false;
         root.revisiting = false;
+        root.reset_perform();
         root.open = false;
     }
 }

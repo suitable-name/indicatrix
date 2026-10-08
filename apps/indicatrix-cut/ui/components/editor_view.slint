@@ -99,8 +99,11 @@ export component EditorView inherits Rectangle {
     // bar, the design settings, the table's 120px minimum, the 6px `SplitHandle`,
     // and the dock padding plus gaps (`56px`, the same total the drag handler's
     // `24px + 32px` spells out). Floors at the inspector's own 160px minimum.
+    // While the table is collapsed it needs only its 40px header row (24px
+    // `SectionHeader` + 8px padding top/bottom) instead of the 120px minimum.
     function inspector_height_ceiling() -> length {
-        return max(160px, root.height - cmd.height - settings.height - 120px - 6px - 56px);
+        return max(160px, root.height - cmd.height - settings.height
+            - (EditorModel.tier_table_collapsed ? 40px : 120px) - 6px - 56px);
     }
     // Height the Tier tab needs to show its title, the four authored rows
     // (Angle/Meets/Name/Indices), the pinned Save/Add row and the header/metrics
@@ -125,6 +128,10 @@ export component EditorView inherits Rectangle {
         if root.tracked_guide_target == "inspector_tier" {
             root.reveal_tier_form();
         }
+        // A step that outlines the tier table needs it open.
+        if root.tracked_guide_target == "tier_table" {
+            EditorModel.tier_table_collapsed = false;
+        }
     }
     // A single `init` -- Slint refuses a second one on the same element
     // ("Duplicated callback") -- covers both the pre-existing dock reclamp AND
@@ -145,6 +152,9 @@ export component EditorView inherits Rectangle {
         if GuideModel.highlight_target == "inspector_tier" {
             root.reveal_tier_form();
         }
+        if GuideModel.highlight_target == "tier_table" {
+            EditorModel.tier_table_collapsed = false;
+        }
         inspector.load_tier_into_form(EditorModel.selected_tier_index);
     }
     changed height => { root.reclamp_inspector_height(); }
@@ -156,9 +166,9 @@ export component EditorView inherits Rectangle {
         cmd := EditorCommandBar {}
         settings := EditorDesignSettings {}
 
+        // `vertical-stretch`/`min-height`/`max-height` follow
+        // `EditorModel.tier_table_collapsed` inside `EditorTierTable` itself.
         tier_table := EditorTierTable {
-            vertical-stretch: 1;
-            min-height: 120px;
             // A plain click/Enter/"Add Anchor" selecting the row ALREADY selected
             // (`idx == EditorModel.selected_tier_index`) makes the assignment below
             // a no-op write: Slint's queued `changed` never fires when a property
@@ -181,8 +191,9 @@ export component EditorView inherits Rectangle {
 
         // Table|inspector split -- hidden while the inspector is collapsed
         // (its header-only row needs no handle above it; the table simply
-        // takes the freed space via its own `vertical-stretch` above).
-        if !EditorModel.inspector_collapsed: SplitHandle {
+        // takes the freed space via its own `vertical-stretch` above) and while
+        // the table is collapsed (the inspector then stretches to fill the dock).
+        if !EditorModel.inspector_collapsed && !EditorModel.tier_table_collapsed: SplitHandle {
             vertical: true;
             dragged(d) => {
                 // Dragging the bar down shrinks the inspector (and hands the
@@ -202,5 +213,11 @@ export component EditorView inherits Rectangle {
         }
 
         inspector := EditorInspector {}
+
+        // Both table and inspector collapsed: nothing else stretches, so this
+        // keeps the two header rows at the top instead of spread over the dock.
+        if EditorModel.tier_table_collapsed && EditorModel.inspector_collapsed: Rectangle {
+            vertical-stretch: 1;
+        }
     }
 }

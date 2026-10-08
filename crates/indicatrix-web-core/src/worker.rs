@@ -334,6 +334,7 @@ impl WorkerHandler {
             height,
             camera: scene.camera(),
             planes: scene.planes(),
+            n_d: scene.material().dispersion.n_d(),
             sample_count,
             sum: &sum,
         };

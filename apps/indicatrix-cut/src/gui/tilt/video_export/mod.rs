@@ -23,19 +23,21 @@
 //! the compute configuration from the SAME two sources the still-image export reads:
 //! `RenderContext::local_compute_target` (the app's persisted CPU/CPU+GPU/GPU setting)
 //! and `AppSettings::remote` (the one configured remote endpoint), plus the section's
-//! own "Transfer" choice (full data or final picture only) -- never a video-only compute picker. The
-//! still-image export's own "Compute" pill
-//! (`ComputeTarget::LocalOnly`/`RemoteOnly`/`Both`) is dialog-local UI state, not a
-//! persisted setting (its own default is `Both` whenever a worker is configured,
-//! `LocalOnly` otherwise -- see `export_dialog.slint`'s `compute_target` property);
-//! since a video has no equivalent dialog control, `run::render_all_frames` always
-//! requests `ComputeTarget::Both` and lets `render_accumulation`'s existing graceful
-//! fallback decide, frame to frame, whether a worker is actually reachable -- the same
-//! end state the dialog's own default reaches for the common case, without a
-//! video-side probe of its own. Because the whole sweep now shares the GPU adapter and
-//! remote workers with the rest of the app, it pauses the live viewport for its own
-//! duration exactly as a still-image export does (`RenderContext::export_active`, see
-//! `run`'s own doc comment) -- never running two GPU programs at once.
+//! own "Transfer" choice (full data or final picture only) and its own "Compute" pill,
+//! the same three choices as the still-image export's
+//! (`ComputeTarget::LocalOnly`/`RemoteOnly`/`Both`, see [`compute_target_of`]). The pill
+//! is shown only with a remote configured and defaults to `Both`; without a remote the
+//! video is `LocalOnly`. `RemoteOnly` is how a long video is sent away without taking
+//! this computer's CPU and GPU: `frames::render_frames` then acquires no GPU backend,
+//! and the render core runs no local lane, so this computer only receives, merges and
+//! saves frames and encodes the video. A remote that is missing or drops fails the
+//! frame (and so the video) with a message rather than falling back to local tracing.
+//! Because a `LocalOnly` or `Both` sweep shares the GPU adapter and remote workers with
+//! the rest of the app, it pauses the live viewport for its own duration exactly as a
+//! still-image export does (`RenderContext::export_active`, see `run`'s own doc comment)
+//! -- never running two GPU programs at once. `RemoteOnly` does NOT pause it
+//! (`ComputeTarget::pauses_live_viewport`): nothing local is traced, so the person keeps
+//! working in the app while the remote renders.
 
 // `pub`: the render job executor (`gui::render_jobs`) drives the same frame loop,
 // encoder and sweep maths. `overlay` and `render` stay private to this group.
@@ -49,14 +51,15 @@ pub mod run;
 pub mod template;
 
 use crate::{
-    ActivityModel, ExportModel, LibraryModel, MainWindow, TiltModel, TiltVideoExportModel,
+    ActivityModel, ExportModel, ExportRunModel, LibraryModel, MainWindow, TiltModel,
+    TiltVideoExportModel,
     bridge::{
         export_thread::{
             ComputeTarget, RemoteSelection, SceneSnapshot, filename_template::TemplateContext,
         },
         render_thread::RenderContext,
     },
-    settings::{ExportTransfer, SettingsPersister},
+    settings::{ExportTransfer, SettingsPersister, TiltVideoCompute},
 };
 use indicatrix::color::{ColorSpace, metrics::PROFILE_AZIMUTHS_DEG};
 use indicatrix_solid::preview::StoneGeometryBuf;
@@ -157,6 +160,15 @@ pub(in crate::gui) fn setup_video_export_callback(
             );
         });
 
+    // The "Compute" pill's choice is remembered across restarts (seeded at startup by
+    // `gui::startup_settings`); the debounced writer coalesces rapid clicks.
+    let settings_store_compute = Arc::clone(settings_store);
+    ui.global::<TiltVideoExportModel>()
+        .on_compute_target_picked(move |index| {
+            let choice = TiltVideoCompute::from_index(index);
+            settings_store_compute.update(|s| s.settings.tilt_video_compute_target = choice);
+        });
+
     let current_run_cancel = current_run.clone();
     ui.global::<TiltVideoExportModel>()
         .on_cancel_video_export(move || {
@@ -217,6 +229,10 @@ fn handle_start_video_export(
         // rather than trusted to the UI alone.
         return;
     }
+    // One export at a time (the Start button is disabled too).
+    if refuse_while_busy(ui) {
+        return;
+    }
 
     let render_ctx = Arc::clone(render_ctx);
     let settings_store = settings_store.clone();
@@ -262,6 +278,19 @@ fn handle_start_video_export(
     });
 }
 
+/// Refuses a start while another export runs: says why in the section's status line and a
+/// toast, and returns `true`.
+fn refuse_while_busy(ui: &MainWindow) -> bool {
+    let Some(reason) = crate::gui::export_run::busy_refusal(ui) else {
+        return false;
+    };
+    let model = ui.global::<TiltVideoExportModel>();
+    model.set_has_error(true);
+    model.set_status_message(reason.into());
+    crate::gui::show_toast(ui, reason, "info");
+    true
+}
+
 /// [`handle_start_video_export`]'s tail, once the export folder and the finished stone are
 /// known: builds the request and starts the background render, or reports why it could
 /// not.
@@ -278,6 +307,11 @@ fn start_video_run(
     if model.get_is_exporting() {
         // A second click while the finished stone was being solved: the first one is
         // already running.
+        return;
+    }
+    // A still export or a queue job may have started while the folder or the finished stone
+    // was being prepared.
+    if refuse_while_busy(ui) {
         return;
     }
     let mut request = match build_request(
@@ -332,8 +366,14 @@ fn start_video_run(
     // export's own `export_active_count` increment in `gui::render::render_export::
     // wiring::finish_start_export` -- `run::spawn`'s every exit path (completion,
     // cancel, error, caught panic) decrements this exactly once, mirroring
-    // `finish_export_queue`'s single decrement point.
-    RenderContext::lock(&render_ctx).export_active_count += 1;
+    // `finish_export_queue`'s single decrement point. Not under Remote only: that run
+    // traces nothing here, so the viewport keeps working (`run::pauses_viewport`).
+    let pausing = run::pauses_viewport(&request);
+    if pausing {
+        RenderContext::lock(&render_ctx).export_active_count += 1;
+    }
+    // The header indicator says so while the viewport is held still.
+    ui.global::<ExportRunModel>().set_live_view_paused(pausing);
     run::spawn(ui.as_weak(), render_ctx, request, cancel, activity_id);
 }
 
@@ -450,12 +490,12 @@ fn build_request(
     // persisted CPU/CPU+GPU/GPU setting (a second, short-lived lock -- the video's own
     // scene capture above already released its lock, so this doesn't extend it), and
     // `remote` is the same endpoint `gui::render::render_export::wiring` reads.
-    // `compute_target` has no persisted dialog source of its own for a video (see this
-    // module's doc comment on why `Both` is the right stand-in).
+    // `compute_target` is the section's own "Compute" pill (see this module's doc comment).
     let local_compute = RenderContext::lock(render_ctx).local_compute_target;
+    let worker = settings_store.snapshot().settings.remote_worker();
     let remote = RemoteSelection {
-        compute_target: ComputeTarget::Both,
-        worker: settings_store.snapshot().settings.remote_worker(),
+        compute_target: compute_target_of(model.get_compute_target_index(), worker.is_some()),
+        worker,
         transfer: ExportTransfer::from_index(model.get_transfer_index()),
         contribute_local: settings_store
             .snapshot()
@@ -524,6 +564,21 @@ fn build_request(
         remote,
         local_compute,
     })
+}
+
+/// The engines a video uses for the section's "Compute" pill index (0 = Local only,
+/// 1 = Remote only, 2 = Local + Remote, the still-image export's own order). Without a
+/// configured remote the pill is hidden and the video renders locally whatever the index
+/// holds (a stale "Remote only" must not fail a video that has no remote to fail on).
+const fn compute_target_of(index: i32, remote_configured: bool) -> ComputeTarget {
+    if !remote_configured {
+        return ComputeTarget::LocalOnly;
+    }
+    match index {
+        0 => ComputeTarget::LocalOnly,
+        1 => ComputeTarget::RemoteOnly,
+        _ => ComputeTarget::Both,
+    }
 }
 
 /// Reads `axis_index`'s already-computed 181-point curves out of `TiltModel` (populated

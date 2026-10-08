@@ -3,10 +3,12 @@
 
 use super::{
     ALL_EXCLUDED_MESSAGE, CANCELLING_STAGE, Candidates, FilterSnapshot, IdSource, Reporter,
-    cache_note, candidates_from, concave_note, excluded_note, gather, outline_note, summary_text,
-    unmeasured_note, validate_model, without_excluded,
+    cache_note, candidates_from, concave_note, excluded_note, floor_summary_text, gather,
+    outline_note, summary_text, unmeasured_note, validate_model, without_excluded,
 };
-use indicatrix_cut_core::rough_plan::{BoxFace, CandidateDesign, RoughBase, RoughCut, RoughModel};
+use indicatrix_cut_core::rough_plan::{
+    BoxFace, CandidateDesign, PlanSettings, RoughBase, RoughCut, RoughModel,
+};
 use indicatrix_vault::{
     db::sqlite::Database,
     model::{
@@ -443,6 +445,31 @@ fn the_summary_names_the_layouts_the_designs_and_the_time() {
         "1 layout from 5 designs -- 3.2 s; 1 design could not be measured"
     );
     assert!(summary_text(0, 5, took, "").starts_with("No layout fits"));
+}
+
+#[test]
+fn a_minimum_stone_count_adds_the_range_and_names_itself_when_nothing_reaches_it() {
+    let took = Duration::from_millis(3210);
+    let plain = PlanSettings::default();
+    assert_eq!(
+        floor_summary_text(&plain, 10, 2431, took, ""),
+        summary_text(10, 2431, took, "")
+    );
+    assert!(floor_summary_text(&plain, 0, 5, took, "").starts_with("No layout fits"));
+    let floor = PlanSettings {
+        count: 5,
+        min_count: 2,
+        ..PlanSettings::default()
+    };
+    assert_eq!(
+        floor_summary_text(&floor, 4, 40, took, "; 1 design could not be measured"),
+        "4 layouts from 40 designs -- 3.2 s, 2-5 stones; 1 design could not be measured"
+    );
+    let none = floor_summary_text(&floor, 0, 40, took, "");
+    assert!(
+        none.starts_with("No layout with at least 2 stones fits this rough"),
+        "{none}"
+    );
 }
 
 #[test]

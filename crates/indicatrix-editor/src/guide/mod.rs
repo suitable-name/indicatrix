@@ -20,6 +20,10 @@
 //! - `build_this_design`: [`build_this_design_guide`], the lesson that rebuilds a library
 //!   design from an empty one (with `build_text`, its wording and number formats, and
 //!   `rebuilt`, the [`Goal::DesignRebuilt`] comparison its last step uses).
+//! - `perform`: [`Perform`], what the Next button does on a step the learner has not done
+//!   (the step done for them through the editor's own paths), with the recipes derived from
+//!   a step's goal ([`default_perform`]) and `perform_table`, the recipes listed by guide id
+//!   and step title.
 //!
 //! A UI owns navigation (start/next/back/close, the short "Done" moment before an
 //! automatic advance) and every control lock, driven by the current step's allowed
@@ -34,6 +38,8 @@ mod catalog;
 mod goal;
 mod listing;
 mod model;
+mod perform;
+mod perform_table;
 mod rebuilt;
 mod start;
 pub mod steps;
@@ -46,6 +52,8 @@ mod build_this_design_tests;
 mod catalog_tests;
 #[cfg(test)]
 mod goal_tests;
+#[cfg(test)]
+mod perform_tests;
 #[cfg(test)]
 mod rebuilt_tests;
 #[cfg(test)]
@@ -68,6 +76,11 @@ pub use listing::{
 };
 pub use model::{
     BUILD_ID_PREFIX, Guide, GuideCategory, GuideStep, StartingState, is_valid_guide_id,
+};
+pub use perform::{
+    CMD_ADOPT_ALL, CMD_COMPARE, CMD_DELETE, CMD_DUPLICATE, CMD_MOVE_DOWN, CMD_MOVE_UP, CMD_SOLVE,
+    CMD_UNDO, COMMANDS as PERFORM_COMMANDS, Perform, StepSeries, TierEntry, TierSave,
+    concave_position, default_perform, resolve_tier, tier_position,
 };
 pub use rebuilt::{MAST_FLOOR, mast_within};
 pub use start::{

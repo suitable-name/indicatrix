@@ -1,6 +1,7 @@
 import { ComboBox, LineEdit } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { ExportModel } from "../../models/export.slint";
+import { ExportRunModel } from "../../models/export_run.slint";
 import { ViewportModel } from "../../models/viewport.slint";
 import { SettingsModel } from "../../models/settings.slint";
 import { TiltModel } from "../../models/tilt.slint";
@@ -547,7 +548,14 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
         icon: @image-url("../../icons/save.svg");
         icon_size: 13px;
         text: ExportModel.is_exporting ? "Exporting..." : "Export";
-        hint: "Render the stone at high resolution and save it as a picture. Exports always show the finished stone.";
+        hint: ExportModel.is_exporting
+            ? "An export is running. Show its progress window again."
+            : (ExportRunModel.running
+                ? ExportRunModel.busy_hint
+                : "Render the stone at high resolution and save it as a picture. Exports always show the finished stone.");
+        // Another kind of export running (a video, a queue job) blocks starting this one; this
+        // export's own button stays on, to bring its popup back after "Run in Background".
+        enabled: !ExportRunModel.running || ExportModel.is_exporting;
         lit: ExportModel.is_open || ExportModel.is_exporting;
         lit_fill: Theme.accent-emerald;
         checkable: true;

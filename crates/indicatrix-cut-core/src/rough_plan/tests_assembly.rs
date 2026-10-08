@@ -3,8 +3,9 @@
 
 use super::{
     Axis, CandidateDesign, CutOrder, CutPlan, FINAL_TOP, LayoutGroup, PlacedStone, RoughLayout,
-    SingleFit, StonePose, final_ranking, flatten_groups, merge_and_rank, own_pool, rank_indices,
-    uniform_pool,
+    SingleFit, StonePose, final_ranking, final_ranking_min, flatten_groups, merge_and_rank,
+    merge_and_rank_min, own_pool, partial_ranking, partial_ranking_min, rank_indices,
+    rank_indices_min, uniform_pool,
 };
 
 fn design(entry_id: i64) -> CandidateDesign {
@@ -161,6 +162,89 @@ fn the_final_ranking_tops_up_with_the_unrefined_candidates() {
     let everything: Vec<usize> = (0..flat.len()).collect();
     let alone = final_ranking(refined, &flat, &everything);
     assert_eq!(alone.len(), 5);
+}
+
+/// Twelve layouts: stone counts 1 to 4, distinct designs so the dedup and the set cap stay
+/// out of the way. Layout `i` (0-based) holds `1 + i % 4` stones and is worth `100 - i` mm^3 a stone.
+fn mixed_counts() -> Vec<RoughLayout> {
+    (0..12_i64)
+        .map(|i| {
+            let stones: Vec<(i64, f64)> = (0..=i % 4)
+                .map(|k| (i * 10 + k, 100.0 - i as f64))
+                .collect();
+            layout(&stones)
+        })
+        .collect()
+}
+
+#[test]
+fn a_minimum_of_one_stone_is_exactly_the_plain_ranking() {
+    let flat = mixed_counts();
+    for limit in [1, 4, 10, 20] {
+        assert_eq!(
+            rank_indices_min(&flat, limit, 1),
+            rank_indices(&flat, limit)
+        );
+        assert_eq!(
+            rank_indices_min(&flat, limit, 0),
+            rank_indices(&flat, limit),
+            "0 reads as 1"
+        );
+        assert_eq!(
+            merge_and_rank_min(flat.clone(), limit, 1),
+            merge_and_rank(flat.clone(), limit)
+        );
+    }
+}
+
+#[test]
+fn a_minimum_drops_the_small_layouts_before_the_limit_and_refills_from_the_rest() {
+    let flat = mixed_counts();
+    let kept = rank_indices_min(&flat, 20, 2);
+    assert!(!kept.is_empty());
+    assert!(kept.iter().all(|&i| flat[i].stones.len() >= 2));
+    // Nine of the twelve hold two stones or more, and all of them qualify.
+    assert_eq!(kept.len(), 9);
+    // A limit smaller than the qualifying count is filled with qualifying layouts only
+    // (the one-stone layouts that would have ranked in the top 3 are gone).
+    let top = rank_indices_min(&flat, 3, 2);
+    assert_eq!(top.len(), 3);
+    assert!(top.iter().all(|&i| flat[i].stones.len() >= 2));
+    assert_eq!(top, kept[..3]);
+    // Above every layout: nothing.
+    assert!(rank_indices_min(&flat, 20, 5).is_empty());
+    assert!(merge_and_rank_min(flat, 20, 5).is_empty());
+}
+
+#[test]
+fn the_final_ranking_top_up_refills_from_layouts_that_qualify() {
+    let flat = mixed_counts();
+    let ranked = rank_indices_min(&flat, 3, 2);
+    let refined: Vec<RoughLayout> = ranked.iter().map(|&i| flat[i].clone()).collect();
+    let topped = final_ranking_min(refined.clone(), &flat, &ranked, 2);
+    assert_eq!(topped.len(), 9, "every qualifying layout, no more");
+    assert!(topped.iter().all(|l| l.stones.len() >= 2));
+    // With a minimum of one the top-up is the plain one.
+    assert_eq!(
+        final_ranking_min(refined.clone(), &flat, &ranked, 1),
+        final_ranking(refined, &flat, &ranked)
+    );
+}
+
+#[test]
+fn the_partial_ranking_honours_the_minimum_too() {
+    let groups = vec![LayoutGroup {
+        pool: Vec::new(),
+        layouts: mixed_counts(),
+    }];
+    assert_eq!(
+        partial_ranking_min(&groups, Vec::new(), 1),
+        partial_ranking(&groups, Vec::new())
+    );
+    let shown = partial_ranking_min(&groups, vec![layout(&[(500, 1000.0)])], 2);
+    assert!(!shown.is_empty());
+    assert!(shown.iter().all(|l| l.stones.len() >= 2));
+    assert!(partial_ranking_min(&groups, Vec::new(), 9).is_empty());
 }
 
 #[test]

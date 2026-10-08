@@ -105,10 +105,12 @@ import { SweepModel, SweepCellItem, SweepRowItem, SweepColumnItem, SweepPathItem
 import { SweepDialog } from "components/sweep_dialog.slint";
 // Cutting mode: the cutting instructions one step per page over the whole window, with done
 // marks kept per design -- see `models/cutting_mode.slint`.
-import { CuttingModeModel, CmChip, CmWheelMark, CmWheelScale } from "models/cutting_mode.slint";
+import { CuttingModeModel, CmChip, CmWheelMark, CmWheelScale, CmScheduleRow } from "models/cutting_mode.slint";
 import { CuttingModeScreen } from "components/cutting_mode/cutting_mode_screen.slint";
 // The render queue: Jobs window, header chip and "Add to Queue" -- see `models/render_jobs.slint`.
 import { RenderJobsModel, RenderJobRow } from "models/render_jobs.slint";
+// "Is an export running?" and the header export indicator's text -- see `models/export_run.slint`.
+import { ExportRunModel } from "models/export_run.slint";
 
 export {
     DiagramItem, AngleItem, FileItem, DiagramDetailData, OpticalMetricsData,
@@ -157,7 +159,7 @@ export {
     // The Angle Sweep dialog's global and its row structs -- see ui/models/sweep.slint.
     SweepModel, SweepCellItem, SweepRowItem, SweepColumnItem, SweepPathItem, SweepLegendItem,
     // Cutting mode's global and its chip and wheel structs -- see ui/models/cutting_mode.slint.
-    CuttingModeModel, CmChip, CmWheelMark, CmWheelScale,
+    CuttingModeModel, CmChip, CmWheelMark, CmWheelScale, CmScheduleRow,
     // The help window and its global, with the row structs -- see ui/models/help.slint.
     HelpWindow, HelpModel, HelpNavItem, HelpBlock, HelpSearchHit, GlossaryRow,
     // Preferences (ui/models/preferences.slint) and the colour tokens (ui/theme.slint, the
@@ -168,7 +170,9 @@ export {
     // The overall verdict's global and its reason row -- see ui/models/verdict.slint.
     VerdictModel, VerdictReasonData,
     // The render queue's global and its row struct -- see ui/models/render_jobs.slint.
-    RenderJobsModel, RenderJobRow
+    RenderJobsModel, RenderJobRow,
+    // The running-export flag and the header indicator's text -- see ui/models/export_run.slint.
+    ExportRunModel
 }
 
 // --- Sizing notes -----------------------------------------------------------
@@ -287,6 +291,26 @@ export component MainWindow inherits Window {
         );
         EditorModel.layout_changed();
     }
+
+    // The width of the window area the in-window modal overlays (the dialogs, the
+    // glossary, the tutorial browser, ...) lay out in. While a guide panel is open and not
+    // collapsed it is the area LEFT of that panel, so a scrim and card never cover the
+    // step text, Back/Next or the close button: a lesson tells the learner what to type
+    // into the very dialog it opens. Docked (the wide Edit layout), the panel sits between
+    // the viewport and the dock, so its left edge is the window width less the 12px body
+    // padding, the dock, the 6px handle, two 12px gaps and the panel's own 260px --
+    // keep that in lock-step with `edit_row` below. Floating, it is the panel's own x.
+    // Under 420px the full window is used instead (a card must fit; the guide can be
+    // collapsed, as before), and so while the guide is closed or collapsed.
+    property <bool> guide_docked: root.active_tab == 0 && root.render_view_tab == 1 && EditorModel.enabled && root.width >= 1100px + (GuideModel.open ? 272px : 0px);
+    property <length> guide_left_edge: root.guide_docked
+        ? root.width - 12px - EditorModel.dock_width - 6px - 24px - 260px
+        : (GuideModel.float_placed
+            ? clamp(GuideModel.float_x, 0px, max(0px, root.width - 260px))
+            : max(0px, root.width - 260px - 20px));
+    property <length> dialog_area_width: (GuideModel.open && !GuideModel.collapsed && root.guide_left_edge >= 420px)
+        ? root.guide_left_edge
+        : root.width;
 
     // Whether `LibraryModel.panel_collapsed` is currently `true`
     // because THIS reaction collapsed it for lack of width, as opposed to the user
@@ -530,12 +554,12 @@ export component MainWindow inherits Window {
             title: "Library";
             // The three whole-library batches are advanced: the Simple interface leaves them out.
             if GuideModel.shows_advanced(): MenuItem {
-                title: "Regenerate All Preview Images...";
+                title: "Regenerate Preview Images...";
                 enabled: !BatchModel.preview_batch_running;
                 activated => { LibraryModel.regenerate_all_previews(); }
             }
             if GuideModel.shows_advanced(): MenuItem {
-                title: "Regenerate All Tilt Curves...";
+                title: "Regenerate Tilt Curves...";
                 enabled: !BatchModel.tilt_batch_running;
                 activated => { LibraryModel.regenerate_all_tilt_curves(); }
             }
@@ -665,6 +689,8 @@ export component MainWindow inherits Window {
                 // filter, not the catalogue search -- the cutter is looking at a
                 // schedule, not a library. Everywhere else it keeps its usual target.
                 if root.active_tab == 0 && root.render_view_tab == 1 && EditorModel.enabled {
+                    // The filter box lives in the tier table; show it first.
+                    EditorModel.tier_table_collapsed = false;
                     EditorModel.filter_focus_pulse += 1;
                 } else {
                     header_toolbar.focus_search();
@@ -800,7 +826,25 @@ export component MainWindow inherits Window {
             // 1. TOP BAR
             // 1160px, not the 1100px stacking threshold below: the Simple | Advanced pill
             // widens the logo cluster by ~130px, and the one-row header needs about 1140px.
-            header_toolbar := HeaderToolbar { compact: root.width < 1160px; }
+            header_toolbar := HeaderToolbar {
+                compact: root.width < 1160px;
+                // The export indicator was clicked: show the running export's popup again. The
+                // tilt dialog is window-wide; the still export's dialog lives in Live Render,
+                // so that tab is brought up first.
+                show_export_progress => {
+                    if TiltVideoExportModel.is_exporting {
+                        if !TiltModel.dialog_open {
+                            TiltModel.toggle_dialog();
+                        }
+                    } else if ExportModel.is_exporting {
+                        root.active_tab = 0;
+                        root.active_tab_changed(0);
+                        root.render_view_tab = 0;
+                        root.render_view_tab_changed(0);
+                        ExportModel.is_open = true;
+                    }
+                }
+            }
 
             // 2. MAIN SPLIT WORKSPACE
             HorizontalLayout {
@@ -996,7 +1040,7 @@ export component MainWindow inherits Window {
             y: 0px;
             width: 100%;
             height: 100%;
-            docked: root.active_tab == 0 && root.render_view_tab == 1 && EditorModel.enabled && root.width >= 1100px + (GuideModel.open ? 272px : 0px);
+            docked: root.guide_docked;
         }
 
         // Cutting mode (Edit > Cutting Mode..., the command bar's Cut Mode, the palette): the
@@ -1034,10 +1078,11 @@ export component MainWindow inherits Window {
         // The size is explicit (and `x`/`y` too, so it adds no constraints to the
         // window): the overlay's children are all `if` branches, so left to
         // itself it would be 0 x 0 and every dialog would draw nothing.
+        // Its width is the area left of an open guide panel (`dialog_area_width`).
         GlobalDialogsOverlay {
             x: 0px;
             y: 0px;
-            width: 100%;
+            width: root.dialog_area_width;
             height: 100%;
         }
 
@@ -1048,7 +1093,7 @@ export component MainWindow inherits Window {
         if HelpModel.glossary_open: FocusScope {
             x: 0px;
             y: 0px;
-            width: 100%;
+            width: root.dialog_area_width;
             height: 100%;
             z: 420;
             key-pressed(event) => {
@@ -1074,7 +1119,7 @@ export component MainWindow inherits Window {
         if RawTextModel.is_open: FocusScope {
             x: 0px;
             y: 0px;
-            width: 100%;
+            width: root.dialog_area_width;
             height: 100%;
             z: 415;
             key-pressed(event) => {
@@ -1103,7 +1148,7 @@ export component MainWindow inherits Window {
         if SweepModel.dialog_open: FocusScope {
             x: 0px;
             y: 0px;
-            width: 100%;
+            width: root.dialog_area_width;
             height: 100%;
             z: 405;
             init => { self.focus(); }
@@ -1133,7 +1178,7 @@ export component MainWindow inherits Window {
         if TutorialsModel.browser_open: FocusScope {
             x: 0px;
             y: 0px;
-            width: 100%;
+            width: root.dialog_area_width;
             height: 100%;
             z: 410;
             key-pressed(event) => {
@@ -1157,7 +1202,7 @@ export component MainWindow inherits Window {
         if root.welcome_open: FocusScope {
             x: 0px;
             y: 0px;
-            width: 100%;
+            width: root.dialog_area_width;
             height: 100%;
             z: 430;
             init => { self.focus(); }
@@ -1184,7 +1229,7 @@ export component MainWindow inherits Window {
         // `EditorModel`'s, since closing the whole window is this file's own concern,
         // not the Edit tab's.
         if root.close_confirm_open: ConfirmActionDialog {
-            width: 100%;
+            width: root.dialog_area_width;
             height: 100%;
             z: 500;
             heading: "Unsaved Changes";

@@ -46,6 +46,7 @@ const CONVERTED_FILES: &[&str] = &[
     "components/toggle_switch.slint",
     "components/icon_button.slint",
     "components/chip_toggle.slint",
+    "components/export_chip.slint",
     "components/gem_viewport/live_cut_badge.slint",
     "components/gem_viewport/render_color_picker.slint",
     "components/gem_viewport/toolbar_actions.slint",

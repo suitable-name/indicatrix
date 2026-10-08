@@ -1,0 +1,54 @@
+// "Is an export running?" -- one answer for the whole window, and the text of the header's
+// export indicator. A global of its own, derived from the three places an export can run, so
+// no dialog keeps a second copy of the state:
+//
+//   * the still-image export (`ExportModel.is_exporting`),
+//   * the tilt video export (`TiltVideoExportModel.is_exporting`),
+//   * a render-queue job (`RenderJobsModel.job_running`, set by `gui::render_jobs`).
+//
+// The progress itself stays on `ExportModel` / `TiltVideoExportModel`, which live as long as
+// the app: a dialog is mounted under `if ...is_open:` and is destroyed when it closes, so
+// closing it ("Run in background") loses nothing, and the header chip (`ExportChip`) reads the
+// same properties. `gui::export_run` mirrors the derivation for the start guards in Rust (the
+// same three flags) and answers the two text callbacks below.
+import { ExportModel } from "export.slint";
+import { TiltVideoExportModel } from "tilt.slint";
+import { RenderJobsModel } from "render_jobs.slint";
+
+export global ExportRunModel {
+    // An export started from a dialog is running (the still export or the tilt video). These are
+    // the ones the header chip shows; a queue job has its own Jobs chip.
+    out property <bool> direct_running: ExportModel.is_exporting || TiltVideoExportModel.is_exporting;
+    // Any export at all, queue job included: every control that would START another export is
+    // disabled while this is true (Add to Queue only records a job, so it stays on).
+    out property <bool> running: root.direct_running || RenderJobsModel.job_running;
+    // The tooltip of a disabled start control. Kept in step with `gui::export_run::BUSY_MESSAGE`.
+    out property <string> busy_hint: "An export is running -- wait for it or cancel it.";
+
+    // Whether the running direct export holds the live viewport still (Local only and Local +
+    // Remote do; Remote only does not). Set by Rust when the export starts; only read while
+    // `direct_running`.
+    in property <bool> live_view_paused: false;
+
+    // The indicator's two lines, worked out in Rust (`gui::export_run`) so the wording is tested:
+    // (frame done, frames in all, ETA text) for a video; (progress 0..1, preset index, preset
+    // count, ETA text) for a still export.
+    pure callback video_text(int, int, string) -> string;
+    pure callback still_text(float, int, int, string) -> string;
+
+    out property <string> indicator_text: TiltVideoExportModel.is_exporting
+        ? root.video_text(TiltVideoExportModel.current_frame, TiltVideoExportModel.total_frames, TiltVideoExportModel.eta_text)
+        : root.still_text(ExportModel.progress, ExportModel.preset_index, ExportModel.preset_total, ExportModel.eta_text);
+    // 0..1 for the thin bar under the chip.
+    out property <float> indicator_progress: TiltVideoExportModel.is_exporting ? TiltVideoExportModel.progress : ExportModel.progress;
+
+    // Stops whichever direct export runs (the chip's cross). The export's own Cancel path, so a
+    // cancel from here and from its dialog end the same way.
+    public function cancel_direct() {
+        if TiltVideoExportModel.is_exporting {
+            TiltVideoExportModel.cancel_video_export();
+        } else if ExportModel.is_exporting {
+            ExportModel.cancel_export();
+        }
+    }
+}

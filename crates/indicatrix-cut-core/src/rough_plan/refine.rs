@@ -19,7 +19,8 @@ use super::{
     FINAL_TOP, PASSES, REFINE_TOP, REL_TOL,
     pareto::sanitize,
     piece::{ASSIGNMENTS, Norm, best_pick, stone_value},
-    rank::{as_layout, flatten_groups, rank_indices, take_indices},
+    rank::{as_layout, flatten_groups, rank_indices_min, take_indices},
+    shaped::parallel::run_lanes_dynamic,
     tree::{Bar, Leaf, Slab, Tree, layout_from_tree, to_canonical},
     types::{CandidateDesign, LayoutGroup, PlanProgress, PlanSettings, RoughBlock, RoughLayout},
 };
@@ -437,7 +438,19 @@ pub fn final_ranking<L: Borrow<RoughLayout>>(
     flat: &[L],
     refined_indices: &[usize],
 ) -> Vec<RoughLayout> {
-    let keep = rank_indices(&refined, FINAL_TOP);
+    final_ranking_min(refined, flat, refined_indices, 1)
+}
+
+/// [`final_ranking`] keeping only layouts of at least `min_stones` stones, in the refined
+/// list and in the top-up pool alike (refinement can merge a layout below the floor).
+#[must_use]
+pub fn final_ranking_min<L: Borrow<RoughLayout>>(
+    refined: Vec<RoughLayout>,
+    flat: &[L],
+    refined_indices: &[usize],
+    min_stones: usize,
+) -> Vec<RoughLayout> {
+    let keep = rank_indices_min(&refined, FINAL_TOP, min_stones);
     if keep.len() >= FINAL_TOP || refined_indices.len() >= flat.len() {
         return take_indices(refined, &keep);
     }
@@ -453,7 +466,7 @@ pub fn final_ranking<L: Borrow<RoughLayout>>(
         .filter(|(_, done)| !**done)
         .map(|(layout, _)| as_layout(layout));
     let pool: Vec<&RoughLayout> = refined.iter().chain(unrefined).collect();
-    rank_indices(&pool, FINAL_TOP)
+    rank_indices_min(&pool, FINAL_TOP, min_stones)
         .into_iter()
         .map(|i| pool[i].clone())
         .collect()
@@ -476,22 +489,52 @@ pub fn finish_plan(
     groups: &[LayoutGroup],
     on_progress: &mut dyn FnMut(PlanProgress) -> bool,
 ) -> Option<Vec<RoughLayout>> {
+    finish_plan_lanes(rough, settings, designs, groups, 1, on_progress)
+}
+
+/// [`finish_plan`] with the refinements of the best 20 spread over `lanes` scoped threads.
+///
+/// The layouts to refine are fixed by the ranking before any thread starts, each refinement
+/// reads only its own layout and pool, and the results are collected in rank order before
+/// the one final ranking, so the output is bitwise the serial one whatever the lane count.
+/// A lane reports [`PlanProgress::Refine`] before each layout it takes, on the calling
+/// thread; `None` when `on_progress` cancels, which every lane notices before its next
+/// layout. With one lane nothing is spawned.
+pub fn finish_plan_lanes(
+    rough: &RoughBlock,
+    settings: &PlanSettings,
+    designs: &[CandidateDesign],
+    groups: &[LayoutGroup],
+    lanes: usize,
+    on_progress: &mut dyn FnMut(PlanProgress) -> bool,
+) -> Option<Vec<RoughLayout>> {
     let all = sanitize(designs);
     let (flat, group_of) = flatten_groups(groups);
-    let ranked = rank_indices(&flat, usize::MAX);
+    let min_stones = settings.min_count_usize();
+    let ranked = rank_indices_min(&flat, usize::MAX, min_stones);
     let split = ranked.len().min(REFINE_TOP);
-    let mut refined = Vec::new();
-    for &i in &ranked[..split] {
-        if !on_progress(PlanProgress::Refine) {
-            return None;
-        }
-        let group = &groups[group_of[i]];
-        let pool = if group.pool.is_empty() {
-            own_pool(&all, flat[i])
-        } else {
-            sanitize(&group.pool)
-        };
-        refined.push(refine_with_pool(rough, settings, &pool, flat[i]));
-    }
-    Some(final_ranking(refined, &flat, &ranked[..split]))
+    let refined = run_lanes_dynamic(
+        (0..split).collect(),
+        lanes,
+        |slot, report| {
+            if !report(PlanProgress::Refine) {
+                return None;
+            }
+            let i = ranked[slot];
+            let group = &groups[group_of[i]];
+            let pool = if group.pool.is_empty() {
+                own_pool(&all, flat[i])
+            } else {
+                sanitize(&group.pool)
+            };
+            Some(refine_with_pool(rough, settings, &pool, flat[i]))
+        },
+        on_progress,
+    )?;
+    Some(final_ranking_min(
+        refined,
+        &flat,
+        &ranked[..split],
+        min_stones,
+    ))
 }

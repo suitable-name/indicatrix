@@ -186,6 +186,9 @@ pub struct SettingsDto {
     /// Maximum stone count (`1..=99`); read as a wide integer so a wrong value is
     /// reported instead of failing the parse.
     pub count: i64,
+    /// Minimum stone count (`1..=count`). Absent in older files, which mean 1 (no floor).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_count: Option<i64>,
     /// Saw blade kerf width in mm.
     pub kerf_mm: f64,
     /// Preform allowance per side in mm.

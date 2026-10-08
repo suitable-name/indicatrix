@@ -9,6 +9,7 @@
 use super::{
     pareto::sanitize,
     piece::{ASSIGNMENTS, Norm, stone_value, usable_rough},
+    shaped::parallel::{even_chunks, run_lanes_dynamic},
     tree::{Bar, Leaf, Slab, Tree, layout_from_tree},
     types::{CandidateDesign, CutOrder, PlanProgress, PlanSettings, RoughBlock, RoughLayout},
 };
@@ -17,6 +18,9 @@ use super::{
 pub const PER_DESIGN: usize = 3;
 /// Designs scanned between two progress reports (and cancel checks).
 const POLL_EVERY: usize = 256;
+/// Chunks of designs per lane in the threaded scan; more chunks than lanes let a lane that
+/// draws the cheap designs take more of them.
+const CHUNKS_PER_LANE: usize = 4;
 /// Layouts returned in all (a pool for the refinement, well beyond the top 10).
 const KEEP: usize = 200;
 
@@ -146,6 +150,26 @@ pub fn uniform_layouts(
     designs: &[CandidateDesign],
     on_progress: &mut dyn FnMut(PlanProgress) -> bool,
 ) -> Option<Vec<RoughLayout>> {
+    uniform_layouts_lanes(rough, settings, designs, 1, on_progress)
+}
+
+/// [`uniform_layouts`] with the designs split over `lanes` scoped threads.
+///
+/// The designs are cut into consecutive chunks (four per lane) that the lanes pull in
+/// ascending order; the candidates are concatenated in design order before the one sort, so
+/// the layouts are bitwise those of the serial scan whatever the lane count. A lane reports
+/// `Uniform { done, total }` with `done` the index of the design it is on, before every 256th
+/// design and at the start of each chunk; the calling thread forwards the largest `done`
+/// seen so far, so the progress never goes back. `None` when `on_progress` returns `false`,
+/// which every lane notices at its next report. With one lane nothing is spawned and the
+/// events are those of the serial scan.
+pub fn uniform_layouts_lanes(
+    rough: &RoughBlock,
+    settings: &PlanSettings,
+    designs: &[CandidateDesign],
+    lanes: usize,
+    on_progress: &mut dyn FnMut(PlanProgress) -> bool,
+) -> Option<Vec<RoughLayout>> {
     let pool = sanitize(designs);
     let grids = enumerate_grids(settings.count_usize());
     let usable = usable_rough(rough, settings.skin_mm);
@@ -155,19 +179,50 @@ pub fn uniform_layouts(
         .map(|&c| cell_size(&usable, settings.kerf_mm, c).map(|s| s - a2))
         .collect();
     let total = pool.len();
-    let mut cands: Vec<Cand> = Vec::new();
-    for (i, design) in pool.iter().enumerate() {
-        if i.is_multiple_of(POLL_EVERY) && !on_progress(PlanProgress::Uniform { done: i, total }) {
-            return None;
+    let chunks = even_chunks(
+        total,
+        if lanes <= 1 {
+            1
+        } else {
+            lanes * CHUNKS_PER_LANE
+        },
+    );
+    // Lanes name the design they are on; only the furthest one is forwarded.
+    let mut reached = 0_usize;
+    let mut forward = |event: PlanProgress| match event {
+        PlanProgress::Uniform { done, total } => {
+            reached = reached.max(done);
+            on_progress(PlanProgress::Uniform {
+                done: reached,
+                total,
+            })
         }
-        cands.extend(best_for_design(
-            i,
-            &Norm::of(design),
-            &grids,
-            &boxes,
-            settings,
-        ));
-    }
+        other => on_progress(other),
+    };
+    let parts = run_lanes_dynamic(
+        chunks,
+        lanes,
+        |chunk, report| {
+            let mut found: Vec<Cand> = Vec::new();
+            for i in chunk.clone() {
+                if (i == chunk.start || i.is_multiple_of(POLL_EVERY))
+                    && !report(PlanProgress::Uniform { done: i, total })
+                {
+                    return None;
+                }
+                found.extend(best_for_design(
+                    i,
+                    &Norm::of(&pool[i]),
+                    &grids,
+                    &boxes,
+                    settings,
+                ));
+            }
+            Some(found)
+        },
+        &mut forward,
+    )?;
+    let mut cands: Vec<Cand> = parts.into_iter().flatten().collect();
     if !on_progress(PlanProgress::Uniform { done: total, total }) {
         return None;
     }

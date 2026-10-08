@@ -170,6 +170,16 @@ pub fn build_main_window() -> anyhow::Result<MainWindowHandle> {
         setup_remote_and_batch(&ui, &db, &library_source, &render_ctx, &settings_store);
     setup_window_close(&ui, &render_ctx, &settings_store);
 
+    // The app always opens on the solid renderer view: the 3D Gem tab's Edit
+    // sub-tab in Solid view mode (`startup_settings` forces the view mode to 0).
+    // Goes through the same path as a user's click on the pill (set the property,
+    // then fire `render_view_tab_changed`), and runs only now that every handler
+    // is connected, so the visibility gate (`recompute_tab_visible`) keeps the
+    // live tracer idle and `edit_view_entered` reclaims the viewport for the
+    // editor. `EditorModel.enabled` is set unconditionally above, so there is no
+    // "enabled later" case to wait for.
+    crate::gui::commands::show_edit_view(&ui);
+
     Ok(MainWindowHandle {
         ui,
         render_ctx,

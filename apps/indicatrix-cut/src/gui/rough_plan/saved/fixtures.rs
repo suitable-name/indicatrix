@@ -162,6 +162,7 @@ pub(super) fn exact_fit_layout_in(model: &RoughModel) -> RoughLayout {
 pub(super) fn settings() -> PlanSettings {
     PlanSettings {
         count: 6,
+        min_count: 1,
         kerf_mm: 0.3,
         allowance_mm: 0.2,
         skin_mm: 0.0,

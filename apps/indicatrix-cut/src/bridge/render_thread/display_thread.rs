@@ -62,6 +62,7 @@ pub(super) struct DisplayWork {
     depth: Vec<f32>,
     normal: Vec<Vec3>,
     facet_id: Vec<i32>,
+    path_sig: Vec<u32>,
     metrics_snapshot: FrameMetricsSnapshot,
     /// Camera movement and convergence at hand-off time (see
     /// [`FrameActivityFlags`]). Defaults to "camera moving, not converged" so
@@ -84,6 +85,7 @@ impl DisplayWork {
             depth: Vec::new(),
             normal: Vec::new(),
             facet_id: Vec::new(),
+            path_sig: Vec::new(),
             activity_flags: FrameActivityFlags {
                 camera_moving: true,
                 converged: false,
@@ -127,10 +129,12 @@ impl DisplayWork {
         self.depth.clear();
         self.normal.clear();
         self.facet_id.clear();
+        self.path_sig.clear();
         if denoise_enabled {
             self.depth.extend_from_slice(frame.first_hit_depth);
             self.normal.extend_from_slice(frame.first_hit_normal);
             self.facet_id.extend_from_slice(frame.first_hit_facet_id);
+            self.path_sig.extend_from_slice(frame.first_hit_path_sig);
         }
         self.metrics_snapshot = metrics_snapshot;
     }
@@ -287,6 +291,7 @@ where
                                     first_hit_depth: &work.depth,
                                     first_hit_normal: &work.normal,
                                     first_hit_facet_id: &work.facet_id,
+                                    first_hit_path_sig: &work.path_sig,
                                 },
                                 &mut DenoiseScratch {
                                     denoiser: &mut denoiser,

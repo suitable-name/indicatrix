@@ -5,14 +5,16 @@
 //! guillotine DP ([`dp`]), tree placement ([`tree`]) with empty-piece merging ([`compact`]),
 //! shaped uniform grids ([`uniform`]), and continuous position refinement ([`refine`]).
 //! The stages that split their work over threads share one runner (`parallel`), which
-//! returns results in job order so no result depends on the thread count.
+//! returns results in job order so no result depends on the thread count. The plain
+//! block planner's `_lanes` twins (piece table, alternatives, uniform pass, refinement)
+//! use the same runner.
 
 pub mod clip;
 pub mod compact;
 pub mod ctx;
 pub mod dp;
 pub mod grid;
-mod parallel;
+pub(crate) mod parallel;
 pub mod refine;
 pub mod rows;
 pub mod tree;

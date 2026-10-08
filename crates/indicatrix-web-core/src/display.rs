@@ -31,7 +31,7 @@ use indicatrix::{
     renderer::{
         denoise::{AtrousDenoiser, AtrousParams, GBuffers},
         frame_denoise::{DenoiseScratch, FirstHitSnapshot, denoise_and_tonemap_frame},
-        guide_pass::{GuideBuffers, generate_guide_buffers},
+        guide_pass::{GuideBuffers, generate_guide_buffers_with_index},
         tonemap::{tonemap_accumulation, tonemap_to_rgba},
     },
 };
@@ -72,12 +72,13 @@ pub fn export_color_space(index: i32) -> ColorSpace {
 /// The desktop live view's denoiser, with the scratch buffers and the guide buffers it
 /// reuses between frames.
 ///
-/// The guides depend only on the pose, the frame size and the planes, so they are
-/// computed once per `guide_key` (the caller passes its scene id) and reused for every
-/// later denoise of that scene -- the desktop's `GuideCache` rule.
+/// The guides depend only on the pose, the frame size, the planes and the material's
+/// reference index (the path signature), so they are computed once per `guide_key` (the
+/// caller passes its scene id) and `n_d`, and reused for every later denoise of that
+/// scene -- the desktop's `GuideCache` rule.
 #[derive(Default)]
 pub struct Denoiser {
-    guides: Option<(u64, GuideBuffers)>,
+    guides: Option<(u64, u32, GuideBuffers)>,
     filter: AtrousDenoiser,
     avg: Vec<Vec3>,
     filtered: Vec<Vec3>,
@@ -96,6 +97,9 @@ pub struct DenoiseFrame<'a> {
     pub camera: &'a Camera,
     /// The planes the frame was traced with.
     pub planes: &'a [GpuFacetPlane],
+    /// The material's reference index `n_d` (`material.dispersion.n_d()`): the guides'
+    /// path signature follows the rays through the stone with it.
+    pub n_d: f32,
     /// Samples per pixel in `sum`.
     pub sample_count: u32,
     /// The running per-pixel sum, `width * height` long.
@@ -110,12 +114,12 @@ impl Denoiser {
     }
 
     /// Whether the guides for `guide_key` are already built (the next call skips the
-    /// guide pass).
+    /// guide pass, provided the frame's `n_d` is unchanged).
     #[must_use]
     pub fn has_guides_for(&self, guide_key: u64) -> bool {
         self.guides
             .as_ref()
-            .is_some_and(|(key, _)| *key == guide_key)
+            .is_some_and(|(key, _, _)| *key == guide_key)
     }
 
     /// Drops the guides and scratch buffers (a large export's memory, say).
@@ -125,12 +129,22 @@ impl Denoiser {
 
     /// Builds the guides for `frame` unless they are already held.
     fn ensure_guides(&mut self, frame: &DenoiseFrame<'_>) {
-        if !self.has_guides_for(frame.guide_key) {
+        let n_d_bits = frame.n_d.to_bits();
+        let held = self
+            .guides
+            .as_ref()
+            .is_some_and(|(key, bits, _)| *key == frame.guide_key && *bits == n_d_bits);
+        if !held {
             // Free the old guides before building new ones.
             self.guides = None;
-            let guides =
-                generate_guide_buffers(frame.width, frame.height, frame.camera, frame.planes);
-            self.guides = Some((frame.guide_key, guides));
+            let guides = generate_guide_buffers_with_index(
+                frame.width,
+                frame.height,
+                frame.camera,
+                frame.planes,
+                frame.n_d,
+            );
+            self.guides = Some((frame.guide_key, n_d_bits, guides));
         }
     }
 
@@ -138,7 +152,7 @@ impl Denoiser {
     /// display thread calls it.
     pub fn denoised_rgba(&mut self, frame: &DenoiseFrame<'_>) -> Vec<u8> {
         self.ensure_guides(frame);
-        let Some((_, guides)) = &self.guides else {
+        let Some((_, _, guides)) = &self.guides else {
             return live_rgba(frame.sum, frame.sample_count);
         };
         denoise_and_tonemap_frame(
@@ -150,6 +164,7 @@ impl Denoiser {
                 first_hit_depth: &guides.depth,
                 first_hit_normal: &guides.normal,
                 first_hit_facet_id: &guides.facet_id,
+                first_hit_path_sig: &guides.path_sig,
             },
             &mut DenoiseScratch {
                 denoiser: &mut self.filter,
@@ -163,7 +178,7 @@ impl Denoiser {
     /// (same averaging, guides and `AtrousParams::default()`), before tone mapping.
     pub fn denoised_mean(&mut self, frame: &DenoiseFrame<'_>) -> Vec<Vec3> {
         self.ensure_guides(frame);
-        let Some((_, guides)) = &self.guides else {
+        let Some((_, _, guides)) = &self.guides else {
             return Vec::new();
         };
         let inv_samples = 1.0 / frame.sample_count.max(1) as f32;
@@ -174,6 +189,7 @@ impl Denoiser {
             depth: &guides.depth,
             normal: &guides.normal,
             facet_id: &guides.facet_id,
+            path_sig: Some(&guides.path_sig),
             width: frame.width as usize,
             height: frame.height as usize,
             spp: frame.sample_count.max(1),

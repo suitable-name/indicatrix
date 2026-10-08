@@ -38,6 +38,9 @@ pub(super) struct PoseAndGeometry<'a> {
     /// The concave tools cut out of `planes` (empty for a planar stone): the guides must
     /// see the notches the image shows, or the denoiser would smooth across their edges.
     pub(super) tools: &'a [ToolPrimitive],
+    /// The material's `n_d` (`0.0` = none): part of the guide key, since the path
+    /// signature refracts at it.
+    pub(super) n_d: f32,
 }
 
 /// Turns a remote accumulator's current running sum into a displayable RGBA byte
@@ -91,6 +94,7 @@ pub(super) fn render_merged_frame(
             planes: pose.planes,
             tools: pose.tools,
         },
+        pose.n_d,
     );
     denoise_and_tonemap_frame(
         FirstHitSnapshot {
@@ -101,6 +105,7 @@ pub(super) fn render_merged_frame(
             first_hit_depth: &guides.depth,
             first_hit_normal: &guides.normal,
             first_hit_facet_id: &guides.facet_id,
+            first_hit_path_sig: &guides.path_sig,
         },
         scratch,
     )
@@ -152,6 +157,7 @@ mod tests {
                 distance: 2.4,
                 planes: &planes,
                 tools: &[],
+                n_d: 0.0,
             },
             &mut guide_cache,
             &mut DenoiseScratch {
@@ -198,6 +204,7 @@ mod tests {
                     distance: 2.4,
                     planes: &planes,
                     tools: &[],
+                    n_d: 0.0,
                 },
                 &mut guide_cache,
                 &mut DenoiseScratch {
@@ -240,6 +247,7 @@ mod tests {
                 distance: 2.4,
                 planes: &planes,
                 tools: &[],
+                n_d: 0.0,
             },
             &mut guide_cache,
             &mut DenoiseScratch {
@@ -262,6 +270,7 @@ mod tests {
                 distance: 2.4,
                 planes: &planes,
                 tools: &[],
+                n_d: 0.0,
             },
             &mut guide_cache,
             &mut DenoiseScratch {
@@ -317,6 +326,7 @@ mod tests {
                 distance: 2.4,
                 planes: &planes,
                 tools: &[],
+                n_d: 0.0,
             },
             &mut guide_cache,
             &mut DenoiseScratch {
@@ -368,6 +378,7 @@ mod tests {
                 distance,
                 planes: &planes,
                 tools: &[],
+                n_d: 0.0,
             },
             &mut guide_cache,
             &mut DenoiseScratch {
@@ -394,6 +405,7 @@ mod tests {
                 first_hit_depth: &guides.depth,
                 first_hit_normal: &guides.normal,
                 first_hit_facet_id: &guides.facet_id,
+                first_hit_path_sig: &guides.path_sig,
             },
             &mut DenoiseScratch {
                 denoiser: &mut expected_denoiser,

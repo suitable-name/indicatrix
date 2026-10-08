@@ -102,6 +102,8 @@ pub(super) fn start_remote_render(
     // orchestrator) denoises the merged image with them. Skipped for a display-only
     // epoch too: the remote's frames arrive already denoised.
     if !combining && !display_only {
+        // The path signature refracts at the material's index, so it keys the guides.
+        let n_d = snapshot.material.dispersion.n_d();
         let guide_key = GuideCache::key_for_geom(
             width,
             height,
@@ -112,6 +114,7 @@ pub(super) fn start_remote_render(
                 planes: &snapshot.active_planes,
                 tools: &snapshot.tools,
             },
+            n_d,
         );
         let guide_camera = Camera::new(
             snapshot.yaw,
@@ -130,6 +133,7 @@ pub(super) fn start_remote_render(
             snapshot.tools,
             width,
             height,
+            n_d,
         ));
     }
 

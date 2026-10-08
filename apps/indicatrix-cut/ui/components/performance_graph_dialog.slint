@@ -134,6 +134,10 @@ export component PerformanceGraphDialog inherits Rectangle {
     // (`performance_graph/tilt_curve_chart.slint`) -- see that component's own doc
     // comments.
 
+    // Shown again while a video renders (the header's export indicator): open on the section
+    // that holds the progress, instead of collapsed.
+    init => { root.video_export_expanded = TiltVideoExportModel.is_exporting; }
+
     callback close();
     close => { TiltModel.dialog_open = false; }
     // Forwarded to `TiltModel.copy_curve_data()` (Rust: `gui::library::

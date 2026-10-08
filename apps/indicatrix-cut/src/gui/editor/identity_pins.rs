@@ -228,13 +228,14 @@ fn tier_rows_and_formats_are_pinned() {
     // shows; the three template fixtures store their tiers in the order they are cut, so their
     // rows (and the Schedule rows after them) list the pavilion first and the table last; and
     // the table's code is `T`, no longer `Table`.
+    // Re-pinned 2026-10-08 for the Schedule-tab codes/index format (first three hashes).
     assert_eq!(
         (got, fnv1a(chips.as_bytes())),
         (
             vec![
-                11_581_065_273_413_082_992,
-                14_521_345_531_080_930_808,
-                2_104_834_131_709_722_518,
+                9_899_944_636_254_421_460,
+                10_090_318_058_485_717_436,
+                4_380_649_056_797_232_228,
                 5_527_885_909_529_035_141,
                 17_206_618_785_430_422_565,
             ],

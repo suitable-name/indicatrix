@@ -352,6 +352,33 @@ fn the_stone_count_is_reported_never_clamped() {
 }
 
 #[test]
+fn the_minimum_stone_count_round_trips_and_defaults_to_one_for_older_files() {
+    // The default 1 is not written (old-shaped plans stay byte-identical), so the key is
+    // added after `count` by hand.
+    let line = "count = 6\n";
+    let text = write_with(&plain_block(), &[], &[]);
+    assert!(
+        !text.contains("min_count"),
+        "the default is omitted:\n{text}"
+    );
+    assert!(text.contains(line), "{text}");
+
+    let loaded = parse_and_validate_plan(&text).expect("a file without the key loads");
+    assert_eq!(loaded.settings.min_count, 1);
+
+    let three = text.replace(line, "count = 6\nmin_count = 3\n");
+    let loaded = parse_and_validate_plan(&three).expect("loads");
+    assert_eq!(loaded.settings.min_count, 3);
+    assert_eq!(loaded.settings.count, 6);
+
+    // Reported, never clamped: below 1 or above the stone count (6 in the fixture).
+    for bad in ["0", "7", "-1"] {
+        let error = expect_error(&text.replace(line, &format!("count = 6\nmin_count = {bad}\n")));
+        assert!(error.contains("settings.min_count"), "{bad}: {error}");
+    }
+}
+
+#[test]
 fn the_losses_are_bounded_by_what_the_planner_form_accepts() {
     let text = write_with(&plain_block(), &[], &[]);
     for (line, replacement, path) in [

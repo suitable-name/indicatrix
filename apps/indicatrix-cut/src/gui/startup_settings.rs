@@ -11,7 +11,7 @@
 
 use crate::{
     EditorModel, LibraryModel, LightingPresetItem, MainWindow, SettingsModel, SolidPreviewModel,
-    ViewportModel,
+    TiltVideoExportModel, ViewportModel,
     bridge::render_thread::{RenderContext, load_env_map, resolve_material},
     gui::{
         optics::c_axis::angles_to_c_axis, remote::live_compute_target_index,
@@ -292,6 +292,8 @@ fn apply_loaded_ui_mirrors(
         .set_local_compute_target_index(local_compute_target_index(s.local_compute_target));
     ui.global::<SettingsModel>()
         .set_contribute_to_final_picture(s.contribute_to_final_picture);
+    ui.global::<TiltVideoExportModel>()
+        .set_compute_target_index(s.tilt_video_compute_target.index());
     // "Reset to Defaults" reads these instead of hard-coding the numbers.
     ui.global::<SettingsModel>()
         .set_default_light_yaw_deg(DEFAULT_LIGHT_YAW_DEG);
@@ -314,16 +316,13 @@ fn apply_loaded_ui_mirrors(
     // Restore the library panel's collapsed/expanded state.
     ui.global::<LibraryModel>()
         .set_panel_collapsed(s.library_panel_collapsed);
-    // Restore the Solid viewport's remembered view mode (0 Solid / 1
-    // Path-traced / 2 Both) -- see `AppSettings::solid_view_mode`'s own doc
-    // comment. This may fire `app.slint`'s `changed editor_solid_view_mode`
-    // handler (hence `editor_solid_view_mode_changed`) before
-    // `setup_editor_solid_view_mode_changed_callback` below ever connects a
-    // handler to it -- harmless: a Slint callback with nothing connected yet is
-    // simply a no-op, not a panic, and the debounced writer would only be asked
-    // to persist the exact value it just loaded anyway.
-    ui.global::<SolidPreviewModel>()
-        .set_view_mode(i32::from(s.solid_view_mode));
+    // The Solid viewport always starts in Solid mode (0), whatever
+    // `AppSettings::solid_view_mode` remembers from the last session (the app
+    // always opens on the solid renderer view). The stored value is left alone
+    // and still follows the user's in-session choice; it is just not applied at
+    // startup. 0 is also the property's default, so this normally fires no
+    // `changed` handler at all.
+    ui.global::<SolidPreviewModel>().set_view_mode(0);
     // Restore the Live Render tab's own remembered view mode (0 Solid / 1
     // Path-traced) -- see `AppSettings::live_view_mode`'s own doc comment. Same
     // harmless-early-`changed`-fire caveat as `solid_view_mode` above: nothing is

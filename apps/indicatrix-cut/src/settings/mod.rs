@@ -12,6 +12,6 @@ pub mod store;
 pub use model::{
     ExportTransfer, ImportPreviewChoice, LightingPreset, LiveComputeTarget, LiveTransfer,
     LocalComputeTarget, LocalPreviewScale, PreviewScale, RemoteEndpoint, SettingsFile,
-    WorkerSettings,
+    TiltVideoCompute, WorkerSettings,
 };
 pub use persist::SettingsPersister;

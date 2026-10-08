@@ -97,6 +97,21 @@ Previews and tilt curves are rendered from the design's own design file (its
 `.asc`, else `.gem`, else `.gcs` attachment) when the record has one, and from
 the angle table only when it has none or the file cannot be read.
 
+The **Library** menu (Advanced interface only) has **Regenerate Preview Images...**,
+**Regenerate Tilt Curves...** and **Regenerate Both...**. Each opens a question first:
+**Missing or outdated only** (the default; it shows how many designs that is, after a
+moment of "counting...") renders just the designs with no picture or curve, a missing
+front or top view, or a result made with other render settings, while **All designs**
+redoes the whole library. When nothing is missing the first choice reads "All designs
+are up to date" and only **All designs** can be started. The two
+**Regenerate for filtered set** buttons ask the same question about the filtered
+designs. The offer at start-up, and **Compute missing tilt curves**, are the "missing
+or outdated only" choice without the question. Ignored designs are never included.
+While a preview or tilt-curve batch runs, its progress line reads "Completed 37 / 412"
+followed by the time left ("about 6 min left"); it says "estimating..." until a few
+seconds of finished designs give a trustworthy rate, and it counts local and remote
+work together.
+
 A batch of previews or tilt curves (several designs at once, from the library
 menu or the filter panel) also renders on a configured remote coordinator when
 Live Compute includes it, and keeps several pictures in flight on the remote
