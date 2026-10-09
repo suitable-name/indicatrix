@@ -45,8 +45,9 @@ use indicatrix::{renderer::cpu_frame::trace_pixels_interleaved_geom, simd::Plane
 use crate::scene::OwnedScene;
 
 /// Traces one chunk: sample indices `[sample_offset, sample_offset + spp)` for pixels
-/// `first_pixel, first_pixel + stride, ...` of `scene`, returning one SUMMED radiance
-/// per owned pixel, in that pixel order.
+/// `first_pixel, first_pixel + stride, ...` of `scene`.
+///
+/// It returns one SUMMED radiance per owned pixel, in that pixel order.
 ///
 /// A thin call into `renderer::cpu_frame::trace_pixels_interleaved_geom`, the same
 /// thread-free core the desktop's `hybrid::cpu_trace_range` runs per thread, with the scene's

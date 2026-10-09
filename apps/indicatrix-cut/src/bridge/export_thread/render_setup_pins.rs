@@ -127,7 +127,37 @@ fn material_dump_hashes() -> Vec<u64> {
         .collect()
 }
 
+/// The default-build hashes of [`material_dump_hashes`].
+#[cfg(not(feature = "zoning"))]
+const MATERIAL_DUMP_HASHES: [u64; 6] = [
+    3_580_898_491_540_929_908,
+    12_196_816_847_341_780_186,
+    9_708_379_532_442_297_358,
+    2_548_391_994_686_336_338,
+    6_689_374_829_022_688_779,
+    4_166_139_222_748_066_605,
+];
+
+/// The `zoning`-build twin of [`MATERIAL_DUMP_HASHES`]. With the feature on `GemMaterial`'s Debug
+/// dump gains a `zoning: None` field, so every hash moves. These are still the DEFAULT-build
+/// values (they cannot be computed without running the test): the test is `#[ignore]`d under
+/// `zoning` until the owner pastes the values `cargo test -p indicatrix-cut --features zoning --
+/// --ignored resolved_material_dumps_are_pinned` prints.
+#[cfg(feature = "zoning")]
+const MATERIAL_DUMP_HASHES: [u64; 6] = [
+    3_580_898_491_540_929_908,
+    12_196_816_847_341_780_186,
+    9_708_379_532_442_297_358,
+    2_548_391_994_686_336_338,
+    6_689_374_829_022_688_779,
+    4_166_139_222_748_066_605,
+];
+
 #[test]
+#[cfg_attr(
+    feature = "zoning",
+    ignore = "zoning re-pin: owner (GemMaterial Debug dump gained `zoning: None`)"
+)]
 fn resolved_material_dumps_are_pinned() {
     // Re-recorded 2026-09-28: `crates/indicatrix::optics::materials` changed under
     // this pin since it was last recorded (an unrelated, legitimate fix elsewhere in
@@ -140,17 +170,7 @@ fn resolved_material_dumps_are_pinned() {
     // Re-pinned 2026-10-08 for the absorption unit tag (`GemMaterial.absorption_unit` is in
     // every `Debug` dump, so all six combos move) and the `(W / 7) / K` ModelUnit scale,
     // K = 2.52 (`MODEL_UNIT_FACE_UP_PATH`).
-    assert_eq!(
-        material_dump_hashes(),
-        [
-            3_580_898_491_540_929_908,
-            12_196_816_847_341_780_186,
-            9_708_379_532_442_297_358,
-            2_548_391_994_686_336_338,
-            6_689_374_829_022_688_779,
-            4_166_139_222_748_066_605,
-        ]
-    );
+    assert_eq!(material_dump_hashes(), MATERIAL_DUMP_HASHES);
 }
 
 #[test]

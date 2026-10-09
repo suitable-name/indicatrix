@@ -439,7 +439,7 @@ fn the_tilt_material_is_sized_by_the_stone_width_like_the_desktop() {
     );
 
     // A different stone size is a different tilt request.
-    let mut other = spec.clone();
+    let mut other = spec;
     other.material.overrides.stone_width_mm = 6.0;
     assert_ne!(params, TiltParams::from_scene(&other));
 }

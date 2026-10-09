@@ -55,8 +55,9 @@ impl Default for ColorMode {
     }
 }
 
-/// The swatch path (model units) for a stone of `stone_width_mm` (`0.0` = no size set): the
-/// face-up path the render integrates a per-model-unit colour over
+/// The swatch path (model units) for a stone of `stone_width_mm` (`0.0` = no size set).
+///
+/// It is the face-up path the render integrates a per-model-unit colour over
 /// (`indicatrix::render_setup::MODEL_UNIT_FACE_UP_PATH`) times the scale the render gives that
 /// colour at that size (`absorption_path_scale_for` = `width / 7 mm / MODEL_UNIT_FACE_UP_PATH`).
 /// The constant cancels: the result is `FANTASY_PATH_UNITS * width / 7` (exactly

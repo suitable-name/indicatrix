@@ -66,8 +66,9 @@ pub fn apply_optimize_outcome(
     apply_changes(history, design, &outcome.changes, &[], false)
 }
 
-/// Applies an [`OptimizeResult`]'s best result to `design` through `history`: the
-/// `outcome.changes` angle changes AND the `mast_changes` that go with them, as ONE
+/// Applies an [`OptimizeResult`]'s best result to `design` through `history`.
+///
+/// It applies the `outcome.changes` angle changes AND the `mast_changes` that go with them, as ONE
 /// [`Edit::Batch`] (one undo step, exact undo).
 ///
 /// Same all-or-nothing contract and stale guard as [`apply_optimize_outcome`], extended

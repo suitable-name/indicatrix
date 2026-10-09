@@ -200,6 +200,7 @@ fn m4_new_species_match_their_target_n_d_within_tolerance() {
         ("Pyrope Garnet", 1.714, 0.002),
         ("Almandine Garnet", 1.790, 0.002),
         ("Spessartine Garnet", 1.800, 0.002),
+        ("Color-Change Garnet (Pyrope-Spessartine)", 1.760, 0.001),
         ("Grossular Garnet (Tsavorite)", 1.734, 0.002),
         ("Andradite Garnet (Demantoid)", 1.887, 0.002),
         ("Peridot", 1.654, 0.002),

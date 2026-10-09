@@ -107,3 +107,42 @@ pub fn run_p1_absorption_path_scale_checks(ctx: &GpuContext) -> bool {
         &estimator_check::run_image_comparison_absorption_path_scale(ctx),
     )
 }
+
+/// Zoned-absorption GPU checks (`zoning` feature): the zone-table layout echo, then one
+/// Tier 3 CPU-vs-GPU image comparison per `ZonedImageCase`.
+///
+/// OWNER: the first run with `--features zoning` records these as the zoned goldens. Each
+/// comparison passes or fails on `ImageComparisonResult::passed` (the same z-score and
+/// cluster criteria as every other Tier 3 check); the soft cases are the ones to read before
+/// lowering `renderer::buffers::GPU_SOFT_SUBDIV`.
+#[cfg(feature = "zoning")]
+pub fn run_zoning_checks(ctx: &GpuContext) -> bool {
+    use indicatrix::renderer::gpu::{layout_check, zoned_cases::ZonedImageCase};
+
+    println!();
+    println!("== Zoned absorption (zoning feature) ==");
+    print!("[Tier 1] zone-table struct-layout echo test (GpuZoneTable) ... ");
+    let layout = layout_check::run_zone_table(ctx);
+    let mut all_passed = layout.passed();
+    if layout.passed() {
+        println!("PASS");
+    } else {
+        println!(
+            "FAIL ({} byte(s) mismatched, showing up to 32)",
+            layout.mismatches.len()
+        );
+        for m in &layout.mismatches {
+            println!(
+                "  byte offset {:>4}: expected 0x{:02x}, got 0x{:02x}",
+                m.offset, m.expected, m.actual
+            );
+        }
+    }
+    for case in ZonedImageCase::ALL {
+        all_passed &= report_image_comparison_material(
+            case.label(),
+            &estimator_check::run_image_comparison_zoned(ctx, case),
+        );
+    }
+    all_passed
+}

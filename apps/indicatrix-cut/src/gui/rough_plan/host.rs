@@ -302,6 +302,8 @@ fn create_host(
     };
     // Starts in the current palette (high contrast) and follows later changes.
     crate::gui::preferences::bind_planner_window_theme(&window);
+    // The `zoning` feature's UI switch (a global is per window).
+    crate::gui::zoning_ui::apply_to_planner(&window);
     let host = Rc::new(Host {
         shape: ShapeWorker::new(window.as_weak()),
         exclusions: ExclusionWorker::new(window.as_weak(), Arc::clone(db)),
@@ -323,6 +325,8 @@ fn create_host(
     model.set_edge_options(options_model(edge_names()));
     model.set_corner_options(options_model(corner_names()));
     editing::setup_edit_callbacks(&host);
+    #[cfg(feature = "zoning")]
+    super::colour_link::setup(&host);
     view::setup_view_callbacks(&host);
     run::setup_run_callbacks(&host);
     saved::setup_saved_callbacks(&host);
@@ -415,6 +419,8 @@ pub(in crate::gui) fn close_planner_window() {
     let _ = host.window.hide();
     // The locate and rig windows belong to the planner and go with it.
     super::locate::close_windows();
+    #[cfg(feature = "zoning")]
+    super::colour_link::close();
 }
 
 #[cfg(test)]

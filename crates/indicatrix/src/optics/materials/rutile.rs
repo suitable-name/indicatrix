@@ -70,6 +70,8 @@ impl GemMaterial {
             edge_rounding_radius: 0.0,
             absorption_path_scale: 1.0,
             absorption_unit: super::AbsorptionUnit::ModelUnit,
+            #[cfg(feature = "zoning")]
+            zoning: None,
             uniaxial_extraordinary_dispersion: Some(DispersionModel::Sellmeier3 {
                 b: [3.940_688, 2.256_312, 0.0],
                 c: [0.0843, 0.0, 0.0],

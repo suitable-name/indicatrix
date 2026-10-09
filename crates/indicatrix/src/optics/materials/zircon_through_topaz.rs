@@ -73,6 +73,8 @@ impl GemMaterial {
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
                 absorption_unit: super::AbsorptionUnit::ModelUnit,
+                #[cfg(feature = "zoning")]
+                zoning: None,
                 uniaxial_extraordinary_dispersion: None,
             },
             // Alexandrite (Chrysoberyl, BeAl2O4:Cr)
@@ -189,6 +191,8 @@ impl GemMaterial {
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
                 absorption_unit: super::AbsorptionUnit::ModelUnit,
+                #[cfg(feature = "zoning")]
+                zoning: None,
                 uniaxial_extraordinary_dispersion: None,
             },
             // Topaz (Al2SiO4(F,OH)2)
@@ -249,6 +253,8 @@ impl GemMaterial {
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
                 absorption_unit: super::AbsorptionUnit::ModelUnit,
+                #[cfg(feature = "zoning")]
+                zoning: None,
                 uniaxial_extraordinary_dispersion: None,
             },
         ]

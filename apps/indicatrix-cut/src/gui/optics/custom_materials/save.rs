@@ -332,6 +332,25 @@ pub(super) fn apply_custom_material_save(
     if let Err(e) = save_result {
         return Err(format!("Could not save '{trimmed}': {e}"));
     }
+    // Zoning builds: a material that has stored zones (an adopted "<rough> colour") keeps them
+    // through an edit of its other optics, because the in-memory material is rebuilt from the
+    // dialog and carries none. Looked up before `render_ctx` is locked below.
+    #[cfg(feature = "zoning")]
+    let new_mat = {
+        let guard = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // An edited body colour goes into the stored BASE zone first, or the stored zone would
+        // silently override the edit (`with_stored_zoning` installs it as the absorption).
+        if let Some(rows) = band_rows.as_deref()
+            && let Err(error) = crate::gui::rough_colour::material_zones::write_back_base_colour(
+                &guard, &trimmed, rows,
+            )
+        {
+            tracing::warn!(
+                "Rough colour: the edited colour of '{trimmed}' was not stored in its zones: {error:#}"
+            );
+        }
+        crate::gui::rough_colour::store::with_stored_zoning(&guard, new_mat, 0.0)
+    };
     // Only an "apply" save selects the material just saved (see
     // `ctx.material_name` below) -- a plain "Save" writes the database/
     // in-memory list without touching whatever the live render currently
@@ -463,6 +482,18 @@ pub(super) fn apply_custom_material_delete(
         .delete_custom_material(name);
     if let Err(e) = delete_result {
         return Err(format!("Could not delete '{name}': {e}"));
+    }
+    // Zoning builds: the material's zones go with it (a later material of the same name must not
+    // inherit them). A failure here leaves a stale row that the startup prune removes.
+    #[cfg(feature = "zoning")]
+    {
+        let removed = crate::gui::rough_colour::store::delete_material_zoning(
+            &db.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+            name,
+        );
+        if let Err(e) = removed {
+            tracing::warn!("Rough colour: the zones of '{name}' were not removed: {e:#}");
+        }
     }
     // Re-reads every remaining custom material's SG straight
     // from the database -- see `apply_custom_material_save`'s matching comment for

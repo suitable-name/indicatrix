@@ -111,6 +111,14 @@ hdr = ["dep:image"]
 # This feature only toggles `glam/serde` (needed for `GemMaterial::c_axis: Vec3`); the
 # `serde` crate itself is always a dependency -- see the `serde` dependency comment above.
 serde = ["glam/serde"]
+# Rough colour and colour zoning from rig photos (plan 2026-10-09, section 1a). Turns on
+# `optics::zoning` (zone types and path-length kernels), the zoned branch of the CPU
+# segment optical depth, the CIE 15:2018 LED illuminant tables
+# (`color::body_color::Illuminant::Led`), and `optics::fresnel_dielectric`. With `gpu`
+# also on, it adds the zone table to the GPU material layout and the zoned WGSL kernels
+# (shader units are concatenated only under this feature). Off by default and left out
+# of every build script: a build without it is unchanged. Adds no dependency.
+zoning = []
 
 [[example]]
 name = "gpu_equivalence_harness"

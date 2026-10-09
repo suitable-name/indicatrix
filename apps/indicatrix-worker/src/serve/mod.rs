@@ -94,6 +94,9 @@ mod socket;
 #[cfg(feature = "worker")]
 mod tilt;
 mod tls;
+// Zones received over the wire (`zoning` builds; see its own doc comment).
+#[cfg(feature = "zoning")]
+pub(crate) mod zoning;
 // These tests drive a real render round trip, uncompilable without `render` support.
 // `library`'s own tests cover the library protocol unconditionally.
 // `pub(crate)` so other test modules (the coordinator's) share its temp-dir helper.

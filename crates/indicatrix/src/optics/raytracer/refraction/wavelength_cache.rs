@@ -52,5 +52,7 @@ pub(in crate::optics::raytracer) fn build_ray_wavelength_cache(
         hero_indicatrix,
         biaxial_ch,
         tensor_ch,
+        #[cfg(feature = "zoning")]
+        zoned: crate::optics::raytracer::zoned::build_zoned_cache(ctx, is_biaxial),
     }
 }

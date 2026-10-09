@@ -9,18 +9,22 @@
 //! - [`worker`] (`worker` builds): the viewer-side handshake and `WELCOME` (including the
 //!   coordinator's `WELCOME` advertisement);
 //! - [`requests`] (`worker` builds): the post-`WELCOME` request loop -- independent of
-//!   who dialled, so `serve`'s accept path and `join`'s dial path share it.
+//!   who dialled, so `serve`'s accept path and `join`'s dial path share it;
+//! - [`batch`] (`worker` builds): protocol v24's batched preview requests, answered with
+//!   finished PNGs on a persistent connection.
 
 use super::library::LibraryHandle;
 use indicatrix_net::messages::{ClientMessage, ErrorMsg, NetError, error_codes};
 #[cfg(not(feature = "worker"))]
-use indicatrix_net::messages::{PROTOCOL_VERSION, PayloadEncoding, PeerRole, Welcome};
+use indicatrix_net::messages::{PayloadEncoding, PeerRole, Welcome};
 #[cfg(feature = "worker")]
 use std::io::Write;
 #[cfg(not(feature = "worker"))]
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 
+#[cfg(feature = "worker")]
+mod batch;
 #[cfg(feature = "worker")]
 mod link;
 #[cfg(feature = "worker")]
@@ -326,16 +330,15 @@ pub fn handle_connection<S: Read + Write + ClearHandshakeTimeout>(
         }
     }
 
-    let welcome = Welcome {
-        protocol_version: PROTOCOL_VERSION,
-        build_hash: indicatrix_net::handshake::UNKNOWN_BUILD_HASH,
-        source_hash: indicatrix_net::handshake::UNKNOWN_BUILD_HASH,
-        render: None,
-        library: true,
-        tilt_curves: false,
-        registration: None,
-        payload_encoding: PayloadEncoding::Raw,
-    };
+    let welcome = Welcome::new(
+        indicatrix_net::handshake::UNKNOWN_BUILD_HASH,
+        indicatrix_net::handshake::UNKNOWN_BUILD_HASH,
+        None,
+        true,
+        false,
+        None,
+        PayloadEncoding::Raw,
+    );
     indicatrix_net::messages::write_message(&mut stream, &welcome)?;
 
     serve_until_render_request_or_eof(&mut stream, db)?.map_or(Ok(()), |never| match never {})

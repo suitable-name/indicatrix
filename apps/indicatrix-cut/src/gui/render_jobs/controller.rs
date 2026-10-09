@@ -25,7 +25,7 @@ use crate::{
     settings::SettingsPersister,
 };
 use indicatrix_render_jobs::{
-    ComputeChoice, FailureKind, JobOutcome, JobProgress, JobSink, codec,
+    ComputeChoice, FailureKind, JobOutcome, JobProgress, JobSink, RenderJobFile, codec,
     order::{QueueEntry, moved, moved_to_front, next_to_run},
     state::{
         APP_CLOSING_NOTE, CommandEffect, JobCommand, JobState, StopReason, command_effect,
@@ -320,24 +320,10 @@ impl JobController {
         let Some(ui) = self.ui.upgrade() else {
             return false;
         };
-        let read = self.db().get_render_job(id);
-        let row = match read {
-            Ok(Some(row)) => row,
-            // Deleted since the list was read.
-            Ok(None) => return false,
-            Err(error) => {
-                self.fail_before_start(id, "", &format!("The job could not be read: {error}"));
-                return false;
-            }
+        let Some((meta, job)) = self.read_job_for_start(id) else {
+            return false;
         };
-        let label = row.meta.label.clone();
-        let job = match codec::from_text(&row.snapshot) {
-            Ok(job) => job,
-            Err(error) => {
-                self.fail_before_start(id, &label, &error.to_string());
-                return false;
-            }
-        };
+        let label = meta.label.clone();
         let marked = self
             .db()
             .set_render_job_state(id, "running", None, unix_now());
@@ -377,7 +363,7 @@ impl JobController {
             output_override: None,
             // A job with no finished frame starts clean (its own earlier frames, if any,
             // are cleared); a paused one goes on where it stopped.
-            restart_frames: row.meta.frames_done == 0,
+            restart_frames: meta.frames_done == 0,
         };
         {
             let mut state = self.state.borrow_mut();
@@ -386,13 +372,65 @@ impl JobController {
                 cancel: Arc::clone(&cancel),
                 stop: None,
                 activity_id,
-                frames_total: row.meta.frames_total,
+                frames_total: meta.frames_total,
                 pausing,
             });
             state.last_note = None;
         }
         *self.live.borrow_mut() = None;
 
+        self.spawn_render_thread(id, job, ctx, cancel);
+        self.refresh();
+        true
+    }
+
+    /// Reads job `id` and its frozen scene for a start. A job that cannot be read, decoded or
+    /// completed is failed (with a toast) and `None` comes back; a deleted one is just `None`.
+    fn read_job_for_start(&self, id: i64) -> Option<(RenderJobMeta, RenderJobFile)> {
+        let read = self.db().get_render_job(id);
+        let row = match read {
+            Ok(Some(row)) => row,
+            // Deleted since the list was read.
+            Ok(None) => return None,
+            Err(error) => {
+                self.fail_before_start(id, "", &format!("The job could not be read: {error}"));
+                return None;
+            }
+        };
+        let label = row.meta.label.clone();
+        let job = match codec::from_text(&row.snapshot) {
+            Ok(job) => job,
+            Err(error) => {
+                self.fail_before_start(id, &label, &error.to_string());
+                return None;
+            }
+        };
+        // Zoning builds: the frozen scene carries no colour zones; they were stored beside the
+        // job when it was queued and are put back here. Unreadable zones fail the job instead of
+        // rendering the stone in its base colour.
+        #[cfg(feature = "zoning")]
+        let job = {
+            let mut job = job;
+            let attached =
+                crate::gui::rough_colour::store::attach_job_zoning(&self.db(), id, &mut job.scene);
+            if let Err(error) = attached {
+                self.fail_before_start(id, &label, &format!("{error:#}"));
+                return None;
+            }
+            job
+        };
+        Some((row.meta, job))
+    }
+
+    /// Runs the job on its own thread; a thread that cannot be spawned finishes the job as
+    /// failed.
+    fn spawn_render_thread(
+        &self,
+        id: i64,
+        job: RenderJobFile,
+        ctx: ExecContext,
+        cancel: Arc<AtomicBool>,
+    ) {
         let ui_weak = self.ui.clone();
         let spawned = std::thread::Builder::new()
             .name("render-job".to_string())
@@ -418,8 +456,6 @@ impl JobController {
                 },
             );
         }
-        self.refresh();
-        true
     }
 
     /// A progress tick of job `job_id` (already throttled by the sink).

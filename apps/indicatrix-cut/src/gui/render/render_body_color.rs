@@ -545,7 +545,7 @@ mod tests {
             optics::materials::GemMaterial,
             render_setup::{MODEL_UNIT_FACE_UP_PATH, material_for_stone},
         };
-        for preset in BODY_COLOR_PRESETS.iter() {
+        for preset in &BODY_COLOR_PRESETS {
             let material = GemMaterial::by_name("Cubic Zirconia")
                 .expect("built-in")
                 .with_body_color(preset.absorption_rgb);

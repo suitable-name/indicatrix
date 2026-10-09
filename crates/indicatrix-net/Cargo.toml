@@ -78,6 +78,12 @@ compression = ["dep:lz4_flex", "dep:png", "dep:zstd"]
 # (`indicatrix-net/render` is what that feature turns on), but scoped to this crate's own
 # concern (the wire types), not the worker binary's.
 render = ["dep:indicatrix"]
+# Rough colour and colour zoning (plan 2026-10-09, section 1a): the zoning wire extension
+# (a capability bit plus a separate `ZoningPayload` message; no change to `SceneState`'s
+# bytes or the protocol version). It needs `indicatrix`'s zone types, so it implies
+# `render` (naming `indicatrix/zoning` alone would enable the optional dependency anyway).
+# Off by default; a build without it is unchanged.
+zoning = ["render", "indicatrix/zoning"]
 
 # The integration test round-trips a real `SceneState` directly -- it needs `indicatrix`,
 # so (like `indicatrix`'s own `gpu`-only examples) it is skipped entirely by a default

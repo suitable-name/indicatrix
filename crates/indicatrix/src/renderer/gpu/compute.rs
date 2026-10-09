@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use wgpu::util::DeviceExt;
 
-/// Bound on every production-path GPU wait: [`finish_map_read`]'s `Device::poll` AND the
+/// Bound on every production-path GPU wait.
+///
+/// It covers [`finish_map_read`]'s `Device::poll` AND the
 /// paired `mpsc::Receiver::recv_timeout` for the buffer-mapping callback (also used by
 /// [`readback`]/[`dispatch_and_wait`]).
 ///
@@ -354,9 +356,10 @@ pub fn begin_map_read(
     rx
 }
 
-/// Blocks (bounded by [`GPU_WAIT_TIMEOUT`]) until `staging`'s producing submission
-/// (`copy_index`, from [`copy_to_staging`]) completes and `rx` (from [`begin_map_read`])
-/// resolves, then reads it back and unmaps it.
+/// Blocks (bounded by [`GPU_WAIT_TIMEOUT`]) until `staging`'s producing submission completes.
+///
+/// The submission is `copy_index`, from [`copy_to_staging`]; `rx` (from [`begin_map_read`])
+/// must resolve too, then it reads the buffer back and unmaps it.
 ///
 /// The read-back length is whatever `count` [`copy_to_staging`] sized `staging` for.
 /// Waiting on `copy_index` specifically (rather than "most recent submission") avoids

@@ -83,6 +83,35 @@ impl<T> WorkQueue<T> {
             .pop_front()
     }
 
+    /// Claims up to `max` fresh items for one batched remote request, then keeps taking
+    /// the items that follow while `same_group(last_taken, next)` holds -- so both views of
+    /// a design travel in the same request (the batch can exceed `max` by the rest of its
+    /// last group). Empty when the shared pool is.
+    pub fn claim_shared_batch(&self, max: usize, same_group: impl Fn(&T, &T) -> bool) -> Vec<T> {
+        let mut shared = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut taken: Vec<T> = Vec::new();
+        while let Some(front) = shared.front() {
+            let belongs =
+                taken.len() < max || taken.last().is_some_and(|last| same_group(last, front));
+            if !belongs {
+                break;
+            }
+            if let Some(item) = shared.pop_front() {
+                taken.push(item);
+            }
+        }
+        taken
+    }
+
+    /// Puts `items` back at the FRONT of the shared pool, in their order -- for a batch
+    /// that claimed more than one request frame can carry.
+    pub fn return_to_shared_front(&self, items: Vec<T>) {
+        let mut shared = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        for item in items.into_iter().rev() {
+            shared.push_front(item);
+        }
+    }
+
     /// Whether the shared pool has nothing left to claim. The remote lane asks this
     /// while it waits out a failure, so a sit-out never holds the batch open once the
     /// local lanes have taken every remaining item.
@@ -163,6 +192,32 @@ mod tests {
         assert_eq!(queue.claim_shared(), Some(2));
         assert_eq!(queue.claim_shared(), Some(3));
         assert_eq!(queue.claim_shared(), None);
+    }
+
+    #[test]
+    fn claim_shared_batch_keeps_both_views_of_a_design_together() {
+        // (design, view): two views per design, like `build_items`.
+        let queue = WorkQueue::new([(1, 'f'), (1, 't'), (2, 'f'), (2, 't'), (3, 'f'), (3, 't')]);
+        let same = |a: &(i32, char), b: &(i32, char)| a.0 == b.0;
+        // Max 3 would end between design 2's views: the rest of the group comes along.
+        assert_eq!(
+            queue.claim_shared_batch(3, same),
+            vec![(1, 'f'), (1, 't'), (2, 'f'), (2, 't')]
+        );
+        assert_eq!(queue.claim_shared_batch(2, same), vec![(3, 'f'), (3, 't')]);
+        assert!(queue.claim_shared_batch(2, same).is_empty());
+    }
+
+    #[test]
+    fn claim_shared_batch_takes_what_is_left_and_trimmed_items_return_to_the_front() {
+        let queue = WorkQueue::new([1, 2, 3]);
+        let never_same = |_: &i32, _: &i32| false;
+        assert_eq!(queue.claim_shared_batch(10, never_same), vec![1, 2, 3]);
+        queue.return_to_shared_front(vec![2, 3]);
+        queue.return_to_shared_front(vec![1]);
+        assert_eq!(queue.claim_shared(), Some(1));
+        assert_eq!(queue.claim_shared(), Some(2));
+        assert_eq!(queue.claim_shared(), Some(3));
     }
 
     #[test]

@@ -189,6 +189,20 @@ pub(super) fn bind_locate_window_theme(window: &LocateWindow) {
     });
 }
 
+/// Makes the Rough colour wizard window follow the high-contrast preference. Called once, when
+/// the window is created (`zoning` feature only).
+#[cfg(feature = "zoning")]
+pub(super) fn bind_rough_colour_window_theme(window: &crate::RoughColourWindow) {
+    let weak = window.as_weak();
+    register_theme_sink(move |on| {
+        let Some(window) = weak.upgrade() else {
+            return false;
+        };
+        window.global::<Theme>().set_high_contrast(on);
+        true
+    });
+}
+
 /// Makes the camera-rig window follow the high-contrast preference. Called once, when the
 /// window is created.
 pub(super) fn bind_rig_window_theme(window: &RigWindow) {

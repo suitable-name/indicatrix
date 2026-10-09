@@ -27,6 +27,17 @@ use std::sync::{Arc, Mutex};
 /// `gui::DB_PATH` by `mod.rs` so that existing call site keeps resolving).
 pub(in crate::gui) const DB_PATH: &str = "facet_diagrams.sqlite";
 
+/// Rebuilds the custom-material list (render context and material picker) from the vault. The
+/// planner's "Use colour" calls it after it wrote a new material (`zoning` builds only).
+#[cfg(feature = "zoning")]
+pub(in crate::gui) fn reload_custom_materials(
+    ui: &MainWindow,
+    db: &Arc<Mutex<indicatrix_vault::db::sqlite::Database>>,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+) {
+    apply_custom_materials(ui, db, render_ctx);
+}
+
 /// A fully constructed and wired [`MainWindow`], not yet shown or running. Built by
 /// [`build_main_window`].
 ///
@@ -111,6 +122,9 @@ pub fn build_main_window() -> anyhow::Result<MainWindowHandle> {
     // gated build if one ever existed.
     ui.global::<EditorModel>().set_enabled(true);
 
+    // The `zoning` feature's UI switch (`false` in a default build, so nothing shows).
+    super::zoning_ui::apply_to_main(&ui);
+
     let db = open_design_library(&ui)?;
 
     // Shared Render Context for 3D Viewport
@@ -125,6 +139,9 @@ pub fn build_main_window() -> anyhow::Result<MainWindowHandle> {
     let library_source: Arc<Mutex<LibrarySource>> = Arc::new(Mutex::new(LibrarySource::default()));
 
     apply_custom_materials(&ui, &db, &render_ctx);
+    // Zoning builds: the planner's "Use colour" needs the render context to select the material.
+    #[cfg(feature = "zoning")]
+    crate::gui::rough_colour::adopt_link::register_render_context(&render_ctx);
     let settings_store = load_settings(&ui, &render_ctx);
 
     // Live Render visibility: outer tab / sub-tab change wiring -- see

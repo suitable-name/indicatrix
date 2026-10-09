@@ -162,6 +162,22 @@ gpu = ["indicatrix/gpu"]
 # default (and left out of the shipped/PGO feature sets) because the physical color mode is
 # out of focus; see `gui::optics::physics_state::PHYSICS_COLOR_UI`.
 physical-color = []
+# Rough colour and colour zoning from rig photos (plan 2026-10-09, section 1a): the Rough
+# colour wizard, the zone panel, the vault side-table storage and the adopt integration.
+# UI switch: `gui::zoning_ui::ZONING_UI`, which sets the Slint global `Zoning.enabled`.
+# Off by default and left out of the shipped/PGO feature sets; a build without it is
+# unchanged. RAW decoding (`rawler`) lives in `indicatrix-cut-core` behind its own `zoning`
+# feature (lane P1), so it is reached through `indicatrix-cut-core/zoning` and this crate
+# declares no `rawler` dependency of its own.
+#
+# Lane I1: `indicatrix-vault/zoning` creates and serves the rough-colour side tables
+# (`gui::rough_colour::store`).
+zoning = [
+    "indicatrix/zoning",
+    "indicatrix-cut-core/zoning",
+    "indicatrix-net/zoning",
+    "indicatrix-vault/zoning",
+]
 
 [build-dependencies]
 slint-build = { workspace = true }

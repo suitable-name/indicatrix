@@ -22,8 +22,8 @@ use indicatrix_net::{
     handshake,
     messages::{
         Backend, ClientMessage, ErrorMsg, Hello, LOOPBACK_SERVER_PREFERENCE, NetError,
-        PROTOCOL_VERSION, PayloadEncoding, PeerRole, RenderCapability, StreamEvent,
-        TiltCurvesResponse, Welcome, adaptive::PeerLink, negotiate,
+        PayloadEncoding, PeerRole, RenderCapability, StreamEvent, TiltCurvesResponse, Welcome,
+        adaptive::PeerLink, negotiate,
     },
 };
 use std::{
@@ -203,19 +203,34 @@ pub fn handle_viewer_connection<S: Read + Write + TimeoutRead + TimeoutWrite>(
         ctx.registry.map(|registry| registry.capacity()),
         ctx.assets.is_some(),
     );
-    let welcome = Welcome {
-        protocol_version: PROTOCOL_VERSION,
-        build_hash: local_hello.build_hash,
-        source_hash: local_hello.source_hash,
+    let welcome = Welcome::new(
+        local_hello.build_hash,
+        local_hello.source_hash,
+        render.clone(),
+        true,
         // Shares the render gate; kept an explicit field (see `Welcome::tilt_curves`).
-        tilt_curves: render.is_some(),
-        render: render.clone(),
-        library: true,
+        render.is_some(),
         // A viewer is never registered; only the worker port hands out registrations.
-        registration: None,
+        None,
         payload_encoding,
+    );
+    // Zoned scenes are traced only by this machine's own lane: a coordinator's viewer
+    // connection does not forward zones to its joined workers, so it never advertises the
+    // bit (a zoning viewer then renders zoned pictures locally). The bit is also only
+    // sent back to a viewer that carried it in its own HELLO.
+    #[cfg(feature = "zoning")]
+    let welcome = Welcome {
+        zoning: remote_hello.zoning && ctx.own_lane && ctx.coordinator.is_none(),
+        ..welcome
     };
+    #[cfg(not(feature = "zoning"))]
     indicatrix_net::messages::write_message(&mut stream, &welcome)?;
+    #[cfg(feature = "zoning")]
+    indicatrix_net::messages::write_welcome_message(&mut stream, &welcome)?;
+
+    // Zones a peer stashes belong to this connection only.
+    #[cfg(feature = "zoning")]
+    let _zoning_guard = crate::serve::zoning::ConnectionGuard::new();
 
     let session = ctx
         .coordinator
@@ -324,17 +339,16 @@ fn pair_as_library_only_if_unknown_build<S: Read + Write + TimeoutRead>(
     {
         return None;
     }
-    let welcome = Welcome {
-        protocol_version: PROTOCOL_VERSION,
-        build_hash: local_hello.build_hash,
-        source_hash: local_hello.source_hash,
-        render: None,
-        library: true,
-        tilt_curves: false,
-        registration: None,
-        // No radiance ever flows on a library-only pairing.
-        payload_encoding: PayloadEncoding::Raw,
-    };
+    // No radiance ever flows on a library-only pairing.
+    let welcome = Welcome::new(
+        local_hello.build_hash,
+        local_hello.source_hash,
+        None,
+        true,
+        false,
+        None,
+        PayloadEncoding::Raw,
+    );
     Some(
         indicatrix_net::messages::write_message(stream, &welcome)
             .and_then(|()| serve_library_only_connection(stream, db)),
@@ -400,7 +414,17 @@ fn serve_library_only_connection<S: Read + Write + TimeoutRead>(
                 &StreamEvent::Error(no_render_capacity("render a final image", r.request_id)),
                 None,
             )?,
+            ClientMessage::BatchRenderRequest(r) => indicatrix_net::messages::write_stream_event(
+                stream,
+                &StreamEvent::Error(no_render_capacity("render a batch", r.request_id)),
+                None,
+            )?,
             ClientMessage::Ping { nonce } => write_pong(stream, nonce)?,
+            // A library-only pairing advertised no zoning capability; nothing renders here.
+            #[cfg(feature = "zoning")]
+            ClientMessage::ZoningPayload(_) => {
+                tracing::debug!("ignoring a ZoningPayload on a library-only pairing");
+            }
             // Nothing here ever asks for an asset; consume an unrequested one's payload.
             ClientMessage::Asset(header) => crate::assets::discard_asset(stream, &header)?,
             // Nothing here ever asks for a contribution either; consume an unrequested

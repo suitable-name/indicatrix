@@ -58,6 +58,12 @@ pub mod render_jobs;
 // The Library menu's "Plan Rough..." dialog: up to K stones of library designs out of
 // one rough block -- see the module's own doc comment.
 mod rough_plan;
+// Rough colour and colour zoning (`zoning` feature only): the vault storage API the Rough colour
+// UI calls, the planner pose choice, the adopt flow and the render-job persistence -- see the
+// module's own doc comment. Deliberately NOT under `rough_plan`, so its tests are independent of
+// that module's test filter.
+#[cfg(feature = "zoning")]
+pub mod rough_colour;
 pub mod solid_preview;
 // The real `PreviewSink` that hops a finished solid-preview frame back onto the UI
 // thread -- see the module's own doc comment. Moved out of this file purely to keep
@@ -82,6 +88,9 @@ mod window_sizing;
 // The window-close unsaved-changes guard's Save/Discard callbacks -- see the
 // module's own doc comment.
 mod window_close;
+// The `zoning` feature's UI switch (`ZONING_UI`, pushed to the Slint global `Zoning` per
+// window) -- see the module's own doc comment.
+pub(crate) mod zoning_ui;
 // A rolling, regression-based time-remaining estimator shared by the still-image
 // export queue (`render::render_export::queue`) and the tilt-video export
 // (`tilt::video_export::run`) -- see the module's own doc comment for why a

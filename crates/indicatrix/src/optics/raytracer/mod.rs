@@ -25,6 +25,10 @@ pub mod sampling;
 pub mod scattering;
 pub mod transport;
 pub mod uniaxial_fresnel;
+#[cfg(feature = "zoning")]
+mod zoned;
+#[cfg(all(test, feature = "zoning"))]
+mod zoned_tests;
 
 /// Number of spectral channels `trace_spectral_ray` traces per ray (8-channel
 /// stratified hero-wavelength sampling). Module-level, not a `const` local to

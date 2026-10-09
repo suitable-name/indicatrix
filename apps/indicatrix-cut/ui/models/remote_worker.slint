@@ -14,6 +14,10 @@ export global RemoteWorkerModel {
     // in place; `remote_batch_lanes_changed` hands the new count to Rust to limit and
     // persist.
     in-out property <int> remote_batch_lanes: 4;
+    // How many pictures one batched preview request to the remote carries
+    // (`AppSettings::remote_preview_batch_size`, 1..=32); `remote_preview_batch_size_changed`
+    // hands the new count to Rust to limit and persist.
+    in-out property <int> remote_preview_batch_size: 10;
     in property <bool> testing_connection: false;
     in property <string> test_connection_result: "";
     in property <bool> test_connection_is_error: false;
@@ -53,6 +57,7 @@ export global RemoteWorkerModel {
     callback pick_cert_dir(string);
     callback denoise_toggled(bool);
     callback remote_batch_lanes_changed(int);
+    callback remote_preview_batch_size_changed(int);
     // Address and certificate folder of the (possibly unsaved) form.
     callback test_worker_connection(string, string);
     callback save_remote(WorkerItem);

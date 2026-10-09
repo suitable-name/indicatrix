@@ -13,13 +13,15 @@ use std::{
 use glam::Vec3;
 
 use super::{
-    GpuAccumulate, GpuPipelineKind, GpuSceneRef,
+    GpuAccumulate, GpuBatchItem, GpuPipelineKind, GpuSceneRef,
     recovery::{COOL_DOWN, RecoveryPolicy},
     turnstile::{CHUNKS_PER_TURN, Turnstile},
 };
 use crate::renderer::gpu::{
     GpuFrameError, GpuFrameRenderer,
-    frame::{ChunkCursor, ChunkTurnOutcome, TurnRequest, classify_material},
+    frame::{
+        BatchEvent, BatchState, ChunkCursor, ChunkTurnOutcome, TurnRequest, classify_material,
+    },
 };
 
 /// The most scratch buffers [`GpuBackend`] keeps between requests. Each is as large as
@@ -378,6 +380,237 @@ impl GpuBackend {
         }
     }
 
+    /// Traces every item of `items`, keeping the GPU queue fed across picture boundaries,
+    /// and calls `on_done(index, outcome)` as soon as each picture finishes -- in input
+    /// order, which is also completion order.
+    ///
+    /// Each item's result is bit-identical to [`Self::try_accumulate_cancellable`] on that
+    /// item alone: its samples are summed into a zeroed scratch of its own and added into
+    /// `out` only on [`GpuAccumulate::Done`] (a `Declined` or `Cancelled` item leaves its
+    /// `out` untouched), with the same absolute sample offsets, the same decline rules per
+    /// item (a device loss declines every picture not yet reported; an unsupported
+    /// material or environment declines only its own picture) and the same cancel polling
+    /// (once per chunk). `cancel` firing reports the first unfinished picture and all
+    /// later ones as `Cancelled`; pictures already `Done` stay done. Afterwards the
+    /// renderer is idle and reusable.
+    ///
+    /// The chunk stream, the scene-upload argument and the memory bound are described in
+    /// the parent module's "Batches" section. Fairness: the batch holds the renderer
+    /// turn while nobody else is queued and yields (draining first) after
+    /// [`CHUNKS_PER_TURN`] chunks as soon as another request is waiting, then rejoins the
+    /// back of the queue. `on_done` runs while the turn is held, with the next chunk
+    /// already queued, so it should be cheap.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an item's `out.len()` is not `scene.width * scene.height`.
+    pub fn try_accumulate_batch_cancellable(
+        &self,
+        items: &mut [GpuBatchItem<'_>],
+        cancel: &AtomicBool,
+        on_done: &mut dyn FnMut(usize, GpuAccumulate),
+    ) {
+        for item in items.iter() {
+            assert_eq!(
+                item.out.len(),
+                item.scene.width as usize * item.scene.height as usize,
+                "batch output buffer must have one entry per pixel"
+            );
+        }
+        let count = items.len();
+        let usable = (!self.lost.load(Ordering::Acquire) || self.try_recover())
+            .then_some(self.renderer.as_ref())
+            .flatten();
+        let Some(mutex) = usable else {
+            for index in 0..count {
+                on_done(index, GpuAccumulate::Declined);
+            }
+            return;
+        };
+
+        let scenes: Vec<crate::renderer::gpu::GpuFrameScene<'_>> = items
+            .iter()
+            .map(|item| crate::renderer::gpu::GpuFrameScene {
+                camera: item.scene.camera,
+                width: item.scene.width,
+                height: item.scene.height,
+                planes: item.scene.planes,
+                facet_finishes: item.scene.facet_finishes,
+                material: item.scene.material,
+                max_bounces: item.scene.max_bounces,
+                environment: item.scene.environment,
+            })
+            .collect();
+        let requests: Vec<TurnRequest<'_>> = scenes
+            .iter()
+            .zip(items.iter())
+            .map(|(scene, item)| TurnRequest {
+                scene,
+                pipeline_class: classify_material(scene.material),
+                sample_offset: item.first_sample,
+                spp: item.samples,
+                cancel: Some(cancel),
+                max_chunks: usize::MAX,
+            })
+            .collect();
+
+        let mut output = BatchOutput {
+            items,
+            scratches: vec![Vec::new(); count],
+            on_done,
+            reported: 0,
+        };
+        self.run_batch(mutex, &requests, &mut output);
+        // Normally every picture was reported by now; this only catches a path that ended
+        // the stream early, so no `on_done` is ever missing.
+        output.finish_rest(self, GpuAccumulate::Declined);
+    }
+
+    /// The turn loop behind [`Self::try_accumulate_batch_cancellable`]: takes a ticket,
+    /// steps the batch (one chunk per step, renderer lock taken per step so `on_done` never
+    /// runs under it), and gives the turn up only when another request is waiting.
+    fn run_batch(
+        &self,
+        mutex: &Mutex<GpuFrameRenderer>,
+        requests: &[TurnRequest<'_>],
+        output: &mut BatchOutput<'_, '_>,
+    ) {
+        let mut state = BatchState::new();
+        #[cfg(test)]
+        let mut steps_started = 0_usize;
+
+        'turns: loop {
+            let ticket = self.turnstile.take_ticket();
+            let _turn = self.turnstile.wait_for_turn(ticket);
+
+            // Re-checked after waiting, for the same reason as in `run_turns`.
+            if self.lost.load(Ordering::Acquire) {
+                output.finish_rest(self, GpuAccumulate::Declined);
+                return;
+            }
+            let Some(mut renderer) = self.lock_renderer(mutex) else {
+                output.finish_rest(self, GpuAccumulate::Declined);
+                return;
+            };
+            renderer.batch_begin_turn(requests, &mut state);
+            drop(renderer);
+
+            let mut chunks_this_turn = 0_usize;
+            loop {
+                self.provision_scratch(requests, &state, output);
+                let Some(mut renderer) = self.lock_renderer(mutex) else {
+                    output.finish_rest(self, GpuAccumulate::Declined);
+                    return;
+                };
+                let result = renderer.batch_step(requests, &mut output.scratches, &mut state);
+                drop(renderer);
+                #[cfg(test)]
+                let result = {
+                    steps_started += 1;
+                    self.injected_failure(steps_started).map_or(result, Err)
+                };
+                let step = match result {
+                    Ok(step) => step,
+                    Err(error) => {
+                        self.note_error(error);
+                        output.finish_rest(self, GpuAccumulate::Declined);
+                        return;
+                    }
+                };
+                for event in step.events {
+                    output.deliver(self, event);
+                }
+                if state.is_finished() {
+                    return;
+                }
+                if step.dispatched {
+                    chunks_this_turn += 1;
+                }
+                if chunks_this_turn < CHUNKS_PER_TURN {
+                    continue;
+                }
+                if !self.turnstile.has_waiters_behind(ticket) {
+                    // Nobody wants the renderer: keep the queue full, ask again later.
+                    chunks_this_turn = 0;
+                    continue;
+                }
+                // Somebody is waiting: drain our one in-flight chunk so the renderer is idle
+                // for them, then rejoin the back of the queue.
+                let Some(mut renderer) = self.lock_renderer(mutex) else {
+                    output.finish_rest(self, GpuAccumulate::Declined);
+                    return;
+                };
+                let drained = renderer.batch_yield(&mut output.scratches, &mut state);
+                drop(renderer);
+                match drained {
+                    Ok(events) => {
+                        for event in events {
+                            output.deliver(self, event);
+                        }
+                    }
+                    Err(error) => {
+                        self.note_error(error);
+                        output.finish_rest(self, GpuAccumulate::Declined);
+                        return;
+                    }
+                }
+                continue 'turns;
+            }
+        }
+    }
+
+    /// Makes sure the picture the next step will start has its zeroed scratch buffer.
+    fn provision_scratch(
+        &self,
+        requests: &[TurnRequest<'_>],
+        state: &BatchState<'_>,
+        output: &mut BatchOutput<'_, '_>,
+    ) {
+        let index = state.next_item();
+        let Some(request) = requests.get(index) else {
+            return;
+        };
+        let pixels = request.scene.width as usize * request.scene.height as usize;
+        if request.spp > 0 && pixels > 0 && output.scratches[index].len() != pixels {
+            output.scratches[index] = self.take_scratch(pixels);
+        }
+    }
+
+    /// Locks the renderer for one batch step. A poisoned mutex is never silently
+    /// recovered (see `run_turns`): it marks the backend lost and yields `None`.
+    fn lock_renderer<'m>(
+        &self,
+        mutex: &'m Mutex<GpuFrameRenderer>,
+    ) -> Option<MutexGuard<'m, GpuFrameRenderer>> {
+        let Ok(guard) = mutex.lock() else {
+            tracing::warn!(
+                "GPU renderer mutex poisoned (a previous turn panicked), disabling the GPU \
+                 backend until a fresh device is acquired"
+            );
+            self.mark_lost("GPU renderer mutex poisoned (a previous turn panicked)".into());
+            return None;
+        };
+        Some(guard)
+    }
+
+    /// Logs a batch step's failure like `run_turns` does: a lost device marks the backend
+    /// lost, anything else is an ordinary decline.
+    fn note_error(&self, error: GpuFrameError) {
+        match error {
+            GpuFrameError::DeviceLost(why) => {
+                tracing::warn!(
+                    "GPU device lost ({why}), disabling the GPU backend until a fresh \
+                     device is acquired -- meanwhile every call falls back to the CPU \
+                     tracer"
+                );
+                self.mark_lost(why);
+            }
+            other => {
+                tracing::debug!("GPU declined this batch, using CPU tracer: {other}");
+            }
+        }
+    }
+
     /// Records a device loss: remembers `reason`, starts the recovery cool-down, and
     /// only then raises [`Self::lost`], so a thread that sees the flag also finds the
     /// cool-down already running.
@@ -477,6 +710,9 @@ impl GpuBackend {
 
     /// Hands `buffer` back for the next request, unless the pool is already full.
     fn return_scratch(&self, buffer: Vec<Vec3>) {
+        if buffer.capacity() == 0 {
+            return;
+        }
         let mut pool = self
             .scratch_pool
             .lock()
@@ -494,5 +730,58 @@ impl GpuBackend {
             .compare_exchange(turn, 0, Ordering::Relaxed, Ordering::Relaxed)
             .is_ok()
             .then(|| GpuFrameError::DeviceLost("injected failure (test seam)".to_string()))
+    }
+}
+
+/// The caller-facing half of one batch run: the output buffers, the per-picture scratch
+/// buffers and the `on_done` sink, with the bookkeeping that every picture is reported
+/// exactly once and in input order.
+struct BatchOutput<'b, 'a> {
+    items: &'b mut [GpuBatchItem<'a>],
+    /// One scratch per picture: empty until the picture starts, taken back when it is
+    /// reported.
+    scratches: Vec<Vec<Vec3>>,
+    on_done: &'b mut dyn FnMut(usize, GpuAccumulate),
+    /// Number of pictures already reported (the next one to report has this index).
+    reported: usize,
+}
+
+impl BatchOutput<'_, '_> {
+    /// Reports picture `index`: on `Done` its scratch is added into the caller's buffer
+    /// first (the single path's final `+=`), then the scratch goes back to the pool.
+    fn report(&mut self, backend: &GpuBackend, index: usize, outcome: GpuAccumulate) {
+        debug_assert_eq!(
+            index, self.reported,
+            "batch outcomes must be reported in input order"
+        );
+        let scratch = std::mem::take(&mut self.scratches[index]);
+        if outcome == GpuAccumulate::Done {
+            for (total, traced) in self.items[index].out.iter_mut().zip(&scratch) {
+                *total += *traced;
+            }
+        }
+        backend.return_scratch(scratch);
+        self.reported = index + 1;
+        (self.on_done)(index, outcome);
+    }
+
+    /// Reports what the renderer's stepper concluded.
+    fn deliver(&mut self, backend: &GpuBackend, event: BatchEvent) {
+        match event {
+            BatchEvent::Done(index) => self.report(backend, index, GpuAccumulate::Done),
+            BatchEvent::Declined(index) => self.report(backend, index, GpuAccumulate::Declined),
+            BatchEvent::Cancelled(first) => {
+                for index in first..self.items.len() {
+                    self.report(backend, index, GpuAccumulate::Cancelled);
+                }
+            }
+        }
+    }
+
+    /// Reports every picture not reported yet with `outcome`.
+    fn finish_rest(&mut self, backend: &GpuBackend, outcome: GpuAccumulate) {
+        for index in self.reported..self.items.len() {
+            self.report(backend, index, outcome);
+        }
     }
 }

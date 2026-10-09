@@ -19,6 +19,11 @@
 //! -> ASSET    { content_hash, len } + payload                                     (v14, E)
 //! -> CONTRIBUTION { request_id, first_sample, samples, width, height, encoding,
 //!                   payload_len, raw_len } + payload    (v16, see crate::messages::contribution)
+//! -> BATCH_RENDER_REQUEST { request_id, reply, items }                                (v24, see crate::messages::batch)
+//! <- BATCH_ITEM_PROGRESS  { request_id, item_id, samples_done }                       (v24)
+//! <- BATCH_ITEM_DONE      { request_id, item_id, samples_done, payload_len } + PNG    (v24)
+//! <- BATCH_ITEM_FAILED    { request_id, item_id, reason }                             (v24)
+//! <- BATCH_DONE           { request_id, cancelled }                                   (v24)
 //! ```
 //!
 //! `FRAME`/`PREVIEW` payloads are encoded per their header's `encoding` (v14,
@@ -101,8 +106,9 @@ mod types;
 mod wire;
 
 pub use types::{
-    Cancel, ClientMessage, DisplayFrameHeader, Done, ErrorMsg, FinalImageHeader, FrameHeader,
-    PreviewHeader, Progress, Stats, StreamEvent,
+    BatchDone, BatchItemDoneHeader, BatchItemFailed, BatchItemProgress, Cancel, ClientMessage,
+    DisplayFrameHeader, Done, ErrorMsg, FinalImageHeader, FrameHeader, PreviewHeader, Progress,
+    Stats, StreamEvent,
 };
 pub use wire::{
     read_frame_message, read_preview_message, read_stream_event, write_frame_message,

@@ -447,6 +447,93 @@ impl MeshLibrary {
     }
 }
 
+/// How a design's model frame relates to the planner's caliper frame, for the corners the planner
+/// measures the design from (`zoning` builds only): the caliper turn of their outline and the
+/// centre of their bounding box in the turned frame. These are the same helpers
+/// [`design_mesh_from_planes`] applies (`rotate_into_caliper_frame`, `caliper_centre`), called in
+/// the same order on the same `f32`-rounded corners, so the placement and the mesh agree.
+#[cfg(feature = "zoning")]
+#[must_use]
+pub(in crate::gui::rough_plan) fn placement_from_corners(
+    corners: &[[f64; 3]],
+) -> Option<indicatrix_cut_core::rough_plan::zoned_plan::DesignPlacement> {
+    let stored: Vec<[f64; 3]> = corners
+        .iter()
+        .map(|corner| corner.map(|c| f64::from(c as f32)))
+        .collect();
+    let width_dir = rotate_into_caliper_frame(&stored)?.width_dir;
+    let centre = caliper_centre(corners, width_dir);
+    Some(
+        indicatrix_cut_core::rough_plan::zoned_plan::DesignPlacement {
+            width_dir,
+            centre_units: centre.to_array(),
+        },
+    )
+}
+
+/// The placement of the stone `planes` bound minus the concave `tools` (`zoning` builds only): the
+/// corners are chosen exactly as [`design_mesh_from_planes`] chooses them (the ring corners of a
+/// planar design, the convex hull of the carved mesh for a design with tools), then
+/// [`placement_from_corners`]. `None` when the planes do not close into a solid or the outline has
+/// no width.
+#[cfg(feature = "zoning")]
+#[must_use]
+pub(in crate::gui::rough_plan) fn design_placement_from_planes(
+    planes: &[(DVec3, f64)],
+    tools: &[ToolPrimitive],
+) -> Option<indicatrix_cut_core::rough_plan::zoned_plan::DesignPlacement> {
+    let SolidStatus::Closed(mesh) = build_solid_mesh_geom(planes, tools) else {
+        return None;
+    };
+    let mesh_corners: Vec<[f64; 3]> = mesh
+        .rings
+        .iter()
+        .flat_map(|(_, ring)| ring.iter().map(DVec3::to_array))
+        .collect();
+    let corners = if tools.is_empty() {
+        mesh_corners
+    } else {
+        let points: Vec<DVec3> = mesh_corners
+            .iter()
+            .copied()
+            .map(DVec3::from_array)
+            .collect();
+        design_outline(&points).map_or(mesh_corners, |outline| {
+            outline.corners.iter().map(DVec3::to_array).collect()
+        })
+    };
+    placement_from_corners(&corners)
+}
+
+#[cfg(feature = "zoning")]
+impl MeshLibrary {
+    /// The placement of design `entry_id` (`None` for a design that is gone, unreadable or has no
+    /// solid). Read from the library each time; the caller asks once per design.
+    pub(in crate::gui::rough_plan) fn placement(
+        &self,
+        entry_id: i64,
+    ) -> Option<indicatrix_cut_core::rough_plan::zoned_plan::DesignPlacement> {
+        let full = self
+            .db
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_diagram_full(entry_id)
+            .ok()??;
+        let resolved = crate::gui::editor::resolve_catalogue_planes(&full);
+        if resolved.concave_error.is_some() {
+            return None;
+        }
+        let halfspaces: Vec<(DVec3, f64)> = resolved
+            .planes
+            .iter()
+            .copied()
+            .map(GpuFacetPlane::to_halfspace_f64)
+            .collect();
+        let start = resolved.preform_plane_count.min(halfspaces.len());
+        design_placement_from_planes(&halfspaces[start..], &resolved.tools)
+    }
+}
+
 impl MeshSource for MeshLibrary {
     fn mesh(&self, entry_id: i64) -> Result<Arc<DesignMesh>, MeshMiss> {
         self.cache.get_or_load(entry_id, || self.load(entry_id))

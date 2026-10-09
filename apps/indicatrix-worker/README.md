@@ -221,6 +221,16 @@ each on its own worker connection, so a desktop batch that keeps several picture
 flight keeps several workers busy. They still count against `--max-job-memory-mib`.
 `--whole-image-secs 0 --whole-image-pixel-samples 0` turns the routing off.
 
+**Batched previews (protocol v24).** A plain worker (and a coordinator's own render lane)
+also serves `BatchRenderRequest`: up to 32 pictures per request on one persistent
+connection, two requests in flight, each picture answered with a finished sRGB PNG
+(byte-identical to the desktop's own preview). GPU-eligible pictures of a request go to
+the GPU as one batch call; concave, fluorescent and GPU-declined pictures are traced on
+the CPU; PNG encoding runs on its own thread so it overlaps the next request's tracing.
+A coordinator does not forward a batch to its joined workers (batches do not count against
+`--jobs-per-viewer`): a coordinator with no render lane of its own answers
+`UNSUPPORTED_REQUEST` and the desktop sends the pictures one at a time instead.
+
 Requires **mutual TLS by default** — both sides must present a certificate
 signed by the same private CA (see [Workflow A](#workflow-a--manual-bundle-copy-verified-end-to-end)
 below).

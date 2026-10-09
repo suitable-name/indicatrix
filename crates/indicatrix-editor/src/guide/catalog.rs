@@ -240,7 +240,9 @@ pub fn worked_example_guide() -> Guide {
 const BUILDERS: &[fn() -> Guide] = &[welcome_tour_guide, worked_example_guide];
 
 /// Every built-in guide, in browser order: the ones in [`BUILDERS`], then the per-function
-/// tutorials of [`tutorials::all`]. Every action step carries what Next does for the learner
+/// tutorials of [`tutorials::all`].
+///
+/// Every action step carries what Next does for the learner
 /// ([`attach_performs`]), or nothing where the step cannot be done automatically.
 #[must_use]
 pub fn static_guides() -> Vec<Guide> {

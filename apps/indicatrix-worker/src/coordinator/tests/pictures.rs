@@ -273,6 +273,8 @@ fn viewer_samples_over_half_is_refused_with_validation_failed() {
 /// at 32x24 so facets span several pixels; see the comment in the body.
 #[test]
 fn display_only_streams_tone_mapped_display_frames() {
+    const W: u32 = 32;
+    const H: u32 = 24;
     let pki = pki_with_server("pictures-display");
     let viewer_bundle = bundle(&pki, "laptop", PeerRole::Viewer);
     let worker_bundle = bundle(&pki, "box", PeerRole::Worker);
@@ -287,8 +289,6 @@ fn display_only_streams_tone_mapped_display_frames() {
     // picture needs facets spanning several pixels for equal-signature neighbours to
     // exist. At 8x6 nearly every gem pixel had a unique signature and background
     // pixels are copied through unfiltered, so the denoiser legitimately did nothing.
-    const W: u32 = 32;
-    const H: u32 = 24;
     let image = scene(W, H);
     let mode = TransferMode::DisplayOnly;
     send(

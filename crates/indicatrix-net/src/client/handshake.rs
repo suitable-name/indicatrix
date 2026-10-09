@@ -45,12 +45,19 @@ use crate::{
 };
 use std::io::{Read, Write};
 
-/// This client's own `HELLO`, using [`handshake::local_hello`] when this build has
-/// render capacity (this crate's `render` feature) and
-/// [`handshake::UNKNOWN_BUILD_HASH`] otherwise -- see the module doc comment.
-#[cfg(feature = "render")]
+/// This client's own `HELLO`.
+///
+/// Uses [`handshake::local_hello`] when this build has render capacity (this crate's `render`
+/// feature) and [`handshake::UNKNOWN_BUILD_HASH`] otherwise -- see the module doc comment.
+#[cfg(all(feature = "render", not(feature = "zoning")))]
 fn local_hello_for_this_build() -> Hello {
     handshake::local_hello()
+}
+
+/// A zoning build always advertises the zoning capability (see `crate::messages::zoning`).
+#[cfg(all(feature = "render", feature = "zoning"))]
+fn local_hello_for_this_build() -> Hello {
+    handshake::local_hello_zoning()
 }
 
 #[cfg(not(feature = "render"))]
@@ -97,14 +104,29 @@ pub fn handshake_with_hello<S: Read + Write>(
     stream: &mut S,
     local: &Hello,
 ) -> Result<Welcome, ClientError> {
+    #[cfg(not(feature = "zoning"))]
     messages::write_message(stream, local)?;
+    // A zoning build appends the capability marker when `local.zoning` is set; otherwise the
+    // frame is byte-identical to `write_message`'s.
+    #[cfg(feature = "zoning")]
+    messages::write_hello_message(stream, local)?;
 
     let raw = crate::framing::read_frame_bounded(stream, crate::framing::MAX_CONTROL_FRAME_LEN)
         .map_err(crate::messages::NetError::Framing)?;
 
+    // A zoning build also accepts the capability marker after `WELCOME` (stripped here, so the
+    // checks below run unchanged); every other trailing byte is still refused.
+    #[cfg(feature = "zoning")]
+    let (raw, zoning_tail) = messages::split_welcome_tail(raw);
+
     if let Ok((welcome, remainder)) = postcard::take_from_bytes::<Welcome>(&raw)
         && remainder.is_empty()
     {
+        #[cfg(feature = "zoning")]
+        let welcome = Welcome {
+            zoning: zoning_tail,
+            ..welcome
+        };
         #[cfg(feature = "render")]
         if welcome.render.is_some() {
             let remote_as_hello = Hello::viewer(
@@ -161,6 +183,10 @@ pub struct ConnectionInfo {
     /// The payload encoding the server negotiated (v14) -- see
     /// [`Welcome::payload_encoding`].
     pub payload_encoding: crate::messages::PayloadEncoding,
+    /// `zoning` builds only: whether the peer accepts `ZoningPayload` messages
+    /// ([`Welcome::zoning`]).
+    #[cfg(feature = "zoning")]
+    pub zoning: bool,
 }
 
 impl From<Welcome> for ConnectionInfo {
@@ -172,6 +198,8 @@ impl From<Welcome> for ConnectionInfo {
             library: w.library,
             tilt_curves: w.tilt_curves,
             payload_encoding: w.payload_encoding,
+            #[cfg(feature = "zoning")]
+            zoning: w.zoning,
         }
     }
 }
@@ -245,6 +273,8 @@ mod tests {
             tilt_curves: true,
             registration: None,
             payload_encoding: crate::messages::PayloadEncoding::Raw,
+            #[cfg(feature = "zoning")]
+            zoning: false,
         }
     }
 
@@ -307,7 +337,53 @@ mod tests {
         // The HELLO this client sent is exactly `local_hello_for_this_build()`.
         let mut out_cursor = Cursor::new(duplex.out);
         let sent_hello: Hello = messages::read_message(&mut out_cursor).unwrap();
-        assert_eq!(sent_hello, local_hello_for_this_build());
+        // The capability marker (zoning build) is not part of the decoded struct.
+        #[cfg(feature = "zoning")]
+        let expected_hello = Hello {
+            zoning: false,
+            ..local_hello_for_this_build()
+        };
+        #[cfg(not(feature = "zoning"))]
+        let expected_hello = local_hello_for_this_build();
+        assert_eq!(sent_hello, expected_hello);
+    }
+
+    /// A zoning client appends the capability marker to its `HELLO`; a worker's reply carrying
+    /// the marker sets `Welcome::zoning`, a plain reply leaves it clear.
+    #[cfg(feature = "zoning")]
+    #[test]
+    fn a_zoning_handshake_sends_the_marker_and_reads_the_workers_marker() {
+        for worker_zoning in [false, true] {
+            let mut input = Vec::new();
+            messages::write_welcome_message(
+                &mut input,
+                &Welcome {
+                    zoning: worker_zoning,
+                    ..scripted_welcome()
+                },
+            )
+            .unwrap();
+            let mut duplex = DuplexHalf::new(input);
+            let welcome = handshake(&mut duplex).unwrap();
+            assert_eq!(welcome.zoning, worker_zoning);
+            assert!(
+                duplex.out.ends_with(&messages::ZONING_TAIL),
+                "the HELLO ends with the marker"
+            );
+        }
+    }
+
+    /// A reply with a marker-shaped tail is the only extra thing accepted; the plain default
+    /// worker reply (no tail) decodes exactly as before.
+    #[cfg(feature = "zoning")]
+    #[test]
+    fn a_zoning_handshake_still_refuses_other_trailing_bytes() {
+        let mut payload = postcard::to_allocvec(&scripted_welcome()).unwrap();
+        payload.extend_from_slice(&[0x5A, 0x4E, 0x02]); // wrong marker version
+        let mut input = Vec::new();
+        crate::framing::write_frame(&mut input, &payload).unwrap();
+        let err = handshake(&mut DuplexHalf::new(input)).unwrap_err();
+        assert!(matches!(err, ClientError::MalformedHandshakeReply));
     }
 
     #[test]

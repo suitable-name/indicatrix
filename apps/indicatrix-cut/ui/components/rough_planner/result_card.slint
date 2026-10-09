@@ -1,5 +1,6 @@
 import { Theme } from "../../theme.slint";
 import { RoughPlanModel, RoughPlanResult } from "../../models/rough_plan.slint";
+import { Zoning } from "../../models/zoning.slint";
 import { Chevron, ElidedText, RoughPill } from "fields.slint";
 import { DesignGroupRow } from "design_group_row.slint";
 
@@ -274,6 +275,7 @@ export component ResultCard inherits Rectangle {
                         RoughPlanModel.select_result(root.rank_index);
                         RoughPlanModel.select_group(root.rank_index, g_idx);
                     }
+                    adopt => { Zoning.adopt_colour(root.rank_index, g_idx); }
                 }
             }
         }

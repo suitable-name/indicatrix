@@ -56,6 +56,10 @@ pub(crate) struct RayWavelengthCache {
     /// `birefringence::effective_pleochroic_alpha` against this cached tensor rather
     /// than rebuilding one (the axis frame + `Mat3`) from scratch every bounce.
     pub(crate) tensor_ch: [AbsorptionTensor3; NUM_CHANNELS],
+    /// The zoned-absorption tables (kernel plus per-zone tensors); `Some` exactly when
+    /// `material.zoning` is. `zoning` feature only -- see `raytracer::zoned`.
+    #[cfg(feature = "zoning")]
+    pub(crate) zoned: Option<crate::optics::raytracer::zoned::ZonedCache>,
 }
 
 /// Per-trace context for exit-event spectral splitting -- see `refraction`'s top-of-file

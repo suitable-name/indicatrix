@@ -39,7 +39,11 @@ pub(super) struct TableEntry {
 }
 
 /// A step Next performs.
-pub(super) fn recipe(guide: &'static str, step: &'static str, perform: Perform) -> TableEntry {
+pub(super) const fn recipe(
+    guide: &'static str,
+    step: &'static str,
+    perform: Perform,
+) -> TableEntry {
     TableEntry {
         guide,
         step,

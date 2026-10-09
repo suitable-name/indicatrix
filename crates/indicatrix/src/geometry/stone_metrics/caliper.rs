@@ -1,4 +1,6 @@
-//! Rotating-caliper extents over a 2D outline, used by
+//! Rotating-caliper extents over a 2D outline.
+//!
+//! Used by
 //! [`measure_solid`](super::measure_solid) as the cross-check against the
 //! axis-aligned width/length convention the printed proportions actually use.
 

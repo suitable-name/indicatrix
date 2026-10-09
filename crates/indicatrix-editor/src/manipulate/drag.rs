@@ -82,7 +82,9 @@ pub enum DragValue {
 }
 
 /// `value` rounded to the nearest multiple of `step`, tidied so `413 * 0.1` reads
-/// `41.3` rather than `41.300000000000004`. A non-positive or NaN `step` returns
+/// `41.3` rather than `41.300000000000004`.
+///
+/// A non-positive or NaN `step` returns
 /// `value` unchanged; a negative zero stays negative.
 #[must_use]
 pub fn snap_to_step(value: f64, step: f64) -> f64 {

@@ -19,7 +19,11 @@ fn struct_sizes_match_documented_wgsl_layout() {
     assert_eq!(size_of::<CameraUniform>(), 112);
     assert_eq!(size_of::<DispersionParams>(), 96);
     assert_eq!(size_of::<GpuAbsorptionBand>(), 16);
+    #[cfg(not(feature = "zoning"))]
     assert_eq!(size_of::<GpuGemMaterial>(), 576);
+    // With the zone table appended (see `renderer::buffers::zoning`).
+    #[cfg(feature = "zoning")]
+    assert_eq!(size_of::<GpuGemMaterial>(), 576 + 2128);
     assert_eq!(size_of::<GpuTransportParams>(), 112);
     assert_eq!(size_of::<GpuWavefrontParams>(), 16);
 }

@@ -78,6 +78,7 @@ pub enum PerformanceAggregateWire {
 }
 
 /// Wire counterpart of `indicatrix_vault::model::performance::PerformanceFilter`.
+///
 /// `tilt_radius_deg` is a plain unvalidated `f32`; `indicatrix-worker`'s
 /// `from_range_wire` validates it via `PerformanceFilter::new`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

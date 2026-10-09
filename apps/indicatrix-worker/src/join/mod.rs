@@ -230,7 +230,9 @@ fn sleep_unless_stopped(delay: Duration, stop: &AtomicBool) {
     }
 }
 
-/// Jittered exponential backoff: [`BACKOFF_MIN`] doubling to [`BACKOFF_MAX`], each delay
+/// Jittered exponential backoff: [`BACKOFF_MIN`] doubling to [`BACKOFF_MAX`].
+///
+/// Each delay
 /// scaled by a random factor in `[0.5, 1.0)` so many workers reconnecting after a
 /// coordinator restart don't arrive in lockstep.
 #[derive(Debug)]

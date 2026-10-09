@@ -62,6 +62,9 @@ pub const CHAPTERS: &[EmbeddedChapter] = &[
     chapter!("21-angle-sweeps"),
     chapter!("22-tutorials"),
     chapter!("23-render-jobs"),
+    // Builds with the `zoning` feature only; the default manual does not contain it.
+    #[cfg(feature = "zoning")]
+    chapter!("24-rough-colour-and-zoning"),
     chapter!("appendix-a-glossary"),
     chapter!("appendix-b-keyboard-shortcuts"),
     chapter!("appendix-c-render-materials"),
@@ -185,6 +188,9 @@ mod tests {
     use super::*;
     use crate::gui::help::markdown::BlockKind;
 
+    /// Chapter files that are embedded only in builds with the `zoning` feature.
+    const ZONING_ONLY_STEMS: &[&str] = &["24-rough-colour-and-zoning"];
+
     #[test]
     fn every_chapter_file_of_the_manual_folder_is_embedded() {
         let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/manual");
@@ -197,6 +203,11 @@ mod tests {
                     .and_then(|stem| stem.to_str())
                     .unwrap_or_default()
                     .to_owned();
+                // A chapter that only a build with the `zoning` feature embeds is not
+                // missing from a build without it.
+                if !cfg!(feature = "zoning") && ZONING_ONLY_STEMS.contains(&stem.as_str()) {
+                    continue;
+                }
                 if !CHAPTERS.iter().any(|chapter| chapter.stem == stem) {
                     missing.push(stem);
                 }

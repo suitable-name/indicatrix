@@ -267,6 +267,19 @@ fn dispatch_render(
         });
         return;
     }
+    // Zoning guard (`zoning` builds): a zoned scene goes only to a remote that advertised the
+    // capability (the zones travel in a separate message a default peer cannot decode); the
+    // chunk fails like an HDR scene's does and the picture renders locally.
+    #[cfg(feature = "zoning")]
+    if crate::bridge::remote::zoned_scene_refusal(request.scene.material.zoning.is_some(), w.zoning)
+        .is_err()
+    {
+        on_update(RemoteUpdate::Failed {
+            request_id,
+            message: RemoteError::ZoningUnsupported.to_string(),
+        });
+        return;
+    }
 
     let render_request = indicatrix_net::messages::RenderRequest {
         request_id,

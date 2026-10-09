@@ -85,6 +85,35 @@ pub const MAX_REMOTE_BATCH_LANES: u32 = 32;
 pub fn clamp_remote_batch_lanes(lanes: u32) -> u32 {
     lanes.clamp(MIN_REMOTE_BATCH_LANES, MAX_REMOTE_BATCH_LANES)
 }
+/// Dispatchers a preview batch runs against a remote GPU worker when the user never chose
+/// a lane count: each keeps two batches of [`DEFAULT_REMOTE_PREVIEW_BATCH_SIZE`] pictures
+/// in flight on one persistent connection, so two connections already queue 40 pictures.
+/// A CPU worker (or a coordinator) keeps [`DEFAULT_REMOTE_BATCH_LANES`].
+pub const GPU_REMOTE_BATCH_LANES: u32 = 2;
+/// Pictures per batched preview request, for new settings.
+pub const DEFAULT_REMOTE_PREVIEW_BATCH_SIZE: u32 = 10;
+/// The fewest pictures per batched preview request.
+pub const MIN_REMOTE_PREVIEW_BATCH_SIZE: u32 = 1;
+/// The most pictures per batched preview request (the protocol's `MAX_BATCH_ITEMS`).
+pub const MAX_REMOTE_PREVIEW_BATCH_SIZE: u32 = 32;
+
+/// The dispatcher count for a remote preview batch: `stored` when the user ever set a lane
+/// count, [`GPU_REMOTE_BATCH_LANES`] for a GPU worker otherwise, else `stored`.
+#[must_use]
+pub const fn effective_remote_batch_lanes(stored: u32, user_set: bool, remote_is_gpu: bool) -> u32 {
+    if remote_is_gpu && !user_set {
+        GPU_REMOTE_BATCH_LANES
+    } else {
+        stored
+    }
+}
+
+/// `size` limited to `1..=32` -- the one rule a loaded, edited or hand-written batch size
+/// passes through.
+#[must_use]
+pub fn clamp_remote_preview_batch_size(size: u32) -> u32 {
+    size.clamp(MIN_REMOTE_PREVIEW_BATCH_SIZE, MAX_REMOTE_PREVIEW_BATCH_SIZE)
+}
 /// Default light yaw deg for new settings.
 pub const DEFAULT_LIGHT_YAW_DEG: f32 = 48.0;
 /// Default light pitch deg for new settings: a near-overhead key, so the light tent's
@@ -367,6 +396,21 @@ pub struct AppSettings {
         deserialize_with = "deserialize_remote_batch_lanes"
     )]
     pub remote_batch_lanes: u32,
+    /// Whether the user ever set [`Self::remote_batch_lanes`] ([`Self::set_remote_batch_lanes`]
+    /// raises it). Until then a preview batch against a GPU worker uses
+    /// [`GPU_REMOTE_BATCH_LANES`] dispatchers instead of the stored default, because the
+    /// batched requests keep the GPU busy with few connections; a user's own choice is
+    /// always honoured. A file without the key loads `false`.
+    #[serde(default)]
+    pub remote_batch_lanes_user_set: bool,
+    /// How many pictures one batched preview request to a remote worker carries
+    /// (protocol v24), limited to `1..=32` ([`clamp_remote_preview_batch_size`]); a file
+    /// without the key loads [`DEFAULT_REMOTE_PREVIEW_BATCH_SIZE`].
+    #[serde(
+        default = "default_remote_preview_batch_size",
+        deserialize_with = "deserialize_remote_preview_batch_size"
+    )]
+    pub remote_preview_batch_size: u32,
     /// The Rough planner's "Scan plan time limit" in seconds: a plan of a mesh rough (a
     /// scan) stops at this limit and shows the layouts found so far. `0` is no limit. See
     /// `crate::plan_limit`; a file without the key loads the default.
@@ -598,6 +642,24 @@ const fn default_remote_batch_lanes() -> u32 {
     DEFAULT_REMOTE_BATCH_LANES
 }
 
+const fn default_remote_preview_batch_size() -> u32 {
+    DEFAULT_REMOTE_PREVIEW_BATCH_SIZE
+}
+
+/// Reads [`AppSettings::remote_preview_batch_size`] as a signed integer and limits it, like
+/// [`deserialize_remote_batch_lanes`].
+fn deserialize_remote_preview_batch_size<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = i64::deserialize(deserializer)?;
+    let limited = raw.clamp(
+        i64::from(MIN_REMOTE_PREVIEW_BATCH_SIZE),
+        i64::from(MAX_REMOTE_PREVIEW_BATCH_SIZE),
+    );
+    Ok(u32::try_from(limited).unwrap_or(DEFAULT_REMOTE_PREVIEW_BATCH_SIZE))
+}
+
 /// Reads [`AppSettings::remote_batch_lanes`] as a signed integer and limits it, so a
 /// hand-edited value outside `1..=32` (a negative one included) loads as the nearest
 /// valid count instead of failing the whole settings file.
@@ -667,6 +729,8 @@ impl Default for AppSettings {
             tilt_video_compute_target: TiltVideoCompute::Both,
             contribute_to_final_picture: DEFAULT_CONTRIBUTE_TO_FINAL_PICTURE,
             remote_batch_lanes: DEFAULT_REMOTE_BATCH_LANES,
+            remote_batch_lanes_user_set: false,
+            remote_preview_batch_size: DEFAULT_REMOTE_PREVIEW_BATCH_SIZE,
             plan_time_limit_secs: crate::plan_limit::DEFAULT_LIMIT_SECS,
             import_preview_choice: super::ImportPreviewChoice::Ask,
             payload_encoding: indicatrix_net::messages::adaptive::PayloadChoice::Auto,
@@ -724,6 +788,12 @@ impl AppSettings {
     /// running app changes it.
     pub fn set_remote_batch_lanes(&mut self, lanes: u32) {
         self.remote_batch_lanes = clamp_remote_batch_lanes(lanes);
+        self.remote_batch_lanes_user_set = true;
+    }
+
+    /// Sets [`Self::remote_preview_batch_size`], limited to `1..=32`.
+    pub fn set_remote_preview_batch_size(&mut self, size: u32) {
+        self.remote_preview_batch_size = clamp_remote_preview_batch_size(size);
     }
 
     /// Records `path` as the most-recently-used native design file: moves it to the

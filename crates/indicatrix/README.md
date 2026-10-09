@@ -42,12 +42,12 @@ finished display frames both call it).
   stone's color genuinely depends on the electric-field direction relative to the
   crystal's optical axes, not just on wavelength.
 
-32 built-in materials ship with cited dispersion and absorption data
+33 built-in materials ship with cited dispersion and absorption data
 (`GemMaterial::all_materials()` in `src/optics/materials/mod.rs`,
 `GemMaterial::by_name(...)`): Diamond, Sapphire, Ruby, Emerald, Zircon, Alexandrite,
 Topaz, Spinel, Quartz, Tourmaline, Tanzanite, Synthetic Moissanite, Cubic Zirconia,
 Aquamarine, Morganite, Chrysoberyl (Yellow), Amethyst, Citrine, Pyrope Garnet,
-Almandine Garnet, Spessartine Garnet, Grossular Garnet (Tsavorite), Andradite Garnet
+Almandine Garnet, Spessartine Garnet, Color-Change Garnet (Pyrope-Spessartine), Grossular Garnet (Tsavorite), Andradite Garnet
 (Demantoid), Peridot, YAG, GGG, Benitoite, Andalusite, Opal, Glass (N-BK7), Glass (F2)
 and Rutile.
 

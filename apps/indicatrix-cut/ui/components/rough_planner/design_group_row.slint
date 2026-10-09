@@ -1,5 +1,6 @@
 import { Theme } from "../../theme.slint";
 import { RoughPlanModel, RoughPlanStoneGroup, RoughMetric } from "../../models/rough_plan.slint";
+import { Zoning } from "../../models/zoning.slint";
 import { RoughPill } from "fields.slint";
 
 // One design group row inside a result card: color swatch, thumbnail, title with
@@ -14,6 +15,9 @@ export component DesignGroupRow inherits Rectangle {
     in property <bool> is_selected;
     in property <bool> show_thumbnails: true;
     callback clicked();
+    // "Use colour" (only in a `zoning` build, with a stored rough colour): adopt the colour of
+    // the first stone of this design as a material.
+    callback adopt();
 
     property <bool> link_ok: root.group.linkable && RoughPlanModel.links_enabled;
     // The chip is short ("changed"); the wording the library check produced goes on
@@ -177,6 +181,20 @@ export component DesignGroupRow inherits Rectangle {
                         ? "Include " + root.group.name + " in planning"
                         : "Exclude " + root.group.name + " from planning";
                     clicked => { RoughPlanModel.toggle_exclude(root.group.entry_id); }
+                }
+            }
+
+            // Adopt the rough's colour for this design (`zoning` feature, plan with a stored colour).
+            if Zoning.enabled && Zoning.colour_available: VerticalLayout {
+                alignment: center;
+                RoughPill {
+                    text: "Use colour";
+                    hint: !root.link_ok ? "Switch to the local library first: this needs the design in the library."
+                        : (RoughPlanModel.running ? "Not while a plan is running."
+                        : "Make a material from the colour this stone has in the rough, select it in the editor and set the stone size to the real size of this stone.");
+                    enabled: root.link_ok && !RoughPlanModel.running;
+                    accessible-label: "Use the colour of " + root.group.name;
+                    clicked => { root.adopt(); }
                 }
             }
         }

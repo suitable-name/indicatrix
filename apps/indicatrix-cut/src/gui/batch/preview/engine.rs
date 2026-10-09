@@ -437,6 +437,9 @@ pub(super) struct LaneShared<'a> {
     /// How many remote dispatchers this batch spawns -- see
     /// `batch_queue::remote_lane_count`. `0` when no remote lane runs (`LocalOnly`).
     pub(super) remote_lane_total: u32,
+    /// Pictures one batched remote request carries (`AppSettings::remote_preview_batch_size`,
+    /// protocol v24); `remote_lane::remote_batch` claims that many at a time.
+    pub(super) remote_batch_size: usize,
     /// Set by the first remote dispatcher to start sitting a failing remote out, so the
     /// "remote lane paused" toast shows once per batch however many dispatchers (each
     /// with its own failure count) reach their own sit-out.

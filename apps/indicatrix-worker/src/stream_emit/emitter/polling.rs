@@ -153,12 +153,28 @@ pub(in crate::stream_emit) fn poll_for_client_message<S: Read + TimeoutRead>(
             ClientPoll::Stale
         }
         ClientMessage::Ping { nonce } => ClientPoll::Ping(nonce),
+        // `zoning` builds: the zones of the request pipelined right behind this one. Kept for
+        // it (it is read, and served, on this same connection thread).
+        #[cfg(feature = "zoning")]
+        ClientMessage::ZoningPayload(payload) => {
+            crate::serve::zoning::stash(*payload);
+            ClientPoll::Stale
+        }
         // Not supported by a plain worker at all (refused with UNSUPPORTED_REQUEST when
         // it arrives between requests); mid-stream it is dropped like a LibraryRequest.
         ClientMessage::FinalImageRequest(_) => {
             tracing::debug!(
                 "received a FinalImageRequest while request_id={request_id} was streaming -- \
                  not supported by this server; ignoring"
+            );
+            ClientPoll::Stale
+        }
+        // v24: a batch is served by `serve::connection::batch`, on a connection with no
+        // single render in flight; mid-stream it is dropped like a FinalImageRequest.
+        ClientMessage::BatchRenderRequest(_) => {
+            tracing::debug!(
+                "received a BatchRenderRequest while request_id={request_id} was streaming -- \
+                 batches are not serviced mid-stream; ignoring"
             );
             ClientPoll::Stale
         }

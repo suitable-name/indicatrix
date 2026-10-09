@@ -38,7 +38,9 @@ use crate::{framing::MAX_FRAME_LEN, messages::PayloadEncoding};
 use glam::Vec3;
 
 /// One payload as it goes on the wire: its encoding, its decoded size, and the bytes to
-/// send. Built by [`PayloadEncoder::encode`]; turned into a header by
+/// send.
+///
+/// Built by [`PayloadEncoder::encode`]; turned into a header by
 /// `FrameHeader::for_encoded`/`PreviewHeader::for_encoded`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncodedPayload<'a> {

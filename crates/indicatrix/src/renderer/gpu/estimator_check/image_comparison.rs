@@ -272,6 +272,25 @@ pub fn run_image_comparison_absorption_path_scale(
     run_image_comparison_for(ctx, &material, &[], LightingPreset::Daylight)
 }
 
+/// Tier 3 statistical image comparison of a ZONED stone (`zoning` feature).
+///
+/// The CPU tracer's zoned absorption (`optics::raytracer::zoned`) against the megakernel's zone
+/// kernels (`shaders/zoning/*.wgsl`), through the same disjoint-sample-range z-score criteria as
+/// every other Tier 3 check ([`ImageComparisonResult::passed`]). A whole-image colour bias
+/// from a wrong zone length, boundary, frame or per-zone alpha shows up as a clustered
+/// failure.
+///
+/// See [`crate::renderer::gpu::zoned_cases::ZonedImageCase`] for the stones; the soft cases
+/// are the ones that decide whether `GPU_SOFT_SUBDIV` may be lowered.
+#[cfg(feature = "zoning")]
+#[must_use]
+pub fn run_image_comparison_zoned(
+    ctx: &crate::renderer::gpu::GpuContext,
+    case: crate::renderer::gpu::zoned_cases::ZonedImageCase,
+) -> ImageComparisonResult {
+    run_image_comparison_for(ctx, &case.material(), &[], LightingPreset::Daylight)
+}
+
 /// Tier 3 statistical image comparison under the ISO hemisphere lighting model.
 ///
 /// Diamond on the standard 57-facet Round Brilliant.

@@ -146,7 +146,9 @@ struct MergeState {
     parked_count: u32,
 }
 
-/// See the module doc. Shared by reference between the pool's lane threads (which
+/// See the module doc.
+///
+/// Shared by reference between the pool's lane threads (which
 /// [`add`](Self::add)) and any observer thread (which reads
 /// [`snapshot_into`](Self::snapshot_into) / [`total`](Self::total)).
 #[derive(Debug)]

@@ -25,11 +25,15 @@ mod tests_batch_lanes;
 #[cfg(test)]
 mod tests_payload_encoding;
 #[cfg(test)]
+mod tests_preview_batch_size;
+#[cfg(test)]
 mod tests_remote;
 mod ui_preferences;
 mod worker;
 
-pub use app_settings::clamp_remote_batch_lanes;
+pub use app_settings::{
+    clamp_remote_batch_lanes, clamp_remote_preview_batch_size, effective_remote_batch_lanes,
+};
 pub use head_shadow::{clamp_head_shadow_deg, head_shadow_deg_from_slider};
 pub use import_preview::ImportPreviewChoice;
 pub use lighting_preset::LightingPreset;

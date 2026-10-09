@@ -264,6 +264,10 @@ pub struct GpuGemMaterial {
     /// The extraordinary-ray curve's `param_b`, encoded like [`DispersionParams::param_b`].
     /// Meaningless when `has_extraordinary_dispersion == 0`.
     pub extraordinary_param_b: [f32; 4],
+    /// The zone table (`zoning` feature only), appended at offset 576 so every earlier
+    /// field keeps its offset. See `renderer::buffers::zoning`. All zero means unzoned.
+    #[cfg(feature = "zoning")]
+    pub zones: super::zoning::GpuZoneTable,
 }
 
 const _: () = {
@@ -286,7 +290,13 @@ const _: () = {
     assert!(offset_of!(GpuGemMaterial, extraordinary_model_type) == 528);
     assert!(offset_of!(GpuGemMaterial, extraordinary_param_a) == 544);
     assert!(offset_of!(GpuGemMaterial, extraordinary_param_b) == 560);
+    #[cfg(not(feature = "zoning"))]
     assert!(size_of::<GpuGemMaterial>() == 576);
+    // With the zone table appended: 576 + 2128 (see `renderer::buffers::zoning`).
+    #[cfg(feature = "zoning")]
+    assert!(offset_of!(GpuGemMaterial, zones) == 576);
+    #[cfg(feature = "zoning")]
+    assert!(size_of::<GpuGemMaterial>() == 576 + 2128);
 };
 
 /// Encodes a CPU `optics::materials::GemMaterial` into a [`GpuGemMaterial`] for upload.
@@ -323,10 +333,16 @@ impl GpuGemMaterial {
             OpticalCharacter::BiaxialNegative => optical_character::BIAXIAL_NEGATIVE,
         };
 
-        let (o_ray_bands, o_ray_band_count) = encode_bands(&material.absorption.o_ray);
-        let (e_ray_bands, e_ray_band_count) = encode_bands(&material.absorption.e_ray);
-        let (beta_ray_bands, beta_ray_band_count) = material
-            .absorption
+        // With `zoning`, a renderable zoned material uploads its BASE zone here (the zones
+        // follow in the appended table); every other material uploads its own tensor.
+        #[cfg(feature = "zoning")]
+        let (absorption, zones) = super::zoning::material_parts(material);
+        #[cfg(not(feature = "zoning"))]
+        let absorption = &material.absorption;
+
+        let (o_ray_bands, o_ray_band_count) = encode_bands(&absorption.o_ray);
+        let (e_ray_bands, e_ray_band_count) = encode_bands(&absorption.e_ray);
+        let (beta_ray_bands, beta_ray_band_count) = absorption
             .beta_ray
             .as_deref()
             .map_or_else(empty_bands, encode_bands);
@@ -350,7 +366,7 @@ impl GpuGemMaterial {
             dispersion: DispersionParams::encode(material),
             crystal_system: crystal_system_val,
             optical_character: optical_character_val,
-            is_pleochroic: u32::from(material.absorption.is_pleochroic),
+            is_pleochroic: u32::from(absorption.is_pleochroic),
             o_ray_band_count,
             e_ray_band_count,
             o_ray_bands,
@@ -358,7 +374,7 @@ impl GpuGemMaterial {
             scattering_sigma_s: material.scattering_sigma_s,
             scattering_g: material.scattering_g,
             edge_rounding_radius: material.edge_rounding_radius,
-            has_beta_ray: u32::from(material.absorption.beta_ray.is_some()),
+            has_beta_ray: u32::from(absorption.beta_ray.is_some()),
             beta_ray_band_count,
             beta_ray_bands,
             absorption_path_scale: material.absorption_path_scale,
@@ -367,6 +383,8 @@ impl GpuGemMaterial {
             _pad_before_extraordinary_params: [0; 3],
             extraordinary_param_a,
             extraordinary_param_b,
+            #[cfg(feature = "zoning")]
+            zones,
         }
     }
 }

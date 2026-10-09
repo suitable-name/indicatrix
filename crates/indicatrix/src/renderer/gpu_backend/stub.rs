@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicBool;
 
 use glam::Vec3;
 
-use super::{GpuAccumulate, GpuPipelineKind, GpuSceneRef};
+use super::{GpuAccumulate, GpuBatchItem, GpuPipelineKind, GpuSceneRef};
 
 /// Gpu backend.
 pub struct GpuBackend;
@@ -88,5 +88,23 @@ impl GpuBackend {
         _cancel: &AtomicBool,
     ) -> GpuAccumulate {
         GpuAccumulate::Declined
+    }
+
+    /// Declines every item through `on_done`, leaving every `out` untouched -- see the
+    /// `gpu`-gated [`super::backend::GpuBackend::try_accumulate_batch_cancellable`] for
+    /// what it stands in for.
+    #[allow(
+        clippy::unused_self,
+        reason = "signature must match the `gpu`-gated GpuBackend::try_accumulate_batch_cancellable"
+    )]
+    pub fn try_accumulate_batch_cancellable(
+        &self,
+        items: &mut [GpuBatchItem<'_>],
+        _cancel: &AtomicBool,
+        on_done: &mut dyn FnMut(usize, GpuAccumulate),
+    ) {
+        for index in 0..items.len() {
+            on_done(index, GpuAccumulate::Declined);
+        }
     }
 }

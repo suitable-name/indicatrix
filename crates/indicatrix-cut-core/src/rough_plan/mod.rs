@@ -70,11 +70,17 @@
 //! `wasm32-unknown-unknown`. The result never depends on the order of the
 //! candidate list (it is sorted by `entry_id` first).
 
+#[cfg(feature = "zoning")]
+pub mod camera_spectral;
+#[cfg(feature = "zoning")]
+pub mod colour_fit;
 mod dp;
 pub mod fit;
 pub mod locate;
 mod lp;
 mod pareto;
+#[cfg(feature = "zoning")]
+pub mod photometry;
 mod piece;
 pub mod plan;
 mod rank;
@@ -96,6 +102,8 @@ mod tests_lp;
 mod tree;
 mod types;
 mod uniform;
+#[cfg(feature = "zoning")]
+pub mod zoned_plan;
 
 pub use dp::{plan_alternatives, plan_alternatives_lanes, plan_rough_for_order};
 pub use fit::*;

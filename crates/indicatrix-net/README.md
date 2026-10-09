@@ -61,7 +61,7 @@ it.
 
 ## Protocol version and message set
 
-`messages::PROTOCOL_VERSION: u16 = 21`. Three protocols share one authenticated
+`messages::PROTOCOL_VERSION: u16 = 24`. Three protocols share one authenticated
 connection: **render** (offload sample tracing), **tilt curves** (offload one design's
 full tilt-performance sweep), and **library** (read a design catalogue). A peer may
 serve any subset, and — for a viewer — consume all three.
@@ -249,6 +249,12 @@ emitters, `indicatrix::optics::fluorescence::Fluorescence`; always on the wire, 
 emitter list for a non-fluorescent material) and the `LightingPreset::{UvLamp365,
 UvLamp395}` variants (enum indices 7 and 8). A scene with fluorescence or a UV lamp is
 traced on the CPU only (`scene_routes_to_gpu` is false); the GPU path is unchanged.
+(v21 to v23 are in `PROTOCOL_VERSION`'s own doc comment.) v24 added batched preview
+requests: `ClientMessage::BatchRenderRequest` (index 8, `messages::batch`) asks for up to
+32 finished pictures at once on one persistent connection, and the worker answers each
+with `StreamEvent::BatchItemDone` (a raw PNG payload frame, byte-identical to the
+viewer's own preview path), `BatchItemFailed`, per-item `BatchItemProgress`, and a final
+`BatchDone`; two batches may be in flight per connection.
 postcard lays structs out as bare fields in order, so every appended field shifts the byte
 layout of every `SceneState`: the bump turns a silent misread into a clear handshake
 refusal (the build-hash check would refuse a peer on a different build anyway, but

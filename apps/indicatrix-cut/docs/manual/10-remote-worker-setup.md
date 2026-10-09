@@ -213,6 +213,20 @@ repeatedly, each lane backs off on its own (and with **Local + Remote** your
 own computer renders the pictures the remote could not, exactly as before).
 With **Local only**, no lane is used.
 
+**Batched previews.** Against a single worker (not a coordinator), Generate
+Previews does not send one picture per request. Each lane keeps one connection
+open for the whole run and sends the pictures in **requests of several at once**
+(both views of a design together), and sends the next request while the current
+one is still rendering, so the worker's graphics card always has work queued
+instead of idling between pictures. The worker returns each finished picture
+(the same picture your own computer would have made), and the app saves it as it
+arrives. **Pictures per preview request** in the same panel sets the request size
+(1 to 32, default 10). Because the batching already keeps a graphics card busy,
+a worker with a graphics card uses **2 lanes** unless you have set the lane count
+yourself; a CPU worker or a coordinator keeps the default of 4. A coordinator
+does not take batches: against one, previews are sent one picture at a time as
+before. Tilt-curve batches are not batched.
+
 ## Denoise and sample budget
 
 One setting applies to remote rendering generally, not per-worker:

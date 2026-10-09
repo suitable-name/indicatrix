@@ -38,6 +38,10 @@ pub(super) fn solve4(mut a: [[Cplx; 4]; 4], mut b: [Cplx; 4]) -> [Cplx; 4] {
             if factor.norm_sqr() == 0.0 {
                 continue;
             }
+            #[allow(
+                clippy::needless_range_loop,
+                reason = "row `row` is updated from row `col` of the same matrix; an iterator would need a split borrow"
+            )]
             for j in col..4 {
                 a[row][j] = a[row][j].sub(factor.mul(a[col][j]));
             }
@@ -85,6 +89,10 @@ pub(super) fn solve4_two_rhs(
             if factor.norm_sqr() == 0.0 {
                 continue;
             }
+            #[allow(
+                clippy::needless_range_loop,
+                reason = "row `row` is updated from row `col` of the same matrix; an iterator would need a split borrow"
+            )]
             for j in col..4 {
                 a[row][j] = a[row][j].sub(factor.mul(a[col][j]));
             }

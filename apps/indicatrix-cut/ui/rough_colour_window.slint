@@ -1,0 +1,844 @@
+import { Theme } from "theme.slint";
+import { ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { RoughPill, RoughField, ElidedText } from "components/rough_planner/fields.slint";
+import { TipBox } from "components/tip_box.slint";
+import { PhotoCanvas, CanvasMarker, ReportRow } from "components/locate/photo_canvas.slint";
+import { Zoning } from "models/zoning.slint";
+
+// One view's row of the Photos step: the file names and what was found.
+export struct ImportSlot {
+    name: string,
+    stone: string,
+    white: string,
+    dark: string,
+    second: string,
+    status: string,
+    active: bool,
+}
+
+// One view in the strip over the picture.
+export struct ViewRow {
+    name: string,
+    status: string,
+    active: bool,
+}
+
+// One row of the zone list.
+export struct ZoneListRow {
+    title: string,
+    summary: string,
+    selected: bool,
+}
+
+// One parameter of the selected zone.
+export struct ParamEditRow {
+    name: string,
+    value: string,
+    locked: bool,
+}
+
+// A predicted colour with its words.
+export struct ChipItem {
+    label: string,
+    swatch: color,
+    text: string,
+}
+
+// A mask flag colour and its name.
+export struct LegendRow {
+    name: string,
+    swatch: color,
+}
+
+component StepTitle inherits Rectangle {
+    in property <string> text;
+    height: 18px;
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.text;
+        font-size: 11px;
+        font-weight: 700;
+        color: Theme.text-muted;
+        vertical-alignment: center;
+    }
+}
+
+component Note inherits Rectangle {
+    in property <string> text;
+    in property <color> text_color: Theme.text-muted;
+    preferred-height: note_text.preferred-height;
+    note_text := Text {
+        width: parent.width;
+        text: root.text;
+        font-size: 10px;
+        color: root.text_color;
+        wrap: word-wrap;
+    }
+}
+
+component Rows inherits VerticalLayout {
+    in property <[ReportRow]> rows;
+    spacing: 2px;
+    for row in root.rows: Text {
+        text: row.text;
+        font-size: 10px;
+        color: row.warn ? Theme.accent-amber : Theme.text-secondary;
+        wrap: word-wrap;
+    }
+}
+
+// "Rough colour...": the Rough planner's colour wizard (behind the `zoning` feature). Photos of a
+// mesh rough on a fixed rig become a colour for the stone and, if needed, for zones inside it. All
+// state is pushed from Rust (`gui::rough_colour::wizard`); the window holds only what is typed.
+export component RoughColourWindow inherits Window {
+    title: "Rough Colour from Photos \u{2014} Indicatrix Cut";
+    // See `MainWindow`'s `icon` (app.slint) for why every window sets it.
+    icon: @image-url("../assets/icon.png");
+    preferred-width: 1320px;
+    preferred-height: 860px;
+    min-width: 1000px;
+    min-height: 600px;
+    background: Theme.bg-darkest;
+    default-font-family: "Segoe UI";
+
+    // The step strip.
+    in property <int> step: 0;
+    in property <[string]> step_titles;
+    in property <[bool]> step_ok;
+    in property <string> next_hint;
+    // The window's state.
+    in property <bool> busy: false;
+    in property <string> busy_text;
+    in property <float> progress: 0;
+    in property <string> error_text;
+    in property <string> status_text;
+    // 1. Checklist and rig.
+    in property <string> checklist_title;
+    in property <[string]> checklist;
+    in property <[string]> rig_names;
+    in-out property <int> rig_index: -1;
+    in property <string> align_text;
+    // 2. Photos.
+    in property <[ImportSlot]> slots;
+    in property <[ReportRow]> consistency_rows;
+    // 3. Calibration.
+    in property <[string]> camera_names;
+    in-out property <int> camera_index: 0;
+    in property <string> camera_file_text;
+    in property <[string]> backlight_names;
+    in-out property <int> backlight_index: 0;
+    in property <[string]> led_names;
+    in-out property <int> led_index: 0;
+    in property <string> backlight_file_text;
+    in-out property <string> panel_setback_text: "40";
+    in-out property <string> panel_size_text: "200";
+    in property <[ReportRow]> calibration_rows;
+    // 4/5/6. The picture and its views.
+    in property <[ViewRow]> view_rows;
+    in property <image> photo;
+    in property <int> image_w: 1;
+    in property <int> image_h: 1;
+    in property <bool> has_photo: false;
+    in property <[CanvasMarker]> markers;
+    in-out property <int> zoom: 1;
+    // 4. Masks.
+    in-out property <int> brush_mode: 0;
+    in-out property <string> brush_radius_text: "4";
+    in-out property <string> edge_band_text: "3";
+    in property <[LegendRow]> legend;
+    in property <string> mask_text;
+    // 5. Surfaces.
+    in-out property <int> surface_index: 0;
+    in-out property <string> roughness_text: "0.20";
+    in-out property <int> paint_mode: 0;
+    in property <string> windows_text;
+    // 6. Fit.
+    in property <bool> show_host_picker: false;
+    in property <[string]> host_names;
+    in-out property <int> host_index: 0;
+    in property <[string]> shape_names;
+    in property <[ZoneListRow]> zone_rows;
+    in property <[ParamEditRow]> param_rows;
+    in-out property <string> softness_text: "0";
+    in-out property <string> iterations_text: "3";
+    in property <string> iterations_hint;
+    in-out property <string> planned_text: "12";
+    in property <[string]> suggestions;
+    in-out property <bool> mark_mode: false;
+    in-out property <int> mark_kind_index: 0;
+    in property <string> mark_text;
+    in property <[ReportRow]> fit_rows;
+    // 7. Compare.
+    in property <image> compare_photo;
+    in property <image> compare_render;
+    in property <image> compare_heat;
+    in-out property <int> compare_zoom: 1;
+    in property <string> compare_stats;
+    in property <[ReportRow]> lovo_rows;
+    in property <[ReportRow]> model_rows;
+    in property <[ChipItem]> chips;
+    in property <[ReportRow]> warning_rows;
+    in property <string> zoned_prompt;
+    // 8. Accept.
+    in property <string> accept_text;
+    in property <bool> can_accept: false;
+
+    callback go_step(int);
+    callback next();
+    callback back();
+    callback cancel_job();
+    callback rig_selected(int);
+    callback open_locate();
+    callback load_file(int, int);
+    callback clear_view_files(int);
+    callback use_locate_photos();
+    callback prepare();
+    callback camera_selected(int);
+    callback pick_camera_file();
+    callback backlight_selected(int);
+    callback pick_backlight_file();
+    callback apply_calibration();
+    callback select_view(int);
+    callback canvas_clicked(float, float);
+    callback edge_band_committed();
+    callback clear_brush();
+    callback surface_selected(int);
+    callback clear_windows();
+    callback add_zone(int);
+    callback remove_zone(int);
+    callback select_zone(int);
+    callback param_committed(int, string);
+    callback toggle_lock(int);
+    // Takes back the newest zone edit, including a whole drag of a 3D handle in the rough view.
+    callback undo_zone_edit();
+    callback softness_committed();
+    callback suggest_zones();
+    callback accept_suggestion(int);
+    callback marks_undo();
+    callback marks_clear();
+    callback marks_fit();
+    callback refine();
+    callback start_fit();
+    callback compare_clicked(float, float);
+    callback compare_zoom_changed();
+    callback add_zones_from_prompt();
+    callback accept_result();
+    callback export_report();
+
+    if Zoning.enabled: Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+
+        VerticalLayout {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+            padding: 10px;
+            spacing: 8px;
+
+            // The step strip and the window's messages.
+            HorizontalLayout {
+                height: 28px;
+                spacing: 6px;
+
+                for title[i] in root.step_titles: RoughPill {
+                    height: 24px;
+                    text: "\{i + 1} \{title}";
+                    hint: root.step_ok[i] ? "Go to this step." : "Not yet: finish the earlier steps first.";
+                    active: root.step == i;
+                    enabled: root.step_ok[i] && !root.busy;
+                    clicked => { root.go_step(i); }
+                }
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.busy ? root.busy_text : (root.error_text != "" ? root.error_text : root.status_text);
+                    font-size: 11px;
+                    color: root.busy ? Theme.text-secondary : (root.error_text != "" ? Theme.danger : Theme.text-secondary);
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                if root.busy: RoughPill {
+                    text: "Cancel";
+                    hint: "Stop the running step.";
+                    clicked => { root.cancel_job(); }
+                }
+            }
+
+            if root.busy && root.progress > 0: Rectangle {
+                height: 4px;
+                background: Theme.bg-input;
+                border-radius: 2px;
+                Rectangle {
+                    x: 0px;
+                    width: parent.width * clamp(root.progress, 0.0, 1.0);
+                    height: parent.height;
+                    background: Theme.accent-cyan;
+                    border-radius: 2px;
+                }
+            }
+
+            HorizontalLayout {
+                vertical-stretch: 1;
+                spacing: 10px;
+
+                // The step's controls.
+                Rectangle {
+                    width: 400px;
+                    background: Theme.bg-dark;
+                    border-radius: Theme.radius-md;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    clip: true;
+
+                    ScrollView {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: parent.height;
+
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 6px;
+                            alignment: start;
+
+                            // --- 1. Checklist ---------------------------------------------------
+                            if root.step == 0: VerticalLayout {
+                                spacing: 6px;
+                                StepTitle { text: "RIG"; }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    TipBox {
+                                        hint: "The camera rig the photos were taken on.";
+                                        ComboBox {
+                                            min-width: 0px;
+                                            model: root.rig_names;
+                                            current-index <=> root.rig_index;
+                                            enabled: !root.busy && root.rig_names.length > 0;
+                                            accessible-label: "Camera rig";
+                                            selected(value) => { root.rig_selected(root.rig_index); }
+                                        }
+                                    }
+                                    RoughPill {
+                                        text: "Locate...";
+                                        hint: "Open Locate inclusion from photos to create a rig and align the mesh to it.";
+                                        clicked => { root.open_locate(); }
+                                    }
+                                }
+                                Note { text: root.align_text; text_color: Theme.text-secondary; }
+                                Rectangle { height: 6px; }
+                                StepTitle { text: root.checklist_title; }
+                                for line in root.checklist: Note { text: "\u{2022} " + line; text_color: Theme.text-secondary; }
+                            }
+
+                            // --- 2. Photos ------------------------------------------------------
+                            if root.step == 1: VerticalLayout {
+                                spacing: 6px;
+                                StepTitle { text: "PHOTOS PER VIEW"; }
+                                Note { text: "Load the stone photo and its white frame for each view, a dark frame if you have one, and optionally a second, shorter exposure. RAW, TIFF, PNG and JPEG are read; files are never copied."; }
+                                RoughPill {
+                                    text: "Use the photos of the locate window";
+                                    hint: "Take the stone photos already loaded in the Locate inclusion window.";
+                                    enabled: !root.busy;
+                                    clicked => { root.use_locate_photos(); }
+                                }
+                                for slot[i] in root.slots: Rectangle {
+                                    height: 86px;
+                                    border-radius: Theme.radius-sm;
+                                    background: slot.active ? Theme.surface-selected : Theme.bg-card;
+                                    VerticalLayout {
+                                        padding: 4px;
+                                        spacing: 2px;
+                                        ElidedText {
+                                            text: slot.name + (slot.status == "" ? "" : " \u{2014} " + slot.status);
+                                            font_size: 11px;
+                                            font_weight: 700;
+                                        }
+                                        HorizontalLayout {
+                                            spacing: 4px;
+                                            RoughPill { text: "Stone"; hint: slot.stone == "" ? "Load the stone photo." : slot.stone; active: slot.stone != ""; enabled: !root.busy; clicked => { root.load_file(i, 0); } }
+                                            RoughPill { text: "White"; hint: slot.white == "" ? "Load a white frame (empty rig, backlight on)." : slot.white; active: slot.white != ""; enabled: !root.busy; clicked => { root.load_file(i, 1); } }
+                                            RoughPill { text: "Dark"; hint: slot.dark == "" ? "Load a dark frame (backlight off)." : slot.dark; active: slot.dark != ""; enabled: !root.busy; clicked => { root.load_file(i, 2); } }
+                                            RoughPill { text: "2nd exposure"; hint: slot.second == "" ? "Load a second exposure about 2 EV lower." : slot.second; active: slot.second != ""; enabled: !root.busy; clicked => { root.load_file(i, 3); } }
+                                            RoughPill { text: "Clear"; hint: "Forget this view's files."; enabled: !root.busy; clicked => { root.clear_view_files(i); } }
+                                        }
+                                        ElidedText {
+                                            text: slot.stone == "" ? "no stone photo" : slot.stone;
+                                            font_size: 10px;
+                                            text_color: Theme.text-muted;
+                                        }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    alignment: start;
+                                    RoughPill {
+                                        text: "Prepare photos";
+                                        hint: "Decode, calibrate and mask every complete view. This reads the photos and can take a minute.";
+                                        active: true;
+                                        enabled: !root.busy;
+                                        clicked => { root.prepare(); }
+                                    }
+                                }
+                                Rows { rows: root.consistency_rows; }
+                            }
+
+                            // --- 3. Calibration -------------------------------------------------
+                            if root.step == 2: VerticalLayout {
+                                spacing: 6px;
+                                StepTitle { text: "CAMERA"; }
+                                TipBox {
+                                    hint: "How the camera's colour sensitivities are known. Measured curves or a reference filter set give the most certain colours; the sRGB fallback is a rough guess.";
+                                    ComboBox {
+                                        min-width: 0px;
+                                        model: root.camera_names;
+                                        current-index <=> root.camera_index;
+                                        enabled: !root.busy;
+                                        accessible-label: "Camera calibration";
+                                        selected(value) => { root.camera_selected(root.camera_index); }
+                                    }
+                                }
+                                if root.camera_index > 0: HorizontalLayout {
+                                    spacing: 6px;
+                                    ElidedText { text: root.camera_file_text; font_size: 10px; text_color: Theme.text-secondary; }
+                                    RoughPill { text: "Choose file..."; hint: "A curves file (wavelength, r, g, b) or a filter set (name, r, g, b, spectrum file per line)."; enabled: !root.busy; clicked => { root.pick_camera_file(); } }
+                                }
+                                Rectangle { height: 6px; }
+                                StepTitle { text: "BACKLIGHT"; }
+                                TipBox {
+                                    hint: "The spectrum of the light behind the stone: found from the white frame, a CIE LED kind, or a measured file.";
+                                    ComboBox {
+                                        min-width: 0px;
+                                        model: root.backlight_names;
+                                        current-index <=> root.backlight_index;
+                                        enabled: !root.busy;
+                                        accessible-label: "Backlight source";
+                                        selected(value) => { root.backlight_selected(root.backlight_index); }
+                                    }
+                                }
+                                if root.backlight_index == 1: TipBox {
+                                    hint: "The CIE 15:2018 LED illuminant that matches your backlight.";
+                                    ComboBox {
+                                        min-width: 0px;
+                                        model: root.led_names;
+                                        current-index <=> root.led_index;
+                                        enabled: !root.busy;
+                                        accessible-label: "LED kind";
+                                    }
+                                }
+                                if root.backlight_index == 2: HorizontalLayout {
+                                    spacing: 6px;
+                                    ElidedText { text: root.backlight_file_text; font_size: 10px; text_color: Theme.text-secondary; }
+                                    RoughPill { text: "Choose file..."; hint: "A table of wavelength in nm and relative power."; enabled: !root.busy; clicked => { root.pick_backlight_file(); } }
+                                }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    RoughField {
+                                        label: "Panel behind stone (mm)";
+                                        hint: "How far behind the stone's centre the diffuse backlight panel is.";
+                                        editable: !root.busy;
+                                        value <=> root.panel_setback_text;
+                                    }
+                                    RoughField {
+                                        label: "Panel size (mm)";
+                                        hint: "The side of the square backlight panel.";
+                                        editable: !root.busy;
+                                        value <=> root.panel_size_text;
+                                    }
+                                }
+                                HorizontalLayout {
+                                    alignment: start;
+                                    RoughPill {
+                                        text: "Apply calibration";
+                                        hint: "Build the camera response and the backlight spectrum and show how well they fit.";
+                                        active: true;
+                                        enabled: !root.busy;
+                                        clicked => { root.apply_calibration(); }
+                                    }
+                                }
+                                Rows { rows: root.calibration_rows; }
+                            }
+
+                            // --- 4. Masks -------------------------------------------------------
+                            if root.step == 3: VerticalLayout {
+                                spacing: 6px;
+                                StepTitle { text: "MASKS"; }
+                                Note { text: "Pixels with a colour here are left out of the fit. Brush away reflections, stains or anything else that is not the stone's colour."; }
+                                for entry in root.legend: HorizontalLayout {
+                                    spacing: 6px;
+                                    Rectangle { width: 12px; height: 12px; border-radius: 2px; background: entry.swatch; }
+                                    Text { text: entry.name; font-size: 10px; color: Theme.text-secondary; vertical-alignment: center; }
+                                }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    RoughPill { text: "Brush off"; hint: "Clicks on the picture do nothing."; active: root.brush_mode == 0; clicked => { root.brush_mode = 0; } }
+                                    RoughPill { text: "Exclude"; hint: "Click the picture to leave a round patch out of the fit."; active: root.brush_mode == 1; clicked => { root.brush_mode = 1; } }
+                                    RoughPill { text: "Restore"; hint: "Click to take your own exclusion off a patch."; active: root.brush_mode == 2; clicked => { root.brush_mode = 2; } }
+                                    RoughPill { text: "Clear brush"; hint: "Remove all your exclusions in this view."; enabled: !root.busy; clicked => { root.clear_brush(); } }
+                                }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    RoughField {
+                                        label: "Brush radius (px)";
+                                        hint: "The radius of a click, in working pixels (the picture is about 384 pixels across).";
+                                        value <=> root.brush_radius_text;
+                                    }
+                                    RoughField {
+                                        label: "Edge band (px)";
+                                        hint: "How many working pixels at the stone's rim are left out, because the rim is where the model is least exact. Enter applies it.";
+                                        editable: !root.busy;
+                                        value <=> root.edge_band_text;
+                                        committed => { root.edge_band_committed(); }
+                                    }
+                                }
+                                Note { text: root.mask_text; text_color: Theme.text-secondary; }
+                            }
+
+                            // --- 5. Surfaces ----------------------------------------------------
+                            if root.step == 4: VerticalLayout {
+                                spacing: 6px;
+                                StepTitle { text: "SURFACE OF THE ROUGH"; }
+                                Note { text: "A polished face shows the inside as through a window. A frosted skin scatters light. Choose the skin, then paint the polished windows on the picture."; }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    RoughPill { text: "Polished"; hint: "Every face is polished."; active: root.surface_index == 0; enabled: !root.busy; clicked => { root.surface_index = 0; root.surface_selected(0); } }
+                                    RoughPill { text: "Frosted, fixed"; hint: "A frosted skin with the roughness below."; active: root.surface_index == 1; enabled: !root.busy; clicked => { root.surface_index = 1; root.surface_selected(1); } }
+                                    RoughPill { text: "Frosted, find it"; hint: "A frosted skin whose roughness the fit searches (about five traces, slower)."; active: root.surface_index == 2; enabled: !root.busy; clicked => { root.surface_index = 2; root.surface_selected(2); } }
+                                }
+                                if root.surface_index == 1: RoughField {
+                                    label: "Roughness (GGX alpha)";
+                                    hint: "0.05 is a lightly frosted skin, 0.6 a very rough one.";
+                                    value <=> root.roughness_text;
+                                }
+                                if root.surface_index > 0: VerticalLayout {
+                                    spacing: 6px;
+                                    StepTitle { text: "POLISHED WINDOWS"; }
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        RoughPill { text: "Paint off"; hint: "Clicks on the picture do nothing."; active: root.paint_mode == 0; clicked => { root.paint_mode = 0; } }
+                                        RoughPill { text: "Paint window"; hint: "Click on a polished window of the rough, as seen in this photo, or on the rough in the Rough Planner's 3D view while this step is open. Every face under the brush becomes polished."; active: root.paint_mode == 1; clicked => { root.paint_mode = 1; } }
+                                        RoughPill { text: "Erase"; hint: "Click, on the photo or in the Rough Planner's 3D view, to make faces frosted again."; active: root.paint_mode == 2; clicked => { root.paint_mode = 2; } }
+                                        RoughPill { text: "Clear windows"; hint: "Make every face frosted."; enabled: !root.busy; clicked => { root.clear_windows(); } }
+                                    }
+                                    Note { text: root.windows_text; text_color: Theme.text-secondary; }
+                                }
+                            }
+
+                            // --- 6. Fit ---------------------------------------------------------
+                            if root.step == 5: VerticalLayout {
+                                spacing: 6px;
+                                StepTitle { text: "COLOUR MODEL"; }
+                                Note { text: "The colour of each zone is fitted as a smooth absorption spectrum. The photos of all views are fitted together."; }
+                                if root.show_host_picker: TipBox {
+                                    hint: "The host mineral, for the chromophore model. Unknown fits the smooth spectrum only.";
+                                    ComboBox {
+                                        min-width: 0px;
+                                        model: root.host_names;
+                                        current-index <=> root.host_index;
+                                        enabled: !root.busy;
+                                        accessible-label: "Host species";
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    RoughField {
+                                        label: "Planned stone width (mm)";
+                                        hint: "The width of the cut stone, for the predicted colour next to the 7 mm reference.";
+                                        value <=> root.planned_text;
+                                    }
+                                }
+
+                                StepTitle { text: "ZONES"; }
+                                for zone[i] in root.zone_rows: Rectangle {
+                                    height: 38px;
+                                    border-radius: Theme.radius-sm;
+                                    background: zone.selected ? Theme.surface-selected : Theme.bg-card;
+                                    TouchArea { mouse-cursor: pointer; clicked => { root.select_zone(i); } }
+                                    HorizontalLayout {
+                                        padding: 4px;
+                                        spacing: 6px;
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            alignment: center;
+                                            ElidedText { text: zone.title; font_size: 11px; font_weight: 700; }
+                                            ElidedText { text: zone.summary; font_size: 10px; text_color: Theme.text-muted; }
+                                        }
+                                        if i > 0: VerticalLayout {
+                                            alignment: center;
+                                            RoughPill { text: "Remove"; hint: "Take this zone out."; enabled: !root.busy; clicked => { root.remove_zone(i); } }
+                                        }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    RoughPill {
+                                        text: "Undo zone edit";
+                                        hint: "Take back the last change to the zones. Dragging a handle in the rough view counts as one change.";
+                                        enabled: !root.busy;
+                                        clicked => { root.undo_zone_edit(); }
+                                    }
+                                    Note { text: "Drag the handles of the selected zone in the Rough Planner's 3D view."; }
+                                }
+                                Note { text: "Add a zone:"; }
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    for name[k] in root.shape_names: RoughPill {
+                                        text: name;
+                                        hint: "Add a " + name + " zone in the middle of the rough, then edit it below.";
+                                        enabled: !root.busy;
+                                        clicked => { root.add_zone(k); }
+                                    }
+                                }
+                                for param[r] in root.param_rows: HorizontalLayout {
+                                    spacing: 6px;
+                                    Text { width: 110px; text: param.name; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+                                    TipBox {
+                                        width: 90px;
+                                        hint: "Type a value in mm (angles in radians) and press Enter.";
+                                        LineEdit {
+                                            min-width: 0px;
+                                            text: param.value;
+                                            enabled: !root.busy;
+                                            accessible-label: param.name;
+                                            accepted(t) => { root.param_committed(r, t); }
+                                        }
+                                    }
+                                    RoughPill {
+                                        text: param.locked ? "Locked" : "Lock";
+                                        hint: "A locked parameter stays where it is when the geometry is refined.";
+                                        active: param.locked;
+                                        clicked => { root.toggle_lock(r); }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    RoughField {
+                                        label: "Softness (mm)";
+                                        hint: "The width of the blend across every zone boundary. 0 is a sharp boundary.";
+                                        value <=> root.softness_text;
+                                        committed => { root.softness_committed(); }
+                                    }
+                                    RoughField {
+                                        label: "Refinement iterations";
+                                        hint: root.iterations_hint;
+                                        editable: !root.busy;
+                                        value <=> root.iterations_text;
+                                    }
+                                }
+
+                                StepTitle { text: "ZONES FROM MARKS"; }
+                                Note { text: "Mark a boundary in at least two photos (the same points in the same order), then fit it as a primitive."; }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    RoughPill { text: root.mark_mode ? "Marking on" : "Marking off"; hint: "While on, clicks on the picture add boundary points to this view."; active: root.mark_mode; clicked => { root.mark_mode = !root.mark_mode; } }
+                                    RoughPill { text: "Undo point"; hint: "Take back the last point in this view."; clicked => { root.marks_undo(); } }
+                                    RoughPill { text: "Clear marks"; hint: "Remove all marks."; clicked => { root.marks_clear(); } }
+                                }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    TipBox {
+                                        hint: "The primitive to fit to the marked boundary.";
+                                        ComboBox {
+                                            min-width: 0px;
+                                            model: root.shape_names;
+                                            current-index <=> root.mark_kind_index;
+                                            accessible-label: "Primitive to fit";
+                                        }
+                                    }
+                                    RoughPill { text: "Fit zone"; hint: "Fit the primitive to the marks and add it as a zone."; enabled: !root.busy; clicked => { root.marks_fit(); } }
+                                }
+                                Note { text: root.mark_text; text_color: Theme.text-secondary; }
+
+                                StepTitle { text: "SUGGESTIONS"; }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    alignment: start;
+                                    RoughPill { text: "Suggest from the photos"; hint: "Look for colour boundaries in the photos (or in the residual of the last fit). A suggestion is only a starting point; nothing is added until you accept it."; enabled: !root.busy; clicked => { root.suggest_zones(); } }
+                                }
+                                for sg[i] in root.suggestions: HorizontalLayout {
+                                    spacing: 6px;
+                                    ElidedText { text: sg; font_size: 10px; text_color: Theme.text-secondary; }
+                                    RoughPill { text: "Accept"; hint: "Add this boundary as a zone."; enabled: !root.busy; clicked => { root.accept_suggestion(i); } }
+                                }
+
+                                StepTitle { text: "FIT"; }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    alignment: start;
+                                    RoughPill { text: "Start fit"; hint: "Trace light through the stone for every view and fit the colours. This can take minutes."; active: true; enabled: !root.busy; clicked => { root.start_fit(); } }
+                                    RoughPill { text: "Refine geometry"; hint: "Move the zone boundaries to the position that fits the photos best. Needs a fit and at least one zone."; enabled: !root.busy; clicked => { root.refine(); } }
+                                }
+                                Rows { rows: root.fit_rows; }
+                            }
+
+                            // --- 7. Compare -----------------------------------------------------
+                            if root.step == 6: VerticalLayout {
+                                spacing: 6px;
+                                if root.zoned_prompt != "": Rectangle {
+                                    preferred-height: prompt_text.preferred-height + 12px;
+                                    border-radius: Theme.radius-sm;
+                                    background: Theme.notice-surface;
+                                    prompt_text := Text {
+                                        x: 6px;
+                                        width: parent.width - 12px;
+                                        text: root.zoned_prompt;
+                                        font-size: 10px;
+                                        color: Theme.notice-text;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                                if root.zoned_prompt != "": HorizontalLayout {
+                                    alignment: start;
+                                    RoughPill { text: "Add zones..."; hint: "Go back to the Fit step to add zones."; clicked => { root.add_zones_from_prompt(); } }
+                                }
+                                StepTitle { text: "HOW WELL IT FITS"; }
+                                Note { text: root.compare_stats; text_color: Theme.text-secondary; }
+                                Rows { rows: root.lovo_rows; }
+                                StepTitle { text: "MODELS"; }
+                                Rows { rows: root.model_rows; }
+                                StepTitle { text: "PREDICTED COLOURS"; }
+                                for chip in root.chips: HorizontalLayout {
+                                    spacing: 6px;
+                                    Rectangle { width: 22px; height: 22px; border-radius: 3px; background: chip.swatch; }
+                                    VerticalLayout {
+                                        ElidedText { text: chip.label; font_size: 10px; font_weight: 700; }
+                                        ElidedText { text: chip.text; font_size: 10px; text_color: Theme.text-muted; }
+                                    }
+                                }
+                                Rows { rows: root.warning_rows; }
+                            }
+
+                            // --- 8. Accept ------------------------------------------------------
+                            if root.step == 7: VerticalLayout {
+                                spacing: 6px;
+                                StepTitle { text: "ACCEPT"; }
+                                Note { text: root.accept_text; text_color: Theme.text-secondary; }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    alignment: start;
+                                    RoughPill { text: "Accept"; hint: root.can_accept ? "Store this rough colour with the saved plan and close." : "Save the plan in the Rough Planner first: the colour is stored with it."; active: true; enabled: root.can_accept && !root.busy; clicked => { root.accept_result(); } }
+                                    RoughPill { text: "Export report..."; hint: "Write a Markdown report and the pictures to a folder."; enabled: !root.busy; clicked => { root.export_report(); } }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // The picture.
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 6px;
+
+                    if root.step >= 2 && root.step <= 5: HorizontalLayout {
+                        height: 22px;
+                        spacing: 4px;
+                        for view[i] in root.view_rows: RoughPill {
+                            text: view.name;
+                            hint: view.status;
+                            active: view.active;
+                            clicked => { root.select_view(i); }
+                        }
+                        RoughPill { text: "1x"; hint: "Show the whole picture."; active: root.zoom == 1; clicked => { root.zoom = 1; } }
+                        RoughPill { text: "2x"; hint: "Zoom in twice. Scroll to move."; active: root.zoom == 2; clicked => { root.zoom = 2; } }
+                        RoughPill { text: "4x"; hint: "Zoom in four times. Scroll to move."; active: root.zoom == 4; clicked => { root.zoom = 4; } }
+                    }
+
+                    if root.step >= 2 && root.step <= 5: PhotoCanvas {
+                        vertical-stretch: 1;
+                        photo: root.photo;
+                        image_w: root.image_w;
+                        image_h: root.image_h;
+                        has_photo: root.has_photo;
+                        markers: root.markers;
+                        zoom: root.zoom;
+                        empty_text: "Prepare the photos in step 2 to see them here.";
+                        clicked(fx, fy) => { root.canvas_clicked(fx, fy); }
+                    }
+
+                    if root.step == 6: HorizontalLayout {
+                        height: 22px;
+                        spacing: 4px;
+                        for view[i] in root.view_rows: RoughPill {
+                            text: view.name;
+                            hint: view.status;
+                            active: view.active;
+                            clicked => { root.select_view(i); }
+                        }
+                        RoughPill { text: "1x"; hint: "Show the whole picture."; active: root.compare_zoom == 1; clicked => { root.compare_zoom = 1; root.compare_zoom_changed(); } }
+                        RoughPill { text: "2x"; hint: "Zoom all three pictures twice. Click the photo to centre."; active: root.compare_zoom == 2; clicked => { root.compare_zoom = 2; root.compare_zoom_changed(); } }
+                        RoughPill { text: "4x"; hint: "Zoom all three pictures four times. Click the photo to centre."; active: root.compare_zoom == 4; clicked => { root.compare_zoom = 4; root.compare_zoom_changed(); } }
+                    }
+
+                    if root.step == 6: HorizontalLayout {
+                        vertical-stretch: 1;
+                        spacing: 8px;
+                        for entry in [
+                            { title: "Photo", picture: root.compare_photo },
+                            { title: "Render", picture: root.compare_render },
+                            { title: "Difference (CIEDE2000)", picture: root.compare_heat },
+                        ]: VerticalLayout {
+                            spacing: 4px;
+                            Text { text: entry.title; font-size: 11px; font-weight: 700; color: Theme.text-secondary; horizontal-alignment: center; }
+                            Rectangle {
+                                vertical-stretch: 1;
+                                background: Theme.bg-input;
+                                border-radius: Theme.radius-md;
+                                clip: true;
+                                Image {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    source: entry.picture;
+                                    image-fit: contain;
+                                }
+                                TouchArea {
+                                    clicked => { root.compare_clicked(self.mouse-x / self.width, self.mouse-y / self.height); }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.step == 0 || root.step == 1 || root.step == 7: Rectangle {
+                        vertical-stretch: 1;
+                        background: Theme.bg-dark;
+                        border-radius: Theme.radius-md;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        Text {
+                            width: parent.width - 40px;
+                            x: 20px;
+                            height: parent.height;
+                            text: root.step == 0 ? "Rough colour: photograph the rough on a fixed backlit rig, and the program works out what colour the stone itself will have, and where it changes colour inside."
+                                : (root.step == 1 ? "The pictures appear here from the Calibration step on."
+                                : "Accept stores the colour with the saved plan. The planner and the editor use it from then on.");
+                            font-size: 12px;
+                            color: Theme.text-muted;
+                            wrap: word-wrap;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // Back and Next.
+            HorizontalLayout {
+                height: 26px;
+                spacing: 8px;
+                alignment: end;
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.next_hint;
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                RoughPill { text: "Back"; hint: "The previous step."; enabled: root.step > 0 && !root.busy; clicked => { root.back(); } }
+                RoughPill { text: "Next"; hint: root.next_hint; active: true; enabled: root.step < 7 && root.step_ok[min(root.step + 1, 7)] && !root.busy; clicked => { root.next(); } }
+            }
+        }
+    }
+}

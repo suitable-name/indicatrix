@@ -129,6 +129,13 @@ pub fn poll_for_cancel<S: Read + TimeoutRead>(
             indicatrix_net::messages::discard_contribution_payload(stream, &header)?;
             CancelPoll::Pending
         }
+        // `zoning` builds: the zones of a request pipelined behind this computation; kept for
+        // it (the tilt sweep itself ignores zones).
+        #[cfg(feature = "zoning")]
+        indicatrix_net::messages::ClientMessage::ZoningPayload(payload) => {
+            crate::serve::zoning::stash(*payload);
+            CancelPoll::Pending
+        }
         other => {
             tracing::debug!(
                 "ignoring a message pipelined while request_id={request_id}'s tilt-curves \

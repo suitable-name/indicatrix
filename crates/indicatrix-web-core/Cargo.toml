@@ -53,5 +53,11 @@ futures-channel = { version = "0.3.34", default-features = false, features = ["s
 # the native test build turns that on; the library itself never does.
 indicatrix = { workspace = true, features = ["gpu", "hdr"] }
 
+[features]
+default = []
+# Rough colour and colour zoning (plan 2026-10-09, section 1a): zoned rendering on the web
+# CPU workers (no UI in v1). Off by default; a build without it is unchanged.
+zoning = ["indicatrix/zoning"]
+
 [lints]
 workspace = true

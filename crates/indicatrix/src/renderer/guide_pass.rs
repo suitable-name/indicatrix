@@ -119,8 +119,10 @@ pub fn generate_guide_buffers(
     generate_guide_buffers_with_index(width, height, camera, planes, 0.0)
 }
 
-/// [`generate_guide_buffers`] that also fills [`GuideBuffers::path_sig`] for the
-/// reference refractive index `n_d` (`DispersionModel::n_d`). `n_d <= 1.0` (or NaN) leaves
+/// [`generate_guide_buffers`] that also fills [`GuideBuffers::path_sig`].
+///
+/// The signature is for the reference refractive index `n_d` (`DispersionModel::n_d`).
+/// `n_d <= 1.0` (or NaN) leaves
 /// the signature all zeros, which is exactly what [`generate_guide_buffers`] returns.
 ///
 /// # Panics

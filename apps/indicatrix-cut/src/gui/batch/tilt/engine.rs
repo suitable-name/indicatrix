@@ -673,6 +673,11 @@ pub fn tilt_curves_for_planes(
     cancel: &AtomicBool,
     on_step: &mut dyn FnMut(SweepProgress),
 ) -> Option<TiltPerformanceCurves> {
+    // Zoning builds: a `TILT_CURVES` request carries no colour zones (it is a bare `SceneState`
+    // and the zoning payload is only sent with render requests), so a zoned material's curves are
+    // always computed here.
+    #[cfg(feature = "zoning")]
+    let worker = worker.filter(|_| material.zoning.is_none());
     if let Some(worker) = worker
         && let Some(curves) = fetch_tilt_curves_remote(worker, planes, material, cancel)
     {

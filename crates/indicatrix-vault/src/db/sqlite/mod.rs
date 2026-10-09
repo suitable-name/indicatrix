@@ -78,6 +78,8 @@ mod tags;
 mod tests;
 mod tilt_curves;
 mod variants;
+#[cfg(feature = "zoning")]
+mod zoning_store;
 
 pub use materials::CustomMaterialParams;
 pub use search::{DisplayFilters, SEARCH_RESULT_CAP, SortOrder};
@@ -384,6 +386,10 @@ impl Database {
         db.migrate_design_cut_progress_table()?;
         db.migrate_design_lighting_table()?;
         db.migrate_render_jobs_table()?;
+        // Zoning builds only: the rough-colour side tables (see `zoning_store`). A default
+        // build neither creates nor touches them.
+        #[cfg(feature = "zoning")]
+        db.migrate_zoning_tables()?;
         db.migrate_mirror_state_tombstone_column()?;
         db.migrate_prune_tilt_curve_aggregate_columns()?;
         // Before `migrate_blob_columns_last`: that rebuild names diagram_details'

@@ -174,7 +174,8 @@ fn tonemap_chunk_in(colors: &[Vec3], dst: &mut [u8], scale: f32, color_space: Co
 }
 
 /// Tone-maps `colors` (each scaled by `scale`) into `color_space` via
-/// [`tonemap_chunk_in`], parallelised exactly like [`tonemap_to_rgba_with_threads`]
+/// [`tonemap_chunk_in`], parallelised exactly like [`tonemap_to_rgba_with_threads`].
+///
 /// (`threads == 0` auto-detects). Bit-identical for any thread count.
 #[must_use]
 pub fn tonemap_wide_gamut_with_threads(

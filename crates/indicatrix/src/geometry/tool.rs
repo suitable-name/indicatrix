@@ -292,8 +292,11 @@ impl Piece {
     /// attains it.
     #[expect(
         clippy::manual_midpoint,
+        reason = "pinned reference arithmetic: plain f32 `0.5 * (a + b)` (`f32::midpoint` widens through f64)"
+    )]
+    #[allow(
         clippy::suboptimal_flops,
-        reason = "pinned reference arithmetic: plain f32 `0.5 * (a + b)` (`f32::midpoint` widens through f64) and unfused products (`mul_add` rounds once and moves the last bit)"
+        reason = "pinned reference arithmetic: unfused products (`mul_add` rounds once and moves the last bit)"
     )]
     fn sd_normal(&self, p: Vec3) -> (f32, Vec3) {
         match *self {

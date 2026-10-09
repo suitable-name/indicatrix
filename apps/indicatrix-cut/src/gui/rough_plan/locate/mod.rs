@@ -30,6 +30,14 @@ pub(super) fn open_locate(planner: &Rc<Host>) {
     window::open(planner);
 }
 
+/// The locate window's alignment and photos (`zoning` feature: the Rough colour wizard reads
+/// them), or `None` when the window was never opened or nothing is aligned.
+#[cfg(feature = "zoning")]
+pub(super) fn alignment_snapshot()
+-> Option<crate::gui::rough_colour::wizard::context::AlignmentSnapshot> {
+    window::alignment_snapshot()
+}
+
 /// Closes both windows for good, with the planner. Called wherever the main window hides.
 pub(super) fn close_windows() {
     window::close();

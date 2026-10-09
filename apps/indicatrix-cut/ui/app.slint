@@ -19,6 +19,8 @@ import { RoughPlannerWindow } from "rough_planner_window.slint";
 // `rig_window.slint` and `components/locate/photo_canvas.slint`.
 import { LocateWindow } from "locate_window.slint";
 import { RigWindow, RigViewRow } from "rig_window.slint";
+// The Rough colour wizard window (`zoning` feature) -- see `rough_colour_window.slint`.
+import { RoughColourWindow, ImportSlot, ViewRow, ZoneListRow, ParamEditRow, ChipItem, LegendRow } from "rough_colour_window.slint";
 import { CanvasMarker, CanvasPath, PhotoSlot, ReportRow } from "components/locate/photo_canvas.slint";
 import { EditorView } from "components/editor_view.slint";
 import { EditorStatusStrip } from "components/editor_status_strip.slint";
@@ -111,6 +113,8 @@ import { CuttingModeScreen } from "components/cutting_mode/cutting_mode_screen.s
 import { RenderJobsModel, RenderJobRow } from "models/render_jobs.slint";
 // "Is an export running?" and the header export indicator's text -- see `models/export_run.slint`.
 import { ExportRunModel } from "models/export_run.slint";
+// The `zoning` feature's UI switch (set from Rust, `false` in a default build) -- see `models/zoning.slint`.
+import { Zoning, MaterialZoneRow } from "models/zoning.slint";
 
 export {
     DiagramItem, AngleItem, FileItem, DiagramDetailData, OpticalMetricsData,
@@ -156,6 +160,8 @@ export {
     RoughPlannerWindow, RoughPlanModel, RoughPlanResult, RoughPlanStoneGroup, RoughMetric, RoughCutRow, SavedRoughPlanRow,
     // The photo-locating windows and their row structs -- see ui/locate_window.slint, ui/rig_window.slint.
     LocateWindow, RigWindow, RigViewRow, CanvasMarker, CanvasPath, PhotoSlot, ReportRow,
+    // The Rough colour wizard window and its row structs -- see ui/rough_colour_window.slint.
+    RoughColourWindow, ImportSlot, ViewRow, ZoneListRow, ParamEditRow, ChipItem, LegendRow,
     // The Angle Sweep dialog's global and its row structs -- see ui/models/sweep.slint.
     SweepModel, SweepCellItem, SweepRowItem, SweepColumnItem, SweepPathItem, SweepLegendItem,
     // Cutting mode's global and its chip and wheel structs -- see ui/models/cutting_mode.slint.
@@ -172,7 +178,9 @@ export {
     // The render queue's global and its row struct -- see ui/models/render_jobs.slint.
     RenderJobsModel, RenderJobRow,
     // The running-export flag and the header indicator's text -- see ui/models/export_run.slint.
-    ExportRunModel
+    ExportRunModel,
+    // The `zoning` feature's UI switch and the material dialog's zone row -- see ui/models/zoning.slint.
+    Zoning, MaterialZoneRow
 }
 
 // --- Sizing notes -----------------------------------------------------------

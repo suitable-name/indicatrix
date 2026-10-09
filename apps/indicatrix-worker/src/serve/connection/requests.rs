@@ -4,7 +4,7 @@
 //! invert at the application layer -- the worker is the TLS/TCP client but the PROTOCOL
 //! server: it reads `ClientMessage`s and answers `StreamEvent`s, exactly as here.
 
-use super::{NO_RENDER_CAPACITY_CODE, handle_non_render_message};
+use super::{NO_RENDER_CAPACITY_CODE, batch, handle_non_render_message};
 use crate::{
     assets::{self, AssetCache, Fetched, HdrRoute, HeldAsset},
     cli::ComputeMode,
@@ -17,8 +17,9 @@ use indicatrix::renderer::gpu_backend::GpuBackend;
 use indicatrix_net::{
     framing::{FramingError, IDLE_READ_TIMEOUT},
     messages::{
-        ClientMessage, ErrorMsg, FinalImageRequest, NetError, PayloadEncoding, RenderRequest,
-        StreamEvent, TiltCurvesRequest, TransferMode, adaptive::PeerLink, error_codes,
+        BatchRenderRequest, ClientMessage, ErrorMsg, FinalImageRequest, NetError, PayloadEncoding,
+        RenderRequest, StreamEvent, TiltCurvesRequest, TransferMode, adaptive::PeerLink,
+        error_codes,
     },
 };
 use std::{
@@ -139,6 +140,13 @@ pub fn serve_requests<S: Read + Write + TimeoutRead + TimeoutWrite>(
                 None => return Ok(()),
             },
         };
+        // A coordinator does not forward zones to its joined workers and never advertises the
+        // zoning capability; a payload that arrives anyway is refused, not dropped silently
+        // (the picture would render as its base zone).
+        #[cfg(feature = "zoning")]
+        if ctx.session.is_some() && refuse_zoning_through_coordinator(stream, &next)? {
+            continue;
+        }
         // An HDR scene's map is resolved (and pinned for the whole request)
         // before the request is served at all.
         let hdr_pin = match prepare_hdr(stream, &next, ctx)? {
@@ -182,10 +190,53 @@ pub fn serve_requests<S: Read + Write + TimeoutRead + TimeoutWrite>(
                 crate::serve::tilt::handle_tilt_curves_request(stream, &tilt_request)?;
                 None
             }
+            // v24: a batch of finished pictures, served on the own lane (a coordinator
+            // without one refuses it, and the viewer falls back to single requests). It
+            // keeps serving later batches that arrive while it runs, so it returns only
+            // once none is unfinished.
+            (NextRequest::Batch(batch_request), _) => {
+                batch::serve_batches(stream, batch_request, ctx)?;
+                None
+            }
         };
         // Served: the request no longer needs its HDR map pinned.
         drop(hdr_pin);
     }
+}
+
+/// `zoning` builds: refuses `next` with `UNSUPPORTED_REQUEST` when the viewer sent a
+/// `ZoningPayload` for it on a coordinator connection. `Ok(true)` means the request was
+/// refused and must not be served.
+#[cfg(feature = "zoning")]
+fn refuse_zoning_through_coordinator<S: Write>(
+    stream: &mut S,
+    next: &NextRequest,
+) -> Result<bool, NetError> {
+    let request_id = match next {
+        NextRequest::Render(r) => r.request_id,
+        NextRequest::FinalImage(r) => r.request_id,
+        NextRequest::TiltCurves(r) => r.request_id,
+        NextRequest::Batch(r) => r.request_id,
+    };
+    if crate::serve::zoning::take(request_id).is_none() {
+        return Ok(false);
+    }
+    tracing::info!(
+        "refusing request {request_id}: zoned materials are not served through a coordinator"
+    );
+    indicatrix_net::messages::write_stream_event(
+        stream,
+        &StreamEvent::Error(ErrorMsg {
+            code: error_codes::UNSUPPORTED_REQUEST,
+            message: format!(
+                "request {request_id}: a coordinator does not serve zoned materials (its WELCOME \
+                 does not advertise the zoning capability); render the picture locally"
+            ),
+            request_id: Some(request_id),
+        }),
+        None,
+    )?;
+    Ok(true)
 }
 
 /// Validates and streams one `RenderRequest` on the own lane; returns the client's
@@ -205,6 +256,24 @@ fn serve_one_render<S: Read + Write + TimeoutRead + TimeoutWrite>(
                 request.request_id
             ),
             request.request_id,
+        )?;
+        return Ok(None);
+    }
+
+    // `zoning` builds: re-attach the zones the viewer sent ahead of this request (they are
+    // `serde(skip)` in the scene). A payload that does not fit refuses the request.
+    #[cfg(feature = "zoning")]
+    if let Err(message) =
+        crate::serve::zoning::attach_to_render(request.request_id, &mut request.scene)
+    {
+        indicatrix_net::messages::write_stream_event(
+            stream,
+            &StreamEvent::Error(ErrorMsg {
+                code: VALIDATION_FAILED_CODE,
+                message,
+                request_id: Some(request.request_id),
+            }),
+            None,
         )?;
         return Ok(None);
     }
@@ -341,6 +410,11 @@ fn prepare_hdr<S: Read + Write + TimeoutRead + TimeoutWrite>(
         NextRequest::FinalImage(_) if ctx.session.is_none() => {
             return Ok(Prepared::Serve(HdrPin::NONE));
         }
+        // A batch item naming an HDR map fails by itself (`batch::check_item`); no asset is
+        // fetched for a batch (nor for a tilt-curves request).
+        NextRequest::Batch(_) | NextRequest::TiltCurves(_) => {
+            return Ok(Prepared::Serve(HdrPin::NONE));
+        }
         NextRequest::Render(r) => (
             r.request_id,
             &r.scene,
@@ -349,7 +423,6 @@ fn prepare_hdr<S: Read + Write + TimeoutRead + TimeoutWrite>(
             r.stream.cadence_ms,
         ),
         NextRequest::FinalImage(r) => (r.request_id, &r.scene, r.first_sample, r.samples, 1000),
-        NextRequest::TiltCurves(_) => return Ok(Prepared::Serve(HdrPin::NONE)),
     };
     let Some(hdr) = scene.hdr() else {
         return Ok(Prepared::Serve(HdrPin::NONE));
@@ -419,6 +492,7 @@ enum NextRequest {
     Render(RenderRequest),
     TiltCurves(TiltCurvesRequest),
     FinalImage(FinalImageRequest),
+    Batch(BatchRenderRequest),
 }
 
 /// Reads the next message off `stream`: blocking, or -- on a coordinator viewer
@@ -475,7 +549,11 @@ fn read_next_message<S: Read + Write + TimeoutRead>(
             ClientMessage::FinalImageRequest(r) => {
                 return Ok(Some(NextRequest::FinalImage(*r)));
             }
+            ClientMessage::BatchRenderRequest(r) => return Ok(Some(NextRequest::Batch(*r))),
             ClientMessage::Ping { nonce } => write_pong(stream, nonce)?,
+            // The zones of the request that follows (`zoning` builds): kept for it.
+            #[cfg(feature = "zoning")]
+            ClientMessage::ZoningPayload(payload) => crate::serve::zoning::stash(*payload),
             // An asset nobody asked for: consume its payload frame.
             ClientMessage::Asset(header) => assets::discard_asset(stream, &header)?,
             // A stray v16 contribution (e.g. arriving after this request's own DONE):

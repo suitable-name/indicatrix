@@ -13,6 +13,13 @@ impl GemMaterial {
     /// lint -- this is plain data, not logic, so the split point carries no
     /// significance.
     pub(super) fn built_in_materials_diamond_through_emerald() -> Vec<Self> {
+        let mut materials = Self::built_in_materials_diamond_and_sapphire();
+        materials.extend(Self::built_in_materials_ruby_and_emerald());
+        materials
+    }
+
+    /// First half of the Diamond-through-Emerald part (Diamond, Sapphire).
+    fn built_in_materials_diamond_and_sapphire() -> Vec<Self> {
         vec![
             // Diamond (C)
             //
@@ -44,6 +51,8 @@ impl GemMaterial {
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
                 absorption_unit: super::AbsorptionUnit::ModelUnit,
+                #[cfg(feature = "zoning")]
+                zoning: None,
                 uniaxial_extraordinary_dispersion: None,
             },
             // Sapphire (Al2O3)
@@ -101,8 +110,17 @@ impl GemMaterial {
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
                 absorption_unit: super::AbsorptionUnit::ModelUnit,
+                #[cfg(feature = "zoning")]
+                zoning: None,
                 uniaxial_extraordinary_dispersion: None,
             },
+        ]
+    }
+
+    /// Second half of the Diamond-through-Emerald part (Ruby, Emerald), split off
+    /// `built_in_materials_diamond_through_emerald` for the same function-length reason.
+    fn built_in_materials_ruby_and_emerald() -> Vec<Self> {
+        vec![
             // Ruby (Al2O3:Cr) -- same host lattice as Sapphire above (trace Cr3+ at
             // sub-1% does not measurably shift the host Al2O3 dispersion), so it
             // shares the identical Malitson & Dodge (1972) Sellmeier fit. See the
@@ -158,6 +176,8 @@ impl GemMaterial {
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
                 absorption_unit: super::AbsorptionUnit::ModelUnit,
+                #[cfg(feature = "zoning")]
+                zoning: None,
                 uniaxial_extraordinary_dispersion: None,
             },
             // Emerald (Beryl, Be3Al2(SiO3)6:Cr/V)
@@ -206,6 +226,8 @@ impl GemMaterial {
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
                 absorption_unit: super::AbsorptionUnit::ModelUnit,
+                #[cfg(feature = "zoning")]
+                zoning: None,
                 uniaxial_extraordinary_dispersion: None,
             },
         ]

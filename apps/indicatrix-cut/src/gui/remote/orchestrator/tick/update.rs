@@ -182,6 +182,10 @@ fn apply_update(c: &UpdateCtx<'_>, update: RemoteUpdate) {
                 let mut s = lock(state);
                 s.worker_label = backend_label(info.render.as_ref());
                 s.remote_hdr = Some(info.render.as_ref().is_some_and(|r| r.hdr));
+                #[cfg(feature = "zoning")]
+                {
+                    s.remote_zoning = Some(info.zoning);
+                }
             }
             sync_served_by_to_ui(ui, render_ctx, state);
         }
@@ -253,6 +257,12 @@ fn apply_update(c: &UpdateCtx<'_>, update: RemoteUpdate) {
                 let mut s = lock(state);
                 s.worker_label = backend_label(render.as_ref());
                 s.remote_hdr = Some(render.as_ref().is_some_and(|r| r.hdr));
+                // Only a coordinator re-advertises capacity, and a coordinator never
+                // advertises the zoning capability.
+                #[cfg(feature = "zoning")]
+                {
+                    s.remote_zoning = Some(false);
+                }
             }
             sync_served_by_to_ui(ui, render_ctx, state);
         }

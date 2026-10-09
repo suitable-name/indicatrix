@@ -44,6 +44,12 @@ toml = { workspace = true }
 # in `indicatrix-formats`, so there is no text-file-format or hash-function
 # dependency in this crate either.
 indicatrix-formats = { workspace = true }
+# Zoning only (`rough_plan::photometry`); neither is built without the `zoning` feature.
+# `rawler` 0.8.0 (published 2026-08-30, LGPL-2.1): pure-Rust RAW/DNG decoder, no C
+# toolchain. Declared directly (not through `[workspace.dependencies]`) so the private
+# workspace, which shares this crate by path, needs no matching entry.
+rawler = { version = "=0.8.0", optional = true }
+image = { workspace = true, optional = true, features = ["png", "jpeg", "tiff"] }
 
 [dev-dependencies]
 # For `examples/manufacturability_corpus_probe.rs` only -- reads the user's real
@@ -56,6 +62,32 @@ indicatrix-formats = { workspace = true }
 # `indicatrix-cut-core`'s own two-dependency (indicatrix, indicatrix-formats)
 # footprint (see `lib.rs`'s crate doc comment) is unchanged for every normal build.
 rusqlite = { workspace = true }
+
+# Zoning validation (lane V1, plan 2026-10-09 section 10): the synthetic test suite and the
+# performance benchmark. Both need the `zoning` feature and are skipped, not built, without it.
+[[test]]
+name = "zoning_validation"
+path = "tests/zoning_validation/main.rs"
+required-features = ["zoning"]
+
+[[example]]
+name = "zoning_bench"
+path = "examples/zoning_bench.rs"
+required-features = ["zoning"]
+
+[features]
+default = []
+# Rough colour and colour zoning from rig photos (plan 2026-10-09, section 1a): turns on
+# `rough_plan::photometry`, `rough_plan::colour_fit::{forward, solve, zones}` and the
+# zoned-pose evaluation in the planner. Off by default; a build without it is unchanged.
+#
+# Lane P1 (photometry): the same feature pulls in the two optional decoders. `rawler` (RAW
+# and DNG decoding, pure Rust, LGPL-2.1) is pinned to an exact version; `image` (JPEG, PNG
+# and TIFF decoding) is the workspace's own entry with the three decoders this module needs.
+#
+# Lane I1 (planner integration): `indicatrix/serde` is named too, because the rough colour
+# (`rough_plan::zoned_plan`) stores `ZonedAbsorption` as JSON in the vault side tables.
+zoning = ["indicatrix/zoning", "indicatrix/serde", "dep:rawler", "dep:image"]
 
 [lints]
 workspace = true

@@ -33,6 +33,10 @@ mod tanzanite_through_cubic_zirconia;
 #[cfg(test)]
 mod tests;
 mod zircon_through_topaz;
+#[cfg(feature = "zoning")]
+mod zoned;
+#[cfg(feature = "zoning")]
+pub use zoned::{ZONE_SWATCH_FALLBACK_MODEL_WIDTH, zone_swatches};
 
 /// A gemstone material's crystallographic system.
 ///
@@ -226,6 +230,19 @@ pub struct GemMaterial {
     /// `per_channel_uniaxial_index` in that physics file takes only the constant-offset
     /// form and does not read this curve.
     pub uniaxial_extraordinary_dispersion: Option<DispersionModel>,
+    /// Spatially zoned absorption (colour zoning, bicolour, watermelon), `zoning` feature only.
+    ///
+    /// `None` (every built-in and custom material) keeps the homogeneous Beer-Lambert path.
+    /// `Some` makes the CPU tracer integrate the optical depth through the zones
+    /// (`raytracer::absorption::apply_segment_absorption`, and `raytracer::zoned` for the
+    /// tables and the frame chain); [`Self::absorption`] is then ignored in favour of the base
+    /// zone (see [`Self::with_zoning`]). Zoned
+    /// materials are [`AbsorptionUnit::PerMm`] only and carry no fluorescence. Never serialised
+    /// inside the material: zones travel in the zoning payload, so wire and file bytes are
+    /// unchanged.
+    #[cfg(feature = "zoning")]
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub zoning: Option<crate::optics::zoning::ZonedAbsorption>,
 }
 
 impl GemMaterial {
@@ -244,6 +261,7 @@ impl GemMaterial {
         materials.extend(Self::built_in_materials_aquamarine_through_citrine());
         materials.extend(Self::built_in_materials_amethyst_through_citrine());
         materials.extend(Self::built_in_materials_garnets_pyrope_through_spessartine());
+        materials.extend(Self::built_in_materials_garnet_color_change());
         materials.extend(Self::built_in_materials_garnets_grossular_and_andradite());
         materials.extend(Self::built_in_materials_peridot_through_benitoite());
         materials.extend(Self::built_in_materials_andalusite_through_glass());

@@ -201,7 +201,7 @@ fn a_minimum_of_one_stone_is_exactly_the_plain_ranking() {
 fn a_minimum_drops_the_small_layouts_before_the_limit_and_refills_from_the_rest() {
     let flat = mixed_counts();
     let kept = rank_indices_min(&flat, 20, 2);
-    assert!(!kept.is_empty());
+    assert_ne!(kept, [] as [usize; 0]);
     assert!(kept.iter().all(|&i| flat[i].stones.len() >= 2));
     // Nine of the twelve hold two stones or more, and all of them qualify.
     assert_eq!(kept.len(), 9);
@@ -212,8 +212,11 @@ fn a_minimum_drops_the_small_layouts_before_the_limit_and_refills_from_the_rest(
     assert!(top.iter().all(|&i| flat[i].stones.len() >= 2));
     assert_eq!(top, kept[..3]);
     // Above every layout: nothing.
-    assert!(rank_indices_min(&flat, 20, 5).is_empty());
-    assert!(merge_and_rank_min(flat, 20, 5).is_empty());
+    assert_eq!(rank_indices_min(&flat, 20, 5), [] as [usize; 0]);
+    assert_eq!(
+        merge_and_rank_min(flat, 20, 5),
+        [] as [crate::rough_plan::types::RoughLayout; 0]
+    );
 }
 
 #[test]
@@ -242,9 +245,12 @@ fn the_partial_ranking_honours_the_minimum_too() {
         partial_ranking(&groups, Vec::new())
     );
     let shown = partial_ranking_min(&groups, vec![layout(&[(500, 1000.0)])], 2);
-    assert!(!shown.is_empty());
+    assert_ne!(shown, [] as [crate::rough_plan::types::RoughLayout; 0]);
     assert!(shown.iter().all(|l| l.stones.len() >= 2));
-    assert!(partial_ranking_min(&groups, Vec::new(), 9).is_empty());
+    assert_eq!(
+        partial_ranking_min(&groups, Vec::new(), 9),
+        [] as [crate::rough_plan::types::RoughLayout; 0]
+    );
 }
 
 #[test]

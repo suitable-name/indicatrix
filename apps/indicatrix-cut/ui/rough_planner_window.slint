@@ -1,6 +1,7 @@
 import { Theme } from "theme.slint";
 import { ScrollView } from "std-widgets.slint";
 import { RoughPlanModel, RoughPlanResult } from "models/rough_plan.slint";
+import { Zoning } from "models/zoning.slint";
 import { RoughForm } from "components/rough_planner/rough_form.slint";
 import { CutList } from "components/rough_planner/cut_list.slint";
 import { PlanForm } from "components/rough_planner/plan_form.slint";
@@ -125,6 +126,33 @@ component ResultsColumn inherits VerticalLayout {
             font-size: 10px;
             color: Theme.accent-amber;
             vertical-alignment: center;
+        }
+    }
+
+    // Stone orientation (`zoning` feature, plan with a stored rough colour): which of the
+    // stone's box-symmetric poses the previews and "Use colour" take.
+    if Zoning.enabled && Zoning.colour_available && RoughPlanModel.results.length > 0: HorizontalLayout {
+        spacing: 6px;
+
+        Text {
+            text: "Stone orientation";
+            font-size: 11px;
+            color: Theme.text-secondary;
+            vertical-alignment: center;
+        }
+        RoughPill {
+            text: "Keep planner pose";
+            hint: "Draw and adopt every stone in the pose the planner gave it.";
+            active: Zoning.pose_option == 0;
+            enabled: !RoughPlanModel.running;
+            clicked => { Zoning.pose_option_changed(0); }
+        }
+        RoughPill {
+            text: "Best colour";
+            hint: "Turn each stone to the box-symmetric pose that shows the most of the innermost colour zone through the table.";
+            active: Zoning.pose_option == 1;
+            enabled: !RoughPlanModel.running;
+            clicked => { Zoning.pose_option_changed(1); }
         }
     }
 

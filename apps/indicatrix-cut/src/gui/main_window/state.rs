@@ -230,6 +230,21 @@ pub(super) fn apply_custom_materials(
         .unwrap_or_default();
     let (initial_custom_mats, initial_custom_sg) =
         initial_custom_materials_and_specific_gravity(&custom_material_rows);
+    // Zoning builds only: drop the zoning rows of owners that are gone, then put the stored
+    // zones back on the materials that have them (an adopted "<rough> colour" material), so every
+    // later `resolve_material` returns a zoned material. A relative-to-stone library material is
+    // scaled to the default stone width here; the width setting is applied later.
+    #[cfg(feature = "zoning")]
+    let initial_custom_mats = {
+        let mut materials = initial_custom_mats;
+        let guard = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Err(error) = crate::gui::rough_colour::store::prune_orphans(&guard) {
+            tracing::warn!("Rough colour: orphaned rows were not pruned: {error:#}");
+        }
+        crate::gui::rough_colour::store::attach_zoning(&guard, &mut materials, 0.0);
+        drop(guard);
+        materials
+    };
     {
         let mut ctx = render_ctx
             .lock()

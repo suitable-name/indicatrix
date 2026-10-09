@@ -39,6 +39,10 @@ pub(super) struct BuildRequest {
     pub(super) titles: BTreeMap<i64, String>,
     /// For a stone's entry id, how its design is drawn.
     pub(super) mesh_ids: BTreeMap<i64, StoneDraw>,
+    /// The plan's rough colour and pose choices, when the plan has a rough colour (`zoning`
+    /// builds).
+    #[cfg(feature = "zoning")]
+    pub(super) colour: Option<super::zoning_view::ColourJob>,
 }
 
 /// Tells the UI thread that the drawing of a result failed, so it stops waiting for it.
@@ -90,15 +94,30 @@ pub(super) fn spawn_build_worker(
         "rough-view-scene",
         move |request: BuildRequest| {
             meshes.refresh(request.epoch);
+            // Zoning builds: the cutter's pose choice is applied and the stones are coloured by
+            // the plan's rough colour.
+            #[cfg(feature = "zoning")]
+            let (posed, colours) =
+                super::zoning_view::prepare(&request.layout, request.colour.as_ref(), &meshes);
+            #[cfg(feature = "zoning")]
+            let layout = &posed;
+            #[cfg(not(feature = "zoning"))]
+            let layout = &request.layout;
             let fit = build_fit_scene(
                 &FitInputs {
-                    layout: &request.layout,
+                    layout,
                     rough: &request.rough,
                     titles: &request.titles,
                     mesh_ids: &request.mesh_ids,
                 },
                 &*meshes,
             );
+            #[cfg(feature = "zoning")]
+            let fit = {
+                let mut fit = fit;
+                fit.apply_stone_colours(&colours);
+                fit
+            };
             let scene = Arc::new(Scene::new(SceneKind::Fit(Box::new(fit))));
             let ticket = request.ticket;
             let _ = window.upgrade_in_event_loop(move |_window| {

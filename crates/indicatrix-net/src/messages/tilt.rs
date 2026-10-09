@@ -27,7 +27,9 @@ use serde::{Deserialize, Serialize};
 /// constants rather than a silent shared change.
 pub const TILT_CURVE_POINTS_PER_AXIS: usize = 181;
 
-/// Axes per [`TiltCurvesResponse`]. Matches
+/// Axes per [`TiltCurvesResponse`].
+///
+/// Matches
 /// `indicatrix::color::metrics::PROFILE_AZIMUTHS_DEG`'s length (`[0.0, 45.0, 90.0,
 /// 135.0]`); see [`TILT_CURVE_POINTS_PER_AXIS`] for why this crate pins its own copy.
 pub const TILT_CURVE_AXIS_COUNT: usize = 4;

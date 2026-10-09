@@ -163,7 +163,10 @@ impl StartCell {
 /// The "start K of N" report worth showing at `stage`: dropped once the polish (and the final
 /// scoring after it) is running, where the stored report is stale; kept for screening and the
 /// coordinate stage.
-fn start_for_stage(stage: SearchStage, start: Option<StartProgress>) -> Option<StartProgress> {
+const fn start_for_stage(
+    stage: SearchStage,
+    start: Option<StartProgress>,
+) -> Option<StartProgress> {
     match stage {
         SearchStage::Polish | SearchStage::FinalFull => None,
         _ => start,

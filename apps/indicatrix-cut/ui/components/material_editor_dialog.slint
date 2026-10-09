@@ -20,6 +20,7 @@ import { MaterialColorPresets } from "material_editor/color_presets.slint";
 import { ChromophorePicker } from "material_editor/chromophore_picker.slint";
 import { LchEditor } from "material_editor/lch_editor.slint";
 import { BodyColorEditorModel } from "../models/body_color_editor.slint";
+import { Zoning } from "../models/zoning.slint";
 
 // The Gem Material Editor.
 //
@@ -534,6 +535,54 @@ export component MaterialEditorDialog inherits Rectangle {
                 // Simple mode hides the birefringence, crystal system and optical character; say
                 // so when one of them holds something other than the default.
                 if !GuideModel.shows_advanced() && root.advanced_in_use: AdvancedNote {}
+
+                // 5c. The zones of a zoned material (an adopted "<rough> colour" or a zoned library
+                // material; `zoning` feature). Read-only: the zones come from the rough colour
+                // wizard. Editing the body colour below changes the BASE zone and nothing else.
+                if Zoning.enabled && Zoning.material_zone_rows.length > 0: VerticalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "Zones";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: Theme.text-secondary;
+                    }
+                    Text {
+                        text: "This material has colour zones. Changing the colour below changes the base zone.";
+                        font-size: 10px;
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+                    for zone in Zoning.material_zone_rows: HorizontalLayout {
+                        spacing: 8px;
+                        VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 14px;
+                                height: 14px;
+                                border-radius: 2px;
+                                background: zone.swatch;
+                                border-width: 1px;
+                                border-color: Theme.border-control;
+                            }
+                        }
+                        Text {
+                            text: zone.title;
+                            font-size: 11px;
+                            font-weight: 600;
+                            color: Theme.text-primary;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: zone.params;
+                            font-size: 11px;
+                            color: Theme.text-secondary;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                }
 
                 // 6. Color area. Fantasy (the nine presets or a free pick, fitted to the three
                 // legacy bands) or Physics (host + elements, see `ChromophorePicker`). Switching

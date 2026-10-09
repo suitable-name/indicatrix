@@ -457,6 +457,29 @@ impl FitScene {
         flags
     }
 
+    /// Colours the facets of the stones that have a colour in `colours` (one entry per stone,
+    /// `None` keeps the palette colour). A stone drawn as a grey box because its design is gone or
+    /// unreadable keeps its grey: that colour is the warning. `zoning` builds only; this is how
+    /// the planner shows the colour of a plan that has a rough colour.
+    #[cfg(feature = "zoning")]
+    pub(super) fn apply_stone_colours(&mut self, colours: &[Option<[u8; 3]>]) {
+        for (stone, span) in self.stone_starts.windows(2).enumerate() {
+            let Some(Some(colour)) = colours.get(stone) else {
+                continue;
+            };
+            let placeholder = self
+                .info
+                .get(stone)
+                .is_some_and(|info| info.note == NOTE_DELETED || info.note == NOTE_UNREADABLE);
+            if placeholder {
+                continue;
+            }
+            if let Some(facets) = self.facet_colors.get_mut(span[0]..span[1]) {
+                facets.fill(*colour);
+            }
+        }
+    }
+
     /// Adds a stone whose design mesh is `design`, placed by `pose`.
     fn push_design(
         &mut self,

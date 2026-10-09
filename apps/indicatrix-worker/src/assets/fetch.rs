@@ -286,6 +286,9 @@ fn request_from_client<S: Read + Write + TimeoutRead>(
                 &StreamEvent::Pong { nonce },
                 None,
             )?,
+            // `zoning` builds: the zones of a request pipelined behind this one; kept for it.
+            #[cfg(feature = "zoning")]
+            ClientMessage::ZoningPayload(payload) => crate::serve::zoning::stash(*payload),
             ClientMessage::Cancel(cancel) if cancel.request_id == pending.request_id => {
                 write_cancelled_done(stream, pending)?;
                 return Ok(Fetched::Superseded(None));

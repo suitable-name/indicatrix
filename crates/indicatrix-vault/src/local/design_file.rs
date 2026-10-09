@@ -92,7 +92,9 @@ pub struct DesignFileText {
     pub warnings: Vec<String>,
 }
 
-/// `file_name`'s stem plus `.asc` (`round.gem` -> `round.asc`): the name a
+/// `file_name`'s stem plus `.asc` (`round.gem` -> `round.asc`).
+///
+/// It is the name a
 /// converted `.gem`/`.gcs` design is stored and offered for saving under, so a
 /// later save never proposes overwriting the file it came from.
 #[must_use]

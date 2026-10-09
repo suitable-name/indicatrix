@@ -31,6 +31,11 @@ pub enum RemoteRefusal {
     /// The scene's HDR map cannot be sent: it was not loaded from a file (no bytes to
     /// transfer) or exceeds the protocol's asset size limit.
     HdrNotTransferable,
+    /// `zoning` builds: the scene's material has colour zones and the remote does not
+    /// advertise the zoning capability (a default build, or a coordinator); it would render
+    /// only the base zone, so the picture renders locally.
+    #[cfg(feature = "zoning")]
+    NoZoningSupport,
 }
 
 impl RemoteRefusal {
@@ -45,6 +50,8 @@ impl RemoteRefusal {
             Self::HdrNotTransferable => {
                 "This HDR environment can't be sent to the remote; rendering locally"
             }
+            #[cfg(feature = "zoning")]
+            Self::NoZoningSupport => "Worker has no zoning support; rendering locally",
         }
     }
 
@@ -63,7 +70,37 @@ impl RemoteRefusal {
                  remote -- rendering locally only so the whole image is lit by the same \
                  environment."
             }
+            #[cfg(feature = "zoning")]
+            Self::NoZoningSupport => {
+                "This stone has colour zones, which the remote does not support (worker has \
+                 no zoning support) -- rendering locally only so the whole image shows the \
+                 same zones."
+            }
         }
+    }
+}
+
+/// `zoning` builds: whether a remote may contribute samples to a scene whose material is
+/// `zoned` (has colour zones), given whether the remote advertised the zoning capability
+/// (`remote_zoning`, `Welcome::zoning`). A zoned scene sent to a remote without the
+/// capability would render as its base zone only and be summed into the same buffer as
+/// the correctly zoned local half -- unsound for the same reason as an HDR mismatch (see the
+/// module doc comment), so it keeps local. An unzoned scene is never refused.
+///
+/// The connection layer applies the same rule against the live `WELCOME`
+/// (`RemoteError::ZoningUnsupported`), so a path that cannot call this up front (the live view
+/// before its first connection, the single-picture preview) still never sends a zoned scene to a
+/// peer that cannot decode its payload.
+///
+/// # Errors
+///
+/// [`RemoteRefusal::NoZoningSupport`] for a zoned scene and a remote without the capability.
+#[cfg(feature = "zoning")]
+pub const fn zoned_scene_refusal(zoned: bool, remote_zoning: bool) -> Result<(), RemoteRefusal> {
+    if zoned && !remote_zoning {
+        Err(RemoteRefusal::NoZoningSupport)
+    } else {
+        Ok(())
     }
 }
 
@@ -225,6 +262,30 @@ mod tests {
                 LiveDispatch::Local
             );
         }
+    }
+
+    /// A zoned scene may go to a remote exactly when that remote advertised the zoning
+    /// capability; an unzoned scene is never refused.
+    #[cfg(feature = "zoning")]
+    #[test]
+    fn a_zoned_scene_renders_remotely_only_on_a_zoning_remote() {
+        assert_eq!(zoned_scene_refusal(false, false), Ok(()));
+        assert_eq!(zoned_scene_refusal(false, true), Ok(()));
+        assert_eq!(zoned_scene_refusal(true, true), Ok(()));
+        assert_eq!(
+            zoned_scene_refusal(true, false),
+            Err(RemoteRefusal::NoZoningSupport)
+        );
+        assert!(
+            RemoteRefusal::NoZoningSupport
+                .live_note()
+                .contains("no zoning support")
+        );
+        assert!(
+            RemoteRefusal::NoZoningSupport
+                .export_note()
+                .contains("no zoning support")
+        );
     }
 
     #[test]

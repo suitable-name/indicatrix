@@ -71,6 +71,14 @@ pub struct Hello {
     /// (informational; the server's preference decides). `Raw` is always implicitly
     /// accepted. See `super::encoding`'s module doc comment.
     pub accept_encodings: Vec<PayloadEncoding>,
+    /// `zoning` builds only: whether this peer speaks the zoning extension. NOT part of the
+    /// postcard layout (`serde(skip)`): it travels as a trailing marker that
+    /// [`super::write_hello_message`] appends after the encoded struct and
+    /// [`super::hello_from_bytes`] strips again -- see `super::zoning`'s module doc comment
+    /// for why a default build ignores it. Always `false` out of [`Self::viewer`].
+    #[cfg(feature = "zoning")]
+    #[serde(skip)]
+    pub zoning: bool,
 }
 
 impl Hello {
@@ -85,6 +93,8 @@ impl Hello {
             role: PeerRole::Viewer,
             capability: None,
             accept_encodings: PayloadEncoding::default_accept_list(),
+            #[cfg(feature = "zoning")]
+            zoning: false,
         }
     }
 
@@ -189,6 +199,45 @@ pub struct Welcome {
     /// sender that adapts to the link speed (`super::adaptive`) may use any encoding the
     /// receiver announced in its `HELLO`.
     pub payload_encoding: PayloadEncoding,
+    /// `zoning` builds only: whether this worker accepts [`super::ZoningPayload`] messages.
+    /// NOT part of the postcard layout (`serde(skip)`): it travels as a trailing marker
+    /// ([`super::write_welcome_message`], [`super::split_welcome_tail`]) that a worker
+    /// appends ONLY in reply to a `HELLO` that carried the marker itself, so a default
+    /// build never receives a byte it does not already expect. `false` for a coordinator
+    /// (zoned pictures through it render locally).
+    #[cfg(feature = "zoning")]
+    #[serde(skip)]
+    pub zoning: bool,
+}
+
+impl Welcome {
+    /// A `WELCOME` carrying this build's [`super::PROTOCOL_VERSION`]. Every literal outside
+    /// this crate goes through here so the `zoning`-only field is set (to `false`) in
+    /// whichever feature combination the crate was built with; a caller that advertises
+    /// zoning overwrites it afterwards.
+    #[must_use]
+    pub const fn new(
+        build_hash: [u8; 8],
+        source_hash: [u8; 8],
+        render: Option<RenderCapability>,
+        library: bool,
+        tilt_curves: bool,
+        registration: Option<WorkerRegistration>,
+        payload_encoding: PayloadEncoding,
+    ) -> Self {
+        Self {
+            protocol_version: super::PROTOCOL_VERSION,
+            build_hash,
+            source_hash,
+            render,
+            library,
+            tilt_curves,
+            registration,
+            payload_encoding,
+            #[cfg(feature = "zoning")]
+            zoning: false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -280,6 +329,8 @@ mod tests {
                     tilt_curves: true,
                     registration,
                     payload_encoding: PayloadEncoding::DEFAULT_ZSTD,
+                    #[cfg(feature = "zoning")]
+                    zoning: false,
                 };
                 assert_eq!(round_trip(&welcome), welcome);
             }
@@ -297,12 +348,49 @@ mod tests {
             tilt_curves: false,
             registration: None,
             payload_encoding: PayloadEncoding::Raw,
+            #[cfg(feature = "zoning")]
+            zoning: false,
         };
         let decoded = round_trip(&welcome);
         assert_eq!(welcome, decoded);
         assert!(decoded.render.is_none());
         assert!(decoded.library);
         assert!(!decoded.tilt_curves);
+    }
+
+    /// The exact postcard bytes of a `HELLO` and a `WELCOME`, written by hand from the
+    /// layout (varint `u16`, raw `[u8; 8]`, enum index, `Option` tag, `Vec` length). Runs in
+    /// every build: the zoning capability marker is a trailing extension written only by
+    /// the zoning-aware writers, so the plain `write_message` bytes -- which is what a
+    /// default build sends and expects -- never change, with or without the `zoning`
+    /// feature.
+    #[test]
+    fn hello_and_welcome_bytes_are_the_pre_zoning_layout() {
+        let mut hello = Hello::viewer(PROTOCOL_VERSION, [1, 2, 3, 4, 5, 6, 7, 8], [8; 8]);
+        hello.accept_encodings = vec![PayloadEncoding::Raw];
+        let mut expected_hello = vec![0x18, 1, 2, 3, 4, 5, 6, 7, 8];
+        expected_hello.extend_from_slice(&[8; 8]);
+        expected_hello.extend_from_slice(&[0x00, 0x00, 0x01, 0x00]);
+        assert_eq!(PROTOCOL_VERSION, 24, "the hand-written bytes assume v24");
+        assert_eq!(postcard::to_allocvec(&hello).unwrap(), expected_hello);
+
+        let welcome = Welcome {
+            protocol_version: PROTOCOL_VERSION,
+            build_hash: [9; 8],
+            source_hash: [10; 8],
+            render: None,
+            library: true,
+            tilt_curves: false,
+            registration: None,
+            payload_encoding: PayloadEncoding::Raw,
+            #[cfg(feature = "zoning")]
+            zoning: false,
+        };
+        let mut expected_welcome = vec![0x18];
+        expected_welcome.extend_from_slice(&[9; 8]);
+        expected_welcome.extend_from_slice(&[10; 8]);
+        expected_welcome.extend_from_slice(&[0x00, 0x01, 0x00, 0x00, 0x00]);
+        assert_eq!(postcard::to_allocvec(&welcome).unwrap(), expected_welcome);
     }
 
     /// Pins the `Backend`/`PeerRole` discriminants: `Coordinator` is appended after the

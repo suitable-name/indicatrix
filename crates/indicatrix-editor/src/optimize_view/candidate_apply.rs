@@ -88,8 +88,9 @@ pub fn candidate_edits(design: &Design, candidate: &OptimizeCandidate) -> Result
 }
 
 /// Applies `candidate` to `session` as ONE undo step: its angles and masts, and the tiers
-/// that follow a relation moved to the angles their relations give. Returns how many tiers
-/// changed, followers included.
+/// that follow a relation moved to the angles their relations give.
+///
+/// Returns how many tiers changed, followers included.
 ///
 /// The session's generation moves on after a success (as for any edit) and after a refusal
 /// (the candidate was computed against a design that has since moved).

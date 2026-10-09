@@ -21,7 +21,10 @@ use crate::{
         },
         remote_lanes_setting::setup_remote_batch_lanes,
     },
-    settings::{ImportPreviewChoice, LiveComputeTarget, SettingsPersister, WorkerSettings},
+    settings::{
+        ImportPreviewChoice, LiveComputeTarget, SettingsPersister, WorkerSettings,
+        model::{clamp_remote_preview_batch_size, effective_remote_batch_lanes},
+    },
 };
 use indicatrix::renderer::gpu_backend::GpuBackend;
 use indicatrix_vault::db::sqlite::Database;
@@ -83,6 +86,12 @@ pub struct PreviewBatchSettings {
     /// (`AppSettings::remote_batch_lanes`); read through
     /// [`remote_lane_count`], which limits it to `1..=32`.
     pub remote_batch_lanes: u32,
+    /// Whether the user ever set [`Self::remote_batch_lanes`]
+    /// (`AppSettings::remote_batch_lanes_user_set`); if not, a GPU worker gets fewer
+    /// dispatchers because the batched requests keep it busy.
+    pub remote_batch_lanes_user_set: bool,
+    /// Pictures per batched remote request (`AppSettings::remote_preview_batch_size`).
+    pub remote_preview_batch_size: u32,
     /// Which kind of picture the batch makes.
     pub mode: PreviewMode,
     /// The library card thumbnail cache; invalidated per design once its previews are
@@ -228,8 +237,20 @@ pub fn spawn_preview_batch(
         // One remote dispatcher per picture kept in flight on the remote -- see
         // `batch_queue::remote_lane_count`. `RemoteOnly` and `Both` both use all of
         // them; `LocalOnly` runs none.
+        //
+        // Unless the user chose a lane count, a GPU worker gets fewer dispatchers
+        // (`effective_remote_batch_lanes`): each keeps two batches of pictures queued on
+        // one connection. Whether the worker has a GPU is read from one handshake probe.
         let remote_lane_total = if plan.run_remote {
-            remote_lane_count(settings.remote_batch_lanes) as u32
+            let remote_is_gpu = !settings.remote_batch_lanes_user_set
+                && remote_worker
+                    .as_ref()
+                    .is_some_and(super::remote_lane::remote_is_gpu);
+            remote_lane_count(effective_remote_batch_lanes(
+                settings.remote_batch_lanes,
+                settings.remote_batch_lanes_user_set,
+                remote_is_gpu,
+            )) as u32
         } else {
             0
         };
@@ -244,6 +265,8 @@ pub fn spawn_preview_batch(
             design_total,
             local_lane_total,
             remote_lane_total,
+            remote_batch_size: clamp_remote_preview_batch_size(settings.remote_preview_batch_size)
+                as usize,
             sit_out_toasted: AtomicBool::new(false),
             thumbnail_cache: &thumbnail_cache,
         };
@@ -370,6 +393,8 @@ fn start_batch(
             preview_size: snapshot.settings.preview_size,
             preview_spp: snapshot.settings.preview_spp,
             remote_batch_lanes: snapshot.settings.remote_batch_lanes,
+            remote_batch_lanes_user_set: snapshot.settings.remote_batch_lanes_user_set,
+            remote_preview_batch_size: snapshot.settings.remote_preview_batch_size,
             mode,
             thumbnail_cache: thumbnail_cache.clone(),
         },
@@ -436,12 +461,14 @@ pub fn offer_batch_confirmation(ui: &MainWindow, ids: &[i64]) {
     open_offer(ui, ids, false);
 }
 
+/// The vault and the settings [`offer_regeneration`]'s background count needs.
+type ScopeEnv = (Arc<Mutex<Database>>, Arc<SettingsPersister>);
+
 thread_local! {
     /// What [`offer_regeneration`]'s background count needs: the vault and the settings
     /// whose preview size/spp feed the cache fingerprint. Set once by
     /// [`setup_preview_batch_callbacks`]; UI-thread only.
-    static SCOPE_ENV: RefCell<Option<(Arc<Mutex<Database>>, Arc<SettingsPersister>)>> =
-        const { RefCell::new(None) };
+    static SCOPE_ENV: RefCell<Option<ScopeEnv>> = const { RefCell::new(None) };
 }
 
 /// Opens the confirm step as a REGENERATION of `ids` (the Library menu's whole-catalogue

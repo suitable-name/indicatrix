@@ -1,6 +1,6 @@
 # Appendix C: Built-in Render Materials
 
-This table lists every one of the app's 32 built-in render materials, as
+This table lists every one of the app's 33 built-in render materials, as
 used by the spectral renderer (Chapter 2) and the Material Editor's
 templates. n_D is the refractive index at the sodium D line (589.3nm).
 Birefringence (Δn) is the difference between a material's fast and slow
@@ -9,7 +9,7 @@ given as the Abbe number V_d where the underlying data provides one (lower
 V_d means more dispersive, i.e. more "fire"); a few entries only have a
 directly stated Δn(F–C) instead, shown as such.
 
-All 32 are reachable from the viewport's **Render Material** drop-down
+All 33 are reachable from the viewport's **Render Material** drop-down
 (Chapter 2), listed alphabetically. The entries marked with `*` were the
 only ones offered by older versions of the drop-down.
 
@@ -36,6 +36,7 @@ only ones offered by older versions of the drop-down.
 | Pyrope Garnet | Isotropic | 1.714 | — | Abbe V_d ≈ 56.1 | Deep red (Cr³⁺/Fe²⁺) |
 | Almandine Garnet | Isotropic | 1.790 | — | Abbe V_d ≈ 56.9 | Red-brown to violet-red (Fe²⁺ triplet) |
 | Spessartine Garnet | Isotropic | 1.800 | — | Abbe V_d ≈ 51.2 | Vivid orange (Mn²⁺ triplet) |
+| Color-Change Garnet (Pyrope-Spessartine) | Isotropic | 1.760 | — | Abbe V_d ≈ 52.5 | Tanzanian colour-change garnet: brownish-mauve in daylight, pink-red to orange-red under incandescent light (Mn²⁺ violet cut-off plus a broad Cr³⁺/V³⁺ band at ~573 nm) |
 | Grossular Garnet (Tsavorite) | Isotropic | 1.734 | — | Abbe V_d ≈ 45.7 | Vivid green (V³⁺/Cr³⁺) |
 | Andradite Garnet (Demantoid) | Isotropic | 1.887 | — | Abbe V_d ≈ 26.9 | Vivid, saturated green — the most dispersive of the garnets here (Cr³⁺) |
 | Peridot | Biaxial (+) | 1.654 | +0.0360 | Abbe V_d ≈ 56.5 | Yellow-green (Fe²⁺ triplet) |

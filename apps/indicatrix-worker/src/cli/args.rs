@@ -4,7 +4,9 @@
 use indicatrix_net::messages::{PeerRole, adaptive::PayloadChoice};
 use std::{net::IpAddr, path::PathBuf};
 
-/// Which engine(s) trace a request. See `USAGE_RENDER`/`USAGE_SERVE`'s
+/// Which engine(s) trace a request.
+///
+/// See `USAGE_RENDER`/`USAGE_SERVE`'s
 /// `--only-gpu`/`--only-cpu` entries for the selecting flags; passing both is a parse
 /// error, not silent last-wins ([`super::parse::parse`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

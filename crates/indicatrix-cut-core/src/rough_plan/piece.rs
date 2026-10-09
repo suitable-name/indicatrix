@@ -270,7 +270,9 @@ impl PieceTable {
 }
 
 /// Fill the piece table over `front` (which must be sorted by `entry_id`, as
-/// [`super::pareto_front`] returns it). Reports [`PlanProgress::Grid`] once per
+/// [`super::pareto_front`] returns it).
+///
+/// Reports [`PlanProgress::Grid`] once per
 /// x-plane; `None` when `on_progress` returns `false`.
 pub fn build_piece_table(
     grid: &Grid,

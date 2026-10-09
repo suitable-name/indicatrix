@@ -7,6 +7,7 @@
 
 use super::{
     NUM_CHANNELS,
+    camera::Ray,
     refraction::{RayMaterialContext, RayWavelengthCache},
 };
 use crate::optics::{
@@ -26,6 +27,7 @@ use crate::optics::{
 
 /// Evaluates a material's absorption coefficient at `lambda_nm` as the sum of its
 /// individual chromophore [`AbsorptionBand`](crate::optics::absorption::AbsorptionBand)s.
+///
 /// An empty band slice sums to `0.0` (colorless material).
 #[must_use]
 pub fn spectral_absorption(bands: &[AbsorptionBand], lambda_nm: f32) -> f32 {
@@ -117,6 +119,44 @@ pub(super) fn apply_absorption(
     for (k, s) in stokes.iter_mut().enumerate() {
         *s = s.scale(trans[k]);
     }
+}
+
+/// The bounce loop's single entry point for the plain (non-scattering) Beer-Lambert absorption
+/// of one interior segment: `segment` is the segment's ray (`origin`, unit `dir`, in model
+/// units) and its length `path_len`.
+///
+/// Without the `zoning` feature, or for a material without zones, this is exactly
+/// [`apply_absorption`] (the ray is ignored). A zoned material instead takes the per-channel
+/// optical depth `sum_z alpha_z * len_z` from `zoned::segment_optical_depths`, which is the one
+/// function every zoned absorption site shares (the scattering estimator,
+/// `scattering::hg::maybe_scatter_or_extinguish_zoned`, uses the same tables).
+#[inline]
+pub(super) fn apply_segment_absorption(
+    ctx: &RayMaterialContext,
+    cache: &RayWavelengthCache,
+    k_hat: Vec3,
+    is_extraordinary: bool,
+    segment: (Ray, f32),
+    stokes: &mut [StokesVector; NUM_CHANNELS],
+) {
+    let (ray, path_len) = segment;
+    #[cfg(not(feature = "zoning"))]
+    let _ = ray;
+    #[cfg(feature = "zoning")]
+    if let Some(depths) =
+        super::zoned::segment_optical_depths(ctx, cache, k_hat, is_extraordinary, ray, path_len)
+    {
+        let mut args = [0f32; NUM_CHANNELS];
+        for (a, depth) in args.iter_mut().zip(&depths) {
+            *a = -depth;
+        }
+        let trans = crate::simd::exp_f32x8(args);
+        for (k, s) in stokes.iter_mut().enumerate() {
+            *s = s.scale(trans[k]);
+        }
+        return;
+    }
+    apply_absorption(ctx, cache, k_hat, is_extraordinary, path_len, stokes);
 }
 
 /// The per-channel ASSIGNED-MODE pleochroic absorption coefficient (`alpha_eff`) for

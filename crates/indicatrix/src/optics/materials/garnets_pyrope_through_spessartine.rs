@@ -50,6 +50,8 @@ impl GemMaterial {
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
                 absorption_unit: super::AbsorptionUnit::ModelUnit,
+                #[cfg(feature = "zoning")]
+                zoning: None,
                 uniaxial_extraordinary_dispersion: None,
             },
             // Almandine (Fe3Al2(SiO4)3): n_d=1.790, B-G 0.024 -> Delta n(F-C) =
@@ -81,6 +83,8 @@ impl GemMaterial {
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
                 absorption_unit: super::AbsorptionUnit::ModelUnit,
+                #[cfg(feature = "zoning")]
+                zoning: None,
                 uniaxial_extraordinary_dispersion: None,
             },
             // Spessartine (Mn3Al2(SiO4)3): n_d=1.800, B-G 0.027 -> Delta n(F-C) =
@@ -110,6 +114,68 @@ impl GemMaterial {
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
                 absorption_unit: super::AbsorptionUnit::ModelUnit,
+                #[cfg(feature = "zoning")]
+                zoning: None,
+                uniaxial_extraordinary_dispersion: None,
+            },
+        ]
+    }
+
+    /// The color-change garnet (Tanzanian pyrope-spessartine), split out of
+    /// [`Self::built_in_materials_garnets_pyrope_through_spessartine`] purely to keep each
+    /// part under clippy's function-length lint. Same 2-parameter Cauchy convention as the
+    /// three species above.
+    pub(super) fn built_in_materials_garnet_color_change() -> Vec<Self> {
+        vec![
+            // Color-Change Garnet: pyrope-spessartine solid solution (Mg,Mn)3Al2(SiO4)3 with
+            // traces of Cr3+ and/or V3+, Tanzania (Umba valley, Tanga; also Lindi/Tunduru).
+            // Cubic, isotropic. SG ~3.85 (comment only, not stored on the material).
+            //
+            // n_d=1.760 (typical range 1.755-1.765), roughly the midpoint of pyrope 1.714 and
+            // spessartine 1.800 (cross-check: `chromophore::catalogue::garnet_optics(
+            // &[("spessartine", 0.5)])` fills the remainder with pyrope and returns the
+            // linear mix 0.5*1.714+0.5*1.800 = 1.757, SG 3.88; the stored 1.760 is the
+            // typical gemmological value for the Tanzanian material and stays).
+            // Dispersion B-G 0.025 (between pyrope 0.022 and spessartine 0.027) -> Delta n(F-C)
+            // = 0.025*0.579 = 0.014475; B = 0.014475/(1/0.4861^2-1/0.6563^2) =
+            // 0.014475/1.91053 = 0.007576; A = 1.760-0.007576/0.5893^2 = 1.760-0.021816 =
+            // 1.738184. Abbe V_d ~ 52.5.
+            Self {
+                name: "Color-Change Garnet (Pyrope-Spessartine)".to_string(),
+                crystal_system: CrystalSystem::Cubic,
+                optical_character: OpticalCharacter::Isotropic,
+                dispersion: DispersionModel::Cauchy {
+                    a: 1.738_184,
+                    b: 0.007_576,
+                    c: 0.0,
+                },
+                birefringence_delta: 0.0,
+                // Chromophores: Mn2+ 410/421/430nm (narrow spin-forbidden group, sigma
+                // 7.5-8nm = ~18-19nm FWHM, strong) blocks violet; Fe2+ 505nm weak (sigma
+                // 10.5nm = ~25nm FWHM); and the color-change band, ONE BROAD Cr3+/V3+ band
+                // centred ~573nm (sigma 40nm = ~94nm FWHM, strong). It leaves two
+                // transmission windows -- blue-green ~450-500nm and red >620nm -- and that
+                // balance is what swings the hue between daylight (D65: brownish/greyish
+                // mauve-green, the blue window dominates) and incandescent (3200K/A: the
+                // lamp is weak in the blue, so the red window wins: pink-red to
+                // orange-red). Band CENTRES cited; widths and peaks (1.5/1.2/1.5, 0.25,
+                // 1.3) TUNED, on the same band-weight scale as the garnets above.
+                absorption: AbsorptionTensor::isotropic(vec![
+                    AbsorptionBand::new(410.0, 8.0, 1.5),
+                    AbsorptionBand::new(421.0, 7.5, 1.2),
+                    AbsorptionBand::new(430.0, 8.0, 1.5),
+                    AbsorptionBand::new(505.0, 10.5, 0.25),
+                    AbsorptionBand::new(573.0, 40.0, 1.3),
+                ]),
+                c_axis: Vec3::Y,
+                biaxial_delta_beta_alpha: None,
+                scattering_sigma_s: 0.0,
+                scattering_g: 0.0,
+                edge_rounding_radius: 0.0,
+                absorption_path_scale: 1.0,
+                absorption_unit: super::AbsorptionUnit::ModelUnit,
+                #[cfg(feature = "zoning")]
+                zoning: None,
                 uniaxial_extraordinary_dispersion: None,
             },
         ]

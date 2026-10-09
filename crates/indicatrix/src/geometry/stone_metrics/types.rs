@@ -1,5 +1,7 @@
 //! Data types [`measure_solid`](super::measure_solid) and
-//! [`build_solid_mesh`](super::build_solid_mesh) report: the measured figures
+//! [`build_solid_mesh`](super::build_solid_mesh) report.
+//!
+//! They are the measured figures
 //! themselves ([`SolidMetrics`]), the printed proportions they're checked
 //! against ([`ExternalProportions`]), and the mesh-building outcome
 //! ([`SolidStatus`], [`SolidMesh`]).

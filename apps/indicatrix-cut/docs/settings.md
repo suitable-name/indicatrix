@@ -58,6 +58,8 @@ denoise_enabled = true
 contribute_to_final_picture = true
 payload_encoding = "auto"
 remote_batch_lanes = 4
+remote_batch_lanes_user_set = false
+remote_preview_batch_size = 10
 surface_glare = 1.0
 import_preview_choice = "ask"
 
@@ -252,6 +254,15 @@ coordinator, keep it at or below the coordinator's `--jobs-per-viewer` (default 
 requests beyond that wait in its per-viewer queue without progress, and one that waits
 there longer than 60 s is given up by the desktop (rendered locally under
 "Compute: Both", counted as failed under "Remote only").
+
+`remote_batch_lanes_user_set` (default `false`, set to `true` by the spin box) records
+that the user chose a lane count. Until then a preview batch against a remote GPU worker
+uses 2 dispatchers instead of `remote_batch_lanes` (a CPU worker or coordinator keeps it):
+the batched requests below keep the GPU busy with few connections. `remote_preview_batch_size`
+(default `10`, limited to 1..=32) is the "Pictures per preview request" spin box: how many
+pictures one protocol v24 `BatchRenderRequest` carries; each dispatcher keeps two such
+requests in flight on one persistent connection. A coordinator takes no batches, so
+previews against one are sent a picture at a time.
 
 **Migration.** A file written before the single-endpoint model carries a
 `[[settings.remote_workers]]` list. It still loads: the FIRST entry becomes `remote` (it was the only one any

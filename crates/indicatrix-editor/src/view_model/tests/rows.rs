@@ -419,8 +419,8 @@ fn unnamed_flat_cutting_rows_are_labelled_by_cutting_position() {
     }
     let solved = design.solve().expect("the fixture's flat tiers solve");
     let rows = cutting_instructions_rows(&design, &solved);
-    let flat: Vec<_> = rows.iter().filter(|r| r.second_line.is_none()).collect();
-    assert_eq!(flat.len(), design.tiers.len());
+    let flat = rows.iter().filter(|r| r.second_line.is_none()).count();
+    assert_eq!(flat, design.tiers.len());
     // An unnamed tier still shows its code, numbered in cutting order (the name is not needed).
     let codes = design.tier_codes();
     for (row, tier_ref) in rows.iter().zip(design.cutting_order()) {

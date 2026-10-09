@@ -3,6 +3,7 @@
 //! indicatrix, and the GPU-routing predicate.
 
 mod biaxial;
+mod color_change_garnet;
 mod custom;
 mod dispersion;
 mod gpu;

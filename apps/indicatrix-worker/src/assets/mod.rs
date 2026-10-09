@@ -81,7 +81,9 @@ pub fn configured_location(anchor: &Path) -> (PathBuf, u64) {
 }
 
 /// Opens the configured cache (see [`configured_location`] for `anchor`), logging where
-/// it lives. `None` -- HDR scenes then refused, never rendered wrongly -- when the
+/// it lives.
+///
+/// `None` -- HDR scenes then refused, never rendered wrongly -- when the
 /// directory cannot be created or listed.
 #[must_use]
 pub fn open_configured(anchor: &Path) -> Option<std::sync::Arc<AssetCache>> {

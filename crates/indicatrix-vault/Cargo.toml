@@ -23,6 +23,16 @@ rusqlite = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
 
+[features]
+default = []
+# Rough colour and colour zoning from rig photos (plan 2026-10-09, section 1a): the side
+# tables `rough_colour`, `rough_colour_photo`, `stone_pose_choice`, `material_zoning` and
+# `render_job_zoning`, created (idempotently) only by a build with this feature, and the
+# `Database` methods that read and write them. Off by default: a build without it never
+# creates, reads, writes or deletes those tables and is unchanged. No dependency is added;
+# every payload is opaque text or bytes (the application owns the formats).
+zoning = []
+
 [dev-dependencies]
 # Tests only: the typed color-recipe round trip (`db::sqlite::tests::materials`) stores a real
 # `ColorRecipe`; the storage layer itself still treats `color_recipe_json` as opaque text.

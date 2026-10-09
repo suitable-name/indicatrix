@@ -58,6 +58,11 @@ pub struct RemoteCapability {
     /// export sizes its requests by `rate::COORDINATOR_CHUNK_TARGET_SECS` and measures
     /// a request's rate over the whole request, not from its first progress report.
     pub coordinator: bool,
+    /// `zoning` builds: whether the remote's `WELCOME` advertised the zoning capability
+    /// (`Welcome::zoning`) -- `bridge::remote::zoned_scene_refusal`'s per-capability input.
+    /// Never set by a coordinator.
+    #[cfg(feature = "zoning")]
+    pub zoning: bool,
 }
 
 impl RemoteCapability {
@@ -68,6 +73,8 @@ impl RemoteCapability {
             max_pixels: render.max_pixels,
             hdr: render.hdr,
             coordinator: matches!(render.backend, Backend::Coordinator { .. }),
+            #[cfg(feature = "zoning")]
+            zoning: false,
         }
     }
 }
@@ -98,11 +105,21 @@ pub fn probe_remote(
         return Err(RemoteUnavailable::NoWorkerConfigured);
     };
     match remote_render::connect_and_handshake(&worker) {
-        Ok((_stream, welcome)) => welcome
-            .render
-            .map_or(Err(RemoteUnavailable::LibraryOnly), |render| {
-                Ok(RemoteCapability::from_render(worker, &render))
-            }),
+        Ok((_stream, welcome)) => {
+            #[cfg(feature = "zoning")]
+            let zoning = welcome.zoning;
+            welcome
+                .render
+                .map_or(Err(RemoteUnavailable::LibraryOnly), |render| {
+                    let capability = RemoteCapability::from_render(worker, &render);
+                    #[cfg(feature = "zoning")]
+                    let capability = RemoteCapability {
+                        zoning,
+                        ..capability
+                    };
+                    Ok(capability)
+                })
+        }
         Err(e) => Err(RemoteUnavailable::Unreachable(e.to_string())),
     }
 }
@@ -136,6 +153,8 @@ mod tests {
             max_pixels,
             hdr: false,
             coordinator: false,
+            #[cfg(feature = "zoning")]
+            zoning: false,
         }
     }
 

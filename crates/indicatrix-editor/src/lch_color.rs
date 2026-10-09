@@ -345,7 +345,7 @@ mod tests {
         assert!(delta_e < 2.0, "rendered vs swatch Delta E {delta_e}");
     }
 
-    /// Review fix (absorption units): a design with LCh bands AND an old stored
+    /// Review fix (absorption units): a design with `LCh` bands AND an old stored
     /// `absorption_path_scale_override` (24.5, written by builds that stored the scale) now
     /// renders at `W / model_width` -- the stored number is ignored for a per-millimetre
     /// material, the renderer supplies the scale. THIS INTENTIONALLY CHANGES OLD FILES: they
@@ -359,7 +359,7 @@ mod tests {
             name: Some("Diamond".to_string()),
             ..MaterialSelection::none()
         }
-        .with_body_color_bands(Some(solve.triple), Some(solve.bands.clone()), Some(24.5));
+        .with_body_color_bands(Some(solve.triple), Some(solve.bands), Some(24.5));
         assert_eq!(old_file.absorption_path_scale_override, Some(24.5));
         let gem = resolved_gem_material(&old_file, &EditorMaterialLookup::new(&[]));
         // Before the render step the stored scale is still on the material...

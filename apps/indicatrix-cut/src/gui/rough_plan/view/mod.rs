@@ -36,8 +36,12 @@ mod scene;
 mod state;
 mod thumbnails;
 mod workers;
+#[cfg(feature = "zoning")]
+mod zoning_view;
 
 pub(super) use self::state::ViewState;
+#[cfg(feature = "zoning")]
+pub(super) use self::zoning_view::{ColourJob, design_info, redraw};
 use self::{
     design_mesh::MeshLibrary,
     render::{Hover, RenderOptions, RenderRequest, SharedPick},
@@ -97,6 +101,8 @@ fn frame_size(view_size: (f32, f32), scale_factor: f32, interactive: bool) -> (u
 /// view's threads.
 pub(super) fn setup_view_callbacks(host: &Rc<Host>) {
     let meshes = Arc::new(MeshLibrary::new(Arc::clone(&host.db)));
+    #[cfg(feature = "zoning")]
+    zoning_view::register_meshes(&meshes);
     let picks: SharedPick = Arc::default();
     let window = host.window.as_weak();
     let runtime = Runtime {
@@ -199,6 +205,13 @@ fn frame_ready(host: &Rc<Host>, generation: u64, pixels: render::Pixels) {
         (newer, rehover)
     };
     if newer {
+        // Zoning builds: the handles of the wizard's selected zone are drawn into the frame.
+        #[cfg(feature = "zoning")]
+        let pixels = {
+            let mut pixels = pixels;
+            zoning_view::draw_overlay(host, &mut pixels);
+            pixels
+        };
         host.window
             .global::<RoughPlanModel>()
             .set_view_image(Image::from_rgba8(pixels));
@@ -353,6 +366,8 @@ fn show_fit(host: &Rc<Host>, index: usize) {
             rough,
             titles: session.run.titles.clone(),
             mesh_ids: mesh_ids_for(layout, &session.run.statuses),
+            #[cfg(feature = "zoning")]
+            colour: super::zoning_hooks::colour_job(index),
         };
         session
             .view
@@ -497,6 +512,20 @@ fn start_thumbnails(host: &Rc<Host>) {
                     epoch: session.view.plan_epoch,
                     rough: Arc::clone(rough),
                     titles: run.titles.clone(),
+                    // The zoning build needs each layout's index for its colour job; the
+                    // default build keeps the plain map it always had.
+                    #[cfg(feature = "zoning")]
+                    items: run
+                        .layouts
+                        .iter()
+                        .enumerate()
+                        .map(|(index, layout)| ThumbnailItem {
+                            layout: layout.clone(),
+                            mesh_ids: mesh_ids_for(layout, &run.statuses),
+                            colour: super::zoning_hooks::colour_job(index),
+                        })
+                        .collect(),
+                    #[cfg(not(feature = "zoning"))]
                     items: run
                         .layouts
                         .iter()
@@ -525,6 +554,10 @@ fn start_thumbnails(host: &Rc<Host>) {
 /// design meshes are kept: a worker checks them against the library once for the new plan
 /// and drops those whose design was edited.
 pub(super) fn results_changed(host: &Rc<Host>) {
+    // Zoning builds: the plan's rough colour (if it has one) is read before the scenes and
+    // thumbnails of the new results are asked for.
+    #[cfg(feature = "zoning")]
+    super::zoning_hooks::refresh(host);
     {
         let mut guard = host.session.borrow_mut();
         let session = &mut *guard;

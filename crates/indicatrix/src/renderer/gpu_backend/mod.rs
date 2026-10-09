@@ -60,6 +60,11 @@
 //! renderer to a COMPLETELY DIFFERENT request's next turn safe: there is nothing left in
 //! flight for that other request's dispatch to race or corrupt.
 //!
+//! This invariant is for TURN BOUNDARIES. A batch ([`GpuBackend::try_accumulate_batch_cancellable`],
+//! "Batches" below) keeps one chunk in flight ACROSS picture boundaries while it holds its
+//! turn, and drains exactly when it gives the turn up -- so the invariant every other
+//! request relies on (an idle renderer at the start of its turn) still holds.
+//!
 //! ## Scene re-upload: the fairness cost
 //!
 //! `GpuFrameRenderer::scene_buffers` (camera/material/planes/facet-finishes) is ONE
@@ -75,6 +80,32 @@
 //! before. A single request with no contention pays this small fixed cost once per
 //! [`turnstile::CHUNKS_PER_TURN`]-chunk turn too (there is no "am I still the only user"
 //! fast path) -- the tradeoff this module makes for fairness.
+//!
+//! ## Batches: a queue that stays fed between pictures
+//!
+//! [`GpuBackend::try_accumulate_batch_cancellable`] traces a list of [`GpuBatchItem`]s as
+//! ONE chunk stream (see `renderer::gpu::frame`'s `batch` module): the next picture's
+//! first chunk is queued before the previous picture's last chunk is read back, its scene
+//! is written into the persistent scene buffers while that chunk may still run
+//! (`write_buffer`/`submit` are ordered by `wgpu`, the same argument the per-slot params
+//! buffers rely on, so no second scene-buffer set is needed), and pictures with different
+//! material classes simply use their own already-compiled pipelines -- there is no
+//! "current pipeline" to switch.
+//!
+//! Fairness choice: a batch holds its turn for as long as nobody else is queued, with no
+//! drain between chunks or pictures. After every [`turnstile::CHUNKS_PER_TURN`] chunks it
+//! asks the turnstile whether a ticket was taken behind it; if so it drains its one
+//! in-flight chunk, gives the turn up and rejoins the back of the queue (a single request
+//! with no contention therefore pays no per-turn drain at all, a contended one waits at
+//! most as long as today). `on_done` runs while the turn is held, with the next chunk
+//! already queued behind it, so it should hand the picture off cheaply (a channel send),
+//! not do slow work inline.
+//!
+//! Memory: the output ring (two slots of output, reduced-pixel, staging and params
+//! buffers) is sized once for the largest picture of the batch and reused for every
+//! picture -- at most about `2 * (50 MiB + 2 * 12 B * pixels)` on the device (roughly 100 MiB
+//! plus 48 MiB at 1024 x 1024, whatever the batch length). On the host each picture has
+//! its own 12 B x pixels scratch while it is in flight (at most two at a time, pooled).
 //!
 //! ## Chunk sample offsets stay deterministic regardless of interleaving
 //!
@@ -140,6 +171,8 @@
 //! [`GpuSceneRef`]/[`GpuAccumulate`]/[`GpuPipelineKind`] below are defined in both
 //! configurations so a caller needs no `#[cfg]` of its own.
 
+use glam::Vec3;
+
 use crate::{
     geometry::{GpuFacetPlane, tool::StoneGeometry},
     optics::{
@@ -159,6 +192,8 @@ mod stub;
 mod tests;
 #[cfg(feature = "gpu")]
 mod turnstile;
+#[cfg(all(test, feature = "gpu", feature = "zoning"))]
+mod zoned_tests;
 
 #[cfg(feature = "gpu")]
 pub use backend::GpuBackend;
@@ -191,6 +226,24 @@ pub struct GpuSceneRef<'a> {
     pub environment: EnvironmentSource<'a>,
 }
 
+/// One picture of a batch: its scene, sample range and its own output buffer.
+///
+/// The unit of [`GpuBackend::try_accumulate_batch_cancellable`]; `out` receives exactly
+/// what [`GpuBackend::try_accumulate_cancellable`] would have ADDED into its `accum` for
+/// this scene (`first_sample` is the absolute sample offset, `samples` the count).
+/// Defined in both build configurations, like [`GpuSceneRef`].
+#[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+pub struct GpuBatchItem<'a> {
+    /// The scene to trace.
+    pub scene: GpuSceneRef<'a>,
+    /// Absolute index of the first sample (see "Sample-range additivity").
+    pub first_sample: u32,
+    /// Number of samples to trace.
+    pub samples: u32,
+    /// Output buffer, `scene.width * scene.height` pixels; written only on `Done`.
+    pub out: &'a mut [Vec3],
+}
+
 /// Whether a scene may be dispatched to the GPU at all.
 ///
 /// The material must be one the GPU supports, the stone must be convex (no tools), the
@@ -211,7 +264,27 @@ pub struct GpuSceneRef<'a> {
 /// `HybridSplit::cpu_only` split. A pure function of the scene so it is unit-tested
 /// without an adapter.
 #[must_use]
+#[cfg(not(feature = "zoning"))]
 pub const fn scene_routes_to_gpu(
+    material: &GemMaterial,
+    geom: StoneGeometry<'_>,
+    fluorescence: &Fluorescence,
+    lighting: LightingPreset,
+) -> bool {
+    material.gpu_supported()
+        && geom.is_convex()
+        && fluorescence.is_empty()
+        && !lighting.is_uv_lamp()
+}
+
+/// [`scene_routes_to_gpu`] in a `zoning` build: the same rule, but not `const`.
+///
+/// `GemMaterial::gpu_supported` inspects a zoned material's zone list (mesh shells,
+/// scattering and oversized band sets are CPU only; this is also how a zoned material the
+/// GPU cannot render stays off it instead of silently rendering its base zone).
+#[must_use]
+#[cfg(feature = "zoning")]
+pub fn scene_routes_to_gpu(
     material: &GemMaterial,
     geom: StoneGeometry<'_>,
     fluorescence: &Fluorescence,
@@ -341,5 +414,64 @@ mod routing_tests {
         for preset in LightingPreset::ALL {
             assert!(!scene_routes_to_gpu(&material, stone, &fluorescent, preset));
         }
+    }
+
+    /// `zoning` build: a zoned stone the GPU zone kernels can render routes to the GPU; one
+    /// with a mesh-shell zone, or a scattering one, stays on the CPU tracer instead of
+    /// silently rendering its base zone on the GPU.
+    #[cfg(feature = "zoning")]
+    #[test]
+    fn scene_routes_to_gpu_declines_a_zoned_stone_the_kernels_cannot_render() {
+        use crate::optics::{
+            absorption::AbsorptionTensor,
+            zoning::{Zone, ZoneAbsorption, ZoneFrame, ZoneShape, ZonedAbsorption},
+        };
+        use glam::DVec3;
+
+        let zone_absorption = || {
+            ZoneAbsorption::per_mm(AbsorptionTensor::isotropic(vec![AbsorptionBand::new(
+                560.0, 60.0, 0.2,
+            )]))
+        };
+        let zoning = |shape: ZoneShape| ZonedAbsorption {
+            frame: ZoneFrame::IDENTITY,
+            base: ZoneAbsorption::per_mm(AbsorptionTensor::isotropic(Vec::new())),
+            zones: vec![Zone {
+                shape,
+                absorption: zone_absorption(),
+            }],
+            boundary_softness_mm: 0.0,
+        };
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let stone = StoneGeometry::planes_only(&planes);
+        let routes = |material: &GemMaterial| {
+            scene_routes_to_gpu(
+                material,
+                stone,
+                Fluorescence::none(),
+                LightingPreset::Daylight,
+            )
+        };
+
+        let plane_zone = GemMaterial::diamond().with_zoning(zoning(ZoneShape::HalfSpace {
+            normal: DVec3::X,
+            offset: 0.0,
+        }));
+        assert!(routes(&plane_zone), "a half-space zone is GPU-renderable");
+
+        let mesh_zone = GemMaterial::diamond().with_zoning(zoning(ZoneShape::MeshShell {
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            triangles: vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]],
+        }));
+        assert!(!routes(&mesh_zone), "a mesh-shell zone is CPU only");
+
+        let mut scattering = plane_zone;
+        scattering.scattering_sigma_s = 0.4;
+        assert!(!routes(&scattering), "a zoned scattering stone is CPU only");
     }
 }

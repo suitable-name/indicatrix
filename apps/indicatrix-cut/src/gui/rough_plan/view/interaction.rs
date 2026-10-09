@@ -179,6 +179,11 @@ pub(super) fn sync_size(host: &Rc<Host>) {
 
 /// The pointer moved with the button held: the camera follows.
 fn orbit(host: &Rc<Host>, dx: f32, dy: f32) {
+    // Zoning builds: a drag that started on a zone handle moves the handle, not the camera.
+    #[cfg(feature = "zoning")]
+    if super::zoning_view::drag_move(host, dx, dy) {
+        return;
+    }
     edit_view(host, |view| view.pose = orbit_step(view.pose, dx, dy));
     request_render(host);
 }
@@ -216,12 +221,17 @@ fn drag_begin(host: &Rc<Host>) {
     host.window
         .global::<RoughPlanModel>()
         .set_view_hint("".into());
+    // Zoning builds: a drag that starts on a zone handle edits the zone.
+    #[cfg(feature = "zoning")]
+    super::zoning_view::drag_begin(host);
 }
 
 /// The pointer button went up: the full-size frame, and the pointer looks at what is
 /// under it again.
 fn drag_end(host: &Rc<Host>) {
     edit_view(host, |view| view.dragging = false);
+    #[cfg(feature = "zoning")]
+    super::zoning_view::drag_end(host);
     request_rehover(host);
     request_render(host);
 }
@@ -332,6 +342,11 @@ fn model_shown(view: &ViewState) -> bool {
 
 /// The pointer moved over the image without a button (or left it, at a negative point).
 fn hover(host: &Rc<Host>, x: f32, y: f32) {
+    // Zoning builds: the pointer lights a zone handle under it and leaves the rest alone.
+    #[cfg(feature = "zoning")]
+    if super::zoning_view::hover(host, x, y) {
+        return;
+    }
     let model = host.window.global::<RoughPlanModel>();
     let armed = model.get_face_from_view_armed();
     let editable = !model.get_running();
@@ -490,6 +505,12 @@ fn cut_from_facet(host: &Rc<Host>, facet: usize) -> Option<RoughCut> {
 /// after the double-click interval), in a result it selects the design of the stone under
 /// the pointer.
 fn click(host: &Rc<Host>, x: f32, y: f32) {
+    // Zoning builds: a click on a zone handle is not a click on the model, and while the wizard
+    // paints polished windows a click on the mesh paints.
+    #[cfg(feature = "zoning")]
+    if super::zoning_view::click(host, x, y) {
+        return;
+    }
     let model = host.window.global::<RoughPlanModel>();
     let armed = model.get_face_from_view_armed();
     let (picked, building) = {

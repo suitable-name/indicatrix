@@ -60,6 +60,17 @@ impl Turnstile {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Whether any ticket was handed out AFTER `ticket` -- i.e. some other caller is
+    /// queued (or about to queue) behind the holder of `ticket`.
+    ///
+    /// Lets a batch keep its turn (and its GPU queue full) while nobody else wants the
+    /// renderer, and yield the moment somebody does. A caller that takes a ticket right
+    /// after this returns `false` simply waits for the holder's next yield point, at most
+    /// [`CHUNKS_PER_TURN`] chunks later.
+    pub(super) fn has_waiters_behind(&self, ticket: u64) -> bool {
+        self.next_ticket.load(std::sync::atomic::Ordering::Acquire) > ticket + 1
+    }
+
     /// Blocks until `ticket` is being served, then returns a guard whose `Drop` advances
     /// `now_serving` and wakes every waiter -- so a turn is released exactly once, even
     /// if the caller returns early (a `?` on a GPU error, a cancellation), never leaked

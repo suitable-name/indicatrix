@@ -1,6 +1,7 @@
 import { Theme } from "../../theme.slint";
 import { ComboBox, LineEdit } from "std-widgets.slint";
 import { RoughPlanModel } from "../../models/rough_plan.slint";
+import { Zoning } from "../../models/zoning.slint";
 import { RoughField, RoughRadio, RoughPill, ElidedText } from "fields.slint";
 import { TipBox, FieldCaption } from "../tip_box.slint";
 
@@ -147,6 +148,13 @@ export component RoughForm inherits VerticalLayout {
                     : "Find an inclusion from photos of the rough taken on a fixed camera rig. Light from the inclusion bends at the surface, so the position is worked out through the mesh."));
                 enabled: !RoughPlanModel.running && !RoughPlanModel.mesh_busy && RoughPlanModel.locate_possible;
                 clicked => { RoughPlanModel.locate_inclusion(); }
+            }
+            if Zoning.enabled: RoughPill {
+                text: "Rough colour...";
+                hint: !RoughPlanModel.locate_possible ? "Needs a mesh rough (import a closed mesh of the rough) and no plan running."
+                    : "Work out the colour of the stone, and of colour zones inside it, from photos of the rough on a backlit rig.";
+                enabled: RoughPlanModel.locate_possible && !RoughPlanModel.running && !RoughPlanModel.mesh_busy;
+                clicked => { Zoning.open_rough_colour(); }
             }
         }
         for row[i] in RoughPlanModel.inclusion_rows: HorizontalLayout {

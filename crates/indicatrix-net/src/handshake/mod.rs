@@ -126,6 +126,19 @@ pub fn local_hello() -> Hello {
     )
 }
 
+/// [`local_hello`] on a zoning build: the same `HELLO` with the zoning capability marker set.
+///
+/// The marker is `Hello::zoning`, written by `crate::messages::write_hello_message`. A default
+/// build never calls this and never sends the marker.
+#[cfg(all(feature = "render", feature = "zoning"))]
+#[must_use]
+pub fn local_hello_zoning() -> Hello {
+    Hello {
+        zoning: true,
+        ..local_hello()
+    }
+}
+
 /// Builds this process's `HELLO` as a render worker joining a coordinator (v14).
 ///
 /// Like [`local_hello`] but with role [`crate::messages::PeerRole::Worker`] and the
@@ -190,7 +203,22 @@ pub fn decode_hello(bytes: &[u8]) -> Result<Hello, HelloReadError> {
             },
         ));
     }
+    decode_hello_body(bytes)
+}
+
+/// The struct half of [`decode_hello`]: `postcard::from_bytes`, which ignores trailing bytes.
+#[cfg(not(feature = "zoning"))]
+fn decode_hello_body(bytes: &[u8]) -> Result<Hello, HelloReadError> {
     Ok(postcard::from_bytes::<Hello>(bytes).map_err(crate::messages::NetError::from)?)
+}
+
+/// The struct half of [`decode_hello`] on a zoning build.
+///
+/// The same decode, plus the zoning capability marker some peers append (`Hello::zoning`) --
+/// see `crate::messages::zoning`.
+#[cfg(feature = "zoning")]
+fn decode_hello_body(bytes: &[u8]) -> Result<Hello, HelloReadError> {
+    Ok(crate::messages::hello_from_bytes(bytes).map_err(crate::messages::NetError::from)?)
 }
 
 /// The cap [`read_hello`] enforces on the `HELLO` frame's length prefix.
@@ -390,7 +418,7 @@ mod tests {
     fn a_peer_advertising_the_previous_protocol_version_is_refused() {
         let current = crate::messages::PROTOCOL_VERSION;
         assert_eq!(
-            current, 23,
+            current, 24,
             "update this pinned value if PROTOCOL_VERSION moves again"
         );
         let local = hello(current, [1; 8]);

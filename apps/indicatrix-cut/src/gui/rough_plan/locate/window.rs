@@ -179,6 +179,29 @@ pub(super) fn rigs_changed() {
     on_locate(reload_rigs);
 }
 
+/// The alignment, the rig it was made with and the loaded photos (`zoning` feature).
+#[cfg(feature = "zoning")]
+pub(super) fn alignment_snapshot()
+-> Option<crate::gui::rough_colour::wizard::context::AlignmentSnapshot> {
+    with_locate(|host| {
+        let state = host.state.borrow();
+        let alignment = state.alignment?;
+        Some(
+            crate::gui::rough_colour::wizard::context::AlignmentSnapshot {
+                rig_name: state.rig().map(|rig| rig.name.clone())?,
+                transform: alignment.transform,
+                mesh_id: alignment.mesh_id,
+                photos: state
+                    .photos
+                    .iter()
+                    .map(|photo| photo.as_ref().map(|p| p.path.clone()))
+                    .collect(),
+            },
+        )
+    })
+    .flatten()
+}
+
 /// Hides the window for good (the planner is closing).
 pub(super) fn close() {
     if let Some(host) = LOCATE.with(|cell| cell.borrow_mut().take()) {

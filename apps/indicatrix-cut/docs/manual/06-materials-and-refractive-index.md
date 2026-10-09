@@ -35,7 +35,7 @@ about 1.54) at the same angle, because quartz's critical angle is larger.
 
 ## The built-in material list
 
-The renderer ships 32 built-in materials, used both by the Live Render
+The renderer ships 33 built-in materials, used both by the Live Render
 viewport and as starting templates in the Material Editor. Full dispersion
 and color detail for every one is in Appendix C; the figures that matter
 for cutting -- refractive index, birefringence, and whether the material
@@ -65,6 +65,7 @@ cutting) -- are:
 | Pyrope Garnet | 1.714 | — | Isotropic | Yes |
 | Almandine Garnet | 1.790 | — | Isotropic | Yes |
 | Spessartine Garnet | 1.800 | — | Isotropic | Yes |
+| Color-Change Garnet (Pyrope-Spessartine) | 1.760 | — | Isotropic | Yes |
 | Grossular Garnet (Tsavorite) | 1.734 | — | Isotropic | Yes |
 | Andradite Garnet (Demantoid) | 1.887 | — | Isotropic | Yes |
 | Peridot | 1.654 | +0.0360 | Biaxial (+) | Yes |
@@ -84,7 +85,7 @@ chapter's Known Limitations.)
 
 Every material picker in the app -- the Design Settings panel's Material
 combo, the New Design dialog's Starting Material combo, and the Live
-Render viewport's Render Material dropdown -- shares one list: all 32
+Render viewport's Render Material dropdown -- shares one list: all 33
 built-in materials above, in that order, followed by every custom material
 you have saved, sorted alphabetically. Whichever picker you open, you see
 the same materials in the same relative order (built-ins first, then your own).

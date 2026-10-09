@@ -4,8 +4,9 @@
 
 use serde::{Deserialize, Serialize};
 
-/// One design as it appears in a [`super::LibraryResponse::SearchResults`] list. Wire
-/// counterpart of `indicatrix_vault::model::entry::DiagramListItem`, plus
+/// One design as it appears in a [`super::LibraryResponse::SearchResults`] list.
+///
+/// Wire counterpart of `indicatrix_vault::model::entry::DiagramListItem`, plus
 /// [`Self::version`] (see the module docs on staleness).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DesignSummary {
@@ -74,7 +75,9 @@ pub struct AngleSettingWire {
     pub tool_line: Option<String>,
 }
 
-/// One attachment's METADATA -- never its content; see the module docs' "Attachments"
+/// One attachment's METADATA -- never its content.
+///
+/// See the module docs' "Attachments"
 /// section for why content is fetched separately, by [`Self::id`], via
 /// [`super::LibraryRequest::FetchAttachment`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -135,8 +135,11 @@ fn resolve_dirty_speed_on_a_large_real_design() {
     // Tier 51 (the pavilion's first tier) stays exactly as import pinned it, so
     // the pavilion block keeps a real anchor once the rest of it (52-102) is
     // adopted back to genuine `MeetExisting`.
-    for i in 52..103 {
-        half_adopted.tiers[i].constraint = real_pavilion_inputs[i].constraint.clone();
+    for (tier, input) in half_adopted.tiers[52..103]
+        .iter_mut()
+        .zip(&real_pavilion_inputs[52..103])
+    {
+        tier.constraint = input.constraint.clone();
     }
     let half_adopted_baseline = half_adopted
         .solve()

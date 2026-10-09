@@ -41,7 +41,9 @@ pub fn dispersion_model_dto(model: &DispersionModel) -> DispersionModelDto {
     }
 }
 
-/// The model `dto` describes, or `None` when it is not one the renderer can use (a
+/// The model `dto` describes, or `None` when it is not one the renderer can use.
+///
+/// (A
 /// coefficient that is not finite, a resonance inside the visible band, an index at or
 /// below 1: see [`DispersionModel::validate`]).
 #[must_use]

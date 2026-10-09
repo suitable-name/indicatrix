@@ -282,45 +282,7 @@ impl GpuFrameRenderer {
         // to reuse.
         self.scene_buffers = Some(frame_buffers);
 
-        // A wgpu validation/internal error `GpuContext::acquire_async`'s
-        // `on_uncaptured_error` handler observed during this turn's dispatches, but that
-        // by wgpu's own default would otherwise have panicked the calling thread instead
-        // of returning here. `swap` both reads and clears it in one step -- this turn
-        // (and this renderer) is about to be abandoned either way, so there is nothing
-        // left for a later turn to still need it set.
-        if self
-            .ctx
-            .validation_error_seen
-            .swap(false, Ordering::Relaxed)
-        {
-            self.abandon_in_flight();
-            // Folds in the actual wgpu error text if the
-            // `on_uncaptured_error` handler captured one -- see
-            // `GpuContext::last_uncaptured_error`'s doc comment for why this avoids
-            // becoming a dead end (a `tracing::error!` alone, with no subscriber
-            // installed in most binaries, would otherwise lose the message). Cleared in
-            // the same step so a later, unrelated turn doesn't report a stale message.
-            let detail = self
-                .ctx
-                .last_uncaptured_error
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
-            let message = detail.map_or_else(
-                || {
-                    "wgpu reported an uncaptured validation/device error during this turn \
-                     (no error text was captured)"
-                        .to_string()
-                },
-                |detail| {
-                    format!(
-                        "wgpu reported an uncaptured validation/device error during this turn: \
-                         {detail}"
-                    )
-                },
-            );
-            return Err(GpuFrameError::DeviceLost(message));
-        }
+        self.check_uncaptured_error()?;
 
         if cancelled {
             return Ok(ChunkTurnOutcome::Cancelled);
@@ -329,6 +291,54 @@ impl GpuFrameRenderer {
             return Ok(ChunkTurnOutcome::Done);
         }
         Ok(ChunkTurnOutcome::MoreWork)
+    }
+
+    /// Turns a wgpu validation/internal error `GpuContext::acquire_async`'s
+    /// `on_uncaptured_error` handler observed since the last check (one that by wgpu's own
+    /// default would have panicked the calling thread instead of returning here) into a
+    /// [`GpuFrameError::DeviceLost`], abandoning the in-flight state first. Shared by
+    /// [`Self::accumulate_turn_body`] (once per turn) and the batch stepper
+    /// (`super::batch`, once per step).
+    ///
+    /// `swap` both reads and clears the flag in one step -- the renderer is about to be
+    /// abandoned either way, so there is nothing left for a later turn to still need it
+    /// set. The actual wgpu error text, when the handler captured one, is folded into the
+    /// message (see `GpuContext::last_uncaptured_error`'s doc comment: a `tracing::error!`
+    /// alone, with no subscriber installed in most binaries, would lose it) and cleared in
+    /// the same step so a later, unrelated turn doesn't report a stale message.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuFrameError::DeviceLost`] if such an error was seen.
+    pub(super) fn check_uncaptured_error(&mut self) -> Result<(), GpuFrameError> {
+        if !self
+            .ctx
+            .validation_error_seen
+            .swap(false, Ordering::Relaxed)
+        {
+            return Ok(());
+        }
+        self.abandon_in_flight();
+        let detail = self
+            .ctx
+            .last_uncaptured_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let message = detail.map_or_else(
+            || {
+                "wgpu reported an uncaptured validation/device error during this turn \
+                 (no error text was captured)"
+                    .to_string()
+            },
+            |detail| {
+                format!(
+                    "wgpu reported an uncaptured validation/device error during this turn: \
+                     {detail}"
+                )
+            },
+        );
+        Err(GpuFrameError::DeviceLost(message))
     }
 
     /// The setup [`Self::accumulate_turn`] must redo on EVERY turn before it can
@@ -347,7 +357,7 @@ impl GpuFrameRenderer {
     ///
     /// [`GpuFrameError::UnsupportedEnvironment`] -- see [`FrameSceneBuffers::ensure`]'s
     /// `# Errors`.
-    fn prepare_turn<'a>(
+    pub(super) fn prepare_turn<'a>(
         &mut self,
         request: &TurnRequest<'a>,
     ) -> Result<TurnSetup<'a>, GpuFrameError> {

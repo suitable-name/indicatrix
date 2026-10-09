@@ -37,6 +37,11 @@ pub enum Illuminant {
     UvLongWave365,
     /// Short-wave ultraviolet lamp (peak at 254.0 nm, SW UV / mineralogical).
     UvShortWave254,
+    /// One of the CIE 15:2018 LED illuminants (tabulated at 5 nm, linearly interpolated, peak
+    /// normalised). Appended last so the earlier variants keep their serialised indices; only
+    /// with the `zoning` feature. See [`LedKind`](super::led::LedKind).
+    #[cfg(feature = "zoning")]
+    Led(super::led::LedKind),
 }
 
 impl Illuminant {
@@ -58,6 +63,8 @@ impl Illuminant {
                 let diff = (lambda_nm - 254.0) / SIGMA;
                 (-0.5 * diff * diff).exp()
             }
+            #[cfg(feature = "zoning")]
+            Self::Led(kind) => kind.spectral_power(lambda_nm),
         }
     }
 }
@@ -185,6 +192,11 @@ fn body_color_transmittance(t_fn: impl Fn(f64) -> f64, ill: Illuminant) -> BodyC
     let display_adaptation = match ill {
         Illuminant::Planckian(temp_k) => Some(compute_illuminant_white_balance(temp_k)),
         Illuminant::D65 | Illuminant::UvLongWave365 | Illuminant::UvShortWave254 => None,
+        // The LED lamps are shown as they are, like D65 and the UV lines: no adaptation. A
+        // caller that wants the swatch adapted to the screen uses `body_color_from_spectra`
+        // with its own `display_adaptation`.
+        #[cfg(feature = "zoning")]
+        Illuminant::Led(_) => None,
     };
     body_color_from_spectra(
         t_fn,

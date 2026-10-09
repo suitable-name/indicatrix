@@ -257,6 +257,39 @@ export component RemoteWorkerDialog inherits PopupWindow {
                 }
             }
 
+            // Pictures per remote preview request -- how many catalogue previews one batched
+            // request to a remote worker carries (`AppSettings::remote_preview_batch_size`).
+            // Saved the moment the spin box changes, like the lane count above.
+            if GuideModel.shows_advanced(): VerticalLayout {
+                spacing: 2px;
+                HorizontalLayout {
+                    alignment: space-between;
+                    FieldCaption {
+                        text: "Pictures per preview request";
+                        hint: "How many catalogue previews are sent to the remote in one request. The remote keeps its graphics card busy across them.";
+                    }
+                    TipBox {
+                        hint: "From 1 to 32. The default of 10 suits most workers.";
+                        SpinBox {
+                            minimum: 1;
+                            maximum: 32;
+                            step-size: 1;
+                            value <=> RemoteWorkerModel.remote_preview_batch_size;
+                            accessible-label: "Pictures per preview request";
+                            edited(size) => { RemoteWorkerModel.remote_preview_batch_size_changed(size); }
+                        }
+                    }
+                }
+                Text {
+                    text: "A preview batch sends this many pictures at a time and queues the next request while the current one renders.";
+                    font-size: 9px;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                    height: 24px;
+                    accessible-role: AccessibleRole.text;
+                }
+            }
+
             // The configured endpoint.
             if RemoteWorkerModel.configured && !root.editing: Rectangle {
                 background: Theme.surface-sunken;

@@ -282,11 +282,10 @@ pub fn render_view(job: &PreviewJob<'_>, view: PreviewView, gpu: &GpuBackend) ->
         );
     }
 
-    // `1.0 / job.spp as f32`: same `inv_samples` convention every other tone-mapping
-    // call site in this crate uses (see `export_thread::tonemap_png::tonemap_to_rgba`,
-    // which this function's own doc comment already notes this reuses).
-    let rgba = tonemap_to_rgba(&accum, 1.0 / job.spp as f32);
-    encode_png(job.size, job.size, &rgba)
+    // The one shared tone-map + PNG step (`1.0 / spp` scale, untagged sRGB): a remote
+    // worker's `BATCH_ITEM_DONE` calls the very same function, so a preview rendered
+    // there is byte-identical to this one from the same sum.
+    indicatrix::render_setup::encode_preview_png(job.size, job.size, &accum, job.spp)
 }
 
 /// Renders `planes` minus the concave `tools` in `material` on the CPU at an arbitrary
@@ -406,25 +405,11 @@ pub fn render_view_remote_checked(
     result
 }
 
-/// The body of [`render_view_remote_checked`], separated so the single `warn!` covers
-/// every early return.
-fn dispatch_remote_view(
-    job: &PreviewJob<'_>,
-    view: PreviewView,
-    worker: &WorkerSettings,
-    cancel: &AtomicBool,
-) -> Result<Vec<u8>, RemoteShortfall> {
-    // The shared remote-render rule (`bridge::remote::guard`). Catalogue thumbnails
-    // always use the analytic studio rig -- `render_view`'s snapshot hard-codes
-    // `env_map: None` -- so this never refuses today; it is asked anyway so a future
-    // per-design environment cannot silently start mixing lighting between the local
-    // and remote lanes of a batch.
-    if let Err(refusal) = remote_can_render(PREVIEW_ENV_MAP, false) {
-        return Err(RemoteShortfall::Failed(format!(
-            "remote render refused: {refusal:?}"
-        )));
-    }
-    let scene = SceneState {
+/// The scene a remote worker traces for `job`'s `view` -- the same lighting, camera and
+/// backdrop [`render_view`] uses locally, shared by the single-request path and the
+/// batch path ([`remote_batch_item`]).
+fn remote_scene(job: &PreviewJob<'_>, view: PreviewView) -> SceneState {
+    SceneState {
         width: job.size,
         height: job.size,
         yaw: PREVIEW_YAW,
@@ -444,7 +429,56 @@ fn dispatch_remote_view(
         tools: Vec::new(),
         fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
         head_shadow_deg: 16.0,
-    };
+    }
+}
+
+/// One picture of a protocol v24 `BatchRenderRequest`: `job`'s `view` over the whole
+/// `job.spp` budget, answered by the worker with a finished PNG. `item_id` is the item's
+/// index within its batch.
+///
+/// # Errors
+///
+/// [`RemoteShortfall::Failed`] when the shared remote-render rule refuses (never, for the
+/// studio-lit catalogue thumbnails).
+pub fn remote_batch_item(
+    item_id: u32,
+    job: &PreviewJob<'_>,
+    view: PreviewView,
+) -> Result<indicatrix_net::messages::BatchItem, RemoteShortfall> {
+    if let Err(refusal) = remote_can_render(PREVIEW_ENV_MAP, false) {
+        return Err(RemoteShortfall::Failed(format!(
+            "remote render refused: {refusal:?}"
+        )));
+    }
+    Ok(indicatrix_net::messages::BatchItem {
+        item_id,
+        scene: remote_scene(job, view),
+        first_sample: 0,
+        samples: job.spp,
+        width: job.size,
+        height: job.size,
+    })
+}
+
+/// The body of [`render_view_remote_checked`], separated so the single `warn!` covers
+/// every early return.
+fn dispatch_remote_view(
+    job: &PreviewJob<'_>,
+    view: PreviewView,
+    worker: &WorkerSettings,
+    cancel: &AtomicBool,
+) -> Result<Vec<u8>, RemoteShortfall> {
+    // The shared remote-render rule (`bridge::remote::guard`). Catalogue thumbnails
+    // always use the analytic studio rig -- `render_view`'s snapshot hard-codes
+    // `env_map: None` -- so this never refuses today; it is asked anyway so a future
+    // per-design environment cannot silently start mixing lighting between the local
+    // and remote lanes of a batch.
+    if let Err(refusal) = remote_can_render(PREVIEW_ENV_MAP, false) {
+        return Err(RemoteShortfall::Failed(format!(
+            "remote render refused: {refusal:?}"
+        )));
+    }
+    let scene = remote_scene(job, view);
     let accumulator = Arc::new(Mutex::new(Accumulator::new(job.size, job.size)));
     let (tx, rx) = mpsc::channel::<RemoteUpdate>();
     let handle = remote_render::spawn_remote_render(
@@ -477,10 +511,10 @@ fn dispatch_remote_view(
             wanted: job.spp,
         });
     }
-    let rgba = tonemap_to_rgba(acc.buffer(), 1.0 / job.spp as f32);
+    let png =
+        indicatrix::render_setup::encode_preview_png(job.size, job.size, acc.buffer(), job.spp);
     drop(acc);
-    encode_png(job.size, job.size, &rgba)
-        .ok_or_else(|| RemoteShortfall::Failed("could not encode the preview PNG".to_owned()))
+    png.ok_or_else(|| RemoteShortfall::Failed("could not encode the preview PNG".to_owned()))
 }
 
 /// What one [`RemoteUpdate`] means for the wait in [`wait_for_remote`].
@@ -703,6 +737,22 @@ mod tests {
             "got {}",
             diamond.refractive_index
         );
+    }
+
+    /// A remote worker's `BATCH_ITEM_DONE` PNG and a local preview come from the same
+    /// shared function; this pins that function to the encoding the local path used
+    /// before it was shared (tone-map at `1 / spp`, then `image`'s default PNG writer),
+    /// so no cached thumbnail's bytes changed.
+    #[test]
+    fn the_shared_preview_png_matches_the_encoding_the_local_path_used_before() {
+        let accum: Vec<Vec3> = (0..16)
+            .map(|i| Vec3::new(0.3, 0.2, 0.1) * (i as f32 + 1.0) * 4.0)
+            .collect();
+        let rgba = tonemap_to_rgba(&accum, 1.0 / 4.0);
+        let legacy = encode_png(4, 4, &rgba).expect("the legacy encoder accepts a 4x4 buffer");
+        let shared = indicatrix::render_setup::encode_preview_png(4, 4, &accum, 4)
+            .expect("the shared encoder accepts a 4x4 sum");
+        assert_eq!(shared, legacy);
     }
 
     #[test]

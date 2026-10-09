@@ -11,7 +11,7 @@ use crate::serve::{
 };
 use indicatrix_net::{
     handshake,
-    messages::{NetError, PROTOCOL_VERSION, PeerRole, Welcome, WorkerRegistration, negotiate},
+    messages::{NetError, PeerRole, Welcome, WorkerRegistration, negotiate},
 };
 use std::{
     net::{SocketAddr, TcpListener},
@@ -160,17 +160,17 @@ fn register_worker(
         .and_then(<[_]>::first)
         .and_then(|der| crate::pki::worker_label_of_certificate(der.as_ref()));
     let worker_id = registry.allocate_id();
-    let welcome = Welcome {
-        protocol_version: PROTOCOL_VERSION,
-        build_hash: local_hello.build_hash,
-        source_hash: local_hello.source_hash,
-        // A worker connection is not a viewer: nothing to advertise to it.
-        render: None,
-        library: false,
-        tilt_curves: false,
-        registration: Some(WorkerRegistration { worker_id }),
+    // A worker connection is not a viewer: nothing to advertise to it. A coordinator does
+    // not forward zones to its joined workers (`Welcome::new` sets the zoning bit false).
+    let welcome = Welcome::new(
+        local_hello.build_hash,
+        local_hello.source_hash,
+        None,
+        false,
+        false,
+        Some(WorkerRegistration { worker_id }),
         payload_encoding,
-    };
+    );
     indicatrix_net::messages::write_message(&mut tls, &welcome)?;
     // The registry (liveness, request execution) sets its own deadlines from here on.
     let _ = tls.sock.set_read_timeout(None);

@@ -849,7 +849,7 @@ fn criterion_6_stone_size_default_and_resolved_scale() {
     );
     // A per-model-unit material (the built-in table) with no size set gets exactly the face-up
     // calibration `1 / K` (its swatch colour over `K` units of path), whatever the model width.
-    let plain = apply_material_overrides(base.clone(), &overrides, Some(model_width));
+    let plain = apply_material_overrides(base, &overrides, Some(model_width));
     assert_eq!(
         plain.absorption_path_scale.to_bits(),
         (1.0 / crate::render_setup::MODEL_UNIT_FACE_UP_PATH).to_bits()

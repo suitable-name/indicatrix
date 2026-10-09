@@ -85,7 +85,9 @@ impl HelpTopic {
     }
 }
 
-/// `indicatrix-worker --help` / `indicatrix-worker -h` / no arguments at all. Small
+/// `indicatrix-worker --help` / `indicatrix-worker -h` / no arguments at all.
+///
+/// Small
 /// enough to fit on a terminal screen; command-specific detail lives on
 /// [`USAGE_RENDER`]/[`USAGE_SERVE`]/[`USAGE_CERT`], not here.
 pub const USAGE_ROOT: &str =

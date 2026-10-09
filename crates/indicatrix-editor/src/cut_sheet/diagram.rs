@@ -26,8 +26,10 @@ pub struct DiagramImage {
 }
 
 /// Builds `design`'s three-panel (crown/pavilion/profile) 2D faceting diagram at
-/// `width` x `height` from its already-[`Design::solve`]'d (or
-/// [`Design::resolve_dirty`]'d) `solved` masts, and PNG-encodes it.
+/// `width` x `height` and PNG-encodes it.
+///
+/// It is drawn from the already-[`Design::solve`]'d (or
+/// [`Design::resolve_dirty`]'d) `solved` masts.
 ///
 /// `None` when the design's current planes don't close to a real solid
 /// ([`build_solid_mesh`] reports [`SolidStatus::Unbounded`]/[`SolidStatus::Degenerate`]

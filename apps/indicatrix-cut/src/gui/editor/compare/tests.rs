@@ -654,7 +654,7 @@ fn a_compare_side_traces_and_measures_the_sized_material() {
     let face_up = indicatrix::render_setup::MODEL_UNIT_FACE_UP_PATH;
     assert!((sized.absorption_path_scale - 10.87 / 7.0 / face_up).abs() < 1e-6);
     // No girdle diameter: only the face-up calibration scale (the 7 mm look).
-    let unsized_expected = bare.clone().with_absorption_path_scale(1.0 / face_up);
+    let unsized_expected = bare.with_absorption_path_scale(1.0 / face_up);
     assert_eq!(session.after.metrics_material, unsized_expected);
     assert_eq!(
         session.after.material.as_ref().expect("Diamond resolves"),

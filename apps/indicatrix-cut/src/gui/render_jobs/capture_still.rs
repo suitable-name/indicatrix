@@ -167,6 +167,10 @@ struct Prepared {
     summary: String,
     output: PathBuf,
     text: String,
+    /// The stone's colour zones: the frozen scene (the wire's `SceneState`) carries none, so they
+    /// are stored beside the job and put back when it runs (`rough_colour::store`).
+    #[cfg(feature = "zoning")]
+    material: indicatrix::optics::materials::GemMaterial,
 }
 
 /// The design fields and file name template every picture of one "Add to Queue" shares.
@@ -327,6 +331,8 @@ fn prepare_jobs(
             summary: still_summary(&params, colorspace, job.scene.lighting_preset.label()),
             output,
             text,
+            #[cfg(feature = "zoning")]
+            material: job.scene.material.clone(),
         });
     }
     Ok(prepared)
@@ -341,19 +347,34 @@ fn store(deps: &Deps, prepared: &[Prepared], now: i64) -> Result<(), (usize, Str
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     for (stored, job) in prepared.iter().enumerate() {
         let output = job.output.to_string_lossy();
-        db.add_render_job(
-            &NewRenderJob {
-                kind: "still",
-                label: &job.label,
-                summary: &job.summary,
-                frames_total: 1,
-                output_path: &output,
-                snapshot_version: JOB_FORMAT_VERSION,
-                snapshot: &job.text,
-            },
-            now,
-        )
-        .map_err(|error| (stored, format!("The job could not be saved: {error}")))?;
+        let job_id = db
+            .add_render_job(
+                &NewRenderJob {
+                    kind: "still",
+                    label: &job.label,
+                    summary: &job.summary,
+                    frames_total: 1,
+                    output_path: &output,
+                    snapshot_version: JOB_FORMAT_VERSION,
+                    snapshot: &job.text,
+                },
+                now,
+            )
+            .map_err(|error| (stored, format!("The job could not be saved: {error}")))?;
+        // Zoning builds: a zoned stone's zones travel beside the job. If they cannot be stored
+        // the job is removed again rather than queued to render without its colour.
+        #[cfg(feature = "zoning")]
+        if let Err(error) =
+            crate::gui::rough_colour::store::save_job_zoning(&db, job_id, &job.material)
+        {
+            let _ = db.delete_render_job(job_id);
+            return Err((
+                stored,
+                format!("The colour zones of the job could not be saved: {error:#}"),
+            ));
+        }
+        #[cfg(not(feature = "zoning"))]
+        let _ = job_id;
     }
     drop(db);
     Ok(())

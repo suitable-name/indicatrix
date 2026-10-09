@@ -1,5 +1,6 @@
-//! Enumeration and deduplication of a plane arrangement's vertices: the
-//! shared primitive [`measure_solid`](super::measure_solid) and
+//! Enumeration and deduplication of a plane arrangement's vertices.
+//!
+//! It is the shared primitive [`measure_solid`](super::measure_solid) and
 //! [`build_solid_mesh`](super::build_solid_mesh) both build on.
 
 use glam::DVec3;
@@ -100,6 +101,10 @@ fn flush_solid_batch(
     visit: &mut impl FnMut([usize; 3], f64, DVec3),
 ) -> Option<()> {
     let sol = crate::simd::solve_triple_batch(batch);
+    #[allow(
+        clippy::needless_range_loop,
+        reason = "the lane index addresses several parallel SoA arrays (det, vx, vy, vz, lanes)"
+    )]
     for lane in 0..batch.len {
         // `is_nan() || .. < det_floor` rather than a plain `.. < det_floor`:
         // a NaN determinant (a non-finite mast or index reaching the solve) fails

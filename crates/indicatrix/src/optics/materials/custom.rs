@@ -103,6 +103,8 @@ impl GemMaterial {
             edge_rounding_radius: 0.0,
             absorption_path_scale: 1.0,
             absorption_unit: AbsorptionUnit::ModelUnit,
+            #[cfg(feature = "zoning")]
+            zoning: None,
             uniaxial_extraordinary_dispersion: None,
         }
     }
@@ -250,6 +252,7 @@ impl GemMaterial {
             | "Citrine"
             | "Pyrope Garnet"
             | "Spessartine Garnet"
+            | "Color-Change Garnet (Pyrope-Spessartine)"
             | "Benitoite"
             | "Andalusite" => Some((0.02, 0.2)),
             // Lab-grown, essentially inclusion-free by construction. "Synthetic

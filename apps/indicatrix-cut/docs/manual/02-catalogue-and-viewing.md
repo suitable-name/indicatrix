@@ -346,7 +346,7 @@ for the design open in the Edit tab: a catalogue row you are browsing is always 
 whole. Exports, the tilt video and the tilt curves never use the part-cut stone; they
 always draw the finished gem (Chapter 9).
 
-The Render Material drop-down lists all 32 of this app's built-in
+The Render Material drop-down lists all 33 of this app's built-in
 materials in alphabetical order (Diamond, Sapphire, Tourmaline, the
 various garnets, Aquamarine, Morganite, and the rest — see Appendix C's
 materials table for the full list and their optical values), followed by

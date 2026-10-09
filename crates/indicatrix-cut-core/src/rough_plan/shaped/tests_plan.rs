@@ -534,14 +534,14 @@ fn an_exact_fit_layout_uses_the_stone_bounding_box_as_its_piece() {
 
     let stone = &layout.stones[0];
     let expected_size = [2.8, 2.8, 2.0];
-    for i in 0..3 {
-        assert!((stone.stone_size_mm[i] - expected_size[i]).abs() < 1e-9);
-        assert!((stone.piece_size_mm[i] - expected_size[i]).abs() < 1e-9);
+    for (i, &expected) in expected_size.iter().enumerate() {
+        assert!((stone.stone_size_mm[i] - expected).abs() < 1e-9);
+        assert!((stone.piece_size_mm[i] - expected).abs() < 1e-9);
     }
     // The piece is the stone's bounding box, not the origin.
     let expected_origin = [3.6, 2.6, 2.0];
-    for i in 0..3 {
-        assert!((stone.piece_origin_mm[i] - expected_origin[i]).abs() < 1e-9);
+    for (&origin, &expected) in stone.piece_origin_mm.iter().zip(&expected_origin) {
+        assert!((origin - expected).abs() < 1e-9);
     }
     assert_eq!(layout.stones.len(), piece_total(&layout));
     assert!((layout.cut_plan.slabs[0].thickness_mm - 2.8).abs() < 1e-9);

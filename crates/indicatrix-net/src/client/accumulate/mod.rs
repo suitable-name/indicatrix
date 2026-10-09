@@ -396,6 +396,15 @@ impl Accumulator {
                 )?);
                 Ok(ApplyOutcome::FinalImageReceived)
             }
+            // v24 batch replies belong to a `BatchRenderRequest`, which has no
+            // accumulator (every item lands in its own PNG). One reaching a single-render
+            // accumulator is a stray from another request on a shared connection:
+            // dropped like any other stale reply. The viewer's batch client reads them
+            // itself.
+            StreamEvent::BatchItemProgress(_)
+            | StreamEvent::BatchItemDone(_)
+            | StreamEvent::BatchItemFailed(_)
+            | StreamEvent::BatchDone(_) => Ok(ApplyOutcome::StaleDropped),
         }
     }
 

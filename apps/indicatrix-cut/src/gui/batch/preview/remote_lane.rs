@@ -12,8 +12,12 @@
 //! happens BEFORE an item is claimed, so a failing remote never holds work hostage.
 //!
 //! `AppSettings::remote_batch_lanes` dispatchers run this loop at once over the one
-//! shared queue (`gui::batch::remote_dispatch`), each keeping one whole picture in
-//! flight. Each has its own [`LaneHealth`], so the schedule above counts one
+//! shared queue (`gui::batch::remote_dispatch`). Since protocol v24 each dispatcher runs
+//! BATCHED (`remote_batch`: one persistent connection, up to
+//! `AppSettings::remote_preview_batch_size` pictures per request, two requests in flight)
+//! and falls back to one picture per connection only for a server that takes no batches.
+//! A GPU worker defaults to 2 dispatchers (`effective_remote_batch_lanes`), a CPU worker
+//! or coordinator to 4. Each has its own [`LaneHealth`], so the schedule above counts one
 //! dispatcher's consecutive failures; the toast is shared and shows once per batch.
 
 use super::engine::{
@@ -40,6 +44,10 @@ use std::{
     time::Instant,
 };
 use tracing::{info, warn};
+
+mod remote_batch;
+
+pub(super) use remote_batch::remote_is_gpu;
 
 /// The toast shown once, when the remote lane starts sitting a failing remote out.
 const SIT_OUT_TOAST: &str = "Remote worker is failing every preview request -- remote lane \
@@ -260,6 +268,30 @@ fn serve_item(
     }
 }
 
+/// The single-picture loop: one fresh connection per picture, one picture in flight.
+/// What a dispatcher runs against a server that does not take batches, and with no worker
+/// configured (`RemoteOnly`, where every item then fails at once).
+fn run_single_loop(
+    shared: &LaneShared<'_>,
+    ui_weak: &Weak<MainWindow>,
+    worker: Option<&WorkerSettings>,
+    fallback_to_local: bool,
+    health: &mut LaneHealth,
+) {
+    loop {
+        if fallback_to_local {
+            wait_out_failures(shared, ui_weak, &health.backoff);
+        }
+        if shared.cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let Some(item) = shared.queue.claim_shared() else {
+            break;
+        };
+        serve_item(shared, ui_weak, worker, fallback_to_local, health, item);
+    }
+}
+
 /// Runs ONE remote dispatcher: claims fresh items via `WorkQueue::claim_shared` only
 /// (never a local-retried one -- that pile is reserved for the local lane, see
 /// `gui::batch::batch_queue`'s doc comment) until the shared pool is empty. The batch
@@ -297,24 +329,17 @@ pub(super) fn run_remote_lane(
     );
 
     let mut health = LaneHealth::default();
-    loop {
-        if fallback_to_local {
-            wait_out_failures(shared, ui_weak, &health.backoff);
+    // Batched mode (protocol v24) first: a persistent connection and whole designs per
+    // request. It hands over to the single-picture loop below only for a server that does
+    // not take batches (a coordinator). The solid stand-ins never reach a remote at all.
+    let exit = match worker {
+        Some(worker) if !shared.ctx.solid => {
+            remote_batch::run_batch_loop(shared, ui_weak, worker, fallback_to_local, &mut health)
         }
-        if shared.cancel.load(Ordering::Relaxed) {
-            break;
-        }
-        let Some(item) = shared.queue.claim_shared() else {
-            break;
-        };
-        serve_item(
-            shared,
-            ui_weak,
-            worker,
-            fallback_to_local,
-            &mut health,
-            item,
-        );
+        _ => remote_batch::BatchExit::UseSingle,
+    };
+    if exit == remote_batch::BatchExit::UseSingle {
+        run_single_loop(shared, ui_weak, worker, fallback_to_local, &mut health);
     }
 
     update_remote(shared.progress, RemoteStatus::dispatcher_ended);

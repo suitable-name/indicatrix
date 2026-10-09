@@ -129,6 +129,10 @@ worker = ["dep:indicatrix", "dep:indicatrix-dispatch", "dep:glam", "dep:bytemuck
 # default even with `worker` on: `wgpu`/`pollster` is a real dependency tree, and a
 # render-capable server may still run on a machine with no GPU adapter at all.
 gpu = ["worker", "indicatrix/gpu"]
+# Rough colour and colour zoning (plan 2026-10-09, section 1a): accept zoned scenes
+# (advertises the zoning capability bit, handles the separate `ZoningPayload` message).
+# Implies `worker`. Off by default and left out of every build and deploy script.
+zoning = ["worker", "indicatrix/zoning", "indicatrix-net/zoning"]
 
 [lints]
 workspace = true

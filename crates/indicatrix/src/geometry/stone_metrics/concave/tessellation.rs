@@ -1,4 +1,6 @@
-//! Tessellating a tool into a convex polytope (and its bounding box): the half-space
+//! Tessellating a tool into a convex polytope (and its bounding box).
+//!
+//! These are the half-space
 //! lists the carved-mesh construction in the parent module clips against. Split from the
 //! parent module so the file stays readable; the functions are unchanged.
 
@@ -255,7 +257,7 @@ pub(in crate::geometry::stone_metrics) fn polytope(
             };
             // `rho . q - apothem k z <= apothem (r0 - k z0)`: the polygon's
             // edge plane at the radius the profile has at height `z`.
-            #[expect(
+            #[allow(
                 clippy::suboptimal_flops,
                 reason = "the plane offset is pinned (identity pins, golden volumes); an outer `mul_add` fuses the shift and moves the last bit"
             )]

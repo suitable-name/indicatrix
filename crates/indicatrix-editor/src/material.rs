@@ -76,7 +76,7 @@ pub struct MaterialComboCache {
 ///
 /// This lists every built-in species the renderer supports, not just a
 /// hand-picked THIRTEEN-name subset (`"Diamond"`..`"Cubic Zirconia"`) of the
-/// renderer's THIRTY-TWO built-ins -- every garnet, Aquamarine, Morganite,
+/// renderer's THIRTY-THREE built-ins -- every garnet, Aquamarine, Morganite,
 /// Chrysoberyl (Yellow), Amethyst, Citrine, Peridot, YAG, GGG, Benitoite,
 /// Andalusite, Opal, both glasses and Rutile can already be traced in Live
 /// Render (`gui::startup_settings::built_in_material_option_names` already reads
@@ -410,7 +410,9 @@ pub fn body_color_index_for(rgb: Option<[f32; 3]>) -> i32 {
     })
 }
 
-/// The combo index of a design's whole colour: [`body_color_custom_index`] while the
+/// The combo index of a design's whole colour.
+///
+/// It is [`body_color_custom_index`] while the
 /// N-band form (the L*C*h editor's colour) is set, whatever its stored triple is, else
 /// [`body_color_index_for`] the triple.
 #[must_use]
@@ -475,7 +477,9 @@ pub fn with_body_color_choice(
     }
 }
 
-/// The gear combo's index for `gear_teeth` -- a position in [`GEAR_PRESETS`] when it
+/// The gear combo's index for `gear_teeth`.
+///
+/// It is a position in [`GEAR_PRESETS`] when it
 /// matches exactly, else `GEAR_PRESETS.len()` (the trailing "Custom" entry), matching
 /// [`gear_choice_to_teeth`]'s inverse mapping.
 #[must_use]

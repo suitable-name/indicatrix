@@ -166,6 +166,10 @@ pub(super) fn start_remote_render(
             s.remote_connection = Some(remote_render::spawn_remote_connection(endpoint.connection));
             s.display_only_refused = false;
             s.remote_hdr = None;
+            #[cfg(feature = "zoning")]
+            {
+                s.remote_zoning = None;
+            }
         }
         s.live_lane = Some(if display_only {
             LiveLane::display_only(epoch)

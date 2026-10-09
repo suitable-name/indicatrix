@@ -89,6 +89,13 @@ pub(crate) fn stone_geometry(scene: &SceneState) -> StoneGeometry<'_> {
 /// HDR panorama has no lamp, so the preset only counts for the analytic rig.
 #[must_use]
 pub(crate) fn scene_uses_gpu(scene: &SceneState) -> bool {
+    // `zoning` builds: a zoned material is traced entirely on the CPU. The WGSL kernels know
+    // nothing about zones (a GPU trace would silently show only the base zone), and a hybrid
+    // split would hand part of the samples to them.
+    #[cfg(feature = "zoning")]
+    if scene.material.zoning.is_some() {
+        return false;
+    }
     let lighting = match scene.environment {
         indicatrix_net::scene::SceneEnvironment::Studio => scene.lighting_preset,
         indicatrix_net::scene::SceneEnvironment::Hdr(_) => {
@@ -111,7 +118,7 @@ pub(crate) fn scene_uses_gpu(scene: &SceneState) -> bool {
 /// a pure, deterministic function of `scene.planes` alone. `false` returns an empty
 /// slice, equivalent to every facet using `FacetFinish::default() == Polished`.
 #[must_use]
-fn resolve_facet_finishes(scene: &SceneState) -> Vec<FacetFinish> {
+pub(crate) fn resolve_facet_finishes(scene: &SceneState) -> Vec<FacetFinish> {
     if scene.girdle_frosted {
         indicatrix::geometry::girdle_facet_finishes(&scene.planes)
     } else {

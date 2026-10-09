@@ -17,7 +17,9 @@
 pub const SLIDER_MAX_SIGMA_S: f32 = 2.0;
 
 /// The largest coefficient a stored value may have (the persisted range since the control
-/// existed). A stored value above [`SLIDER_MAX_SIGMA_S`] is kept as it is until the slider is
+/// existed).
+///
+/// A stored value above [`SLIDER_MAX_SIGMA_S`] is kept as it is until the slider is
 /// moved; the slider itself sits at its top for it.
 pub const STORED_MAX_SIGMA_S: f32 = 3.0;
 
@@ -46,7 +48,7 @@ pub fn sigma_s_to_position(sigma_s: f32) -> f32 {
 /// A stored coefficient limited to the persisted range `0 ..= STORED_MAX_SIGMA_S` (`NaN` to
 /// `0.0`), the clamp every load and every slider handler applies.
 #[must_use]
-pub fn clamp_stored_sigma_s(sigma_s: f32) -> f32 {
+pub const fn clamp_stored_sigma_s(sigma_s: f32) -> f32 {
     if sigma_s.is_nan() {
         0.0
     } else {

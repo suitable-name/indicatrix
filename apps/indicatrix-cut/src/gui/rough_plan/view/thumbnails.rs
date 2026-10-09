@@ -36,6 +36,10 @@ pub(super) struct ThumbnailItem {
     pub(super) layout: RoughLayout,
     /// For a stone's entry id, how its design is drawn.
     pub(super) mesh_ids: BTreeMap<i64, StoneDraw>,
+    /// The plan's rough colour and pose choices, when the plan has a rough colour (`zoning`
+    /// builds).
+    #[cfg(feature = "zoning")]
+    pub(super) colour: Option<super::zoning_view::ColourJob>,
 }
 
 /// All the thumbnails of one set of results.
@@ -157,15 +161,29 @@ fn thumbnail(
     item: &ThumbnailItem,
     meshes: &MeshLibrary,
 ) -> Pixels {
+    // Zoning builds: the cutter's pose choice is applied and the stones are coloured by the plan's
+    // rough colour.
+    #[cfg(feature = "zoning")]
+    let (posed, colours) = super::zoning_view::prepare(&item.layout, item.colour.as_ref(), meshes);
+    #[cfg(feature = "zoning")]
+    let layout = &posed;
+    #[cfg(not(feature = "zoning"))]
+    let layout = &item.layout;
     let fit = build_fit_scene(
         &FitInputs {
-            layout: &item.layout,
+            layout,
             rough: &batch.rough,
             titles: &batch.titles,
             mesh_ids: &item.mesh_ids,
         },
         meshes,
     );
+    #[cfg(feature = "zoning")]
+    let fit = {
+        let mut fit = fit;
+        fit.apply_stone_colours(&colours);
+        fit
+    };
     let request = RenderRequest {
         generation: 0,
         scene: Arc::new(Scene::new(SceneKind::Fit(Box::new(fit)))),

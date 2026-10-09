@@ -39,6 +39,7 @@ fn builtin_preset_names_covers_every_renderer_built_in() {
         "Pyrope Garnet",
         "Almandine Garnet",
         "Spessartine Garnet",
+        "Color-Change Garnet (Pyrope-Spessartine)",
         "Grossular Garnet (Tsavorite)",
         "Andradite Garnet (Demantoid)",
         "Peridot",

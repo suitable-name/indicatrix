@@ -12,7 +12,7 @@ use super::{
 
 use super::super::{
     NUM_CHANNELS,
-    absorption::{apply_absorption, rotate_stokes_to_plane_of_incidence},
+    absorption::{apply_absorption, apply_segment_absorption, rotate_stokes_to_plane_of_incidence},
     camera::{FacetFinish, HitRecord, Ray},
     color::{
         apply_von_kries_white_balance, integrate_channels_to_xyz,
@@ -156,8 +156,12 @@ fn debug_assert_inside_gem_matches_geometry(
 /// function's argument count within clippy's `too_many_arguments` limit.
 ///
 /// `k_hat` is the WAVE NORMAL `k` (`current_k` in the caller), not the Poynting
-/// direction `S` -- `apply_absorption`'s assigned-mode E-field derives from `k`; `hit_t`
-/// (path length) stays geometric. See `refraction`'s design note, rule 6.
+/// direction `S` -- `apply_absorption`'s assigned-mode E-field derives from `k`; the
+/// segment's path length stays geometric. See `refraction`'s design note, rule 6.
+///
+/// `segment` is the interior segment: the ray it travelled (its current origin and direction
+/// in model units) and its length `hit_t`. The ray matters only to a zoned material, whose
+/// absorption depends on where the segment lies (`absorption::apply_segment_absorption`).
 ///
 /// `is_extraordinary` names which eigenmode this path was assigned to at its most recent
 /// air->crystal entry -- see `absorption::channel_absorption_alphas_assigned`'s doc
@@ -166,7 +170,7 @@ fn apply_interior_segment(
     ray_ctx: (&RayMaterialContext, &RayWavelengthCache),
     k_hat: Vec3,
     is_extraordinary: bool,
-    hit_t: f32,
+    segment: (Ray, f32),
     inside_gem: bool,
     normal: &mut Vec3,
     stokes: &mut [StokesVector; NUM_CHANNELS],
@@ -177,7 +181,7 @@ fn apply_interior_segment(
     }
     *normal = -*normal;
     if ctx.material.scattering_sigma_s <= 0.0 {
-        apply_absorption(ctx, cache, k_hat, is_extraordinary, hit_t, stokes);
+        apply_segment_absorption(ctx, cache, k_hat, is_extraordinary, segment, stokes);
     }
 }
 
@@ -499,6 +503,13 @@ fn trace_spectral_ray_core(
             || material.absorption_path_scale.to_bits() == 1.0_f32.to_bits(),
         "fluorescent emitters need a PerMm material (or an unscaled bare one)"
     );
+    // A zoned medium is not homogeneous: the fluorescence vertex sampler (a single exponential
+    // clock at one rate) does not apply to it.
+    #[cfg(feature = "zoning")]
+    debug_assert!(
+        !fluorescent || material.zoning.is_none(),
+        "fluorescent emitters are not supported on a zoned material"
+    );
     let fluorescence_rate = if fluorescent {
         fluorescence.pseudo_extinction(camera_lambdas[0])
     } else {
@@ -757,7 +768,7 @@ fn trace_spectral_ray_core(
                             .mul_add(unit_draw(rng_seed, bounce, FLUORESCENCE_DIR_U_STREAM), 1.0);
                         let phi = std::f32::consts::TAU
                             * unit_draw(rng_seed, bounce, FLUORESCENCE_DIR_V_STREAM);
-                        #[expect(
+                        #[allow(
                             clippy::suboptimal_flops,
                             reason = "transport results are pinned bit for bit (goldens, twins); a fused `1 - z*z` rounds once and moves the last bit"
                         )]
@@ -833,7 +844,7 @@ fn trace_spectral_ray_core(
             (&mat_ctx, &wavelength_cache),
             current_k,
             is_extraordinary,
-            hit_rec.t,
+            (current_ray, hit_rec.t),
             inside_gem,
             &mut normal,
             &mut stokes,

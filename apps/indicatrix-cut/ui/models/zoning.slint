@@ -1,0 +1,42 @@
+// Rough colour and colour zoning from rig photos (plan 2026-10-09). The `zoning` Cargo feature
+// is the only thing that turns this on: Slint has no `cfg!`, so Rust sets `enabled` once per
+// window from `gui::zoning_ui::ZONING_UI`, and every zoning element sits under
+// `if Zoning.enabled`. In a default build it stays `false` and nothing is shown.
+//
+// A global is instantiated once per top-level window (the main window and the Rough Planner
+// window each have their own), so Rust sets it on each window it builds.
+
+// One zone of a zoned material, as the material dialog's read-only "Zones..." list shows it.
+export struct MaterialZoneRow {
+    // "Base zone" or "Zone 2: Cylinder".
+    title: string,
+    // The key numbers ("outer radius 3.2") or "Everywhere no zone covers".
+    params: string,
+    // The colour of the zone at the face-up path.
+    swatch: color,
+}
+
+export global Zoning {
+    in property <bool> enabled: false;
+    // The Rough planner's "Rough colour..." button: opens the colour wizard (Rust registers it
+    // only in a `zoning` build).
+    callback open_rough_colour();
+
+    // --- Rough Planner window instance -----------------------------------------------------
+    // The shown plan has a stored rough colour: the previews are coloured by it and the
+    // orientation choice and "Use colour" are offered.
+    in property <bool> colour_available: false;
+    // "Stone orientation": 0 keep the planner's pose, 1 the pose with the most of the wanted
+    // zone face-up. Rust pushes it from the stored choices.
+    in property <int> pose_option: 0;
+    // The user picked an orientation (0 or 1); Rust stores it for every layout and redraws.
+    callback pose_option_changed(int);
+    // "Use colour" on a design row: result index, group index. Rust adopts the first stone of
+    // that design in the result as a coloured material, selects it in the editor and sets the
+    // editor's stone width to the stone's real width.
+    callback adopt_colour(int, int);
+
+    // --- Main window instance --------------------------------------------------------------
+    // The zones of the custom material the material dialog shows; empty for a plain one.
+    in property <[MaterialZoneRow]> material_zone_rows;
+}

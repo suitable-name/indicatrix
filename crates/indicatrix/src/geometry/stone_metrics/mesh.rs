@@ -1,5 +1,6 @@
-//! [`build_solid_mesh`]: triangulated mesh extraction from a plane
-//! arrangement, plus the per-face polygon reconstruction ([`face_ring`],
+//! [`build_solid_mesh`]: triangulated mesh extraction from a plane arrangement.
+//!
+//! It also holds the per-face polygon reconstruction ([`face_ring`],
 //! [`face_area`]) it shares with [`measure_solid`](super::measure_solid).
 
 use glam::DVec3;

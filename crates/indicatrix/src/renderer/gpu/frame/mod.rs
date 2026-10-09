@@ -59,6 +59,13 @@
 //! one chunk deep. This changes only WHEN a result is read back, never WHAT is
 //! computed, so results stay bit-identical ([`run_chunk_equivalence`] checks this).
 //!
+//! The batch stepper (`batch.rs`, driven by `GpuBackend::try_accumulate_batch_cancellable`)
+//! extends the same one-deep overlap ACROSS pictures: the slot index comes from a
+//! batch-global chunk counter, so the next picture's first chunk is queued before the
+//! previous picture's last chunk is read back, and the next picture's scene is written
+//! into the persistent scene buffers while that last chunk may still run (safe by
+//! `wgpu`'s submission-order semantics for `write_buffer`).
+//!
 //! # Per-frame uploads, persistent staging
 //!
 //! Of `transport_main`'s five scene-input buffers, only [`GpuTransportParams`]
@@ -251,6 +258,7 @@ use crate::renderer::gpu::GpuAcquireError;
 mod accumulate;
 #[cfg(target_arch = "wasm32")]
 mod async_impl;
+mod batch;
 mod bind_groups;
 mod dispatch;
 mod equivalence;
@@ -273,6 +281,7 @@ mod gpu_hardware_tests;
 // own signature reading naturally as `renderer::gpu::frame::GpuPipelineKind`.
 pub use crate::renderer::gpu_backend::GpuPipelineKind;
 
+pub(crate) use batch::{BatchEvent, BatchState};
 pub(crate) use bind_groups::TransportDispatchArgs;
 pub(crate) use dispatch::encode_and_dispatch;
 pub use equivalence::{

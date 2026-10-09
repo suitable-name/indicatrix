@@ -77,7 +77,7 @@ impl Sim {
             StartingState::CurrentDesign | StartingState::RequiresOpenDesign => {
                 start::started_session(&StartingState::Template(5))?
             }
-            _ => return None,
+            StartingState::LibraryDesign(_) => return None,
         };
         Some(Self {
             session,
@@ -151,8 +151,7 @@ impl Sim {
             imported_meet: current.and_then(|found| found.imported_meet.clone()),
             original_notes: current.and_then(|found| found.original_notes.clone()),
             other_tier_names: other_tier_names_excluding(design, save.index),
-        })
-        .map_err(|error| error.to_string())?;
+        })?;
         if let Some(found) = current {
             tier.detached.clone_from(&found.detached);
             if found.angle_deg.is_sign_negative() {
@@ -161,8 +160,7 @@ impl Sim {
         } else if name_indicates_pavilion(&tier.name) {
             tier.angle_deg = -tier.angle_deg.abs();
         }
-        let target = parse_tier_target(save.constraint_kind, &save.constraint_text)
-            .map_err(|error| error.to_string())?;
+        let target = parse_tier_target(save.constraint_kind, &save.constraint_text)?;
         let (_, edit) = tier_save_edit_with_target(design, save.index, tier, target, None);
         self.apply(edit)
     }
@@ -591,7 +589,10 @@ fn a_refused_entry_changes_nothing_and_says_why() {
         sim.play(&bad_indices).is_err(),
         "an index off the gear is refused"
     );
-    assert!(sim.session.design.tiers.is_empty());
+    assert_eq!(
+        sim.session.design.tiers,
+        [] as [indicatrix_cut_core::ConstraintTier; 0]
+    );
     let missing = Perform::Tier(TierEntry::of("Nothing").angle("41"));
     assert!(sim.play(&missing).is_err(), "there is no such row to edit");
 }

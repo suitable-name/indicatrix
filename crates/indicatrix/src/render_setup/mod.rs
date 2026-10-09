@@ -36,5 +36,5 @@ pub use materials::{
 };
 pub use plane_hash::{hash_geometry, hash_planes};
 #[cfg(feature = "hdr")]
-pub use png_encode::encode_png_with_icc;
+pub use png_encode::{encode_png_with_icc, encode_preview_png};
 pub use stone_width::measure_model_width;

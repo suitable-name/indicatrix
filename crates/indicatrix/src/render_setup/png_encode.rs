@@ -52,9 +52,51 @@ pub fn encode_png_with_icc(
     Ok(bytes)
 }
 
+/// The finished catalogue-preview picture for a float radiance sum.
+///
+/// Divides `accum` by `samples`, tone-maps it to sRGB
+/// ([`crate::renderer::tonemap::tonemap_to_rgba`] at `1.0 / samples`) and encodes the result as
+/// an untagged sRGB PNG.
+///
+/// The ONE function the viewer's local preview path and a remote worker's
+/// `BATCH_ITEM_DONE` both call, so a preview rendered remotely is byte-identical to one
+/// rendered locally from the same sum. `None` only when `accum` is not
+/// `width * height` long or the encoder fails (neither happens for a well-formed sum).
+/// `samples` of zero is treated as one.
+#[must_use]
+pub fn encode_preview_png(
+    width: u32,
+    height: u32,
+    accum: &[glam::Vec3],
+    samples: u32,
+) -> Option<Vec<u8>> {
+    if accum.len() != (width as usize) * (height as usize) {
+        return None;
+    }
+    let rgba = crate::renderer::tonemap::tonemap_to_rgba(accum, 1.0 / samples.max(1) as f32);
+    encode_png_with_icc(&rgba, width, height, ColorSpace::Srgb).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_png_is_the_srgb_tone_map_of_the_averaged_sum() {
+        let accum: Vec<glam::Vec3> = (0..12)
+            .map(|i| glam::Vec3::new(0.2, 0.3, 0.1) * (i as f32 + 1.0) * 8.0)
+            .collect();
+        let png = encode_preview_png(4, 3, &accum, 8).expect("a well-formed sum encodes");
+        let rgba = crate::renderer::tonemap::tonemap_to_rgba(&accum, 1.0 / 8.0);
+        let expected = encode_png_with_icc(&rgba, 4, 3, ColorSpace::Srgb).unwrap();
+        assert_eq!(png, expected);
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn preview_png_refuses_a_wrongly_sized_sum() {
+        assert!(encode_preview_png(4, 3, &[glam::Vec3::ZERO; 11], 1).is_none());
+    }
 
     fn fixed_rgba(width: u32, height: u32) -> Vec<u8> {
         (0..width * height * 4)

@@ -14,11 +14,11 @@ use slint::ComponentHandle;
 
 /// The refusal shown when a start is attempted while an export runs. Kept in step with
 /// `ExportRunModel.busy_hint`.
-pub(crate) const BUSY_MESSAGE: &str = "An export is running -- wait for it or cancel it.";
+pub const BUSY_MESSAGE: &str = "An export is running -- wait for it or cancel it.";
 
 /// Which exports run right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ExportActivity {
+pub struct ExportActivity {
     /// The still-image export.
     pub still: bool,
     /// The tilt video export.
@@ -48,15 +48,15 @@ impl ExportActivity {
     }
 }
 
-/// `Some(`[`BUSY_MESSAGE`]`)` while any export runs, else `None`: what every start guard asks.
-pub(crate) fn busy_refusal(ui: &MainWindow) -> Option<&'static str> {
+/// `Some(BUSY_MESSAGE)` while any export runs, else `None`: what every start guard asks.
+pub fn busy_refusal(ui: &MainWindow) -> Option<&'static str> {
     ExportActivity::read(ui).running().then_some(BUSY_MESSAGE)
 }
 
 /// The header indicator's text for a tilt video: `done` of `total` frames finished, `eta` the
 /// estimator's sentence (empty while there is no estimate). The frame shown is the one being
 /// rendered.
-pub(crate) fn video_indicator_text(done: i32, total: i32, eta: &str) -> String {
+pub fn video_indicator_text(done: i32, total: i32, eta: &str) -> String {
     let mut text = if total > 0 {
         let shown = (done.max(0) + 1).min(total);
         format!("Exporting video -- frame {shown} of {total}")
@@ -69,7 +69,7 @@ pub(crate) fn video_indicator_text(done: i32, total: i32, eta: &str) -> String {
 
 /// The header indicator's text for a still export: `progress` is `0..=1` over the whole
 /// export; with `preset_total` above one the picture being made is named too.
-pub(crate) fn still_indicator_text(
+pub fn still_indicator_text(
     progress: f32,
     preset_index: i32,
     preset_total: i32,
@@ -94,7 +94,7 @@ fn push_eta(text: &mut String, eta: &str) {
 }
 
 /// The close guard's sentence while an export started from a dialog runs, else `None`.
-pub(crate) fn work_at_risk_text(activity: ExportActivity) -> Option<String> {
+pub fn work_at_risk_text(activity: ExportActivity) -> Option<String> {
     let mut parts = Vec::new();
     if activity.still {
         parts.push(
@@ -112,7 +112,7 @@ pub(crate) fn work_at_risk_text(activity: ExportActivity) -> Option<String> {
 }
 
 /// [`work_at_risk_text`] for the window as it is now.
-pub(crate) fn work_at_risk(ui: &MainWindow) -> Option<String> {
+pub fn work_at_risk(ui: &MainWindow) -> Option<String> {
     work_at_risk_text(ExportActivity::read(ui))
 }
 

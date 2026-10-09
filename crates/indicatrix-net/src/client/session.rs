@@ -45,6 +45,14 @@ pub fn send_render_request<W: Write>(
     writer: &mut W,
     request: &crate::messages::RenderRequest,
 ) -> Result<(), ClientError> {
+    // `zoning` builds: a zoned scene is preceded by its zones (they are `serde(skip)` in the
+    // scene). The caller has checked `Welcome::zoning`; see `crate::messages::zoning`.
+    #[cfg(feature = "zoning")]
+    if let Some(payload) =
+        crate::messages::ZoningPayload::for_scene(request.request_id, &request.scene)
+    {
+        messages::write_zoning_payload(writer, &payload)?;
+    }
     messages::write_message(
         writer,
         &ClientMessage::RenderRequest(Box::new(request.clone())),
@@ -82,6 +90,13 @@ pub fn send_final_image_request<W: Write>(
     writer: &mut W,
     request: &crate::messages::FinalImageRequest,
 ) -> Result<(), ClientError> {
+    // As in `send_render_request`: the zones of a zoned scene go first.
+    #[cfg(feature = "zoning")]
+    if let Some(payload) =
+        crate::messages::ZoningPayload::for_scene(request.request_id, &request.scene)
+    {
+        messages::write_zoning_payload(writer, &payload)?;
+    }
     messages::write_message(
         writer,
         &ClientMessage::FinalImageRequest(Box::new(request.clone())),
@@ -488,6 +503,48 @@ mod tests {
             decoded,
             ClientMessage::RenderRequest(r) if r.request_id == 9
         ));
+    }
+
+    /// A zoned scene's zones go first, then the unchanged request; an unzoned scene sends the
+    /// request alone, exactly as a default build does.
+    #[cfg(feature = "zoning")]
+    #[test]
+    fn a_zoned_request_is_preceded_by_its_zoning_payload() {
+        use indicatrix::optics::{
+            absorption::AbsorptionTensor,
+            zoning::{ZoneAbsorption, ZonedAbsorption},
+        };
+        let mut request = render_request(11);
+        request.scene.material =
+            request
+                .scene
+                .material
+                .with_zoning(ZonedAbsorption::new(ZoneAbsorption::per_mm(
+                    AbsorptionTensor::isotropic(vec![]),
+                )));
+        let mut buf = Vec::new();
+        send_render_request(&mut buf, &request).unwrap();
+        let mut cursor = Cursor::new(buf);
+        let first: ClientMessage = messages::read_message(&mut cursor).unwrap();
+        let second: ClientMessage = messages::read_message(&mut cursor).unwrap();
+        assert!(matches!(
+            first,
+            ClientMessage::ZoningPayload(p) if p.request_id == 11
+        ));
+        assert!(matches!(
+            second,
+            ClientMessage::RenderRequest(r) if r.request_id == 11
+        ));
+
+        let mut plain = Vec::new();
+        send_render_request(&mut plain, &render_request(12)).unwrap();
+        let mut cursor = Cursor::new(plain);
+        let only: ClientMessage = messages::read_message(&mut cursor).unwrap();
+        assert!(matches!(only, ClientMessage::RenderRequest(_)));
+        assert_eq!(
+            usize::try_from(cursor.position()).unwrap(),
+            cursor.get_ref().len()
+        );
     }
 
     #[cfg(feature = "render")]

@@ -74,7 +74,7 @@ pub const COMMANDS: &[&str] = &[
 
 /// What the learner types into the Tier form. A blank part of an edit stays as the picked row
 /// has it, exactly as the form shows it.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TierEntry {
     /// The row to pick first (any of the tier's names; case and surrounding spaces do not
     /// matter), so the form says Save Tier. `None` is "+ Add Tier": a new tier at the end.
@@ -160,7 +160,7 @@ pub struct TierSave {
 }
 
 /// The Steps panel's Generate form.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StepSeries {
     /// The name prefix (`Step` makes Step1, Step2 and so on).
     pub name: String,

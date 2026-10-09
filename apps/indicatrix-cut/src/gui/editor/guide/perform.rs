@@ -246,20 +246,16 @@ fn save_concave_tier(
     tier: &ConcaveTier,
 ) -> Result<(), String> {
     let editor = ui.global::<EditorModel>();
-    let position = match edit {
-        Some(name) => {
-            let at = with_design(|design| {
-                concave_position(design, name).map(|at| design.tiers.len() + at)
-            })?
-            .ok_or_else(|| format!("There is no concave tier called '{}'.", name.trim()))?;
-            let row = i32::try_from(at).map_err(|_| "The design has too many tiers.".to_owned())?;
-            editor.set_selected_tier_index(row);
-            row
-        }
-        None => {
-            editor.invoke_add_concave_tier();
-            -1
-        }
+    let position = if let Some(name) = edit {
+        let at =
+            with_design(|design| concave_position(design, name).map(|at| design.tiers.len() + at))?
+                .ok_or_else(|| format!("There is no concave tier called '{}'.", name.trim()))?;
+        let row = i32::try_from(at).map_err(|_| "The design has too many tiers.".to_owned())?;
+        editor.set_selected_tier_index(row);
+        row
+    } else {
+        editor.invoke_add_concave_tier();
+        -1
     };
     editor.invoke_save_concave_tier(position, concave_form_data(tier));
     Ok(())

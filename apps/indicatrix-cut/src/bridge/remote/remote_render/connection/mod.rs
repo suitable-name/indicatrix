@@ -12,6 +12,7 @@
 //! every one of them directly, with no live TCP/TLS connection.
 
 mod asset_upload;
+mod batch_client;
 mod handshake;
 mod one_shot;
 mod payload_setting;
@@ -20,6 +21,9 @@ mod stream_io;
 #[cfg(test)]
 mod tests;
 
+pub use batch_client::{
+    BatchClient, BatchEvent, BatchWatch, MAX_BATCH_REQUEST_BYTES, items_fitting,
+};
 pub use handshake::{connect_and_handshake, test_connection};
 pub use one_shot::{spawn_final_image_request, spawn_remote_render};
 pub use payload_setting::set_payload_choice;

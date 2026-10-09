@@ -5,13 +5,16 @@
 //! (the connection stays usable afterward), [`v14`] (payload-encoding negotiation and
 //! compressed streams, `PING`/`PONG`, the v14 refusals), [`hdr_assets`] (an HDR
 //! scene's map fetched once by `NEED_ASSET`/`ASSET`), [`lazy_library`] (a connection
-//! opens the library database on its first library request, never for anything else).
+//! opens the library database on its first library request, never for anything else),
+//! [`batch`] (protocol v24 batched preview requests: shared PNG bytes, per-item failure,
+//! `CANCEL`, two batches on one connection).
 //! [`fixtures`] holds the scene/database builders and `Read + Write` test doubles shared
 //! across them.
 //!
 //! [`mtls`] (real mutual-TLS handshakes over real loopback sockets) is a separate,
 //! larger test suite kept in its own file, as it always has been.
 
+mod batch;
 mod cancellation;
 pub mod fixtures;
 mod handshake;
@@ -21,6 +24,8 @@ mod render_roundtrip;
 mod streaming;
 mod tilt_curves;
 mod v14;
+#[cfg(feature = "zoning")]
+mod zoning;
 
 // `mtls` (below) still reaches these through `super::{..}`, exactly as when this whole
 // folder was one flat `tests.rs` file -- kept as a private re-export here rather than

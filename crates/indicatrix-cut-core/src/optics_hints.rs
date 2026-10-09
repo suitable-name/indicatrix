@@ -74,7 +74,9 @@ pub enum Risk {
     Windows,
 }
 
-/// Classifies a tier's windowing risk at index `n` -- see [`Risk`]'s own doc
+/// Classifies a tier's windowing risk at index `n`.
+///
+/// See [`Risk`]'s own doc
 /// comment for the three bands and their boundaries (`< 0.0` is
 /// [`Risk::Windows`], `[0.0, 2.0)` is [`Risk::Marginal`], `>= 2.0` is
 /// [`Risk::Safe`]).

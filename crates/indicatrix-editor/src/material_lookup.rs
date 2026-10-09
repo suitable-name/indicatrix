@@ -206,7 +206,7 @@ pub fn traced_gem_material(
 /// The built-in species [`nearest_built_in_material`] guesses for a nameless
 /// design, purely from its refractive index.
 ///
-/// Deliberately only thirteen common species (not the full thirty-two built-ins),
+/// Deliberately only thirteen common species (not the full thirty-three built-ins),
 /// because an exhaustive search regressed `material_for_refractive_index_names_the_catalogues_common_stones`:
 /// at `n_d` 1.76, Benitoite sits closer than Sapphire (see its Sellmeier entry),
 /// so all-thirty-two search silently misnamed the owner's Sapphire designs. Picking

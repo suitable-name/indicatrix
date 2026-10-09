@@ -20,7 +20,7 @@ use std::{
 use glam::Vec3;
 
 use super::{
-    GpuAccumulate, GpuBackend, GpuSceneRef,
+    GpuAccumulate, GpuBackend, GpuBatchItem, GpuSceneRef,
     recovery::{COOL_DOWN, MAX_ATTEMPTS_PER_WINDOW, RecoveryPolicy, WINDOW},
     turnstile::Turnstile,
 };
@@ -43,7 +43,7 @@ fn gpu_required() -> bool {
 /// # Panics
 ///
 /// If no adapter could be acquired while `INDICATRIX_REQUIRE_GPU=1`.
-fn acquire_or_skip(test: &str) -> Option<GpuBackend> {
+pub(super) fn acquire_or_skip(test: &str) -> Option<GpuBackend> {
     let backend = GpuBackend::acquire();
     if backend.renderer.is_some() {
         return Some(backend);
@@ -491,4 +491,391 @@ fn at_most_six_attempts_start_per_hour() {
     let first_attempt = start + COOL_DOWN;
     assert!(!policy.may_attempt(first_attempt + WINDOW.saturating_sub(Duration::from_secs(1))));
     assert!(policy.may_attempt(first_attempt + WINDOW));
+}
+
+// ---------------------------------------------------------------------------------------
+// Batches: `try_accumulate_batch_cancellable` must equal each picture traced alone.
+// ---------------------------------------------------------------------------------------
+
+/// One picture of a test batch, owning what its `GpuSceneRef` borrows.
+struct BatchSpec {
+    camera: Camera,
+    material: GemMaterial,
+    width: u32,
+    height: u32,
+    first_sample: u32,
+    samples: u32,
+}
+
+impl BatchSpec {
+    fn new(
+        material: GemMaterial,
+        yaw: f32,
+        (width, height): (u32, u32),
+        first_sample: u32,
+        samples: u32,
+    ) -> Self {
+        Self {
+            camera: Camera::new(yaw, 0.28, 5.0, 18.0),
+            material,
+            width,
+            height,
+            first_sample,
+            samples,
+        }
+    }
+
+    const fn scene<'a>(&'a self, planes: &'a [crate::geometry::GpuFacetPlane]) -> GpuSceneRef<'a> {
+        spinel_scene(
+            &self.camera,
+            planes,
+            &self.material,
+            self.width,
+            self.height,
+        )
+    }
+
+    const fn pixels(&self) -> usize {
+        self.width as usize * self.height as usize
+    }
+}
+
+/// Three pictures that differ in material (and so pipeline class where the library's
+/// birefringent stones classify differently), size, camera and sample range.
+fn three_different_pictures() -> Vec<BatchSpec> {
+    vec![
+        BatchSpec::new(
+            GemMaterial::by_name("Spinel").expect("built-in"),
+            0.35,
+            (64, 48),
+            0,
+            3,
+        ),
+        BatchSpec::new(GemMaterial::diamond(), 0.9, (40, 40), 5, 2),
+        BatchSpec::new(
+            GemMaterial::by_name("Ruby").expect("built-in"),
+            1.7,
+            (56, 32),
+            0,
+            4,
+        ),
+    ]
+}
+
+/// The bit patterns of `pixels`, so equality is exact (`-0.0`, NaN payloads and all).
+pub(super) fn bits(pixels: &[Vec3]) -> Vec<[u32; 3]> {
+    pixels
+        .iter()
+        .map(|p| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()])
+        .collect()
+}
+
+/// Each picture traced alone through the single-request path: the reference a batch must
+/// reproduce bit for bit.
+fn traced_alone(
+    backend: &GpuBackend,
+    specs: &[BatchSpec],
+    planes: &[crate::geometry::GpuFacetPlane],
+) -> Vec<Vec<Vec3>> {
+    let never_cancel = AtomicBool::new(false);
+    specs
+        .iter()
+        .map(|spec| {
+            let mut accum = vec![Vec3::ZERO; spec.pixels()];
+            let outcome = backend.try_accumulate_cancellable(
+                &spec.scene(planes),
+                spec.first_sample,
+                spec.samples,
+                &mut accum,
+                &never_cancel,
+            );
+            assert_eq!(
+                outcome,
+                GpuAccumulate::Done,
+                "reference render must succeed"
+            );
+            accum
+        })
+        .collect()
+}
+
+/// Runs `specs` as one batch into fresh zeroed buffers; returns the buffers and the
+/// outcome `on_done` reported for each picture (`None` = never reported).
+fn traced_as_batch(
+    backend: &GpuBackend,
+    specs: &[BatchSpec],
+    planes: &[crate::geometry::GpuFacetPlane],
+    cancel: &AtomicBool,
+    mut on_done: impl FnMut(usize, GpuAccumulate),
+) -> (Vec<Vec<Vec3>>, Vec<Option<GpuAccumulate>>) {
+    let mut outs: Vec<Vec<Vec3>> = specs
+        .iter()
+        .map(|spec| vec![Vec3::ZERO; spec.pixels()])
+        .collect();
+    let mut outcomes = vec![None; specs.len()];
+    {
+        let mut items: Vec<GpuBatchItem<'_>> = specs
+            .iter()
+            .zip(outs.iter_mut())
+            .map(|(spec, out)| GpuBatchItem {
+                scene: spec.scene(planes),
+                first_sample: spec.first_sample,
+                samples: spec.samples,
+                out: out.as_mut_slice(),
+            })
+            .collect();
+        backend.try_accumulate_batch_cancellable(&mut items, cancel, &mut |index, outcome| {
+            assert!(
+                outcomes[index].is_none(),
+                "picture {index} reported more than once"
+            );
+            outcomes[index] = Some(outcome);
+            on_done(index, outcome);
+        });
+    }
+    (outs, outcomes)
+}
+
+/// A batch of three different pictures equals each picture traced alone, bitwise, and
+/// every picture is reported once, in input order.
+#[test]
+fn a_batch_of_different_scenes_equals_each_scene_alone() {
+    let Some(backend) = acquire_or_skip("a_batch_of_different_scenes_equals_each_scene_alone")
+    else {
+        return;
+    };
+    let planes = StandardGemCuts::standard_round_brilliant();
+    let specs = three_different_pictures();
+    let expected = traced_alone(&backend, &specs, &planes);
+
+    let never_cancel = AtomicBool::new(false);
+    let mut order = Vec::new();
+    let (outs, outcomes) = traced_as_batch(&backend, &specs, &planes, &never_cancel, |index, _| {
+        order.push(index);
+    });
+
+    assert_eq!(order, vec![0, 1, 2], "pictures are reported in input order");
+    for (index, outcome) in outcomes.iter().enumerate() {
+        assert_eq!(*outcome, Some(GpuAccumulate::Done), "picture {index}");
+        assert_eq!(
+            bits(&outs[index]),
+            bits(&expected[index]),
+            "picture {index} differs from its single-request render"
+        );
+    }
+    assert!(
+        outs.iter()
+            .any(|out| out.iter().any(|p| p.length_squared() > 0.0)),
+        "the batch must have produced radiance"
+    );
+}
+
+/// A batch whose pictures span several turns, run while another thread keeps issuing
+/// single requests on the same backend: both sides stay bit-identical to running alone.
+#[test]
+fn a_batch_interleaved_with_a_concurrent_single_request_stays_bit_identical() {
+    let Some(backend) =
+        acquire_or_skip("a_batch_interleaved_with_a_concurrent_single_request_stays_bit_identical")
+    else {
+        return;
+    };
+    let planes = StandardGemCuts::standard_round_brilliant();
+    // Large enough that every picture needs more than CHUNKS_PER_TURN chunks (the first,
+    // uncalibrated chunks are capped at one million tuples), so the batch really yields.
+    let specs = vec![
+        BatchSpec::new(
+            GemMaterial::by_name("Spinel").expect("built-in"),
+            0.2,
+            (512, 384),
+            0,
+            4,
+        ),
+        BatchSpec::new(
+            GemMaterial::by_name("Ruby").expect("built-in"),
+            1.1,
+            (400, 300),
+            3,
+            4,
+        ),
+        BatchSpec::new(GemMaterial::diamond(), 2.0, (320, 320), 0, 4),
+    ];
+    let single = BatchSpec::new(
+        GemMaterial::by_name("Spinel").expect("built-in"),
+        0.7,
+        (384, 256),
+        2,
+        4,
+    );
+    let expected_batch = traced_alone(&backend, &specs, &planes);
+    let expected_single = traced_alone(&backend, std::slice::from_ref(&single), &planes);
+
+    let never_cancel = AtomicBool::new(false);
+    thread::scope(|scope| {
+        let single_thread = scope.spawn(|| {
+            (0..3)
+                .map(|_| {
+                    let mut accum = vec![Vec3::ZERO; single.pixels()];
+                    let outcome = backend.try_accumulate_cancellable(
+                        &single.scene(&planes),
+                        single.first_sample,
+                        single.samples,
+                        &mut accum,
+                        &never_cancel,
+                    );
+                    (outcome, accum)
+                })
+                .collect::<Vec<_>>()
+        });
+        let (outs, outcomes) = traced_as_batch(&backend, &specs, &planes, &never_cancel, |_, _| {});
+        for (index, outcome) in outcomes.iter().enumerate() {
+            assert_eq!(*outcome, Some(GpuAccumulate::Done), "batch picture {index}");
+            assert_eq!(
+                bits(&outs[index]),
+                bits(&expected_batch[index]),
+                "batch picture {index} changed under contention"
+            );
+        }
+        for (outcome, accum) in single_thread.join().expect("single-request thread") {
+            assert_eq!(outcome, GpuAccumulate::Done);
+            assert_eq!(
+                bits(&accum),
+                bits(&expected_single[0]),
+                "the concurrent single request changed under contention"
+            );
+        }
+    });
+}
+
+/// Cancelling from inside the first `on_done` reports the first picture `Done`, the last
+/// one `Cancelled` (its `out` untouched), and leaves the renderer reusable.
+#[test]
+fn cancelling_mid_batch_reports_cancelled_and_leaves_the_renderer_reusable() {
+    let Some(backend) =
+        acquire_or_skip("cancelling_mid_batch_reports_cancelled_and_leaves_the_renderer_reusable")
+    else {
+        return;
+    };
+    let planes = StandardGemCuts::standard_round_brilliant();
+    let specs = three_different_pictures();
+    let expected = traced_alone(&backend, &specs, &planes);
+
+    let cancel = AtomicBool::new(false);
+    let (outs, outcomes) = traced_as_batch(&backend, &specs, &planes, &cancel, |index, outcome| {
+        if index == 0 && outcome == GpuAccumulate::Done {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    });
+
+    assert_eq!(outcomes[0], Some(GpuAccumulate::Done));
+    assert_eq!(bits(&outs[0]), bits(&expected[0]));
+    // Picture 1's only chunk was already queued when the flag fired, so it may still
+    // finish; picture 2 had not been dispatched and must be cancelled.
+    assert!(matches!(
+        outcomes[1],
+        Some(GpuAccumulate::Done | GpuAccumulate::Cancelled)
+    ));
+    assert_eq!(outcomes[2], Some(GpuAccumulate::Cancelled));
+    for (index, outcome) in outcomes.iter().enumerate() {
+        match outcome {
+            Some(GpuAccumulate::Done) => assert_eq!(bits(&outs[index]), bits(&expected[index])),
+            Some(GpuAccumulate::Cancelled) => assert!(
+                outs[index].iter().all(|p| *p == Vec3::ZERO),
+                "cancelled picture {index} must leave its output untouched"
+            ),
+            other => panic!("picture {index}: unexpected outcome {other:?}"),
+        }
+    }
+    assert!(!backend.is_lost(), "a cancel is not a device loss");
+
+    // Reusable: the same batch, uncancelled, matches the reference again.
+    let never_cancel = AtomicBool::new(false);
+    let (outs, outcomes) = traced_as_batch(&backend, &specs, &planes, &never_cancel, |_, _| {});
+    for index in 0..specs.len() {
+        assert_eq!(outcomes[index], Some(GpuAccumulate::Done), "rerun {index}");
+        assert_eq!(bits(&outs[index]), bits(&expected[index]), "rerun {index}");
+    }
+}
+
+/// A device lost during a batch declines every picture not yet reported (their outputs
+/// untouched), marks the backend lost, and after the cool-down the next batch recovers
+/// and is bit-identical to the single-request reference.
+#[test]
+fn a_device_loss_during_a_batch_declines_the_rest_and_the_backend_recovers() {
+    let Some(backend) =
+        acquire_or_skip("a_device_loss_during_a_batch_declines_the_rest_and_the_backend_recovers")
+    else {
+        return;
+    };
+    let planes = StandardGemCuts::standard_round_brilliant();
+    let specs = three_different_pictures();
+    let expected = traced_alone(&backend, &specs, &planes);
+    let never_cancel = AtomicBool::new(false);
+
+    // The seam counts batch STEPS (one chunk each): the first step fails before any
+    // picture can have been reported.
+    backend.fail_on_turn.store(1, Ordering::Relaxed);
+    let (outs, outcomes) = traced_as_batch(&backend, &specs, &planes, &never_cancel, |_, _| {});
+    assert!(
+        outcomes
+            .iter()
+            .all(|outcome| *outcome == Some(GpuAccumulate::Declined)),
+        "{outcomes:?}"
+    );
+    assert!(
+        outs.iter().all(|out| out.iter().all(|p| *p == Vec3::ZERO)),
+        "a declined picture must leave its output untouched"
+    );
+    assert!(backend.is_lost());
+
+    let Some(aged) = Instant::now().checked_sub(COOL_DOWN * 2) else {
+        println!("skipping the recovery half: the monotonic clock is younger than the cool-down");
+        return;
+    };
+    backend
+        .recovery
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .record_loss(aged);
+
+    let (outs, outcomes) = traced_as_batch(&backend, &specs, &planes, &never_cancel, |_, _| {});
+    assert!(!backend.is_lost());
+    for index in 0..specs.len() {
+        assert_eq!(
+            outcomes[index],
+            Some(GpuAccumulate::Done),
+            "recovered {index}"
+        );
+        assert_eq!(
+            bits(&outs[index]),
+            bits(&expected[index]),
+            "recovered {index}"
+        );
+    }
+}
+
+/// A disabled backend reports every picture `Declined` and touches no output.
+#[test]
+fn a_disabled_backend_declines_every_batch_item() {
+    let backend = GpuBackend::disabled();
+    let planes = StandardGemCuts::standard_round_brilliant();
+    let specs = three_different_pictures();
+    let never_cancel = AtomicBool::new(false);
+    let (outs, outcomes) = traced_as_batch(&backend, &specs, &planes, &never_cancel, |_, _| {});
+    assert!(
+        outcomes
+            .iter()
+            .all(|outcome| *outcome == Some(GpuAccumulate::Declined))
+    );
+    assert!(outs.iter().all(|out| out.iter().all(|p| *p == Vec3::ZERO)));
+}
+
+/// The yield test a batch uses: only tickets handed out AFTER the holder's count.
+#[test]
+fn has_waiters_behind_sees_only_later_tickets() {
+    let turnstile = Turnstile::new();
+    let first = turnstile.take_ticket();
+    assert!(!turnstile.has_waiters_behind(first));
+    let second = turnstile.take_ticket();
+    assert!(turnstile.has_waiters_behind(first));
+    assert!(!turnstile.has_waiters_behind(second));
 }

@@ -8,6 +8,7 @@
 //! -> <ClientMessage>  Cancel | Library(LibraryRequest) | RenderRequest | TiltCurvesRequest
 //!                     | Ping { nonce } | FinalImageRequest | Asset { content_hash, len } + payload
 //!                     | Contribution + payload                        (post-handshake, tagged)
+//!                     | ZoningPayload (`zoning` feature only; no protocol bump, see `zoning`)
 //! <- <StreamEvent>    Frame | Preview | Progress | Done | Error
 //!                     | Pong { nonce } | DisplayFrame | FinalImage | CapabilityChanged { render }
 //!                     | NeedAsset { content_hash }                      (tagged)
@@ -27,6 +28,8 @@
 //!   only, v14).
 //! - [`contribution`]: `-> CONTRIBUTION`, the viewer's own share of a final-picture
 //!   export (`render` feature only, v16).
+//! - `batch`: `-> BATCH_RENDER_REQUEST`, several finished pictures per request on one
+//!   persistent connection (`render` feature only, v24).
 //! - [`tilt`]: `TILT_CURVES`'s request/response shapes (`render` feature only).
 //! - [`stream`]: everything else post-handshake -- [`stream::ClientMessage`],
 //!   [`stream::StreamEvent`], and [`stream::ErrorMsg`].
@@ -39,6 +42,9 @@
 pub mod adaptive;
 /// Content-addressed assets (v14) -- see this module's own "Modules" doc section.
 pub mod asset;
+/// Batched finished-picture requests (v24) -- see this module's own doc comment.
+#[cfg(feature = "render")]
+pub mod batch;
 mod codec;
 #[cfg(feature = "render")]
 mod contribution;
@@ -54,12 +60,22 @@ mod render;
 mod stream;
 #[cfg(feature = "render")]
 mod tilt;
+/// The zoning wire extension (`zoning` feature only; no protocol bump).
+///
+/// A capability marker after `HELLO`/`WELCOME` and the separate `ZoningPayload` message -- see
+/// this module's own doc comment.
+#[cfg(feature = "zoning")]
+pub mod zoning;
 
 #[cfg(feature = "render")]
 pub use asset::write_asset_message;
 pub use asset::{
     AssetError, AssetHeader, ContentHash, MAX_ASSET_LEN, content_hash, discard_asset_payload,
     hash_hex, read_asset_payload,
+};
+#[cfg(feature = "render")]
+pub use batch::{
+    BatchItem, BatchRenderRequest, BatchReply, MAX_BATCH_ITEMS, MAX_BATCHES_IN_FLIGHT,
 };
 pub use codec::{
     NetError, decode_control_frame, read_control_message, read_message, read_message_bounded,
@@ -80,14 +96,21 @@ pub use hello::{Backend, Hello, PeerRole, RenderCapability, Welcome, WorkerRegis
 #[cfg(feature = "render")]
 pub use render::{PreviewConfig, RenderRequest, RequestIntent, StreamConfig, TransferMode};
 pub use stream::{
-    Cancel, ClientMessage, DisplayFrameHeader, Done, ErrorMsg, FinalImageHeader, FrameHeader,
-    PreviewHeader, Progress, Stats, StreamEvent, read_frame_message, read_preview_message,
-    read_stream_event, write_frame_message, write_preview_message, write_stream_event,
+    BatchDone, BatchItemDoneHeader, BatchItemFailed, BatchItemProgress, Cancel, ClientMessage,
+    DisplayFrameHeader, Done, ErrorMsg, FinalImageHeader, FrameHeader, PreviewHeader, Progress,
+    Stats, StreamEvent, read_frame_message, read_preview_message, read_stream_event,
+    write_frame_message, write_preview_message, write_stream_event,
 };
 #[cfg(feature = "render")]
 pub use tilt::{
     AxisTiltCurves, TILT_CURVE_AXIS_COUNT, TILT_CURVE_POINTS_PER_AXIS, TiltCurvesRequest,
     TiltCurvesResponse, TiltCurvesResult,
+};
+#[cfg(feature = "zoning")]
+pub use zoning::{
+    MAX_ZONED_ENTRIES, ZONING_TAIL, ZonedMaterialEntry, ZoningPayload, ZoningPayloadError,
+    hello_from_bytes, split_welcome_tail, write_hello_message, write_welcome_message,
+    write_zoning_payload,
 };
 
 /// The wire protocol version this build of `indicatrix-net` speaks.
@@ -193,7 +216,17 @@ pub use tilt::{
 ///     the tracer no longer scales the inclusion `scattering_sigma_s` by the path scale (it is
 ///     per model unit, independent of the stone's size). A peer on 22 would misalign the
 ///     material and trace scattering scenes with the old rule.
-pub const PROTOCOL_VERSION: u16 = 23;
+/// 24: batched preview requests. `ClientMessage::BatchRenderRequest` (index 8, `render`-gated)
+///     and `StreamEvent::{BatchItemProgress, BatchItemDone, BatchItemFailed, BatchDone}`
+///     (indices 10 to 13) appended; see `messages::batch`. `BatchItemDone` carries a raw PNG payload
+///     frame. Nothing existing changed shape, but a peer on 23 would fail to decode the new
+///     indices outright, so the bump turns that into a handshake refusal.
+///
+/// A `zoning` build (off by default) appends `ClientMessage::ZoningPayload` (index 9) WITHOUT a
+/// bump: it is sent only to a peer whose `WELCOME` carried the zoning capability marker, which a
+/// peer sends only in reply to a `HELLO` that carried the marker -- so a default build never
+/// sees the message or the marker. See the `zoning` module.
+pub const PROTOCOL_VERSION: u16 = 24;
 
 #[cfg(test)]
 mod tests {
@@ -203,7 +236,9 @@ mod tests {
     /// 21: `SceneState::head_shadow_deg` (see the constant's history).
     /// 22: lighting wave (new `LightingPreset` and `LightingModel` variants).
     /// 23: absorption units (`GemMaterial::absorption_unit`; scattering unscaled).
+    /// 24: batched preview requests (`ClientMessage::BatchRenderRequest` and the four
+    ///     `StreamEvent::Batch*` events).
     fn protocol_version_matches_constant() {
-        assert_eq!(super::PROTOCOL_VERSION, 23);
+        assert_eq!(super::PROTOCOL_VERSION, 24);
     }
 }

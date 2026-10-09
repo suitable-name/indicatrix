@@ -98,6 +98,10 @@ fn push_selected_custom_material_fields(
     db: &Arc<Mutex<Database>>,
     selected_name: &str,
 ) {
+    // Zoning builds: the dialog's read-only "Zones..." list of the selected material (cleared for a
+    // plain or built-in one).
+    #[cfg(feature = "zoning")]
+    crate::gui::rough_colour::material_zones::push_zone_rows(ui, db, selected_name);
     let row = db
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

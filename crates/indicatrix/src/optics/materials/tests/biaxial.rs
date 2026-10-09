@@ -245,6 +245,7 @@ fn m4_new_species_match_their_target_birefringence() {
         "Pyrope Garnet",
         "Almandine Garnet",
         "Spessartine Garnet",
+        "Color-Change Garnet (Pyrope-Spessartine)",
         "Grossular Garnet (Tsavorite)",
         "Andradite Garnet (Demantoid)",
         "YAG",

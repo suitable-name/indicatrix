@@ -150,7 +150,9 @@ pub struct GBuffers<'a> {
     pub spp: u32,
 }
 
-/// Tunable parameters for the À-Trous filter. [`AtrousParams::default`] gives
+/// Tunable parameters for the À-Trous filter.
+///
+/// [`AtrousParams::default`] gives
 /// reasonable starting points for a normalised-radiance (roughly `0..~4` XYZ Y)
 /// gemstone render; scene-specific tuning is expected.
 #[derive(Clone, Copy, Debug, PartialEq)]

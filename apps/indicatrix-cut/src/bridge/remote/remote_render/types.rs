@@ -64,6 +64,11 @@ pub enum RemoteError {
     /// silence clock on every `PROGRESS`, so a wedged tracer that ignores the cancel
     /// would otherwise keep this one-shot thread alive for as long as the socket lives.
     CancelUnacknowledged(Duration),
+    /// `zoning` builds: the scene's material has colour zones but the remote's `WELCOME` does
+    /// not advertise the zoning capability (a default build, or a coordinator), so the request
+    /// was not sent -- it would render as its base zone only. The picture renders locally.
+    #[cfg(feature = "zoning")]
+    ZoningUnsupported,
 }
 
 impl fmt::Display for RemoteError {
@@ -86,6 +91,11 @@ impl fmt::Display for RemoteError {
             Self::CancelUnacknowledged(waited) => {
                 write!(f, "worker did not acknowledge CANCEL within {waited:.0?}")
             }
+            #[cfg(feature = "zoning")]
+            Self::ZoningUnsupported => write!(
+                f,
+                "worker has no zoning support (it does not advertise the zoning capability)"
+            ),
         }
     }
 }

@@ -115,6 +115,50 @@ fn camera_pose_for_hover(axis_index: usize, tilt_deg: f32) -> (f32, f32) {
     camera_pose_for_axis_tilt(axis_index, f64::from(tilt_deg))
 }
 
+/// What the hover preview copies out of the shared render context: geometry, material
+/// selection, and the scene's lighting and quality settings.
+struct HoverContext {
+    planes: Arc<Vec<GpuFacetPlane>>,
+    tools: Arc<Vec<ToolPrimitive>>,
+    fluorescence: Option<Arc<Fluorescence>>,
+    material_name: String,
+    /// Includes the Live Render toolbar's view-only colour.
+    material_override: Option<GemMaterial>,
+    custom_materials: Arc<Vec<GemMaterial>>,
+    distance: f32,
+    lighting_preset: indicatrix::optics::raytracer::LightingPreset,
+    exposure: f32,
+    light_yaw: f32,
+    light_pitch: f32,
+    max_bounces: u32,
+    stone_width_mm: f32,
+}
+
+impl HoverContext {
+    /// Copies what the hover preview needs out of the shared render context, holding its lock
+    /// only for the copy.
+    fn snapshot(render_ctx: &Mutex<RenderContext>) -> Self {
+        let ctx = render_ctx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self {
+            planes: ctx.active_planes.clone(),
+            tools: ctx.active_tools.clone(),
+            fluorescence: ctx.active_fluorescence(),
+            material_name: ctx.material_name.clone(),
+            material_override: ctx.tinted_material_override(),
+            custom_materials: ctx.custom_materials.clone(),
+            distance: ctx.distance,
+            lighting_preset: ctx.lighting_preset,
+            exposure: ctx.exposure,
+            light_yaw: ctx.light_yaw,
+            light_pitch: ctx.light_pitch,
+            max_bounces: ctx.max_bounces,
+            stone_width_mm: ctx.stone_width_mm,
+        }
+    }
+}
+
 /// Bundles every input [`render_hover_preview`] needs -- geometry, material, the
 /// derived camera pose, and the scene's lighting/quality settings -- into one struct
 /// rather than a ten-parameter function signature.
@@ -282,7 +326,7 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
                     return;
                 }
 
-                let (
+                let HoverContext {
                     planes,
                     tools,
                     fluorescence,
@@ -296,27 +340,7 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
                     light_pitch,
                     max_bounces,
                     stone_width_mm,
-                ) = {
-                    let ctx = render_ctx
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    (
-                        ctx.active_planes.clone(),
-                        ctx.active_tools.clone(),
-                        ctx.active_fluorescence(),
-                        ctx.material_name.clone(),
-                        // Includes the Live Render toolbar's view-only colour.
-                        ctx.tinted_material_override(),
-                        ctx.custom_materials.clone(),
-                        ctx.distance,
-                        ctx.lighting_preset,
-                        ctx.exposure,
-                        ctx.light_yaw,
-                        ctx.light_pitch,
-                        ctx.max_bounces,
-                        ctx.stone_width_mm,
-                    )
-                };
+                } = HoverContext::snapshot(&render_ctx);
                 let (planes, tools) = finished.map_or((planes, tools), |stone| {
                     (Arc::new(stone.planes), Arc::new(stone.tools))
                 });

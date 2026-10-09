@@ -175,6 +175,20 @@ fn queue_request(
             now,
         )
     };
+    // Zoning builds: a zoned stone's zones travel beside the job (the frozen scene carries none).
+    // If they cannot be stored the job is removed again rather than queued without its colour.
+    #[cfg(feature = "zoning")]
+    let stored = stored.and_then(|job_id| {
+        let db = deps
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::gui::rough_colour::store::save_job_zoning(&db, job_id, &request.scene.material)
+            .inspect_err(|_| {
+                let _ = db.delete_render_job(job_id);
+            })
+            .map(|_| job_id)
+    });
     match stored {
         Ok(_) => {
             super::controller::with_controller(super::controller::JobController::refresh);

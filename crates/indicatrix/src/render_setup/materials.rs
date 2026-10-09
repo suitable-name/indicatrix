@@ -139,8 +139,9 @@ pub fn apply_material_overrides(
     material
 }
 
-/// `material` sized for a stone of `stone_width_mm` on `planes` and nothing else dialled in:
-/// the stone-size step of [`apply_material_overrides`] alone, measuring the plane arrangement
+/// `material` sized for a stone of `stone_width_mm` on `planes` and nothing else dialled in.
+///
+/// The stone-size step of [`apply_material_overrides`] alone, measuring the plane arrangement
 /// only when the material's unit needs it ([`needs_model_width`]).
 ///
 /// For the callers that score or sweep a stone outside the render loop (tone/tilt metrics, the
@@ -186,7 +187,7 @@ pub const PHYSICS_DEFAULT_STONE_WIDTH_MM: f32 = 7.0;
 /// (`indicatrix_cut_core::material::color::FANTASY_PATH_UNITS`). Light that leaves a face-up stone
 /// has travelled several chords (the tone metric's `mean_path_units`, about 2.5 for a round
 /// brilliant), so rendering those numbers at scale 1.0 is several times too dark (the 2026-10-08
-/// 10.87 mm green cubic zirconia came out black). The ModelUnit scale is therefore divided by
+/// 10.87 mm green cubic zirconia came out black). The `ModelUnit` scale is therefore divided by
 /// this constant: absorption is linear in the scale, so over `MODEL_UNIT_FACE_UP_PATH` units of
 /// path the stone shows exactly the colour the swatch shows over one unit, at 7 mm or with no
 /// size set, and a larger or smaller stone scales physically from there (`width / 7`).
@@ -393,6 +394,10 @@ mod tests {
         ("Pyrope Garnet", AbsorptionUnit::ModelUnit),
         ("Almandine Garnet", AbsorptionUnit::ModelUnit),
         ("Spessartine Garnet", AbsorptionUnit::ModelUnit),
+        (
+            "Color-Change Garnet (Pyrope-Spessartine)",
+            AbsorptionUnit::ModelUnit,
+        ),
         ("Grossular Garnet (Tsavorite)", AbsorptionUnit::ModelUnit),
         ("Andradite Garnet (Demantoid)", AbsorptionUnit::ModelUnit),
         ("Peridot", AbsorptionUnit::ModelUnit),
@@ -570,7 +575,7 @@ mod tests {
     fn unset_and_seven_mm_face_up_path_renders_the_one_unit_swatch() {
         use crate::optics::materials::body_color::BODY_COLOR_PRESETS;
         let mut materials = GemMaterial::all_materials();
-        for preset in BODY_COLOR_PRESETS.iter() {
+        for preset in &BODY_COLOR_PRESETS {
             materials.push(
                 GemMaterial::by_name("Cubic Zirconia")
                     .expect("built-in")
@@ -603,7 +608,7 @@ mod tests {
             color::body_color::{Illuminant, body_colors},
             optics::materials::body_color::BODY_COLOR_PRESETS,
         };
-        for preset in BODY_COLOR_PRESETS.iter() {
+        for preset in &BODY_COLOR_PRESETS {
             let material = GemMaterial::by_name("Cubic Zirconia")
                 .expect("built-in")
                 .with_body_color(preset.absorption_rgb);
@@ -690,7 +695,7 @@ mod tests {
             // (lightness falls monotonically with the path).
             let (mut low, mut high) = (0.01_f64, 80.0_f64);
             for _ in 0..60 {
-                let mid = 0.5 * (low + high);
+                let mid = f64::midpoint(low, high);
                 let l_star = body_colors(&green.absorption, mid, Illuminant::D65)
                     .unpolarised
                     .lab[0];
@@ -700,7 +705,7 @@ mod tests {
                     high = mid;
                 }
             }
-            let equivalent = 0.5 * (low + high);
+            let equivalent = f64::midpoint(low, high);
             let _ = write!(
                 report,
                 "{name}: mean_path_units {}, mixture-equivalent path {equivalent:.2}; ",
@@ -712,8 +717,8 @@ mod tests {
         let median = |values: &mut Vec<f64>| {
             values.sort_by(f64::total_cmp);
             let mid = values.len() / 2;
-            if values.len() % 2 == 0 {
-                0.5 * (values[mid - 1] + values[mid])
+            if values.len().is_multiple_of(2) {
+                f64::midpoint(values[mid - 1], values[mid])
             } else {
                 values[mid]
             }

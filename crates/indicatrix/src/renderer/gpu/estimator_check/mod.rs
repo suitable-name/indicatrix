@@ -58,6 +58,8 @@ pub use furnace::{
     FurnaceResult, run_furnace, run_furnace_edge_rounding, run_furnace_frosted_girdle,
     run_furnace_nee_equality_frosted, run_furnace_nee_equality_scattering, run_furnace_scattering,
 };
+#[cfg(feature = "zoning")]
+pub use image_comparison::run_image_comparison_zoned;
 pub use image_comparison::{
     ImageComparisonResult, run_image_comparison, run_image_comparison_absorption_path_scale,
     run_image_comparison_alexandrite, run_image_comparison_aset,
@@ -112,6 +114,8 @@ pub fn furnace_material() -> GemMaterial {
         edge_rounding_radius: 0.0,
         absorption_path_scale: 1.0,
         absorption_unit: crate::optics::materials::AbsorptionUnit::ModelUnit,
+        #[cfg(feature = "zoning")]
+        zoning: None,
         uniaxial_extraordinary_dispersion: None,
     }
 }

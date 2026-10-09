@@ -214,6 +214,16 @@ fn run(
     if request.scene().hdr().is_some() && !capability.hdr {
         return Err(RemoteError::HdrUnsupported);
     }
+    // Zoning guard (`zoning` builds): see `persistent::dispatch_render`.
+    #[cfg(feature = "zoning")]
+    if crate::bridge::remote::zoned_scene_refusal(
+        request.scene().material.zoning.is_some(),
+        welcome.zoning,
+    )
+    .is_err()
+    {
+        return Err(RemoteError::ZoningUnsupported);
+    }
     request.send(&mut stream, capability)?;
 
     // Reset right after the request is actually on the wire -- see `LIVENESS_TIMEOUT`'s

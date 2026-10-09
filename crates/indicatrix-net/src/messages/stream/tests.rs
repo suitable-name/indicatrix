@@ -687,6 +687,115 @@ fn contribution_is_appended_at_discriminant_7_and_round_trips() {
     assert_eq!(decoded, contribution);
 }
 
+/// v24: the batch events are appended after `NeedAsset` (indices 10 to 13), carry their
+/// batch's `request_id`, and only `BatchItemDone` has a payload frame (the PNG).
+#[test]
+fn v24_batch_events_are_appended_and_round_trip() {
+    use crate::messages::{BatchDone, BatchItemDoneHeader, BatchItemFailed, BatchItemProgress};
+
+    let first_byte = |e: &StreamEvent| postcard::to_allocvec(e).unwrap()[0];
+    let png = vec![0x89, b'P', b'N', b'G', 1, 2, 3];
+    let done = StreamEvent::BatchItemDone(BatchItemDoneHeader {
+        request_id: 6,
+        item_id: 3,
+        samples_done: 64,
+        payload_len: png.len() as u32,
+    });
+    let progress = StreamEvent::BatchItemProgress(BatchItemProgress {
+        request_id: 6,
+        item_id: 3,
+        samples_done: 64,
+    });
+    let failed = StreamEvent::BatchItemFailed(BatchItemFailed {
+        request_id: 6,
+        item_id: 4,
+        reason: "the scene names an HDR environment".to_owned(),
+    });
+    let batch_done = StreamEvent::BatchDone(BatchDone {
+        request_id: 6,
+        cancelled: true,
+    });
+    assert_eq!(first_byte(&progress), 10);
+    assert_eq!(first_byte(&done), 11);
+    assert_eq!(first_byte(&failed), 12);
+    assert_eq!(first_byte(&batch_done), 13);
+
+    for (event, payload) in [
+        (&progress, None),
+        (&done, Some(png.as_slice())),
+        (&failed, None),
+        (&batch_done, None),
+    ] {
+        assert_eq!(event.request_id(), Some(6));
+        assert_eq!(event.payload_len(), payload.map(|p| p.len() as u32));
+        let mut buf = Vec::new();
+        write_stream_event(&mut buf, event, payload).unwrap();
+        let (decoded, decoded_payload) = read_stream_event(&mut std::io::Cursor::new(buf)).unwrap();
+        assert_eq!(&decoded, event);
+        assert_eq!(decoded_payload.as_deref(), payload);
+    }
+
+    // A payload handed to a payload-less batch event is refused before anything is written.
+    let mut buf = Vec::new();
+    assert!(write_stream_event(&mut buf, &batch_done, Some(png.as_slice())).is_err());
+    assert_eq!(buf, [] as [u8; 0]);
+}
+
+/// v24: `BatchRenderRequest` is appended after `Contribution` (index 7), at discriminant
+/// 8, and round-trips through the tagged `ClientMessage` envelope.
+#[cfg(feature = "render")]
+#[test]
+fn batch_render_request_is_appended_at_discriminant_8_and_round_trips() {
+    use crate::messages::{BatchItem, BatchRenderRequest, BatchReply};
+    use indicatrix::{
+        geometry::cuts::StandardGemCuts,
+        optics::{materials::GemMaterial, raytracer::LightingPreset},
+    };
+
+    let scene = crate::scene::SceneState {
+        width: 2,
+        height: 2,
+        yaw: 0.0,
+        pitch: 0.0,
+        distance: 1.0,
+        light_yaw: 0.0,
+        light_pitch: 0.0,
+        exposure: 1.0,
+        max_bounces: 1,
+        lighting_preset: LightingPreset::Daylight,
+        material: GemMaterial::diamond(),
+        planes: StandardGemCuts::standard_round_brilliant(),
+        girdle_frosted: false,
+        backdrop: 0.0,
+        environment: crate::scene::SceneEnvironment::Studio,
+        surface_glare: 1.0,
+        tools: Vec::new(),
+        fluorescence: indicatrix::optics::fluorescence::Fluorescence::default(),
+        head_shadow_deg: 16.0,
+    };
+    let request = ClientMessage::BatchRenderRequest(Box::new(BatchRenderRequest {
+        request_id: 12,
+        reply: BatchReply::FinalPng,
+        items: vec![BatchItem {
+            item_id: 0,
+            scene,
+            first_sample: 0,
+            samples: 16,
+            width: 2,
+            height: 2,
+        }],
+    }));
+    assert_eq!(
+        postcard::to_allocvec(&request).unwrap()[0],
+        8,
+        "BatchRenderRequest must be discriminant 8"
+    );
+    let mut buf = Vec::new();
+    write_message(&mut buf, &request).unwrap();
+    let decoded: ClientMessage = read_message(&mut std::io::Cursor::new(buf)).unwrap();
+    assert_eq!(decoded, request);
+}
+
 /// v16: `Stats.reclaimed_samples` round-trips through `DONE` for a nonzero value (a
 /// zero one is already covered by `done_round_trips_both_cancelled_states`).
 #[test]

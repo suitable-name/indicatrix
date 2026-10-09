@@ -74,7 +74,22 @@ impl GemMaterial {
     /// require all of them to return `true` before routing that scene's render to the
     /// GPU backend.
     #[must_use]
+    #[cfg(not(feature = "zoning"))]
     pub const fn gpu_supported(&self) -> bool {
         true
+    }
+
+    /// GPU routing predicate, `zoning` build: as the plain predicate (every optics is
+    /// supported), except that a ZONED material is supported only when the GPU zone kernels
+    /// can render it. A mesh-shell zone, a scattering zoned stone, invalid zoning or a zone
+    /// with more than `MAX_ABSORPTION_BANDS` bands are CPU only (see
+    /// `renderer::buffers::gpu_zoning_decline`, which names the reason). Without this a
+    /// zoned material sent to the GPU would render its base zone only.
+    ///
+    /// Not `const` in this build (it inspects the zone list); `scene_routes_to_gpu` follows.
+    #[must_use]
+    #[cfg(feature = "zoning")]
+    pub fn gpu_supported(&self) -> bool {
+        crate::renderer::buffers::gpu_zoning_decline(self).is_none()
     }
 }

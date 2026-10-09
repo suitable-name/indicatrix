@@ -260,7 +260,9 @@ pub fn sanitize_file_name(title: &str) -> String {
     }
 }
 
-/// The `.asc` name a save proposes: the design's own recorded name when it has one,
+/// The `.asc` name a save proposes.
+///
+/// It is the design's own recorded name when it has one,
 /// else its first non-blank header sanitized plus `.asc`, else
 /// `"edited_design.asc"` -- the desktop's `suggested_file_name` rule.
 #[must_use]

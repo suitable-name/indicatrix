@@ -255,8 +255,9 @@ pub fn too_many_planes_message(design: &Design) -> Option<String> {
     }
 }
 
-/// Converts an already-solved mast list into the `GpuFacetPlane`s a viewport draws,
-/// via [`Design::planes_from_solved`] -- the `n . x <= m` half-space convention
+/// Converts an already-solved mast list into the `GpuFacetPlane`s a viewport draws.
+///
+/// It goes via [`Design::planes_from_solved`] -- the `n . x <= m` half-space convention
 /// flipped to `GpuFacetPlane`'s `n . x + d = 0` (`d = -m`).
 ///
 /// See

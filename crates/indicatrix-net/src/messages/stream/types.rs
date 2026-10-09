@@ -216,6 +216,62 @@ pub struct Progress {
     pub samples_done: u32,
 }
 
+/// `<- BATCH_ITEM_PROGRESS` (v24): one item of a `BatchRenderRequest` has been traced.
+///
+/// Sent per item as the worker finishes tracing it (before its PNG is encoded), so a
+/// viewer's progress and stall deadlines move per picture; the batch-wide `PROGRESS`
+/// heartbeat covers the quiet in between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchItemProgress {
+    /// The batch this belongs to.
+    pub request_id: u32,
+    /// The item within the batch.
+    pub item_id: u32,
+    /// Samples traced for this item so far (its full `samples` once traced).
+    pub samples_done: u32,
+}
+
+/// The header half of a `<- BATCH_ITEM_DONE` (v24): one finished picture.
+///
+/// The payload (`payload_len` bytes) follows as a raw frame: a PNG for
+/// `BatchReply::FinalPng`. Sent exactly once per answered item, never together with a
+/// [`BatchItemFailed`] for the same item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchItemDoneHeader {
+    /// The batch this belongs to.
+    pub request_id: u32,
+    /// The item within the batch.
+    pub item_id: u32,
+    /// Samples the picture was averaged over (the item's `samples` on success).
+    pub samples_done: u32,
+    /// Size in bytes of the payload frame that follows.
+    pub payload_len: u32,
+}
+
+/// `<- BATCH_ITEM_FAILED` (v24): this item produced no picture; the rest of the batch
+/// carries on. `reason` is a human-readable sentence for the viewer's log.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchItemFailed {
+    /// The batch this belongs to.
+    pub request_id: u32,
+    /// The item within the batch.
+    pub item_id: u32,
+    /// Why no picture was produced.
+    pub reason: String,
+}
+
+/// `<- BATCH_DONE` (v24): the terminal message of a `BatchRenderRequest`, exactly once.
+///
+/// Sent after every `BATCH_ITEM_DONE`/`BATCH_ITEM_FAILED` of that batch. `cancelled` is `true`
+/// when a `CANCEL` (or the peer closing) stopped it before every item was answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchDone {
+    /// The batch that ended.
+    pub request_id: u32,
+    /// Whether it ended because of a `CANCEL`.
+    pub cancelled: bool,
+}
+
 /// `-> CANCEL`: asks the worker to stop tracing `request_id` as soon as possible,
 /// without dropping the connection.
 ///
@@ -281,6 +337,18 @@ pub enum ClientMessage {
     /// [`crate::messages::contribution`]). `render`-feature only (index 7).
     #[cfg(feature = "render")]
     Contribution(crate::messages::contribution::ContributionHeader),
+    /// `-> BATCH_RENDER_REQUEST` (v24): several finished pictures in one request -- see
+    /// `crate::messages::batch`. Boxed like `RenderRequest`. `render`-feature only
+    /// (index 8). `CANCEL` with the batch's `request_id` cancels it.
+    #[cfg(feature = "render")]
+    BatchRenderRequest(Box<crate::messages::batch::BatchRenderRequest>),
+    /// `-> ZONING_PAYLOAD` (`zoning` feature, no protocol bump; index 9): the colour zones of
+    /// the request that follows, keyed by its `request_id` -- see
+    /// [`crate::messages::zoning`]. Sent only to a peer whose `WELCOME` advertised the zoning
+    /// capability (a peer without it cannot decode this index), so it never reaches a
+    /// default build. Boxed like the requests.
+    #[cfg(feature = "zoning")]
+    ZoningPayload(Box<crate::messages::zoning::ZoningPayload>),
 }
 
 /// Delivery statistics reported on [`Done`].
@@ -413,6 +481,17 @@ pub enum StreamEvent {
         /// SHA-256 of the wanted bytes (see `crate::messages::asset`).
         content_hash: [u8; 32],
     },
+    /// `<- BATCH_ITEM_PROGRESS` (v24): one batch item has been traced -- see
+    /// [`BatchItemProgress`]. Epoch-gated by its batch's `request_id`.
+    BatchItemProgress(BatchItemProgress),
+    /// `<- BATCH_ITEM_DONE` (v24): one finished picture, followed by its payload frame --
+    /// see [`BatchItemDoneHeader`].
+    BatchItemDone(BatchItemDoneHeader),
+    /// `<- BATCH_ITEM_FAILED` (v24): one batch item produced no picture -- see
+    /// [`BatchItemFailed`].
+    BatchItemFailed(BatchItemFailed),
+    /// `<- BATCH_DONE` (v24): the terminal event of a batch -- see [`BatchDone`].
+    BatchDone(BatchDone),
 }
 
 impl StreamEvent {
@@ -425,12 +504,16 @@ impl StreamEvent {
             Self::Preview(h) => Some(h.payload_len),
             Self::DisplayFrame(h) => Some(h.payload_len),
             Self::FinalImage(h) => Some(h.payload_len),
+            Self::BatchItemDone(h) => Some(h.payload_len),
             Self::Progress(_)
             | Self::Done(_)
             | Self::Error(_)
             | Self::Pong { .. }
             | Self::CapabilityChanged { .. }
-            | Self::NeedAsset { .. } => None,
+            | Self::NeedAsset { .. }
+            | Self::BatchItemProgress(_)
+            | Self::BatchItemFailed(_)
+            | Self::BatchDone(_) => None,
         }
     }
 
@@ -446,6 +529,10 @@ impl StreamEvent {
             Self::Done(d) => Some(d.request_id),
             Self::DisplayFrame(h) => Some(h.request_id),
             Self::FinalImage(h) => Some(h.request_id),
+            Self::BatchItemProgress(p) => Some(p.request_id),
+            Self::BatchItemDone(h) => Some(h.request_id),
+            Self::BatchItemFailed(f) => Some(f.request_id),
+            Self::BatchDone(d) => Some(d.request_id),
             Self::Error(e) => e.request_id,
             Self::Pong { .. } | Self::CapabilityChanged { .. } | Self::NeedAsset { .. } => None,
         }

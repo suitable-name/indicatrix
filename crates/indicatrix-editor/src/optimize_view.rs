@@ -450,7 +450,9 @@ fn tone_row(
     )
 }
 
-/// The tier name to show alongside a tier-index reference in a result table: what the tier
+/// The tier name to show alongside a tier-index reference in a result table.
+///
+/// It is what the tier
 /// table shows, so the tier's own name, or its standard code (`P1`, `C2`) when the name is
 /// empty or old-style (`1`, `A`).
 ///

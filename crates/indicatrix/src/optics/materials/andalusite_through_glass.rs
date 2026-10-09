@@ -63,6 +63,8 @@ impl GemMaterial {
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
                 absorption_unit: super::AbsorptionUnit::ModelUnit,
+                #[cfg(feature = "zoning")]
+                zoning: None,
                 uniaxial_extraordinary_dispersion: None,
             },
             // Opal (amorphous hydrated SiO2, common/body-color opal -- NOT precious
@@ -109,6 +111,8 @@ impl GemMaterial {
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
                 absorption_unit: super::AbsorptionUnit::ModelUnit,
+                #[cfg(feature = "zoning")]
+                zoning: None,
                 uniaxial_extraordinary_dispersion: None,
             },
             // Glass (Schott N-BK7) -- the most common optical crown glass, included
@@ -144,6 +148,8 @@ impl GemMaterial {
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
                 absorption_unit: super::AbsorptionUnit::ModelUnit,
+                #[cfg(feature = "zoning")]
+                zoning: None,
                 uniaxial_extraordinary_dispersion: None,
             },
             // Glass (Schott F2) -- a common dense flint glass, the classic
@@ -178,6 +184,8 @@ impl GemMaterial {
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
                 absorption_unit: super::AbsorptionUnit::ModelUnit,
+                #[cfg(feature = "zoning")]
+                zoning: None,
                 uniaxial_extraordinary_dispersion: None,
             },
         ]

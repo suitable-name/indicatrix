@@ -125,6 +125,13 @@ pub(super) struct Orchestrator {
     /// settle decision (`bridge::remote::live_remote_dispatch`) keeps HDR scenes local
     /// once this says `Some(false)`. Reset wherever `remote_connection` is replaced.
     pub(super) remote_hdr: Option<bool>,
+    /// `zoning` builds: the live remote's zoning capability (`Welcome::zoning`) from its last
+    /// `WELCOME`; `None` before the connection first reported one, `Some(false)` for a default
+    /// build or a coordinator (`CAPABILITY_CHANGED` always resets it to `false`: a coordinator
+    /// never advertises it). The settle decision keeps a zoned stone local once this says
+    /// `Some(false)`. Reset wherever `remote_connection` is replaced.
+    #[cfg(feature = "zoning")]
+    pub(super) remote_zoning: Option<bool>,
     pub(super) last_pose: Pose,
     /// When the settle debounce last restarted: the last pose change, or the last
     /// held-to-released edge of `RenderContext::camera_drag_held` (whichever is later).

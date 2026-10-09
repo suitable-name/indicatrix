@@ -68,7 +68,9 @@ pub fn rank_indices<L: Borrow<RoughLayout>>(candidates: &[L], limit: usize) -> V
     rank_indices_min(candidates, limit, 1)
 }
 
-/// [`rank_indices`] over the candidates holding at least `min_stones` stones: the ONE place
+/// [`rank_indices`] over the candidates holding at least `min_stones` stones.
+///
+/// This is the ONE place
 /// the planner's minimum stone count is applied. Layouts below it are dropped before sorting,
 /// dedup and the per-set cap, so every slot goes to a qualifying layout. `min_stones <= 1` is
 /// exactly [`rank_indices`] (empty layouts are skipped either way).
