@@ -1331,11 +1331,8 @@ struct BodyModel<'a, 'c> {
 impl<'a, 'c> BodyModel<'a, 'c> {
     fn new(ctx: &'a Ctx<'c>) -> Self {
         let mut spectra = vec![[0.0; N]; BODY_BANDS];
-        for (row, &(centre, width)) in spectra
-            .iter_mut()
-            .zip(crate::optics::absorption::BODY_COLOR_BASIS_NM.iter())
-        {
-            let band = AbsorptionBand::new(centre, width, 1.0);
+        let bands = crate::optics::absorption::body_color_bands([1.0; 7]);
+        for (row, band) in spectra.iter_mut().zip(bands.iter()) {
             for (i, s) in row.iter_mut().enumerate() {
                 *s = f64::from(band.evaluate((380 + i) as f32));
             }

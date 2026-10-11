@@ -935,7 +935,11 @@ fn walk_exits(
 #[must_use]
 pub(crate) fn henyey_greenstein_phase(cos_theta: f32, g: f32) -> f32 {
     let g2 = g * g;
-    let denom = (2.0 * g).mul_add(-cos_theta, 1.0 + g2).max(1e-6).powf(1.5);
+    // `base^1.5` as `base * sqrt(base)`, not `powf(1.5)`: the WGSL twin cannot get an
+    // accurate `pow` (GPUs lower it to exp2/log2, which amplifies error with the
+    // magnitude of `base`), whereas `sqrt` is near-exact everywhere.
+    let base = (2.0 * g).mul_add(-cos_theta, 1.0 + g2).max(1e-6);
+    let denom = base * base.sqrt();
     (1.0 - g2) / (4.0 * std::f32::consts::PI * denom)
 }
 

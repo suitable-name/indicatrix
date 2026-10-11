@@ -345,7 +345,15 @@ impl GemMaterial {
         let bands = rows
             .iter()
             .filter(|r| r.iter().all(|v| v.is_finite()) && r[1] > 0.0 && r[2] > 0.0)
-            .map(|r| AbsorptionBand::new(r[0], r[1], r[2]))
+            .map(|r| {
+                if r[1] > 500.0 {
+                    let mut b = AbsorptionBand::energy(r[0], r[1] * 2.35482, r[2]);
+                    b.width_nm = r[1]; // exactly restore the wavenumber sigma
+                    b
+                } else {
+                    AbsorptionBand::new(r[0], r[1], r[2])
+                }
+            })
             .collect();
         self.absorption = AbsorptionTensor::isotropic(bands);
         self.absorption_unit = AbsorptionUnit::PerMm;

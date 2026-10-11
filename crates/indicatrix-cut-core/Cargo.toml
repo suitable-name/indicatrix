@@ -88,6 +88,8 @@ default = []
 # Lane I1 (planner integration): `indicatrix/serde` is named too, because the rough colour
 # (`rough_plan::zoned_plan`) stores `ZonedAbsorption` as JSON in the vault side tables.
 zoning = ["indicatrix/zoning", "indicatrix/serde", "dep:rawler", "dep:image"]
+physics-color = []
+experimental = ["zoning", "physics-color"]
 
 [lints]
 workspace = true

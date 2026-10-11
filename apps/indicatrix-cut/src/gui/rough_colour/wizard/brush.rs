@@ -42,9 +42,9 @@ pub fn working_position(fx: f32, fy: f32, width: usize, height: usize) -> Option
 /// Returns how many pixels changed.
 pub fn apply(mask: &mut PixelMask, centre: [f64; 2], radius_px: f64, mode: BrushMode) -> usize {
     let radius = if radius_px.is_finite() {
-        radius_px.clamp(0.5, MAX_BRUSH_RADIUS_PX)
+        radius_px.clamp(0.75, MAX_BRUSH_RADIUS_PX)
     } else {
-        0.5
+        0.75
     };
     let (width, height) = (mask.width(), mask.height());
     if width == 0 || height == 0 {
@@ -161,7 +161,7 @@ mod tests {
         let limit = (std::f64::consts::PI * MAX_BRUSH_RADIUS_PX * MAX_BRUSH_RADIUS_PX) as usize;
         assert!(big <= limit + 200, "{big} vs {limit}");
         let mut other = PixelMask::new(20, 20);
-        let tiny = apply(&mut other, [10.0, 10.0], f64::NAN, BrushMode::Exclude);
+        let tiny = apply(&mut other, [10.5, 10.5], f64::NAN, BrushMode::Exclude);
         assert!(tiny >= 1);
     }
 

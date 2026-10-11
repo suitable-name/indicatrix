@@ -179,6 +179,9 @@ zoning = [
     "indicatrix-vault/zoning",
 ]
 
+# Experimental features bundle: activates both the zoning and physical-color feature sets.
+experimental = ["zoning", "physical-color"]
+
 [build-dependencies]
 slint-build = { workspace = true }
 # Unconditional on purpose: a `[target.'cfg(windows)'.build-dependencies]` gate follows

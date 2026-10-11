@@ -713,8 +713,8 @@ macro_rules! zone_kernel_impl {
                     sort_small(&mut bp[..nb]);
                     let mut out = [0.0; MAX_ZONES + 1];
                     for i in 0..nb - 1 {
-                        let a = bp[i];
-                        let b = bp[i + 1];
+                        let a = F::max(bp[i], 0.0);
+                        let b = F::min(bp[i + 1], 1.0);
                         if b <= a {
                             continue;
                         }
@@ -773,8 +773,8 @@ macro_rules! zone_kernel_impl {
 
                     let mut acc = [0.0; MAX_ZONES + 1];
                     for i in 0..nb - 1 {
-                        let a = bp[i];
-                        let b = bp[i + 1];
+                        let a = F::max(bp[i], 0.0);
+                        let b = F::min(bp[i + 1], 1.0);
                         if b <= a {
                             continue;
                         }

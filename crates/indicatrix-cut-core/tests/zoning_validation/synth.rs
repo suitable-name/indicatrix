@@ -450,7 +450,7 @@ pub fn band_zone(bands: &[(f32, f32, f32)]) -> ZoneAbsorption {
     ZoneAbsorption::per_mm(AbsorptionTensor::isotropic(
         bands
             .iter()
-            .map(|&(centre, width, peak)| AbsorptionBand::new(centre, width, peak))
+            .map(|&(centre, width, peak)| AbsorptionBand::energy(centre, width, peak))
             .collect(),
     ))
 }
@@ -520,50 +520,53 @@ impl Truth {
             absorption,
         };
         let (geometry, uniform) = match case {
-            ColourCase::UniformPale => (None, Some(band_zone(&[(560.0, 70.0, 0.02)]))),
+            ColourCase::UniformPale => (
+                None,
+                Some(band_zone(&[(545.0, 2600.0, 0.02), (390.0, 3500.0, 0.016)])),
+            ),
             ColourCase::UniformSaturated => (
                 None,
-                Some(band_zone(&[(520.0, 40.0, 0.18), (600.0, 50.0, 0.12)])),
+                Some(band_zone(&[(545.0, 2600.0, 0.2), (390.0, 3500.0, 0.16)])),
             ),
             ColourCase::Bicolour => (
                 zoned(
-                    band_zone(&[(450.0, 40.0, 0.08)]),
-                    vec![half_space(band_zone(&[(610.0, 40.0, 0.12)]))],
+                    band_zone(&[(580.0, 700.0, 0.04), (625.0, 700.0, 0.03), (540.0, 700.0, 0.024)]),
+                    vec![half_space(band_zone(&[(545.0, 2600.0, 0.2), (390.0, 3500.0, 0.16)]))],
                 ),
                 None,
             ),
             ColourCase::WatermelonPrism => (
                 zoned(
-                    band_zone(&[(620.0, 45.0, 0.10)]),
+                    band_zone(&[(545.0, 2600.0, 0.1), (390.0, 3500.0, 0.08)]),
                     vec![Zone {
                         shape: watermelon_prism(),
-                        absorption: band_zone(&[(540.0, 40.0, 0.15)]),
+                        absorption: band_zone(&[(580.0, 700.0, 0.08), (625.0, 700.0, 0.06), (540.0, 700.0, 0.048)]),
                     }],
                 ),
                 None,
             ),
             ColourCase::Sector => (
                 zoned(
-                    band_zone(&[(560.0, 60.0, 0.04)]),
+                    band_zone(&[(545.0, 2600.0, 0.04), (390.0, 3500.0, 0.032)]),
                     vec![Zone {
                         shape: sector_wedge(),
-                        absorption: band_zone(&[(450.0, 40.0, 0.15)]),
+                        absorption: band_zone(&[(580.0, 700.0, 0.06), (625.0, 700.0, 0.045), (540.0, 700.0, 0.036)]),
                     }],
                 ),
                 None,
             ),
             ColourCase::Banded => (
                 zoned(
-                    band_zone(&[(560.0, 60.0, 0.04)]),
+                    band_zone(&[(545.0, 2600.0, 0.04), (390.0, 3500.0, 0.032)]),
                     vec![
-                        half_space(band_zone(&[(610.0, 40.0, 0.10)])),
+                        half_space(band_zone(&[(545.0, 2600.0, 0.2), (390.0, 3500.0, 0.16)])),
                         Zone {
                             shape: watermelon_prism(),
-                            absorption: band_zone(&[(540.0, 40.0, 0.15)]),
+                            absorption: band_zone(&[(580.0, 700.0, 0.08), (625.0, 700.0, 0.06), (540.0, 700.0, 0.048)]),
                         },
                         Zone {
                             shape: sector_wedge(),
-                            absorption: band_zone(&[(450.0, 40.0, 0.12)]),
+                            absorption: band_zone(&[(580.0, 700.0, 0.04), (625.0, 700.0, 0.03), (540.0, 700.0, 0.024)]),
                         },
                     ],
                 ),
@@ -1012,6 +1015,7 @@ impl Setup {
 #[must_use]
 pub fn quick_fit_config(threads: usize) -> FitConfig {
     FitConfig {
+        host_id: Some("spinel".into()),
         seeds: 4,
         stage1_iterations: 10,
         finalists: 1,

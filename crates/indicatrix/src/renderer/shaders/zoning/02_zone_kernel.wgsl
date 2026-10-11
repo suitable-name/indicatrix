@@ -377,8 +377,8 @@ fn zone_fractions_sharp(p0: vec3<f32>, dv: vec3<f32>, count: u32) -> array<f32, 
     zone_sort_bp(&bp, nb);
     var out: array<f32, 5>;
     for (var i: u32 = 0u; i + 1u < nb; i = i + 1u) {
-        let a = bp[i];
-        let b = bp[i + 1u];
+        let a = max(bp[i], 0.0);
+        let b = min(bp[i + 1u], 1.0);
         if (b <= a) {
             continue;
         }
@@ -444,8 +444,8 @@ fn zone_fractions_soft(p0: vec3<f32>, dv: vec3<f32>, count: u32) -> array<f32, 5
     let subdiv = max(material.zones.header.soft_subdiv, 1u);
     var acc: array<f32, 5>;
     for (var i: u32 = 0u; i + 1u < nb; i = i + 1u) {
-        let a = bp[i];
-        let b = bp[i + 1u];
+        let a = max(bp[i], 0.0);
+        let b = min(bp[i + 1u], 1.0);
         if (b <= a) {
             continue;
         }

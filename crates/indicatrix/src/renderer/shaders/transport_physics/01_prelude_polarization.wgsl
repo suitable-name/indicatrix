@@ -335,18 +335,22 @@ fn effective_extraordinary_index(n_o: f32, n_e: f32, theta: f32) -> f32 {
     return (n_o * n_e) / sqrt(denom_sq);
 }
 
-fn walk_off_angle(n_o: f32, n_e: f32, theta: f32) -> f32 {
+// `BirefringenceParams::walk_off_from_sin_cos`: the walk-off from sin/cos of theta
+// directly, so callers that already hold cos(theta) skip the lossy acos -> sin/cos trip.
+fn walk_off_from_sin_cos(n_o: f32, n_e: f32, sin_t: f32, cos_t: f32) -> f32 {
     if (abs(n_o - n_e) < 1e-5) {
         return 0.0;
     }
     let n_o2 = n_o * n_o;
     let n_e2 = n_e * n_e;
-    let sin_t = sin(theta);
-    let cos_t = cos(theta);
     let numer = (n_o2 - n_e2) * sin_t * cos_t;
     let denom = max(fma(n_e2 * cos_t, cos_t, n_o2 * sin_t * sin_t), 1e-6);
     let tan_rho = numer / denom;
     return atan(tan_rho);
+}
+
+fn walk_off_angle(n_o: f32, n_e: f32, theta: f32) -> f32 {
+    return walk_off_from_sin_cos(n_o, n_e, sin(theta), cos(theta));
 }
 
 // Fix 1 (see optics::birefringence::BirefringenceParams::extraordinary_poynting_dir's
@@ -357,8 +361,11 @@ fn walk_off_angle(n_o: f32, n_e: f32, theta: f32) -> f32 {
 // under `c_axis -> -c_axis` while `delta` does not.
 fn extraordinary_poynting_dir(wave_normal: vec3<f32>, c_axis: vec3<f32>, n_o: f32, n_e: f32) -> vec3<f32> {
     let cos_theta = clamp(dot(wave_normal, c_axis), -1.0, 1.0);
-    let theta = acos(abs(cos_theta));
-    let delta = walk_off_angle(n_o, n_e, theta);
+    let abs_cos = abs(cos_theta);
+    // sin(theta) from the cosine directly (no acos round trip), factored to avoid
+    // cancellation near 1.
+    let sin_t = sqrt(max((1.0 - abs_cos) * (1.0 + abs_cos), 0.0));
+    let delta = walk_off_from_sin_cos(n_o, n_e, sin_t, abs_cos);
 
     if (abs(delta) < 1e-5) {
         return wave_normal;
@@ -407,11 +414,12 @@ fn theta_c_for_bounce(
             let cos_t_guess = sqrt(max(1.0 - sin2_t_guess, 0.0));
             let wave_dir_guess = normalize(eta_guess * ray_dir + fma(eta_guess, cos_i, -cos_t_guess) * normal);
             let cos_theta_wave = abs(clamp(dot(wave_dir_guess, c_axis), -1.0, 1.0));
-            theta = acos(cos_theta_wave);
+            theta = atan2(sqrt(max((1.0 - cos_theta_wave) * (1.0 + cos_theta_wave), 0.0)), cos_theta_wave);
             n_guess = effective_extraordinary_index(n_o_hero_seed, n_e_hero_seed, theta);
         }
         return theta;
     } else {
-        return acos(abs(clamp(dot(ray_dir, c_axis), -1.0, 1.0)));
+        let cos_ray = abs(clamp(dot(ray_dir, c_axis), -1.0, 1.0));
+        return atan2(sqrt(max((1.0 - cos_ray) * (1.0 + cos_ray), 0.0)), cos_ray);
     }
 }

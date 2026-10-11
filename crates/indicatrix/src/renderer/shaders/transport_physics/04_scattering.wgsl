@@ -27,7 +27,8 @@ const PHASE_DIR_V_STREAM: u32 = 0x1ce4e5b9u;
 // optics::raytracer::henyey_greenstein_phase
 fn henyey_greenstein_phase(cos_theta: f32, g: f32) -> f32 {
     let g2 = g * g;
-    let denom = pow(max(fma(2.0 * g, -cos_theta, 1.0 + g2), 1e-6), 1.5);
+    let base = max(fma(2.0 * g, -cos_theta, 1.0 + g2), 1e-6);
+    let denom = base * sqrt(base);
     return (1.0 - g2) / (4.0 * PI * denom);
 }
 

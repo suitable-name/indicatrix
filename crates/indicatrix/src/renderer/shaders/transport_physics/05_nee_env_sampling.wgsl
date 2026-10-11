@@ -37,7 +37,8 @@ fn balance_heuristic(pdf_a: f32, pdf_b: f32) -> f32 {
 
 fn hdr_direction_to_uv(dir: vec3<f32>) -> vec2<f32> {
     let d = normalize(dir);
-    let theta = acos(clamp(d.y, -1.0, 1.0));
+    let cy = clamp(d.y, -1.0, 1.0);
+    let theta = atan2(sqrt(max((1.0 - cy) * (1.0 + cy), 0.0)), cy);
     let phi = atan2(d.x, d.z);
     let v = theta / PI;
     let u = fract(phi / (2.0 * PI));

@@ -404,7 +404,10 @@ pub fn body_color_bands(amplitudes_per_mm: [f32; 7]) -> Vec<AbsorptionBand> {
         .iter()
         .zip(amplitudes_per_mm)
         .filter(|(_, a)| a.is_finite() && *a > 0.0)
-        .map(|(&(centre, width), a)| AbsorptionBand::new(centre, width, a))
+        .map(|(&(centre, width), a)| {
+            let sigma_nu = width * 1.0e7 / (centre * centre);
+            AbsorptionBand::energy(centre, sigma_nu * 2.35482, a)
+        })
         .collect()
 }
 

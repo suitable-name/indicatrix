@@ -40,7 +40,14 @@ fn zone_lengths_mm(origin: vec3<f32>, dir: vec3<f32>, hit_t: f32, path_scale: f3
         return out;
     }
     for (var i: u32 = 0u; i < 5u; i = i + 1u) {
-        out[i] = scaled * (raw[i] / total);
+        // WGSL division is only accurate to ~2.5 ULP, so `total / total` is not guaranteed
+        // to be exactly 1.0 on every GPU. A zone holding the whole segment must get exactly
+        // `scaled` (bit for bit the unzoned product), so that case skips the division.
+        if (raw[i] >= total) {
+            out[i] = scaled;
+        } else {
+            out[i] = scaled * (raw[i] / total);
+        }
     }
     return out;
 }

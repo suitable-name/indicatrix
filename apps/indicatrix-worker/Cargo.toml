@@ -129,10 +129,35 @@ worker = ["dep:indicatrix", "dep:indicatrix-dispatch", "dep:glam", "dep:bytemuck
 # default even with `worker` on: `wgpu`/`pollster` is a real dependency tree, and a
 # render-capable server may still run on a machine with no GPU adapter at all.
 gpu = ["worker", "indicatrix/gpu"]
-# Rough colour and colour zoning (plan 2026-10-09, section 1a): accept zoned scenes
-# (advertises the zoning capability bit, handles the separate `ZoningPayload` message).
-# Implies `worker`. Off by default and left out of every build and deploy script.
-zoning = ["worker", "indicatrix/zoning", "indicatrix-net/zoning"]
+
+# Shows the physics-based color editor in the Gem Material Editor: the "Color Mode:
+# Fantasy | Physics" toggle and the whole host-crystal / element-recipe section
+# (`ChromophorePicker`), plus the "color changed by an older version" question and the
+# "color data updated" badge. UI only: the data layer is compiled and active in EVERY
+# build -- a material's stored color mode and recipe (vault `color_recipe_json`, the
+# design file's `color_recipe`) are kept byte-for-byte and still render as before. Off by
+# default (and left out of the shipped/PGO feature sets) because the physical color mode is
+# out of focus; see `gui::optics::physics_state::PHYSICS_COLOR_UI`.
+physical-color = []
+# Rough colour and colour zoning from rig photos (plan 2026-10-09, section 1a): the Rough
+# colour wizard, the zone panel, the vault side-table storage and the adopt integration.
+# UI switch: `gui::zoning_ui::ZONING_UI`, which sets the Slint global `Zoning.enabled`.
+# Off by default and left out of the shipped/PGO feature sets; a build without it is
+# unchanged. RAW decoding (`rawler`) lives in `indicatrix-cut-core` behind its own `zoning`
+# feature (lane P1), so it is reached through `indicatrix-cut-core/zoning` and this crate
+# declares no `rawler` dependency of its own.
+#
+# Lane I1: `indicatrix-vault/zoning` creates and serves the rough-colour side tables
+# (`gui::rough_colour::store`).
+zoning = [
+    "worker",
+    "indicatrix/zoning",
+    "indicatrix-net/zoning",
+    "indicatrix-vault/zoning",
+]
+
+# Experimental features bundle: activates both the zoning and physical-color feature sets.
+experimental = ["zoning", "physical-color"]
 
 [lints]
 workspace = true

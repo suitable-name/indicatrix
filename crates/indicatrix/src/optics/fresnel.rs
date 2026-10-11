@@ -25,6 +25,9 @@
 #[must_use]
 pub fn fresnel_dielectric(cos_i: f64, n_from: f64, n_to: f64) -> f64 {
     let ci = cos_i.clamp(0.0, 1.0);
+    if (n_from - n_to).abs() < f64::EPSILON {
+        return 0.0;
+    }
     let eta = n_from / n_to;
     let sin2_t = eta * eta * ci.mul_add(-ci, 1.0);
     if sin2_t >= 1.0 {

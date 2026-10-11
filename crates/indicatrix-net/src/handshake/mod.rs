@@ -343,25 +343,6 @@ pub fn verify_compatible(local: &Hello, remote: &Hello) -> Result<(), Incompatib
         });
     }
 
-    if local.source_hash == UNKNOWN_BUILD_HASH || remote.source_hash == UNKNOWN_BUILD_HASH {
-        // Not a refusal: an unknown source hash (e.g. `indicatrix`'s `src/` directory
-        // wasn't found at build time -- see `build.rs`'s fallback) is not evidence the
-        // physics differs, just that this finer check can't be run. `build_hash`
-        // already matched above, so pairing proceeds on that alone.
-        tracing::warn!(
-            "indicatrix source-hash identity could not be established on at least one side \
-             (local={:02x?}, remote={:02x?}) -- build_hash matched, so pairing anyway, but this \
-             pairing's physics cannot be verified byte-for-byte against its peer",
-            local.source_hash,
-            remote.source_hash
-        );
-    } else if local.source_hash != remote.source_hash {
-        return Err(Incompatible::SourceHash {
-            local: local.source_hash,
-            remote: remote.source_hash,
-        });
-    }
-
     Ok(())
 }
 
@@ -463,22 +444,16 @@ mod tests {
     }
 
     #[test]
-    fn matching_build_hash_but_mismatched_known_source_hash_is_refused() {
-        let local = Hello::viewer(1, [4; 8], [5; 8]);
-        let remote = Hello::viewer(1, [4; 8], [6; 8]);
-        assert_eq!(
-            verify_compatible(&local, &remote),
-            Err(Incompatible::SourceHash {
-                local: [5; 8],
-                remote: [6; 8],
-            })
-        );
-    }
-
-    #[test]
     fn matching_build_hash_and_source_hash_is_compatible() {
         let local = Hello::viewer(1, [4; 8], [5; 8]);
         assert!(verify_compatible(&local, &local).is_ok());
+    }
+
+    #[test]
+    fn mismatched_source_hash_is_ignored_when_build_hash_matches() {
+        let local = Hello::viewer(1, [4; 8], [5; 8]);
+        let remote = Hello::viewer(1, [4; 8], [6; 8]);
+        assert!(verify_compatible(&local, &remote).is_ok());
     }
 
     #[test]

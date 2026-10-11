@@ -155,7 +155,10 @@ impl SmoothBasisModel {
     #[must_use]
     pub fn basis(k: usize, lambda_nm: f64) -> f64 {
         let (centre, width) = BODY_COLOR_BASIS_NM[k];
-        let t = (lambda_nm - f64::from(centre)) / f64::from(width);
+        let sigma_nu = f64::from(width) * 1.0e7 / (f64::from(centre) * f64::from(centre));
+        let delta_nm = f64::from(centre) - lambda_nm;
+        let nu_diff = 1.0e7 * delta_nm / (lambda_nm * f64::from(centre));
+        let t = nu_diff / sigma_nu;
         (-0.5 * t * t).exp()
     }
 }

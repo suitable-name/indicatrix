@@ -221,7 +221,7 @@ fn a_panicking_lane_is_a_failure_not_a_crash() {
     let lanes = [
         fake("panics", Values::Integer, Duration::ZERO, Failure::Panic),
         // Slow enough that the panicking lane reaches retirement before the run ends.
-        fake("steady", Values::Integer, MS, Failure::Never),
+        fake("steady", Values::Integer, MS * 5, Failure::Never),
     ];
     let pool = pool_of(config(ChunkPolicy::fixed(6)), &lanes);
     let range = SampleRange::new(0, 60);

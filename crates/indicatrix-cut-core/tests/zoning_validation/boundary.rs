@@ -168,6 +168,8 @@ fn suggested_boundary_is_within_0_2_mm() {
         .collect();
     let options = SuggestOptions {
         k: Some(2),
+        try_cylinder: false,
+        prism_sides: vec![],
         ..SuggestOptions::default()
     };
     let report = suggest_zones(&setup.scene(), &views, &options).expect("a suggestion report");

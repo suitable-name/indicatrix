@@ -51,13 +51,23 @@ impl BirefringenceParams {
     /// Walk-off angle estimation for extraordinary ray Poynting vector.
     #[must_use]
     pub fn walk_off_angle(n_o: f32, n_e: f32, theta: f32) -> f32 {
+        Self::walk_off_from_sin_cos(n_o, n_e, theta.sin(), theta.cos())
+    }
+
+    /// [`Self::walk_off_angle`] from the sine and cosine of `theta` directly.
+    ///
+    /// [`Self::extraordinary_poynting_dir`] already has `cos(theta) = |k . c|` in hand;
+    /// going through `theta = acos(..)` and back via `sin`/`cos` costs real accuracy on
+    /// GPUs (their `acos`/`cos` are only loosely specified, and `cos` near pi/2 can be
+    /// off by ~1e-5, which turned a no-walk-off direction into a visibly deflected one).
+    /// The WGSL twin `walk_off_from_sin_cos` mirrors this expression exactly.
+    #[must_use]
+    pub fn walk_off_from_sin_cos(n_o: f32, n_e: f32, sin_t: f32, cos_t: f32) -> f32 {
         if (n_o - n_e).abs() < 1e-5 {
             return 0.0;
         }
         let n_o2 = n_o * n_o;
         let n_e2 = n_e * n_e;
-        let sin_t = theta.sin();
-        let cos_t = theta.cos();
         let tan_rho = ((n_o2 - n_e2) * sin_t * cos_t)
             / (n_e2 * cos_t)
                 .mul_add(cos_t, n_o2 * sin_t * sin_t)
@@ -77,8 +87,10 @@ impl BirefringenceParams {
     #[must_use]
     pub fn extraordinary_poynting_dir(wave_normal: Vec3, c_axis: Vec3, n_o: f32, n_e: f32) -> Vec3 {
         let cos_theta = wave_normal.dot(c_axis).clamp(-1.0, 1.0);
-        let theta = cos_theta.abs().acos();
-        let delta = Self::walk_off_angle(n_o, n_e, theta);
+        let abs_cos = cos_theta.abs();
+        // sin(theta) from the cosine directly, factored to avoid cancellation near 1.
+        let sin_t = ((1.0 - abs_cos) * (1.0 + abs_cos)).max(0.0).sqrt();
+        let delta = Self::walk_off_from_sin_cos(n_o, n_e, sin_t, abs_cos);
 
         if delta.abs() < 1e-5 {
             return wave_normal;
