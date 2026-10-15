@@ -31,7 +31,9 @@ pub mod raytracer;
 ///
 /// Shared by the CPU and GPU environment sampling paths.
 pub mod studio_rig;
-/// Colour zoning: zone types, path-length kernels and the zoned segment optical depth.
+/// Colour zoning.
+///
+/// Zone types, path-length kernels and the zoned segment optical depth.
 pub mod zoning;
 
 pub use fluorescence::{EmissionBand, Fluorescence, FluorescentEmitter};

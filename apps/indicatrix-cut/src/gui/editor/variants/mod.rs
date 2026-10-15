@@ -251,7 +251,9 @@ fn to_data(row: &VariantRow, picture: Option<&Pixels>) -> VariantRowData {
         exact: row.exact.as_str().into(),
         parent: row.parent.as_str().into(),
         opened_from: row.opened_from,
-        picture: picture.map_or_else(Image::default, |pixels| Image::from_rgba8(pixels.clone())),
+        picture: picture.map_or_else(Image::default, |pixels| {
+            crate::bridge::pixel_buffer::rgba_image(pixels.clone())
+        }),
         has_picture: picture.is_some(),
     }
 }

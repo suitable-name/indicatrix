@@ -489,7 +489,7 @@ fn handle_export_job_progress(
         .set_preview_samples_total(progress.samples_total.cast_signed());
     if let Some(buf) = progress.preview {
         ui.global::<ExportModel>()
-            .set_preview_image(slint::Image::from_rgba8(buf));
+            .set_preview_image(crate::bridge::pixel_buffer::rgba_image(buf));
     }
     if let Some(note) = progress.note {
         show_toast(ui, &note, "info");

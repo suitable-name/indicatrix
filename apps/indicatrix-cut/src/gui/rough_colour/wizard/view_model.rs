@@ -30,7 +30,7 @@ pub fn to_image(raster: &Rgba) -> Image {
     buffer
         .make_mut_slice()
         .copy_from_slice(bytemuck::cast_slice(&raster.data));
-    Image::from_rgba8(buffer)
+    crate::bridge::pixel_buffer::rgba_image(buffer)
 }
 
 fn strings(items: Vec<String>) -> ModelRc<SharedString> {

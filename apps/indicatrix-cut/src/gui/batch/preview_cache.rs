@@ -440,10 +440,10 @@ fn decode_to_pixel_buffer(png: &[u8]) -> Option<Pixels> {
 fn to_slint_thumbnails(front: Option<&Pixels>, top: Option<&Pixels>) -> PreviewThumbnails {
     PreviewThumbnails {
         front: front.map_or_else(slint::Image::default, |buf| {
-            slint::Image::from_rgba8(buf.clone())
+            crate::bridge::pixel_buffer::rgba_image(buf.clone())
         }),
         top: top.map_or_else(slint::Image::default, |buf| {
-            slint::Image::from_rgba8(buf.clone())
+            crate::bridge::pixel_buffer::rgba_image(buf.clone())
         }),
         has_front: front.is_some(),
         has_top: top.is_some(),

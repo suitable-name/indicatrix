@@ -373,7 +373,7 @@ pub(super) fn spawn_viewport_render_thread(
         render_ctx.clone(),
         move |ui: &MainWindow, img: slint::SharedPixelBuffer<slint::Rgba8Pixel>| {
             ui.global::<ViewportModel>()
-                .set_render_image(slint::Image::from_rgba8(img));
+                .set_render_image(crate::bridge::pixel_buffer::rgba_image(img));
             ui.global::<ViewportModel>().set_has_render(true);
             // This path-traced frame reflects whatever `RenderContext::
             // active_planes` currently is -- remember it (by `Arc` pointer

@@ -57,6 +57,21 @@ impl FramebufferTransfer {
     }
 }
 
+/// Wraps `buffer` in a [`slint::Image`], or returns an empty image when the buffer has no
+/// pixels.
+///
+/// The `femtovg` renderer panics on a zero-width or zero-height upload (`imgref`'s
+/// "Invalid `ImgRef` params"), and a frame sized from a layout that is not laid out yet
+/// (at start-up, for one) can be exactly that.
+#[must_use]
+pub fn rgba_image(buffer: SharedPixelBuffer<Rgba8Pixel>) -> slint::Image {
+    if buffer.width() == 0 || buffer.height() == 0 {
+        slint::Image::default()
+    } else {
+        slint::Image::from_rgba8(buffer)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,5 +105,21 @@ mod tests {
         let again = transfer.copy_from_gpu_slice(&[9; 64]);
         assert_eq!(again.as_slice().as_ptr(), first);
         assert_eq!(bytes_of(&again), [9; 64]);
+    }
+
+    /// A buffer without pixels becomes the empty image instead of reaching the renderer,
+    /// which would panic on the zero-sized upload; a real buffer keeps its size.
+    #[test]
+    fn empty_buffers_become_the_empty_image() {
+        for (width, height) in [(0, 45), (45, 0), (0, 0)] {
+            let image = rgba_image(SharedPixelBuffer::new(width, height));
+            assert_eq!(
+                image.size(),
+                slint::Image::default().size(),
+                "{width}x{height}"
+            );
+        }
+        let size = rgba_image(SharedPixelBuffer::new(3, 2)).size();
+        assert_eq!((size.width, size.height), (3, 2));
     }
 }

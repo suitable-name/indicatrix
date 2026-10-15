@@ -392,7 +392,7 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
                         return;
                     }
                     ui.global::<TiltModel>()
-                        .set_hover_preview_image(slint::Image::from_rgba8(buffer));
+                        .set_hover_preview_image(crate::bridge::pixel_buffer::rgba_image(buffer));
                 });
             });
         },

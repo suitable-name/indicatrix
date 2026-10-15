@@ -686,7 +686,7 @@ fn push_image(ui: &MainWindow, width: u32, height: u32, rgba: &[u8]) {
     let mut fb = crate::bridge::pixel_buffer::FramebufferTransfer::new(width, height);
     let image = fb.copy_from_gpu_slice(rgba);
     ui.global::<ViewportModel>()
-        .set_render_image(slint::Image::from_rgba8(image));
+        .set_render_image(crate::bridge::pixel_buffer::rgba_image(image));
     ui.global::<ViewportModel>().set_has_render(true);
 }
 

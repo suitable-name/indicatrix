@@ -223,7 +223,7 @@ fn frame_ready(host: &Rc<Host>, generation: u64, pixels: render::Pixels) {
         };
         host.window
             .global::<RoughPlanModel>()
-            .set_view_image(Image::from_rgba8(pixels));
+            .set_view_image(crate::bridge::pixel_buffer::rgba_image(pixels));
     }
     if rehover {
         interaction::rehover(host);
@@ -314,7 +314,7 @@ fn thumbnail_ready(
     let model = host.window.global::<RoughPlanModel>();
     let results = model.get_results();
     if let Some(mut row) = results.row_data(index) {
-        row.thumbnail = Image::from_rgba8(pixels);
+        row.thumbnail = crate::bridge::pixel_buffer::rgba_image(pixels);
         row.has_thumbnail = true;
         results.set_row_data(index, row);
     }

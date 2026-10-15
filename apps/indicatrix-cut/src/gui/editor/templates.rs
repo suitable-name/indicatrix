@@ -114,7 +114,7 @@ fn set_thumbnail(ui: &MainWindow, template_index: i32, pixels: &SharedPixelBuffe
                 continue;
             };
             if card.template_index == template_index {
-                card.thumbnail = Image::from_rgba8(pixels.clone());
+                card.thumbnail = crate::bridge::pixel_buffer::rgba_image(pixels.clone());
                 card.has_thumbnail = true;
                 rows.set_row_data(row, card);
             }

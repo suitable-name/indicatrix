@@ -243,8 +243,9 @@ fn to_slint_results(rows: Vec<ResultRow>, previews: &Previews) -> ModelRc<RoughP
                         count: group.count,
                         detail: group.detail.into(),
                         swatch: palette_swatch(group.swatch_index),
-                        thumbnail: pixels
-                            .map_or_else(Image::default, |p| Image::from_rgba8(p.clone())),
+                        thumbnail: pixels.map_or_else(Image::default, |p| {
+                            crate::bridge::pixel_buffer::rgba_image(p.clone())
+                        }),
                         has_thumbnail: pixels.is_some(),
                         metrics: ModelRc::new(VecModel::from(metrics)),
                         status: group.status.into(),

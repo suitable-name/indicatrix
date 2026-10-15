@@ -596,13 +596,13 @@ fn deliver_frame(msg: FrameMsg) {
     };
     handle.with_model(|model| {
         if let Some((before, after)) = update.images {
-            model.set_before_image(Image::from_rgba8(before));
-            model.set_after_image(Image::from_rgba8(after));
+            model.set_before_image(crate::bridge::pixel_buffer::rgba_image(before));
+            model.set_after_image(crate::bridge::pixel_buffer::rgba_image(after));
         }
         if let Some(overlay) = update.overlay
             && model.get_mode_index() == MODE_OVERLAY
         {
-            model.set_overlay_image(Image::from_rgba8(overlay));
+            model.set_overlay_image(crate::bridge::pixel_buffer::rgba_image(overlay));
         }
         model.set_status(update.status.into());
     });

@@ -635,18 +635,18 @@ impl PreviewSink for SlintSolidSink {
             let model = ui.global::<SolidPreviewModel>();
             model.set_trace_matches_solid(trace_matches);
 
-            model.set_image(slint::Image::from_rgba8(image));
+            model.set_image(crate::bridge::pixel_buffer::rgba_image(image));
             model.set_has_solid(has_solid);
             model.set_status(status.into());
             model.set_stale(stale);
             if let Some(edges_image) = edges_image {
-                model.set_edges_image(slint::Image::from_rgba8(edges_image));
+                model.set_edges_image(crate::bridge::pixel_buffer::rgba_image(edges_image));
                 model.set_has_solid_edges(true);
             } else {
                 model.set_has_solid_edges(false);
             }
             if let Some(diagram_image) = diagram_image {
-                model.set_diagram_image(slint::Image::from_rgba8(diagram_image));
+                model.set_diagram_image(crate::bridge::pixel_buffer::rgba_image(diagram_image));
             }
             model.set_has_diagram(has_diagram);
             // LAST, so every store above is already visible: the manipulation

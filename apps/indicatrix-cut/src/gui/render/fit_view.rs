@@ -73,7 +73,7 @@ pub(super) fn fit_distance(
 /// The radius to fit: the stone the tracer holds (`current`), or the drawn frame's
 /// (`drawn`) where the solid raster is on screen and its stone is larger. `drawn`
 /// alone when the planes do not close.
-fn fit_radius(current: Option<f64>, drawn: f64, traced_only: bool) -> f64 {
+const fn fit_radius(current: Option<f64>, drawn: f64, traced_only: bool) -> f64 {
     match current {
         Some(current) if traced_only => current,
         Some(current) => current.max(drawn),

@@ -33,7 +33,7 @@ impl Photo {
     pub(super) fn new(path: PathBuf, decoded: Decoded) -> Self {
         Self {
             path,
-            image: Image::from_rgba8(decoded.buffer),
+            image: crate::bridge::pixel_buffer::rgba_image(decoded.buffer),
             size: decoded.full_size,
         }
     }

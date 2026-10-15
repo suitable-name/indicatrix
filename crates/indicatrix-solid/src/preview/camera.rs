@@ -65,9 +65,11 @@ pub fn fit_distance_for_radius(bounding_radius: f64) -> f32 {
     (bounding_radius as f32).max(0.01) / half_fov_tan * FIT_MARGIN
 }
 
-/// The orbit distance at which a sphere of `bounding_radius` about the orbit centre
-/// is seen whole in an image of `aspect` (width over height), whatever the orbit
-/// angle, with its outline at `1 / FIT_MARGIN` of the shorter side's half-extent.
+/// The orbit distance at which a sphere of `bounding_radius` is seen whole in an image
+/// of `aspect` (width over height), whatever the orbit angle.
+///
+/// The sphere is centred on the orbit centre, and its outline sits at `1 / FIT_MARGIN`
+/// of the shorter side's half-extent.
 ///
 /// Unlike [`fit_distance_for_radius`] it fits the sphere's true outline (a sphere
 /// at distance `d` spans `r / sqrt(d^2 - r^2)` in tangent units, not `r / d`), and it

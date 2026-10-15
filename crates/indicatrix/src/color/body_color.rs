@@ -197,11 +197,13 @@ pub fn body_colors(tensor: &AbsorptionTensor, path_mm: f64, ill: Illuminant) -> 
 fn body_color_transmittance(t_fn: impl Fn(f64) -> f64, ill: Illuminant) -> BodyColor {
     let display_adaptation = match ill {
         Illuminant::Planckian(temp_k) => Some(compute_illuminant_white_balance(temp_k)),
-        Illuminant::D65 | Illuminant::UvLongWave365 | Illuminant::UvShortWave254 => None,
-        // The LED lamps are shown as they are, like D65 and the UV lines: no adaptation. A
+        // D65, the UV lines and the LED lamps are shown as they are: no adaptation. A
         // caller that wants the swatch adapted to the screen uses `body_color_from_spectra`
         // with its own `display_adaptation`.
-        Illuminant::Led(_) => None,
+        Illuminant::D65
+        | Illuminant::UvLongWave365
+        | Illuminant::UvShortWave254
+        | Illuminant::Led(_) => None,
     };
     body_color_from_spectra(
         t_fn,

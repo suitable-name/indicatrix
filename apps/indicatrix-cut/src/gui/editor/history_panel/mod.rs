@@ -188,7 +188,9 @@ impl Panel {
         }
         for Finished { key, outcome } in finished {
             match outcome {
-                Outcome::Ready(pixels) => self.cache.store_ready(key, Image::from_rgba8(pixels)),
+                Outcome::Ready(pixels) => self
+                    .cache
+                    .store_ready(key, crate::bridge::pixel_buffer::rgba_image(pixels)),
                 Outcome::CannotDraw => self.cache.store_failed(key),
                 Outcome::Stale => self.cache.forget_waiting(&key),
             }
